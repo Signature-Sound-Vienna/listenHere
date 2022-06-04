@@ -1,0 +1,8 @@
+/*.waveform { 
+  display:none;
+  border:1px solid red;
+}
+*/
+.waveforms .active { 
+  background:#ff0;
+}

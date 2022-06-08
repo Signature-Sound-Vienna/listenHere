@@ -1,9 +1,3 @@
-/*.waveform { 
-  display:none;
-  border:1px solid red;
-}
-*/
-
 #waveforms .active { 
   background:#ff0;
 }
@@ -25,4 +19,10 @@
   width:80%;
 }
 
+.renditionName { 
+  cursor: pointer;
+}
 
+.renditionName:hover { 
+  text-decoration:underline;
+}

@@ -93,6 +93,20 @@ function setGrids(grids) {
     });
 }
 document.addEventListener('DOMContentLoaded', () => {
+  // load csv
+  fetch('/static/csv/all_wphil_donau.csv')
+    .then(response => response.text())
+    .then(contents => {
+      const grids = {};
+      lines = contents.split("\n");
+      audiofiles = lines[0].split("|");
+      ref = audiofiles[0];
+      audiofiles.forEach((name, ix) => { 
+        grids[audiofiles[ix]] = lines[ix+1].split(",");
+      })
+      setGrids(grids);
+    })
+    .catch(err => console.warn("Couldn't load alignment data: ", err));
   // generate waveforms
   audios.forEach((t, ix) => { 
     let waveform = document.createElement("div");
@@ -143,10 +157,11 @@ document.addEventListener('DOMContentLoaded', () => {
       } else { 
         console.error("Could not find grid entry for time ", e.time);
       }
-    });
-    wavesurfers.push(wavesurfer);
+      wavesurfers.push(wavesurfer);
+    })
   })  
   // hook up file event listener
+  /*
   document.getElementById("csv").addEventListener("change", (e) => { 
     const file = e.target.files[0];
     if(!file) { 
@@ -167,6 +182,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     reader.readAsText(file);
   });
+  */
   // play/pause button
   document.getElementById("playpause").addEventListener('click', function(e){
     if(wavesurfers[currentAudioIx].isPlaying()) 

@@ -107,6 +107,12 @@ document.addEventListener('DOMContentLoaded', () => {
       //backend: "MediaElement"
       plugins: [ WaveSurfer.markers.create({}) ]
     });
+    wavesurfer.addMarker({
+      time: 0,
+      label: audios[ix],
+      color:"black",
+      position:"top"
+    })
     wavesurfer.load(root + "wav/" + audios[ix]);
     wavesurfer.on("marker-click", (e) => {
       // index into audio recordings for clicked marker's waveform

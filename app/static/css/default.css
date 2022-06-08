@@ -3,6 +3,26 @@
   border:1px solid red;
 }
 */
-.waveforms .active { 
+
+#waveforms .active { 
   background:#ff0;
 }
+
+#wrapper { 
+  display:flex;
+  max-height:calc( 100vh - 50px );
+}
+
+#wrapper nav  {
+  width:20%;
+}
+
+#waveforms { 
+  display:flex;
+  flex-direction: column;
+  overflow-y:scroll;
+  height:calc( 100vh - 50px );
+  width:80%;
+}
+
+

@@ -157,8 +157,8 @@ document.addEventListener('DOMContentLoaded', () => {
       } else { 
         console.error("Could not find grid entry for time ", e.time);
       }
-      wavesurfers.push(wavesurfer);
     })
+    wavesurfers.push(wavesurfer);
   })  
   // hook up file event listener
   /*

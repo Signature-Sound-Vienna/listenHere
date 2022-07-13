@@ -1,5 +1,4 @@
 //let audios =["Donau/2001.mp3","Donau/1990.mp3","Donau/1999.mp3","Donau/2011.mp3","Donau/1980.mp3","Donau/1979.mp3","Donau/1995.mp3","Donau/1998.mp3","Donau/2007.mp3","Donau/1991.mp3","Donau/1994.mp3","Donau/2009.mp3","Donau/2005.mp3","Donau/2018.mp3","Donau/2000.mp3","Donau/1996.mp3","Donau/2004.mp3","Donau/2002.mp3","Donau/1997.mp3","Donau/1988.mp3","Donau/Compilation-1980-83.mp3","Donau/1993.mp3","Donau/1987.mp3"]
-
 let audios = ["Donau/Wiener-Johann-Straus-Orchester-Boskovsky-1995.wav.mp3","Donau/Orchester-der-Wiener-Volksoper-Scholz-1988.wav.mp3","Donau/Wiener-Opernorchester-Falk-1991.wav.mp3","Donau/K&K-Philharmoniker-Kendlinger-2010.wav.mp3","Donau/StraussOrchester-JosephFrancek.wav.mp3","Donau/WPhil-2001.wav.mp3","Donau/Wiener-Symphoniker-Wogan-Sawallisch-1967.wav.mp3","Donau/Vienna-Johann-Strauss-Orchestra-Johannes-Wildner-2012.wav.mp3","Donau/Slovakisches-Philharmonisches-Orchester-Aebi-1996.wav.mp3","Donau/JohannStraußOrchester-Herbert-Siebert-2015.wav.mp3","Donau/Philharmonie-Lugansk-Kurt-Schmid.wav.mp3","Donau/NYPhil-Bernstein-1982.wav.mp3","Donau/Vienna-Symphony-Orhestra-Stolz.wav.mp3","Donau/K&K-Philharmoniker-Kendlinger-2009.wav.mp3"]
 let wavesurfers = [];
 let markers = [];
@@ -96,7 +95,7 @@ function setGrids(grids) {
 }
 document.addEventListener('DOMContentLoaded', () => {
   // load csv
-  fetch('/static/csv/all_wphil_donau.csv')
+  fetch('/static/csv/otherDonau.csv')
     .then(response => response.text())
     .then(contents => {
       const grids = {};

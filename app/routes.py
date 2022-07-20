@@ -7,6 +7,9 @@ def index():
 @app.route("/other")
 def other():
     return render_template('other.html')
+@app.route("/choose")
+def choose():
+    return render_template('choose.html')
 @app.route("/old")
 def old():
     return render_template('old.html')

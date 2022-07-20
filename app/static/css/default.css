@@ -8,7 +8,7 @@
 }
 
 #wrapper nav  {
-  width:20%;
+  width:22%;
 }
 
 #waveforms { 
@@ -16,7 +16,7 @@
   flex-direction: column;
   overflow-y:scroll;
   height:calc( 100vh - 50px );
-  width:80%;
+  width:78%;
 }
 
 .renditionName { 
@@ -25,4 +25,22 @@
 
 .renditionName:hover { 
   text-decoration:underline;
+}
+
+ul { 
+  list-style-type: none;
+  padding-left:0px;
+  margin-left:0px;
+}
+
+label { 
+  color:gray;
+}
+
+label.ready { 
+  color:green;
+}
+
+label.loading { 
+  color:black;
 }

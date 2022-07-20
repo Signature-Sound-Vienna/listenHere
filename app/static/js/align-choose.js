@@ -107,6 +107,7 @@ function swapCurrentAudio(newAudio) {
     const wasPlaying = wavesurfers[currentAudioIx].isPlaying();
     wavesurfers[currentAudioIx].pause();
     let closestAlignmentIx = getClosestAlignmentIx();
+    document.getElementById(`waveform-${currentAudioIx}`).classList.remove("active");
     // swap to new audio and alignment grid
     currentAudioIx = newAudio;
     console.log("new audio ix: ", currentAudioIx);
@@ -244,6 +245,15 @@ function prepareWaveform(filename) {
         console.error("Could not find grid entry for time ", e.time);
       }
     })
+  } else {
+    // waveform already loaded...
+    let checkbox = document.getElementById(filename).querySelector("input");
+    if(!(checkbox.checked)) { 
+      // if hidden, unhide by clicking on checkbox
+      checkbox.click();
+    }
+    // now swap to the audio
+    swapCurrentAudio(filename);
   }
 }
 
@@ -338,5 +348,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
   // play from last marker button
-  document.getElementById("playLastMark").addEventListener('click', () => seekToLastMark());
+  document.getElementById("playLastMark").addEventListener('click', () => { 
+    seekToLastMark();
+    wavesurfers[currentAudioIx].play();
+  });
 })

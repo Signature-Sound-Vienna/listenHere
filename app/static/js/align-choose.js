@@ -271,17 +271,25 @@ function setGrids(grids) {
 
   const nycList = generateCheckboxList(nycFiles);
   const otherList = generateCheckboxList(otherFiles);
-  
+
+  const listSelectors = `<span class='listSelectors'>
+    <span class='all'>All</span>
+    <span class='none'>None</span>
+  </span>`;
+
   const nycFoldout = document.createElement("details");
   const nycSummary = document.createElement("summary");
+
   nycSummary.innerText = "NYC";
   nycFoldout.appendChild(nycSummary);
+  nycFoldout.innerHTML += listSelectors;
   nycFoldout.appendChild(nycList);
 
   const otherFoldout = document.createElement("details");
   const otherSummary = document.createElement("summary");
   otherSummary.innerText = "Other";
   otherFoldout.appendChild(otherSummary);
+  otherFoldout.innerHTML += listSelectors;
   otherFoldout.appendChild(otherList);
 
   const audiosElement = document.getElementById("audios");
@@ -292,6 +300,27 @@ function setGrids(grids) {
   audiosElement.appendChild(nycFoldout);
   audiosElement.appendChild(otherFoldout);
 
+  // list selectors
+  Array.from(document.querySelectorAll('.listSelectors .all'))
+    .forEach(selector => selector.addEventListener('click', (e) => {
+      let checkboxes = Array.from(e.target.closest("details").querySelectorAll("input"));
+      checkboxes.forEach(cb => { 
+        // we're doing work in clickhandlers, so can't just set checked value
+        if(!(cb.checked))
+          cb.click();
+      })
+    }));
+  Array.from(document.querySelectorAll('.listSelectors .none'))
+    .forEach(selector => selector.addEventListener('click', (e) => {
+      let checkboxes = Array.from(e.target.closest("details").querySelectorAll("input"));
+      checkboxes.forEach(cb => { 
+        // we're doing work in clickhandlers, so can't just unset checked value
+        if(cb.checked)
+          cb.click();
+      })
+    }));
+  
+  // rendition selectors
   Array.from(document.getElementsByClassName("renditionName"))
     .forEach((r, ix) => {
       r.addEventListener("click", onClickRenditionName);
@@ -302,7 +331,7 @@ function setGrids(grids) {
     });
 }
 document.addEventListener('DOMContentLoaded', () => {
-  // load csv
+  // load alignment json 
   fetch('/static/align/allDonau.json')
     .then(response => response.json())
     .then(contents => {

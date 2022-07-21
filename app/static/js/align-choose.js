@@ -415,6 +415,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // show spectrograms checkbox
+  document.getElementById("showSpectrograms").checked = false;
   document.getElementById("showSpectrograms").addEventListener('click', (e) => { 
     let waveforms = document.getElementById("waveforms");
     if(e.target.checked) {

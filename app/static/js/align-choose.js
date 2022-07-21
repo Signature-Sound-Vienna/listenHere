@@ -114,7 +114,16 @@ function swapCurrentAudio(newAudio) {
     let currentGrid = alignmentGrids[currentAudioIx]
     console.log("new audio grid: ", alignmentGrids[currentAudioIx]);
     console.log("new duration: ", wavesurfers[currentAudioIx].getDuration());
-    document.getElementById(`waveform-${currentAudioIx}`).classList.add("active");
+    let newWaveform = document.getElementById(`waveform-${currentAudioIx}`);
+    // highlight as active
+    newWaveform.classList.add("active");
+    // scroll to position
+    let bbox = newWaveform.getBoundingClientRect();
+    document.getElementById("waveforms").scrollTo({ 
+      top: bbox.top, // scroll to second position
+      left: bbox.left,
+      behavior: "smooth"
+    })
     // seek to new (corresponding) position 
     transitionToLastMark = document.getElementById(`transitionType`).checked;
     console.log("transitionToLastMark: ", transitionToLastMark)
@@ -273,8 +282,7 @@ function setGrids(grids) {
   const otherList = generateCheckboxList(otherFiles);
 
   const listSelectors = `<span class='listSelectors'>
-    <span class='all'>All</span>
-    <span class='none'>None</span>
+    <span class='all'>All</span><span class='none'>None</span>
   </span>`;
 
   const nycFoldout = document.createElement("details");

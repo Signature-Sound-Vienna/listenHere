@@ -4,18 +4,28 @@
 
 #wrapper { 
   display:flex;
-  max-height:calc( 100vh - 50px );
+  max-height:100vh;
 }
 
 #wrapper nav  {
+  display:flex;
+  flex-direction:column;
   width:22%;
+}
+
+#audios { 
+  flex-shrink:2;
+  flex-direction:column;
+  overflow-y:scroll;
+  overflow-x:clip;
+  font-size:small;
 }
 
 #waveforms { 
   display:flex;
   flex-direction: column;
   overflow-y:scroll;
-  height:calc( 100vh - 50px );
+  height: 100vh;
   width:78%;
 }
 
@@ -35,6 +45,8 @@ ul {
 
 label { 
   color:gray;
+  font-size:smaller;
+  cursor:pointer;
 }
 
 label.ready { 
@@ -43,4 +55,21 @@ label.ready {
 
 label.loading { 
   color:black;
+}
+
+
+details { 
+  cursor:pointer;
+}
+
+.listSelectors { 
+  font-size: smaller;
+  text-decoration:underline;
+}
+
+.listSelectors .all { 
+  padding-right:1em;
+}
+.listSelectors .none{ 
+  padding-left:1em;
 }

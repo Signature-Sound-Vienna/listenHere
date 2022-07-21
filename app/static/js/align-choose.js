@@ -6,6 +6,7 @@ let alignmentGrids = {};
 let ref;
 let currentAudioIx = "";
 let storage;
+let colorMap;
 try { 
   storage = window.localStorage;
 } catch(err) { 
@@ -173,8 +174,13 @@ function prepareWaveform(filename) {
     waveform.id = "waveform-"+filename;
     waveform.dataset.ix = filename;
     waveform.classList.add("waveform");
+    const spectrogram = document.createElement("div");
+    spectrogram.id = "waveform-"+filename+"-spec";
+    spectrogram.dataset.ix = filename;
+    spectrogram.classList.add("spectrogram");
     let waveforms = document.getElementById("waveforms");
-    // add container element to waveforms
+    // add elements to waveforms
+    waveforms.appendChild(spectrogram);
     waveforms.appendChild(waveform);
     // now resort waveforms to maintain order
     [...waveforms.children]
@@ -187,7 +193,18 @@ function prepareWaveform(filename) {
                   .replace(".", "\\."),
       waveColor: "violet",
       progressColor: "purple",
-      plugins: [ WaveSurfer.markers.create({}) ]
+      plugins: [ 
+        WaveSurfer.markers.create({}), 
+        WaveSurfer.spectrogram.create({
+          wavesurfer: wavesurfers[filename],
+          container: ("#waveform-"+filename+"-spec")
+                  .replace("/", "\\/")
+                  .replace(".", "\\."),
+          labels: true,
+          colorMap: colorMap,
+          height: 192,
+        })
+      ]
     });
     // add filename label marker
     wavesurfers[filename].addMarker({
@@ -346,6 +363,13 @@ document.addEventListener('DOMContentLoaded', () => {
       setGrids(contents);
     })
     .catch(err => console.warn("Couldn't load alignment data: ", err));
+
+    // load a colormap json file to be passed to the spectrogram.create method.
+  WaveSurfer.util
+      .fetchFile({ url: root + 'js/hot-colormap.json', responseType: 'json' })
+      .on('success', cM => {
+        colorMap = cM;
+      });
   // play/pause button
   document.getElementById("playpause").addEventListener('click', function(e){
     if(wavesurfers[currentAudioIx].isPlaying()) 
@@ -388,5 +412,16 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById("playLastMark").addEventListener('click', () => { 
     seekToLastMark();
     wavesurfers[currentAudioIx].play();
+  });
+
+  // show spectrograms checkbox
+  document.getElementById("showSpectrograms").addEventListener('click', (e) => { 
+    let waveforms = document.getElementById("waveforms");
+    if(e.target.checked) {
+      waveforms.classList.add("showSpectrograms");
+    }
+    else {
+      waveforms.classList.remove("showSpectrograms");
+    }
   });
 })

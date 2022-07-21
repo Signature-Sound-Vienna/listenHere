@@ -6,16 +6,23 @@
     <script src="{{ url_for('static', filename='js/align-choose.js') }}"></script>
     <script src="{{ url_for('static', filename='js/wavesurfer.js') }}"></script>
     <script src="{{ url_for('static', filename='js/wavesurfer.markers.min.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/wavesurfer.spectrogram.min.js') }}"></script>
   </head>
   <body>
     <div id="wrapper">
       <nav>
-          <button id="restore">Restore marks</button><br/>
-          <button id="mark">Mark</button><br/>
-          <button id="playLastMark">Play from last marker</button><br/>
-          <button id="playpause">Play/Pause</button><br/>
-          <input type="checkbox" id="transitionType" checked>Jump to marker</input><br/>
-          <hr/>
+          <button id="restore">Restore marks</button>
+          <button id="mark">Mark</button>
+          <button id="playLastMark">Play from last marker</button>
+          <button id="playpause">Play/Pause</button>
+          <span>
+            <input type="checkbox" id="transitionType" checked />
+            <label for="#transitionType">Jump to marker</label>
+          </span>
+          <span>
+            <input type="checkbox" id="showSpectrograms"/>
+            <label for="#showSpectrograms">Spectrograms</label>
+          </span>
           <div id="audios"></div>
       </nav>
       <div id="waveforms"></div>

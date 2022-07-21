@@ -10,7 +10,8 @@
 #wrapper nav  {
   display:flex;
   flex-direction:column;
-  width:22%;
+  width:200px;
+  font-size: smaller;
 }
 
 #audios { 
@@ -26,7 +27,27 @@
   flex-direction: column;
   overflow-y:scroll;
   height: 100vh;
-  width:78%;
+  width: calc(100% - 200px);
+}
+
+#waveforms wave {
+  height:128px !important;
+}
+
+#waveforms.showSpectrograms wave {
+  height:64px !important;
+}
+
+#waveforms .spectrogram { 
+  display:none;
+}
+
+#waveforms .spec-labels { 
+  position:absolute !important;
+}
+
+#waveforms.showSpectrograms .spectrogram{
+  display:unset;
 }
 
 .renditionName { 

@@ -60,18 +60,23 @@ function onClickRenditionName(e) {
   if(e.target.nodeName.toLowerCase() === "label") { 
     // retrieve checkbox
     checkbox = document.getElementById(e.target.for);
-  } else if(e.target.nodeName.toLowerCase == "li"){ 
+  } else if(e.target.nodeName.toLowerCase === "li"){ 
     checkbox = e.target.querySelector("input");
   } else { 
     checkbox = e.target;
   }
-  const status = document.getElementById(checkbox.value)
-    .querySelector("label").classList;
-  if(!(status.contains("ready")) && !(status.contains("loading"))) {
-    status.add("loading");
+  console.log("CLick: ", e)
+  console.log("Checkbox: ", checkbox)
+
+  if(checkbox.value) { 
+    const status = document.getElementById(checkbox.value)
+      .querySelector("label").classList;
+    if(!(status.contains("ready")) && !(status.contains("loading"))) {
+      status.add("loading");
+    }
+    prepareWaveform(checkbox.value);
+    console.log("Clicked!", checkbox.value)
   }
-  prepareWaveform(checkbox.value);
-  console.log("Clicked!", checkbox.value)
 }
 
 function onClickRenditionCheckbox(e)  {
@@ -270,7 +275,11 @@ function prepareWaveform(filename) {
       } else { 
         console.error("Could not find grid entry for time ", e.time);
       }
-    })
+    });
+    wavesurfers[filename].on("seek", (e) => { 
+      if(filename !== currentAudioIx)
+        swapCurrentAudio(filename);
+    });
   } else {
     // waveform already loaded...
     let checkbox = document.getElementById(filename).querySelector("input");
@@ -286,29 +295,29 @@ function prepareWaveform(filename) {
 function setGrids(grids) { 
   console.log("setting grids: ", grids);
   alignmentGrids = grids;
-  /* separate NYC and other */
+  /* separate VPO and other */
   /* for now, hackily use filenames */
   /* in glorious future, use knowledge graph */
   let filenames = Object.keys(grids);
-  let nycFiles = filenames.filter(n => n.match(/\/\d\d\d\d\./));
-  nycFiles = nycFiles.sort();
-  let otherFiles = filenames.filter(n => !nycFiles.includes(n)).sort();
+  let vpoFiles = filenames.filter(n => n.match(/\/\d\d\d\d\./));
+  vpoFiles = vpoFiles.sort();
+  let otherFiles = filenames.filter(n => !vpoFiles.includes(n)).sort();
   otherFiles = otherFiles.sort();
 
-  const nycList = generateCheckboxList(nycFiles);
+  const vpoList = generateCheckboxList(vpoFiles);
   const otherList = generateCheckboxList(otherFiles);
 
   const listSelectors = `<span class='listSelectors'>
     <span class='all'>All</span><span class='none'>None</span>
   </span>`;
 
-  const nycFoldout = document.createElement("details");
-  const nycSummary = document.createElement("summary");
+  const vpoFoldout = document.createElement("details");
+  const vpoSummary = document.createElement("summary");
 
-  nycSummary.innerText = "NYC";
-  nycFoldout.appendChild(nycSummary);
-  nycFoldout.innerHTML += listSelectors;
-  nycFoldout.appendChild(nycList);
+  vpoSummary.innerText = "VPO";
+  vpoFoldout.appendChild(vpoSummary);
+  vpoFoldout.innerHTML += listSelectors;
+  vpoFoldout.appendChild(vpoList);
 
   const otherFoldout = document.createElement("details");
   const otherSummary = document.createElement("summary");
@@ -319,10 +328,10 @@ function setGrids(grids) {
 
   const audiosElement = document.getElementById("audios");
 
-  nycFoldout.open = true;
+  vpoFoldout.open = true;
   otherFoldout.open = true;
 
-  audiosElement.appendChild(nycFoldout);
+  audiosElement.appendChild(vpoFoldout);
   audiosElement.appendChild(otherFoldout);
 
   // list selectors

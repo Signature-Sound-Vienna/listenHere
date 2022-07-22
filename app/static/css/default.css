@@ -34,6 +34,11 @@
   height:128px !important;
 }
 
+#waveforms .waveform:not(.active) wave wave { 
+  /* prevent cursor on non-active waveforms */
+  display:none !important;
+}
+
 #waveforms.showSpectrograms wave {
   height:64px !important;
 }
@@ -91,6 +96,7 @@ details {
 .listSelectors .all { 
   padding-right:1em;
 }
+
 .listSelectors .none{ 
   padding-left:1em;
 }

@@ -146,6 +146,7 @@ function swapCurrentAudio(newAudio) {
       wavesurfers[currentAudioIx].play();
   } else { 
     currentAudioIx = newAudio;
+    document.getElementById(`waveform-${currentAudioIx}`).classList.add("active");
   }
 }
 
@@ -190,10 +191,11 @@ function prepareWaveform(filename) {
     // add elements to waveforms
     waveforms.appendChild(spectrogram);
     waveforms.appendChild(waveform);
-    // now resort waveforms to maintain order
-    [...waveforms.children]
-      .sort((a,b) => a.id > b.id?1:-1)
-      .forEach(node=>waveforms.appendChild(node));
+    // now resort waveforms to maintain order, prioritizing VPO
+    let vpo = [...waveforms.children].filter(n => n.id.substr(n.id.lastIndexOf("/")+1).startsWith("VPO-"));
+    let other = [...waveforms.children].filter(n => !(n.id.substr(n.id.lastIndexOf("/")+1).startsWith("VPO-")));
+    vpo.sort((a,b) => a.id > b.id?1:-1).forEach(node=>waveforms.appendChild(node));
+    other.sort((a,b) => a.id > b.id?1:-1).forEach(node=>waveforms.appendChild(node));
     // create new wavesurfer instance in the new container
     wavesurfers[filename] = WaveSurfer.create({
       container: `#${CSS.escape("waveform-"+filename)}`,

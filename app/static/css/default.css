@@ -47,6 +47,11 @@
   display:none;
 }
 
+#waveforms marker {
+  /* lift labels above waveform */
+  z-index:3;
+}
+
 #waveforms .spec-labels { 
   position:absolute !important;
 }

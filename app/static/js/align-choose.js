@@ -262,7 +262,7 @@ function prepareWaveform(filename) {
           wavesurfers[ws].clearMarkers();
           wavesurfers[ws].addMarker({
             time: 0,
-            label: filename,
+            label: ws,
             color:"black",
             position:"top"
           })

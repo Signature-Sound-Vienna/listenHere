@@ -3,6 +3,7 @@
     <title>SSV Align</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/default.css') }}" />
     <script> let root = "{{ url_for('static', filename='') }}" </script>
+    <script> let alignmentData = "{{ data }}" </script>
     <script src="{{ url_for('static', filename='js/align-choose.js') }}"></script>
     <script src="{{ url_for('static', filename='js/wavesurfer.js') }}"></script>
     <script src="{{ url_for('static', filename='js/wavesurfer.markers.min.js') }}"></script>

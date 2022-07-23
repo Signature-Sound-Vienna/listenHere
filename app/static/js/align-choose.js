@@ -1,4 +1,3 @@
-//let audios =["Donau/2001.mp3","Donau/1990.mp3","Donau/1999.mp3","Donau/2011.mp3","Donau/1980.mp3","Donau/1979.mp3","Donau/1995.mp3","Donau/1998.mp3","Donau/2007.mp3","Donau/1991.mp3","Donau/1994.mp3","Donau/2009.mp3","Donau/2005.mp3","Donau/2018.mp3","Donau/2000.mp3","Donau/1996.mp3","Donau/2004.mp3","Donau/2002.mp3","Donau/1997.mp3","Donau/1988.mp3","Donau/Compilation-1980-83.mp3","Donau/1993.mp3","Donau/1987.mp3"]
 let wavesurfers = {};
 let markers = [];
 let loaded = new Set();
@@ -87,15 +86,19 @@ function onClickRenditionCheckbox(e)  {
   let checked = checkbox.checked;
   let label = checkbox.parentElement.querySelector("label");
   let waveform = document.getElementById("waveform-"+ e.target.value);
+  let spectrogram = document.getElementById("waveform-"+ e.target.value+"-spec");
   if(!checked) { 
     e.stopPropagation(); // hide from other handler
     waveform.style.display = "none";
+    spectrogram.style.display = "none";
     checkbox.checked = false;
     label.classList.remove("ready");
     label.classList.add("loading");
   } else if(label.classList.contains("loading")) { 
     e.stopPropagation(); // hide from other handler
     waveform.style.display = "unset";
+    if(document.getElementById("showSpectrograms").checked) 
+      spectrogram.style.display = "unset";
     checkbox.checked = true;
     label.classList.remove("loading");
     label.classList.add("ready");
@@ -193,18 +196,14 @@ function prepareWaveform(filename) {
       .forEach(node=>waveforms.appendChild(node));
     // create new wavesurfer instance in the new container
     wavesurfers[filename] = WaveSurfer.create({
-      container: ("#waveform-"+filename)
-                  .replace("/", "\\/")
-                  .replace(".", "\\."),
+      container: `#${CSS.escape("waveform-"+filename)}`,
       waveColor: "violet",
       progressColor: "purple",
       plugins: [ 
         WaveSurfer.markers.create({}), 
         WaveSurfer.spectrogram.create({
           wavesurfer: wavesurfers[filename],
-          container: ("#waveform-"+filename+"-spec")
-                  .replace("/", "\\/")
-                  .replace(".", "\\."),
+          container: (`#${CSS.escape("waveform-"+filename+"-spec")}`),
           labels: true,
           colorMap: colorMap,
           height: 192,
@@ -299,7 +298,7 @@ function setGrids(grids) {
   /* for now, hackily use filenames */
   /* in glorious future, use knowledge graph */
   let filenames = Object.keys(grids);
-  let vpoFiles = filenames.filter(n => n.match(/\/\d\d\d\d\./));
+  let vpoFiles = filenames.filter(n => n.substr(n.lastIndexOf("/")+1).startsWith("VPO-"));
   vpoFiles = vpoFiles.sort();
   let otherFiles = filenames.filter(n => !vpoFiles.includes(n)).sort();
   otherFiles = otherFiles.sort();
@@ -366,7 +365,7 @@ function setGrids(grids) {
 }
 document.addEventListener('DOMContentLoaded', () => {
   // load alignment json 
-  fetch('/static/align/allDonau.json')
+  fetch(alignmentData)
     .then(response => response.json())
     .then(contents => {
       setGrids(contents);

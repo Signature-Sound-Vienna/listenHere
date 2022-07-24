@@ -2,11 +2,9 @@ from flask import Flask, url_for, render_template
 from app import app
 
 @app.route("/")
+@app.route("/other")
 def index():
     return render_template('index.html')
-@app.route("/other")
-def other():
-    return render_template('other.html')
 @app.route("/Donau")
 @app.route("/donau")
 def donau():
@@ -17,6 +15,11 @@ def donau():
 def radetzky():
     return render_template('choose.html', 
             data=url_for('static', filename='align/Radetzky.json'))
+@app.route("/Fledermaus")
+@app.route("/fledermaus")
+def fledermaus():
+    return render_template('choose.html', 
+            data=url_for('static', filename='align/Fledermaus.json'))
 @app.route("/old")
 def old():
     return render_template('old.html')

@@ -8,20 +8,16 @@ def index():
 @app.route("/Donau")
 @app.route("/donau")
 def donau():
-    return render_template('choose.html', 
+    return render_template('listen.html', 
             data=url_for('static', filename='align/Donau.json'))
 @app.route("/Radetzky")
 @app.route("/radetzky")
 def radetzky():
-    return render_template('choose.html', 
+    return render_template('listen.html', 
             data=url_for('static', filename='align/Radetzky.json'))
 @app.route("/Fledermaus")
 @app.route("/fledermaus")
 def fledermaus():
-    return render_template('choose.html', 
+    return render_template('listen.html', 
             data=url_for('static', filename='align/Fledermaus.json'))
-@app.route("/old")
-def old():
-    return render_template('old.html')
-
 

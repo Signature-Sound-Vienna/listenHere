@@ -109,7 +109,7 @@ function onClickRenditionCheckbox(e)  {
   }
 }
 
-function swapCurrentAudio(newAudio) { 
+function swapCurrentAudio(newAudio, scrollToNew = false) { 
   if(currentAudioIx) { 
     console.log("Pausing current: ", currentAudioIx);
     console.log("Current duration: ", wavesurfers[currentAudioIx].getDuration());
@@ -126,13 +126,15 @@ function swapCurrentAudio(newAudio) {
     let newWaveform = document.getElementById(`waveform-${currentAudioIx}`);
     // highlight as active
     newWaveform.classList.add("active");
-    // scroll to position
-    let bbox = newWaveform.getBoundingClientRect();
-    document.getElementById("waveforms").scrollTo({ 
-      top: bbox.top, // scroll to second position
-      left: bbox.left,
-      behavior: "smooth"
-    })
+    if(scrollToNew) { 
+      // scroll to position
+      let bbox = newWaveform.getBoundingClientRect();
+      document.getElementById("waveforms").scrollTo({ 
+        top: bbox.top, // scroll to second position
+        left: bbox.left,
+        behavior: "smooth"
+      })
+    }
     // seek to new (corresponding) position 
     transitionToLastMark = document.getElementById(`transitionType`).checked;
     console.log("transitionToLastMark: ", transitionToLastMark)
@@ -235,7 +237,7 @@ function prepareWaveform(filename) {
       status.add("ready");
       listItem.querySelector("input")
         .checked = true;
-      swapCurrentAudio(filename);
+      swapCurrentAudio(filename, true);
     });
     wavesurfers[filename].on("marker-click", (e) => {
       if(e.position === "top") { 
@@ -289,7 +291,7 @@ function prepareWaveform(filename) {
       checkbox.click();
     }
     // now swap to the audio
-    swapCurrentAudio(filename);
+    swapCurrentAudio(filename, true);
   }
 }
 

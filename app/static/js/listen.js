@@ -85,7 +85,7 @@ function onClickRenditionCheckbox(e)  {
   let checkbox = e.target;
   let checked = checkbox.checked;
   let label = checkbox.parentElement.querySelector("label");
-  let waveform = document.getElementById("waveform-"+ e.target.value);
+  let waveform = document.getElementById("waveform-"+ e.target.value + "-wav");
   let spectrogram = document.getElementById("waveform-"+ e.target.value+"-spec");
   if(!checked) { 
     e.stopPropagation(); // hide from other handler
@@ -109,44 +109,35 @@ function onClickRenditionCheckbox(e)  {
   }
 }
 
-function swapCurrentAudio(newAudio, scrollToNew = false) { 
+function swapCurrentAudio(newAudio) { 
   if(currentAudioIx === newAudio) { 
     // no need to swap
     return;
   }
-  console.log("Swapping to ", newAudio, " with scrollToNew: ", scrollToNew);
   if(currentAudioIx) { 
     console.log("Pausing current: ", currentAudioIx);
     console.log("Current duration: ", wavesurfers[currentAudioIx].getDuration());
     const wasPlaying = wavesurfers[currentAudioIx].isPlaying();
     wavesurfers[currentAudioIx].pause();
     let closestAlignmentIx = getClosestAlignmentIx();
-    document.getElementById(`waveform-${currentAudioIx}`).classList.remove("active");
+    document.getElementById(`waveform-${currentAudioIx}`+"-wav").classList.remove("active");
     // swap to new audio and alignment grid
     currentAudioIx = newAudio;
     console.log("new audio ix: ", currentAudioIx);
     let currentGrid = alignmentGrids[currentAudioIx]
     console.log("new audio grid: ", alignmentGrids[currentAudioIx]);
     console.log("new duration: ", wavesurfers[currentAudioIx].getDuration());
-    let newWaveform = document.getElementById(`waveform-${currentAudioIx}`);
+    let newWaveform = document.getElementById(`waveform-${currentAudioIx}`+"-wav");
     // highlight as active
     newWaveform.classList.add("active");
-    if(scrollToNew) { 
-      // scroll to position
-      let bbox = newWaveform.getBoundingClientRect();
-      let waveforms = document.getElementById("waveforms");
-      waveforms.scrollTo({
-        top: bbox.top + waveforms.scrollTop - 128,
-        left: 0,
-        behavior: "smooth"
-      });
-
-//      document.getElementById("waveforms").scrollTo({ 
-//        top: ((bbox.top+bbox.bottom)/2) - document.getElementById("waveforms").scrollTop, // scroll to second position
-//        left: bbox.left,
-//        behavior: "smooth"
-//      })
-    }
+    // scroll to position
+    let bbox = newWaveform.getBoundingClientRect();
+    let waveforms = document.getElementById("waveforms");
+    waveforms.scrollTo({
+      top: bbox.top + waveforms.scrollTop - 128,
+      left: 0,
+      behavior: "smooth"
+    });
     // seek to new (corresponding) position 
     transitionToLastMark = document.getElementById(`transitionType`).checked;
     console.log("transitionToLastMark: ", transitionToLastMark)
@@ -160,7 +151,7 @@ function swapCurrentAudio(newAudio, scrollToNew = false) {
       wavesurfers[currentAudioIx].play();
   } else { 
     currentAudioIx = newAudio;
-    document.getElementById(`waveform-${currentAudioIx}`).classList.add("active");
+    document.getElementById(`waveform-${currentAudioIx}`+"-wav").classList.add("active");
   }
 }
 
@@ -194,7 +185,7 @@ function prepareWaveform(filename) {
   // if not yet created, do so:
   if(!(filename in wavesurfers)) { 
     const waveform = document.createElement("div");
-    waveform.id = "waveform-"+filename;
+    waveform.id = "waveform-"+filename+"-wav";
     waveform.dataset.ix = filename;
     waveform.classList.add("waveform");
     const spectrogram = document.createElement("div");
@@ -212,7 +203,7 @@ function prepareWaveform(filename) {
     other.sort((a,b) => a.id > b.id?1:-1).forEach(node=>waveforms.appendChild(node));
     // create new wavesurfer instance in the new container
     wavesurfers[filename] = WaveSurfer.create({
-      container: `#${CSS.escape("waveform-"+filename)}`,
+      container: `#${CSS.escape("waveform-"+filename)+"-wav"}`,
       waveColor: "violet",
       progressColor: "purple",
       plugins: [ 
@@ -222,7 +213,7 @@ function prepareWaveform(filename) {
           container: (`#${CSS.escape("waveform-"+filename+"-spec")}`),
           labels: true,
           colorMap: colorMap,
-          height: 192,
+          height: 128,
         })
       ]
     });
@@ -303,7 +294,7 @@ function prepareWaveform(filename) {
       checkbox.click();
     }
     // now swap to the audio
-    swapCurrentAudio(filename, true);
+    swapCurrentAudio(filename);
   }
 }
 

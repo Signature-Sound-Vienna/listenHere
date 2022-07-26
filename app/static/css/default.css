@@ -105,3 +105,25 @@ details {
 .listSelectors .none{ 
   padding-left:1em;
 }
+
+.waveform {
+  margin-bottom: .2em;
+  border: 1px solid black;
+  border-top:0px;
+  border-bottom-right-radius: 5px;
+  border-bottom-left-radius: 5px;
+}
+
+.spectrogram{
+  border-top:1px solid black;
+  border-left:1px solid black;
+  border-right:1px solid black;
+  border-top-left-radius:5px;
+  border-top-right-radius:5px;
+}
+
+#waveforms:not(.showSpectrograms) .waveform { 
+  border-top: 1px solid black;
+  border-radius: 5px;
+}
+

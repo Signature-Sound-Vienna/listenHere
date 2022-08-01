@@ -151,7 +151,10 @@ function swapCurrentAudio(newAudio) {
       wavesurfers[currentAudioIx].play();
   } else { 
     currentAudioIx = newAudio;
-    document.getElementById(`waveform-${currentAudioIx}`+"-wav").classList.add("active");
+    const newActiveWaveform = document.getElementById(`waveform-${currentAudioIx}`+"-wav");
+    if(newActiveWaveform) { 
+      newActiveWaveform.classList.add("active");
+    }
   }
 }
 
@@ -181,7 +184,25 @@ function generateCheckboxList(list) {
   return ul;
 }
 
-function prepareWaveform(filename) { 
+function reloadWaveforms() { 
+  let playPosition = 0;
+  let isPlaying = false;
+  const prevLoaded = Object.keys(wavesurfers);
+  if(currentAudioIx) {
+    playPosition = wavesurfers[currentAudioIx].getCurrentTime();
+    isPlaying = wavesurfers[currentAudioIx].isPlaying();
+  }
+  // get current play position of active wavesurfer
+  // destroy current wavesurfers
+  prevLoaded.forEach(ws => wavesurfers[ws].destroy());
+  wavesurfers = {};
+  // forget waveform elements (and spectorgrams)
+  document.getElementById("waveforms").replaceChildren();
+  // re-create previously loaded waveforms
+  prevLoaded.forEach(ws => prepareWaveform(ws, playPosition, isPlaying));
+}
+
+function prepareWaveform(filename, playPosition = 0, isPlaying = false) { 
   // if not yet created, do so:
   if(!(filename in wavesurfers)) { 
     const waveform = document.createElement("div");
@@ -206,6 +227,7 @@ function prepareWaveform(filename) {
       container: `#${CSS.escape("waveform-"+filename)+"-wav"}`,
       waveColor: "violet",
       progressColor: "purple",
+      normalize: document.getElementById("normalize").checked,
       plugins: [ 
         WaveSurfer.markers.create({}), 
         WaveSurfer.spectrogram.create({
@@ -213,7 +235,7 @@ function prepareWaveform(filename) {
           container: (`#${CSS.escape("waveform-"+filename+"-spec")}`),
           labels: true,
           colorMap: colorMap,
-          height: 128,
+          height: 128
         })
       ]
     });
@@ -240,7 +262,15 @@ function prepareWaveform(filename) {
       status.add("ready");
       listItem.querySelector("input")
         .checked = true;
-      //swapCurrentAudio(filename, true);
+      // check if we're the currentAudioIx, and if so make ourselves active and spool to provided playPosition
+      // (possible when normalize checkbox has forced a reload of waveform elements)
+      if(filename === currentAudioIx) { 
+        document.querySelector(`.waveform[data-ix='${filename}']`).classList.add("active");
+        wavesurfers[currentAudioIx].play(playPosition);
+        if(!isPlaying) { 
+          wavesurfers[currentAudioIx].pause();
+        }
+      }
     });
     wavesurfers[filename].on("marker-click", (e) => {
       if(e.position === "top") { 
@@ -440,4 +470,11 @@ document.addEventListener('DOMContentLoaded', () => {
       waveforms.classList.remove("showSpectrograms");
     }
   });
+
+  // normalize audio checkbox
+  document.getElementById("normalize").checked = false;
+  document.getElementById("normalize").addEventListener('click', (e) => { 
+    reloadWaveforms();
+  });
+
 })

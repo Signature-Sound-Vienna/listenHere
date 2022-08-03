@@ -312,6 +312,18 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           wavesurfers[currentAudioIx].pause();
         }
       }
+      // restore marks from storage if they exist
+      if(storage) { 
+        markersString = storage.getItem("markers");
+        if(markersString) {
+          markers = JSON.parse(markersString);
+            // apply any markers that may have been loaded from local storage
+          markers.forEach(m => { 
+            const t = getCorrespondingTime(filename, m);
+            wavesurfers[filename].addMarker({time: t, color:"red"});
+          })
+        }
+      }
     });
     wavesurfers[filename].on("marker-click", (e) => {
       console.log("MARKER CLICKED")
@@ -477,24 +489,6 @@ document.addEventListener('DOMContentLoaded', () => {
       console.log("got corresponding time: ",t) 
       wavesurfers[ws].addMarker({time: t, color:"red"})
     })
-  });
-  // restore button
-  document.getElementById("restore").addEventListener('click', function(e){
-    // recover marker positions from local storage if possible
-    console.log("RESTORE CLICKED", storage.getItem("markers"))
-    if(storage) { 
-      markersString = storage.getItem("markers");
-      if(markersString) {
-        markers = JSON.parse(markersString);
-        Object.keys(wavesurfers).forEach(ws => {
-          // apply any markers that may have been loaded from local storage
-          markers.forEach(m => { 
-            const t = getCorrespondingTime(ws, m);
-            wavesurfers[ws].addMarker({time: t, color:"red"});
-          })
-        })
-      }
-    }
   });
   // play from last marker button
   document.getElementById("playLastMark").addEventListener('click', () => { 

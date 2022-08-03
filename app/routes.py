@@ -24,4 +24,8 @@ def fledermaus():
 def midi_test():
     return render_template('listen.html', 
             data=url_for('static', filename='align/midi-test.json'))
-
+@app.route("/Rosegarden")
+@app.route("/rosegarden")
+def rosegarden():
+    return render_template('listen.html', 
+            data=url_for('static', filename='align/Rosegarden-midi.json'))

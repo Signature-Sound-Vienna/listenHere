@@ -286,12 +286,13 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       waveCanvas.parentNode.insertBefore(gridCanvas, waveCanvas);
       const canvasCtx = gridCanvas.getContext('2d');
       canvasCtx.lineWidth = 1;
-      canvasCtx.strokeStyle = "#b0b0b0";
+      canvasCtx.strokeStyle = "#b0b0b055";
       // draw alignment grid
       // for each grid position, figure out x-coord by doing (seconds / duration) * canvas-width
       const duration = wavesurfers[filename].getDuration();
       // only draw every fifth position to prevent overplotting
-      alignmentGrids[filename].filter((_, ix) => ix % 5 === 0).forEach(gridPos => { 
+      //alignmentGrids[filename].filter((_, ix) => ix % 5 === 0).forEach(gridPos => { 
+      alignmentGrids[filename].forEach(gridPos => { 
         const x = (gridPos / duration) * gridCanvas.width;
         canvasCtx.moveTo(x, 0);
         canvasCtx.lineTo(x, gridCanvas.height);

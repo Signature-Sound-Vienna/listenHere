@@ -1,13 +1,13 @@
 let wavesurfers = {};
 let markers = [];
 let loaded = new Set();
-let alignmentgrids = {};
+let alignmentGrids = {};
 let ref;
-let currentaudioix = "";
+let currentAudioIx = "";
 let storage;
 let colormap;
 try { 
-  storage = window.localstorage;
+  storage = window.localStorage;
 } catch(err) { 
   console.warn("unable to access local storage: ", err);
 }
@@ -48,7 +48,6 @@ function getCorrespondingTime(audioIx, alignmentIx) {
   // get time position corresponding to current position of current audio, 
   // in the alternative audio with index audioIx
   let grid = alignmentGrids[audioIx];
-  console.log("Looking up ", alignmentIx, " in ", grid);
   return grid[alignmentIx];
 }
 
@@ -207,7 +206,7 @@ function visualiseAlignments() {
   Object.keys(wavesurfers).forEach(ws => { 
     wavesurfers[ws].clearMarkers();
     alignmentGrids[ws].forEach(t => { 
-      wavesurfers[ws].addMarker({ time: t, color: "green" });
+      wavesurfers[ws].addMarker({ time: t, color: "red" });
       wavesurfers[ws].on("hover", (e) => { 
         console.log("HOVER: ", e)
       })
@@ -262,25 +261,42 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     // add any user-generated markers
     markers.forEach(m => { 
       const t = getCorrespondingTime(filename, m);
-      wavesurfers[filename].addMarker({time: t, color:"green"});
+      wavesurfers[filename].addMarker({time: t, color:"red"});
     })
     wavesurfers[filename].load(root + "wav/" + filename);
     wavesurfers[filename].on("ready", () => {
       // signal file is ready in filename list
       loaded.add(filename);
-      console.log("READY:", filename);/*
-      const canvas = document.querySelector(`.waveform[data-ix='${filename}']`).querySelector('canvas');
-      const canvasCtx = canvas.getContext('2d');
-      console.log("COntext: ", canvasCtx);
+      console.log("READY:...", filename);
+      // create alignment grid canvas from waveform canvas
+      const waveCanvas = document.querySelector(`.waveform[data-ix='${filename}']>wave>canvas`);
+      const waveStyle = waveCanvas.style;
+      const gridCanvas = document.createElement('canvas');
+      const gridStyle = gridCanvas.style;
+      gridCanvas.classList.add("alignment-grid");
+      gridCanvas.width = waveCanvas.width;
+      gridCanvas.height = waveCanvas.height;
+      gridStyle.zIndex = waveStyle.zIndex-1;
+      gridStyle.position = "absolute";
+      gridStyle.top = waveStyle.top;
+      gridStyle.left = waveStyle.left;
+      gridStyle.bottom = waveStyle.bottom;
+      gridStyle.right = waveStyle.right;
+      gridStyle.display = document.getElementById("visalign").checked ? "unset" : "none";
+      waveCanvas.parentNode.insertBefore(gridCanvas, waveCanvas);
+      const canvasCtx = gridCanvas.getContext('2d');
+      canvasCtx.lineWidth = 1;
+      canvasCtx.strokeStyle = "#b0b0b0";
       // draw alignment grid
       // for each grid position, figure out x-coord by doing (seconds / duration) * canvas-width
       const duration = wavesurfers[filename].getDuration();
-      alignmentGrids[filename].forEach(gridPos => { 
-        const x = (gridPos / duration) * canvas.width;
+      // only draw every fifth position to prevent overplotting
+      alignmentGrids[filename].filter((_, ix) => ix % 5 === 0).forEach(gridPos => { 
+        const x = (gridPos / duration) * gridCanvas.width;
         canvasCtx.moveTo(x, 0);
-        canvasCtx.lineTo(x, canvas.height);
+        canvasCtx.lineTo(x, gridCanvas.height);
       });
-      canvasCtx.stroke();*/
+      canvasCtx.stroke();
       let listItem = document.getElementById(filename);
       let status = listItem.querySelector("label").classList;
       status.remove("loading");
@@ -298,6 +314,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       }
     });
     wavesurfers[filename].on("marker-click", (e) => {
+      console.log("MARKER CLICKED")
       if(e.position === "top") { 
         // ignore clicks on filename-label markers
         return;
@@ -330,7 +347,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
             // get time corresponding to the marker for this audio
             const t = getCorrespondingTime(ws, m);
             // draw marker at this time
-            wavesurfers[ws].addMarker({time: t, color:"green"});
+            wavesurfers[ws].addMarker({time: t, color:"red"});
           })
         })
       } else { 
@@ -458,21 +475,22 @@ document.addEventListener('DOMContentLoaded', () => {
     Object.keys(wavesurfers).forEach((ws) =>  {
       const t = getCorrespondingTime(ws, toMark);
       console.log("got corresponding time: ",t) 
-      wavesurfers[ws].addMarker({time: t, color:"green"})
+      wavesurfers[ws].addMarker({time: t, color:"red"})
     })
   });
   // restore button
   document.getElementById("restore").addEventListener('click', function(e){
     // recover marker positions from local storage if possible
+    console.log("RESTORE CLICKED", storage.getItem("markers"))
     if(storage) { 
       markersString = storage.getItem("markers");
       if(markersString) {
         markers = JSON.parse(markersString);
-        wavesurfers.forEach((ws, wsIx) => {
+        Object.keys(wavesurfers).forEach(ws => {
           // apply any markers that may have been loaded from local storage
           markers.forEach(m => { 
-            const t = getCorrespondingTime(wsIx, m);
-            wavesurfers[wsIx].addMarker({time: t, color:"green"});
+            const t = getCorrespondingTime(ws, m);
+            wavesurfers[ws].addMarker({time: t, color:"red"});
           })
         })
       }
@@ -504,31 +522,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // visualize alignment checkbox
   document.getElementById("visalign").checked = false;
   document.getElementById("visalign").addEventListener('click', (e) => { 
-    const canvases = Array.from(document.querySelectorAll(".waveform>wave>canvas"));
-    console.log("Canvases: ", canvases)
-    canvases.forEach(canvas => { 
-      const filename = canvas.closest(".waveform").dataset['ix'];
-      const canvasCtx = canvas.getContext('2d');
-      console.log("COntext: ", canvasCtx);
-      // draw alignment grid
-      // for each (nth) grid position, figure out x-coord by doing (seconds / duration) * canvas-width
-      const duration = wavesurfers[filename].getDuration();
-      // for each 10th position, to avoid overfitting
-      alignmentGrids[filename].filter((_, ix) => ix % 10 === 0).forEach(gridPos => { 
-        const x = (gridPos / duration) * canvas.width;
-        canvasCtx.moveTo(x, 0);
-        canvasCtx.lineTo(x, canvas.height);
-        canvasCtx.stroke();
-      });
-    })
-    markButton = document.getElementById("mark");
-    markButton.disabled = !!e.target.checked; // disable marks if visualising alignments
-    if(e.target.checked) { 
-    //  visualiseAlignments();
-    } else { 
-     // document.getElementById("restore").click();
-    }
-
+    let display = e.target.checked ? "unset" : "none";
+    Array.from(document.querySelectorAll(".alignment-grid")).forEach(e => e.style.display = display);
   });
 
 })

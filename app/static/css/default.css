@@ -128,13 +128,7 @@ details {
   border-radius: 5px;
 }
 
-polygon[fill='green'] { 
-  /* alignment visualisation: transparent marker tags */
-  fill-opacity: 0;
-}
-
-marker:hover {
-  background-color:red;
-  opacity:0.5;
-  width:1px;
+wave marker:not(marker:first-child) div:first-child {  
+  opacity:1 !important;
+  background-color:red !important;
 }

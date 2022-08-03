@@ -20,4 +20,8 @@ def radetzky():
 def fledermaus():
     return render_template('listen.html', 
             data=url_for('static', filename='align/Fledermaus.json'))
+@app.route("/midi-test")
+def midi_test():
+    return render_template('listen.html', 
+            data=url_for('static', filename='align/midi-test.json'))
 

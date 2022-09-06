@@ -264,26 +264,69 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       wavesurfers[filename].addMarker({time: t, color:"red"});
     })
     wavesurfers[filename].load(root + "wav/" + filename);
+    wavesurfers[filename].on("seek", () => { 
+      // work out current alignment grid index
+      const currentGridIx = alignmentGrids[filename].findIndex(n => n > wavesurfers[filename].getCurrentTime())+1;
+      if (currentGridIx < 0) { 
+        // reset if can't find, e.g. because reached end
+        currentGridIx = 0;
+      }
+      // iterate through all positionIndicatorCanvases, drawing in current ix position for that canvas
+      const canvases = document.getElementsByClassName("position-indicator");
+      Array.from(canvases).forEach(c => {
+        //c.width = c.width; // clear
+        const file = c.closest(".waveform").dataset["ix"];
+        const ctx = c.getContext("2d");
+        const correspondingSeconds = alignmentGrids[file][currentGridIx];
+        const duration = wavesurfers[file].getDuration();
+        const absoluteX = (currentGridIx / alignmentGrids[filename].length) * c.width;
+        const relativeX = (correspondingSeconds / duration) * c.width;
+        const diffMapped = Math.floor(255 * (absoluteX-relativeX) / 100);
+        console.log("abs: ", absoluteX, "rel: ", relativeX, "mapped: ", diffMapped);
+        ctx.clearRect(0,0,c.width,c.height);
+        ctx.beginPath();
+        ctx.lineWidth = 2;
+        ctx.moveTo(absoluteX, 0);
+        ctx.lineTo(relativeX, (c.height / 6));
+        ctx.lineTo(relativeX, 5*(c.height / 6));
+        ctx.lineTo(absoluteX, c.height);
+        ctx.strokeStyle = diffMapped < 0 ? `rgb(${-1*diffMapped} 100 100)` : `rgb(100 100 ${diffMapped})`;
+        ctx.stroke();
+      })
+    });
     wavesurfers[filename].on("ready", () => {
       // signal file is ready in filename list
       loaded.add(filename);
       console.log("READY:...", filename);
-      // create alignment grid canvas from waveform canvas
+      // create alignment grid and position indicator canvases from waveform canvas
       const waveCanvas = document.querySelector(`.waveform[data-ix='${filename}']>wave>canvas`);
       const waveStyle = waveCanvas.style;
       const gridCanvas = document.createElement('canvas');
       const gridStyle = gridCanvas.style;
+      const positionIndicatorCanvas = document.createElement('canvas');
+      const positionIndicatorStyle = positionIndicatorCanvas.style;
       gridCanvas.classList.add("alignment-grid");
       gridCanvas.width = waveCanvas.width;
       gridCanvas.height = waveCanvas.height;
-      gridStyle.zIndex = waveStyle.zIndex-1;
+      gridStyle.zIndex = waveStyle.zIndex-2;
       gridStyle.position = "absolute";
       gridStyle.top = waveStyle.top;
       gridStyle.left = waveStyle.left;
       gridStyle.bottom = waveStyle.bottom;
       gridStyle.right = waveStyle.right;
       gridStyle.display = document.getElementById("visalign").checked ? "unset" : "none";
+      positionIndicatorCanvas.classList.add("position-indicator");
+      positionIndicatorCanvas.width = waveCanvas.width;
+      positionIndicatorCanvas.height = waveCanvas.height;
+      positionIndicatorStyle.zIndex = waveStyle.zIndex-1;
+      positionIndicatorStyle.position = "absolute";
+      positionIndicatorStyle.top = waveStyle.top;
+      positionIndicatorStyle.left = waveStyle.left;
+      positionIndicatorStyle.bottom = waveStyle.bottom;
+      positionIndicatorStyle.right = waveStyle.right;
+//      positionIndicatorStyle.display = document.getElementById("visalign").checked ? "unset" : "none";
       waveCanvas.parentNode.insertBefore(gridCanvas, waveCanvas);
+      waveCanvas.parentNode.insertBefore(positionIndicatorCanvas, waveCanvas);
       const canvasCtx = gridCanvas.getContext('2d');
       canvasCtx.lineWidth = 1;
       canvasCtx.strokeStyle = "#b0b0b055";
@@ -292,10 +335,20 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       const duration = wavesurfers[filename].getDuration();
       // only draw every fifth position to prevent overplotting
       //alignmentGrids[filename].filter((_, ix) => ix % 5 === 0).forEach(gridPos => { 
-      alignmentGrids[filename].forEach(gridPos => { 
-        const x = (gridPos / duration) * gridCanvas.width;
-        canvasCtx.moveTo(x, 0);
-        canvasCtx.lineTo(x, gridCanvas.height);
+      alignmentGrids[filename].forEach((gridPos, gridIx) => { 
+        // draw a vertical line in three segments:
+        // first segment: ABSOLUTE GRID INDEX position
+        // second segment: RELATIVE DURATION position
+        // third segment: ABSOLUTE GRID INDEX position
+        const absoluteX = (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
+        const relativeX = (gridPos / duration) * gridCanvas.width;
+        const diffMapped = Math.floor(255 * (absoluteX-relativeX) / 100);
+        //canvasCtx.beginPath();
+        //canvasCtx.strokeStyle = diffMapped < 0 ? `rgb(${-1*diffMapped} 0 0)` : `rgb(0 0 ${diffMapped})`;
+        canvasCtx.moveTo(absoluteX, 0);
+        canvasCtx.lineTo(relativeX, (gridCanvas.height / 6));
+        canvasCtx.lineTo(relativeX, 5*(gridCanvas.height / 6));
+        canvasCtx.lineTo(absoluteX, gridCanvas.height);
       });
       canvasCtx.stroke();
       let listItem = document.getElementById(filename);

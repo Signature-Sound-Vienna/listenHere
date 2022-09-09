@@ -31,3 +31,12 @@ def rosegarden():
             #data=url_for('static', filename='align/Rosegarden-midi.json'))
             #data=url_for('static', filename='align/allDonauRosegarden.json'))
             data=url_for('static', filename='align/allFledermausRosegarden.json'))
+@app.route("/Kaiserwalzer")
+@app.route("/kaiserwalzer")
+@app.route("/Kaiser-Walzer")
+@app.route("/kaiser-walzer")
+def kaiserwalzer():
+    return render_template('listen.html', 
+            #data=url_for('static', filename='align/Rosegarden-midi.json'))
+            #data=url_for('static', filename='align/allDonauRosegarden.json'))
+            data=url_for('static', filename='align/Kaiserwalzer.json'))

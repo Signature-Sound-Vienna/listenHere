@@ -57,4 +57,4 @@ def tempo():
     return render_template('listen.html', 
             #data=url_for('static', filename='align/Rosegarden-midi.json'))
             #data=url_for('static', filename='align/allDonauRosegarden.json'))
-            data=url_for('static', filename='align/KW-tempo-test.json'))
+            data=url_for('static', filename='align/KaiserBBC_tempi.json'))

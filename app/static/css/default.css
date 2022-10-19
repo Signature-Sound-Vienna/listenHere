@@ -57,8 +57,17 @@
   position:absolute !important;
 }
 
-#waveforms.showSpectrograms .spectrogram{
+#waveforms.showSpectrograms .spectrogram {
   display:unset;
+}
+
+waveforms .tempoCurves { 
+  display:none;
+}
+
+#waveforms.showTempoCurves .tempoCurve { 
+  display:unset;
+  height:64px;
 }
 
 .renditionName { 

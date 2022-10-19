@@ -40,3 +40,21 @@ def kaiserwalzer():
             #data=url_for('static', filename='align/Rosegarden-midi.json'))
             #data=url_for('static', filename='align/allDonauRosegarden.json'))
             data=url_for('static', filename='align/Kaiserwalzer.json'))
+@app.route("/ref-bbcso")
+def ref_bbcso():
+    return render_template('listen.html', 
+            #data=url_for('static', filename='align/Rosegarden-midi.json'))
+            #data=url_for('static', filename='align/allDonauRosegarden.json'))
+            data=url_for('static', filename='align/Kaiserwalzer-BBCSO.json'))
+@app.route("/ref-midi")
+def ref_midi():
+    return render_template('listen.html', 
+            #data=url_for('static', filename='align/Rosegarden-midi.json'))
+            #data=url_for('static', filename='align/allDonauRosegarden.json'))
+            data=url_for('static', filename='align/Kaiserwalzer-MIDI.json'))
+@app.route("/tempo")
+def tempo():
+    return render_template('listen.html', 
+            #data=url_for('static', filename='align/Rosegarden-midi.json'))
+            #data=url_for('static', filename='align/allDonauRosegarden.json'))
+            data=url_for('static', filename='align/KW-tempo-test.json'))

@@ -246,210 +246,245 @@ function visualiseAlignments() {
   })
 }
 
+
+function generateRibbon(filename, suffix) { 
+  console.log("Generating ribbon: ", filename, suffix)
+  // suffix one of: 'wav', 'spec', 'tempo'
+  const ribbon = document.createElement("div");
+  ribbon.id = `waveform-${filename}-${suffix}`;
+  ribbon.dataset.ix = filename;
+  switch(suffix) { 
+    case "wav": 
+      ribbon.classList.add("waveform");
+      break;
+    case "spec":
+      ribbon.classList.add("spectrogram");
+      break;
+    case "tempo":
+      ribbon.classList.add("tempoCurve");
+      break;
+    default:
+      console.error("Unknown suffix supplied to generateRibbon");
+      return;
+  }
+  return ribbon;
+}
+
+function filterAndSortWaveforms(waveforms) {
+  // filter, sort, and re-arrange waveform dom elements
+  let filtered;
+  ['ref', 'vpo', 'other'].forEach(category => { 
+    if(category === "other") { 
+      filtered = [...waveforms.children].filter(n => !(
+              n.id.substr(n.id.lastIndexOf("/")+1).startsWith("VPO-") ||
+              n.id.substr(n.id.lastIndexOf("/")+1).startsWith("REF-") 
+      ))
+    } else { 
+      filtered = [...waveforms.children].filter(n => 
+        n.id.substr(n.id.lastIndexOf("/")+1).startsWith(`${category.toUpperCase()}-`));
+    }
+  });
+  filtered.sort((a,b) => a.id > b.id ? 1: -1)
+    .forEach((node =>  waveforms.appendChild(node)));
+}
+
+function createWavesurfer(filename) { 
+  console.log("CREATE: ", filename)
+  wavesurfers[filename] = WaveSurfer.create({
+    container: `#${CSS.escape("waveform-"+filename)+"-wav"}`,
+    waveColor: "violet",
+    progressColor: "purple",
+    normalize: document.getElementById("normalize").checked,
+    plugins: [ 
+      WaveSurfer.markers.create({}), 
+      WaveSurfer.spectrogram.create({
+        wavesurfer: wavesurfers[filename],
+        container: (`#${CSS.escape("waveform-"+filename+"-spec")}`),
+        labels: true,
+        colorMap: colorMap,
+        height: 128
+      })
+    ]
+  });
+  // add filename label marker
+  wavesurfers[filename].addMarker({
+    time: 0,
+    label: filename,
+    color:"black",
+    position:"top"
+  });
+  // add any user-generated markers
+  markers.forEach(m => { 
+    const t = getCorrespondingTime(filename, m);
+    wavesurfers[filename].addMarker({time: t, color:"red"});
+  });
+}
+
+function onWavesurferSeek(filename) { 
+    // work out current alignment grid index
+    const currentGridIx = alignmentGrids[filename].findIndex(n => n > wavesurfers[filename].getCurrentTime())+1;
+    if (currentGridIx < 0) { 
+      // reset if can't find, e.g. because reached end
+      currentGridIx = 0;
+    }
+    // iterate through all positionIndicatorCanvases, drawing in current ix position for that canvas
+    const canvases = document.getElementsByClassName("position-indicator");
+    Array.from(canvases).forEach(c => {
+      //c.width = c.width; // clear
+      const file = c.closest(".waveform").dataset["ix"];
+      const ctx = c.getContext("2d");
+      const correspondingSeconds = alignmentGrids[file][currentGridIx];
+      const duration = wavesurfers[file].getDuration();
+      const absoluteX = (currentGridIx / alignmentGrids[filename].length) * c.width;
+      const relativeX = (correspondingSeconds / duration) * c.width;
+      const diffMapped = Math.floor(255 * (absoluteX-relativeX) / 100);
+      console.log("abs: ", absoluteX, "rel: ", relativeX, "mapped: ", diffMapped);
+      ctx.clearRect(0,0,c.width,c.height);
+      ctx.beginPath();
+      ctx.lineWidth = 2;
+      ctx.moveTo(absoluteX, 0);
+      ctx.lineTo(relativeX, (c.height / 6));
+      ctx.lineTo(relativeX, 5*(c.height / 6));
+      ctx.lineTo(absoluteX, c.height);
+      ctx.strokeStyle = diffMapped < 0 ? `rgb(${-1*diffMapped} 100 100)` : `rgb(100 100 ${diffMapped})`;
+      ctx.stroke();
+    })
+}
+
+function onWavesurferReady(filename) { 
+  // signal file is ready in filename list
+  loaded.add(filename);
+  console.log("READY:...", filename);
+  const tempoCurveDiv = document.querySelector(`.tempoCurve[data-ix='${filename}']`)
+  console.log("Tempo curve div: ", tempoCurveDiv)
+  // create alignment grid and position indicator canvases from waveform canvas
+  const waveCanvas = document.querySelector(`.waveform[data-ix='${filename}']>wave>canvas`);
+  const waveStyle = waveCanvas.style;
+  const gridCanvas = document.createElement('canvas');
+  const gridStyle = gridCanvas.style;
+  const positionIndicatorCanvas = document.createElement('canvas');
+  const positionIndicatorStyle = positionIndicatorCanvas.style;
+  const tempoCurveCanvas = document.createElement('canvas');
+  const tempoCurveStyle = tempoCurveCanvas.style;
+  gridCanvas.classList.add("alignment-grid");
+  gridCanvas.width = waveCanvas.width;
+  gridCanvas.height = waveCanvas.height;
+  gridStyle.zIndex = waveStyle.zIndex-2;
+  gridStyle.position = "absolute";
+  gridStyle.top = waveStyle.top;
+  gridStyle.left = waveStyle.left;
+  gridStyle.bottom = waveStyle.bottom;
+  gridStyle.right = waveStyle.right;
+  gridStyle.display = document.getElementById("visalign").checked ? "unset" : "none";
+  positionIndicatorCanvas.classList.add("position-indicator");
+  positionIndicatorCanvas.width = waveCanvas.width;
+  positionIndicatorCanvas.height = waveCanvas.height;
+  positionIndicatorStyle.zIndex = waveStyle.zIndex-1;
+  positionIndicatorStyle.position = "absolute";
+  positionIndicatorStyle.top = waveStyle.top;
+  positionIndicatorStyle.left = waveStyle.left;
+  positionIndicatorStyle.bottom = waveStyle.bottom;
+  positionIndicatorStyle.right = waveStyle.right;
+  tempoCurveCanvas.classList.add("tempoCurveCanvas");
+  tempoCurveCanvas.dataset.ix=filename;
+  tempoCurveStyle.width = tempoCurveDiv.offsetWidth + "px";
+  //tempoCurveCanvas.height = tempoCurveDiv.offsetHeight;
+  tempoCurveStyle.height = 64 + "px"; 
+  //tempoCurveStyle.position = "relative";
+  //positionIndicatorStyle.display = document.getElementById("visalign").checked ? "unset" : "none";
+  tempoCurveDiv.appendChild(tempoCurveCanvas);
+  waveCanvas.parentNode.insertBefore(gridCanvas, waveCanvas);
+  waveCanvas.parentNode.insertBefore(positionIndicatorCanvas, waveCanvas);
+  const canvasCtx = gridCanvas.getContext('2d');
+  canvasCtx.lineWidth = 1;
+  canvasCtx.strokeStyle = "#b0b0b055";
+  let tempoCtx = tempoCurveCanvas.getContext('2d');
+  tempoCtx.lineWidth = 2;
+  tempoCtx.strokeStyle = "#b0b0b055";
+  // draw alignment grid
+  // for each grid position, figure out x-coord by doing (seconds / duration) * canvas-width
+  const duration = wavesurfers[filename].getDuration();
+  alignmentGrids[filename].forEach((gridPos, gridIx) => { 
+    // FOR ALIGNMENT VISUALISATION:
+    // draw a vertical line in three segments:
+    // first segment: ABSOLUTE GRID INDEX position
+    // second segment: RELATIVE DURATION position
+    // third segment: ABSOLUTE GRID INDEX position
+    const absoluteX = (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
+    const relativeX = (gridPos / duration) * gridCanvas.width;
+    const diffMapped = Math.floor(255 * (absoluteX-relativeX) / 100);
+    //canvasCtx.beginPath();
+    //canvasCtx.strokeStyle = diffMapped < 0 ? `rgb(${-1*diffMapped} 0 0)` : `rgb(0 0 ${diffMapped})`;
+    canvasCtx.moveTo(absoluteX, 0);
+    canvasCtx.lineTo(relativeX, (gridCanvas.height / 6));
+    canvasCtx.lineTo(relativeX, 5*(gridCanvas.height / 6));
+    canvasCtx.lineTo(absoluteX, gridCanvas.height);
+    // FOR TEMPO VISUALISATION:
+    // map canvas height to reasonable max tempo (barring errors, outliers, etc)
+    // then draw lines connecting the tempi for each grid position
+    if(Object.keys(smoothedTempi).length) {
+      let x = Math.round(absoluteX);
+      //let yMapped = Math.round((smoothedTempi[filename][gridIx] / maxExpectedTempo) * tempoCurveCanvas.height);
+      let yMapped = smoothedTempo[filename][gridIx] / 3;
+      let y = tempoCurveCanvas.height - Math.min(yMapped, 64);
+      //tempoCtx.lineTo(x, y);
+      // tempoCtx.lineTo(x, y);
+      //tempoCtx.lineTo(x, 32);
+      tempoCtx.fillStyle = "green";
+      if(x % 5 === 0)
+        tempoCtx.moveTo(x, 0);
+        tempoCtx.lineTo(x, y);
+      console.debug("Drawing line: ", x, y, yMapped, smoothedTempi[filename][gridIx], maxExpectedTempo, tempoCurveCanvas.height);
+    }       
+  });
+  canvasCtx.stroke();
+  tempoCtx.stroke();
+  console.log("Thought I draw on canvas context: ", tempoCtx);
+  let listItem = document.getElementById(filename);
+  let status = listItem.querySelector("label").classList;
+  status.remove("loading");
+  status.add("ready");
+  listItem.querySelector("input")
+    .checked = true;
+  // check if we're the currentAudioIx, and if so make ourselves active and spool to provided playPosition
+  // (possible when normalize checkbox has forced a reload of waveform elements)
+  if(filename === currentAudioIx) { 
+    document.querySelector(`.waveform[data-ix='${filename}']`).classList.add("active");
+    wavesurfers[currentAudioIx].play(playPosition);
+    if(!isPlaying) { 
+      wavesurfers[currentAudioIx].pause();
+    }
+  }
+  // restore marks from storage if they exist
+  if(storage) { 
+    markersString = storage.getItem("markers");
+    if(markersString) {
+      markers = JSON.parse(markersString);
+        // apply any markers that may have been loaded from local storage
+      markers.forEach(m => { 
+        const t = getCorrespondingTime(filename, m);
+        wavesurfers[filename].addMarker({time: t, color:"red"});
+      })
+    }
+  }
+}
+
 function prepareWaveform(filename, playPosition = 0, isPlaying = false) { 
-  // if not yet created, do so:
+// if not yet created, do so:
   if(!(filename in wavesurfers)) { 
-    const waveform = document.createElement("div");
-    waveform.id = "waveform-"+filename+"-wav";
-    waveform.dataset.ix = filename;
-    waveform.classList.add("waveform");
-    const spectrogram = document.createElement("div");
-    spectrogram.id = "waveform-"+filename+"-spec";
-    spectrogram.dataset.ix = filename;
-    spectrogram.classList.add("spectrogram");
-    const tempoCurve = document.createElement("div");
-    tempoCurve.id = "waveform-"+filename+"-tempo";
-    tempoCurve.dataset.ix = filename;
-    tempoCurve.classList.add("tempoCurve")
+    console.log("HELLO", filename)
     let waveforms = document.getElementById("waveforms");
     // add elements to waveforms
-    waveforms.appendChild(tempoCurve);
-    waveforms.appendChild(spectrogram);
-    waveforms.appendChild(waveform);
-    // now resort waveforms to maintain order, prioritizing REF and VPO
-    let ref = [...waveforms.children].filter(n => n.id.substr(n.id.lastIndexOf("/")+1).startsWith("REF-"));
-    let vpo = [...waveforms.children].filter(n => n.id.substr(n.id.lastIndexOf("/")+1).startsWith("VPO-"));
-    let other = [...waveforms.children].filter(n => !(
-						n.id.substr(n.id.lastIndexOf("/")+1).startsWith("VPO-") ||
-						n.id.substr(n.id.lastIndexOf("/")+1).startsWith("REF-") 
-		));
-    ref.sort((a,b) => a.id > b.id?1:-1).forEach(node=>waveforms.appendChild(node));
-    vpo.sort((a,b) => a.id > b.id?1:-1).forEach(node=>waveforms.appendChild(node));
-    other.sort((a,b) => a.id > b.id?1:-1).forEach(node=>waveforms.appendChild(node));
-    // create new wavesurfer instance in the new container
-    wavesurfers[filename] = WaveSurfer.create({
-      container: `#${CSS.escape("waveform-"+filename)+"-wav"}`,
-      waveColor: "violet",
-      progressColor: "purple",
-      normalize: document.getElementById("normalize").checked,
-      plugins: [ 
-        WaveSurfer.markers.create({}), 
-        WaveSurfer.spectrogram.create({
-          wavesurfer: wavesurfers[filename],
-          container: (`#${CSS.escape("waveform-"+filename+"-spec")}`),
-          labels: true,
-          colorMap: colorMap,
-          height: 128
-        })
-      ]
-    });
-    // add filename label marker
-    wavesurfers[filename].addMarker({
-      time: 0,
-      label: filename,
-      color:"black",
-      position:"top"
-    })
-    // add any user-generated markers
-    markers.forEach(m => { 
-      const t = getCorrespondingTime(filename, m);
-      wavesurfers[filename].addMarker({time: t, color:"red"});
-    })
+    waveforms.appendChild(generateRibbon(filename, 'spec'));
+    waveforms.appendChild(generateRibbon(filename, 'tempo'));
+    waveforms.appendChild(generateRibbon(filename, 'wav'));
+    // now re-sort waveforms to maintain order, prioritizing REF and VPO
+    filterAndSortWaveforms(waveforms);
+    // create new wavesurfer instance in the new container, adding markers as required
+    createWavesurfer(filename);
     wavesurfers[filename].load(root + "wav/" + filename);
-    wavesurfers[filename].on("seek", () => { 
-      // work out current alignment grid index
-      const currentGridIx = alignmentGrids[filename].findIndex(n => n > wavesurfers[filename].getCurrentTime())+1;
-      if (currentGridIx < 0) { 
-        // reset if can't find, e.g. because reached end
-        currentGridIx = 0;
-      }
-      // iterate through all positionIndicatorCanvases, drawing in current ix position for that canvas
-      const canvases = document.getElementsByClassName("position-indicator");
-      Array.from(canvases).forEach(c => {
-        //c.width = c.width; // clear
-        const file = c.closest(".waveform").dataset["ix"];
-        const ctx = c.getContext("2d");
-        const correspondingSeconds = alignmentGrids[file][currentGridIx];
-        const duration = wavesurfers[file].getDuration();
-        const absoluteX = (currentGridIx / alignmentGrids[filename].length) * c.width;
-        const relativeX = (correspondingSeconds / duration) * c.width;
-        const diffMapped = Math.floor(255 * (absoluteX-relativeX) / 100);
-        console.log("abs: ", absoluteX, "rel: ", relativeX, "mapped: ", diffMapped);
-        ctx.clearRect(0,0,c.width,c.height);
-        ctx.beginPath();
-        ctx.lineWidth = 2;
-        ctx.moveTo(absoluteX, 0);
-        ctx.lineTo(relativeX, (c.height / 6));
-        ctx.lineTo(relativeX, 5*(c.height / 6));
-        ctx.lineTo(absoluteX, c.height);
-        ctx.strokeStyle = diffMapped < 0 ? `rgb(${-1*diffMapped} 100 100)` : `rgb(100 100 ${diffMapped})`;
-        ctx.stroke();
-      })
-    });
-    wavesurfers[filename].on("ready", () => {
-      // signal file is ready in filename list
-      loaded.add(filename);
-      console.log("READY:...", filename);
-      const tempoCurveDiv = document.querySelector(`.tempoCurve[data-ix='${filename}']`)
-      console.log("Tempo curve div: ", tempoCurveDiv)
-      // create alignment grid and position indicator canvases from waveform canvas
-      const waveCanvas = document.querySelector(`.waveform[data-ix='${filename}']>wave>canvas`);
-      const waveStyle = waveCanvas.style;
-      const gridCanvas = document.createElement('canvas');
-      const gridStyle = gridCanvas.style;
-      const positionIndicatorCanvas = document.createElement('canvas');
-      const positionIndicatorStyle = positionIndicatorCanvas.style;
-      const tempoCurveCanvas = document.createElement('canvas');
-      const tempoCurveStyle = tempoCurveCanvas.style;
-      gridCanvas.classList.add("alignment-grid");
-      gridCanvas.width = waveCanvas.width;
-      gridCanvas.height = waveCanvas.height;
-      gridStyle.zIndex = waveStyle.zIndex-2;
-      gridStyle.position = "absolute";
-      gridStyle.top = waveStyle.top;
-      gridStyle.left = waveStyle.left;
-      gridStyle.bottom = waveStyle.bottom;
-      gridStyle.right = waveStyle.right;
-      gridStyle.display = document.getElementById("visalign").checked ? "unset" : "none";
-      positionIndicatorCanvas.classList.add("position-indicator");
-      positionIndicatorCanvas.width = waveCanvas.width;
-      positionIndicatorCanvas.height = waveCanvas.height;
-      positionIndicatorStyle.zIndex = waveStyle.zIndex-1;
-      positionIndicatorStyle.position = "absolute";
-      positionIndicatorStyle.top = waveStyle.top;
-      positionIndicatorStyle.left = waveStyle.left;
-      positionIndicatorStyle.bottom = waveStyle.bottom;
-      positionIndicatorStyle.right = waveStyle.right;
-      tempoCurveCanvas.classList.add("tempoCurveCanvas");
-      tempoCurveCanvas.dataset.ix=filename;
-      tempoCurveCanvas.width = tempoCurveDiv.offsetWidth;
-      //tempoCurveCanvas.height = tempoCurveDiv.offsetHeight;
-      tempoCurveCanvas.height = 64; //hack
-      tempoCurveStyle.position = "relative";
-//      positionIndicatorStyle.display = document.getElementById("visalign").checked ? "unset" : "none";
-      tempoCurveDiv.appendChild(tempoCurveCanvas);
-      waveCanvas.parentNode.insertBefore(gridCanvas, waveCanvas);
-      waveCanvas.parentNode.insertBefore(positionIndicatorCanvas, waveCanvas);
-      const canvasCtx = gridCanvas.getContext('2d');
-      canvasCtx.lineWidth = 1;
-      canvasCtx.strokeStyle = "#b0b0b055";
-      let tempoCtx = tempoCurveCanvas.getContext('2d');
-      tempoCtx.lineWidth = 2;
-      tempoCtx.strokeStyle = "#b0b0b055";
-      // draw alignment grid
-      // for each grid position, figure out x-coord by doing (seconds / duration) * canvas-width
-      const duration = wavesurfers[filename].getDuration();
-      // only draw every fifth position to prevent overplotting
-      //alignmentGrids[filename].filter((_, ix) => ix % 5 === 0).forEach(gridPos => { 
-      tempoCtx.moveTo(0,0);
-      alignmentGrids[filename].forEach((gridPos, gridIx) => { 
-        // FOR ALIGNMENT VISUALISATION:
-        // draw a vertical line in three segments:
-        // first segment: ABSOLUTE GRID INDEX position
-        // second segment: RELATIVE DURATION position
-        // third segment: ABSOLUTE GRID INDEX position
-        const absoluteX = (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
-        const relativeX = (gridPos / duration) * gridCanvas.width;
-        const diffMapped = Math.floor(255 * (absoluteX-relativeX) / 100);
-        //canvasCtx.beginPath();
-        //canvasCtx.strokeStyle = diffMapped < 0 ? `rgb(${-1*diffMapped} 0 0)` : `rgb(0 0 ${diffMapped})`;
-        canvasCtx.moveTo(absoluteX, 0);
-        canvasCtx.lineTo(relativeX, (gridCanvas.height / 6));
-        canvasCtx.lineTo(relativeX, 5*(gridCanvas.height / 6));
-        canvasCtx.lineTo(absoluteX, gridCanvas.height);
-        // FOR TEMPO VISUALISATION:
-        // map canvas height to reasonable max tempo (barring errors, outliers, etc)
-        // then draw lines connecting the tempi for each grid position
-        if(Object.keys(smoothedTempi).length) {
-          let x = Math.round(absoluteX);
-          let yMapped = Math.round((smoothedTempi[filename][gridIx] / maxExpectedTempo) * tempoCurveCanvas.height);
-          let y = tempoCurveCanvas.height - Math.min(tempoCurveCanvas.height, yMapped);
-          tempoCtx.lineTo(x, y);
-         // tempoCtx.lineTo(x, y);
-          console.debug("Drawing line: ", x, y, yMapped, smoothedTempi[filename][gridIx], maxExpectedTempo, tempoCurveCanvas.height);
-        }       
-      });
-      canvasCtx.stroke();
-      tempoCtx.stroke();
-      console.log("Thought I draw on canvas context: ", tempoCtx);
-      let listItem = document.getElementById(filename);
-      let status = listItem.querySelector("label").classList;
-      status.remove("loading");
-      status.add("ready");
-      listItem.querySelector("input")
-        .checked = true;
-      // check if we're the currentAudioIx, and if so make ourselves active and spool to provided playPosition
-      // (possible when normalize checkbox has forced a reload of waveform elements)
-      if(filename === currentAudioIx) { 
-        document.querySelector(`.waveform[data-ix='${filename}']`).classList.add("active");
-        wavesurfers[currentAudioIx].play(playPosition);
-        if(!isPlaying) { 
-          wavesurfers[currentAudioIx].pause();
-        }
-      }
-      // restore marks from storage if they exist
-      if(storage) { 
-        markersString = storage.getItem("markers");
-        if(markersString) {
-          markers = JSON.parse(markersString);
-            // apply any markers that may have been loaded from local storage
-          markers.forEach(m => { 
-            const t = getCorrespondingTime(filename, m);
-            wavesurfers[filename].addMarker({time: t, color:"red"});
-          })
-        }
-      }
-    });
+    wavesurfers[filename].on("seek", () => onWavesurferSeek(filename));
+    wavesurfers[filename].on("ready", () => onWavesurferReady(filename));
     wavesurfers[filename].on("marker-click", (e) => {
       console.log("MARKER CLICKED")
       if(e.position === "top") { 
@@ -508,181 +543,181 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 }
 
 function setGrids(grids) { 
-  console.log("setting grids: ", grids);
-  alignmentGrids = grids;
-  /* separate REF, VPO and other */
-  /* for now, hackily use filenames */
-  /* in glorious future, use knowledge graph */
-  let filenames = Object.keys(grids);
-  let refFiles = filenames.filter(n => n.substr(n.lastIndexOf("/")+1).startsWith("REF-"));
-  refFiles = refFiles.sort();
-  let vpoFiles = filenames.filter(n => n.substr(n.lastIndexOf("/")+1).startsWith("VPO-"));
-  vpoFiles = vpoFiles.sort();
-  let otherFiles = filenames.filter(n => !vpoFiles.includes(n) && !refFiles.includes(n)).sort();
-  otherFiles = otherFiles.sort();
+console.log("setting grids: ", grids);
+alignmentGrids = grids;
+/* separate REF, VPO and other */
+/* for now, hackily use filenames */
+/* in glorious future, use knowledge graph */
+let filenames = Object.keys(grids);
+let refFiles = filenames.filter(n => n.substr(n.lastIndexOf("/")+1).startsWith("REF-"));
+refFiles = refFiles.sort();
+let vpoFiles = filenames.filter(n => n.substr(n.lastIndexOf("/")+1).startsWith("VPO-"));
+vpoFiles = vpoFiles.sort();
+let otherFiles = filenames.filter(n => !vpoFiles.includes(n) && !refFiles.includes(n)).sort();
+otherFiles = otherFiles.sort();
 
-  const refList = generateCheckboxList(refFiles);
-  const vpoList = generateCheckboxList(vpoFiles);
-  const otherList = generateCheckboxList(otherFiles);
+const refList = generateCheckboxList(refFiles);
+const vpoList = generateCheckboxList(vpoFiles);
+const otherList = generateCheckboxList(otherFiles);
 
-  const listSelectors = `<span class='listSelectors'>
-    <span class='all'>All</span><span class='none'>None</span>
-  </span>`;
+const listSelectors = `<span class='listSelectors'>
+  <span class='all'>All</span><span class='none'>None</span>
+</span>`;
 
-  const refFoldout = document.createElement("details");
-  const refSummary = document.createElement("summary");
-  refSummary.innerText = "REF";
-  refFoldout.appendChild(refSummary);
-  refFoldout.innerHTML += listSelectors;
-  refFoldout.appendChild(refList);
+const refFoldout = document.createElement("details");
+const refSummary = document.createElement("summary");
+refSummary.innerText = "REF";
+refFoldout.appendChild(refSummary);
+refFoldout.innerHTML += listSelectors;
+refFoldout.appendChild(refList);
 
-  const vpoFoldout = document.createElement("details");
-  const vpoSummary = document.createElement("summary");
-  vpoSummary.innerText = "VPO";
-  vpoFoldout.appendChild(vpoSummary);
-  vpoFoldout.innerHTML += listSelectors;
-  vpoFoldout.appendChild(vpoList);
+const vpoFoldout = document.createElement("details");
+const vpoSummary = document.createElement("summary");
+vpoSummary.innerText = "VPO";
+vpoFoldout.appendChild(vpoSummary);
+vpoFoldout.innerHTML += listSelectors;
+vpoFoldout.appendChild(vpoList);
 
-  const otherFoldout = document.createElement("details");
-  const otherSummary = document.createElement("summary");
-  otherSummary.innerText = "Other";
-  otherFoldout.appendChild(otherSummary);
-  otherFoldout.innerHTML += listSelectors;
-  otherFoldout.appendChild(otherList);
+const otherFoldout = document.createElement("details");
+const otherSummary = document.createElement("summary");
+otherSummary.innerText = "Other";
+otherFoldout.appendChild(otherSummary);
+otherFoldout.innerHTML += listSelectors;
+otherFoldout.appendChild(otherList);
 
-  const audiosElement = document.getElementById("audios");
+const audiosElement = document.getElementById("audios");
 
-  refFoldout.open = true;
-  vpoFoldout.open = true;
-  otherFoldout.open = true;
+refFoldout.open = true;
+vpoFoldout.open = true;
+otherFoldout.open = true;
 
-  audiosElement.appendChild(refFoldout);
-  audiosElement.appendChild(vpoFoldout);
-  audiosElement.appendChild(otherFoldout);
+audiosElement.appendChild(refFoldout);
+audiosElement.appendChild(vpoFoldout);
+audiosElement.appendChild(otherFoldout);
 
-  // list selectors
-  Array.from(document.querySelectorAll('.listSelectors .all'))
-    .forEach(selector => selector.addEventListener('click', (e) => {
-      let checkboxes = Array.from(e.target.closest("details").querySelectorAll("input"));
-      checkboxes.forEach(cb => { 
-        // we're doing work in clickhandlers, so can't just set checked value
-        if(!(cb.checked))
-          cb.click();
-      })
-    }));
-  Array.from(document.querySelectorAll('.listSelectors .none'))
-    .forEach(selector => selector.addEventListener('click', (e) => {
-      let checkboxes = Array.from(e.target.closest("details").querySelectorAll("input"));
-      checkboxes.forEach(cb => { 
-        // we're doing work in clickhandlers, so can't just unset checked value
-        if(cb.checked)
-          cb.click();
-      })
-    }));
-  
-  // rendition selectors
-  Array.from(document.getElementsByClassName("renditionName"))
-    .forEach((r, ix) => {
-      r.addEventListener("click", onClickRenditionName);
-    });
-  Array.from(document.getElementsByClassName("renditionCheckbox"))
-    .forEach((r, ix) => {
-      r.addEventListener("click", onClickRenditionCheckbox);
-    });
+// list selectors
+Array.from(document.querySelectorAll('.listSelectors .all'))
+  .forEach(selector => selector.addEventListener('click', (e) => {
+    let checkboxes = Array.from(e.target.closest("details").querySelectorAll("input"));
+    checkboxes.forEach(cb => { 
+      // we're doing work in clickhandlers, so can't just set checked value
+      if(!(cb.checked))
+        cb.click();
+    })
+  }));
+Array.from(document.querySelectorAll('.listSelectors .none'))
+  .forEach(selector => selector.addEventListener('click', (e) => {
+    let checkboxes = Array.from(e.target.closest("details").querySelectorAll("input"));
+    checkboxes.forEach(cb => { 
+      // we're doing work in clickhandlers, so can't just unset checked value
+      if(cb.checked)
+        cb.click();
+    })
+  }));
+
+// rendition selectors
+Array.from(document.getElementsByClassName("renditionName"))
+  .forEach((r, ix) => {
+    r.addEventListener("click", onClickRenditionName);
+  });
+Array.from(document.getElementsByClassName("renditionCheckbox"))
+  .forEach((r, ix) => {
+    r.addEventListener("click", onClickRenditionCheckbox);
+  });
 }
 document.addEventListener('DOMContentLoaded', () => {
-  // load alignment json 
-  fetch(alignmentData)
-    .then(response => response.json())
-    .then(contents => {
-      if("header" in contents && "body" in contents) { 
-        if("ref" in contents.header) { 
-          refName = contents.header.ref;
-        } else {
-          console.warn("Alignment JSON header does not have a 'ref' specified!")
-        }
-        if("tempi" in contents.header) { 
-          smoothTempi(contents.header.tempi, windowRadius);
-					console.log("SMOOTH TEMPI: ", smoothedTempi);
-        } else { 
-          console.warn("Alignment JSON header does not have 'tempi' specified!")
-        }
-        setGrids(contents.body);
-      } else { 
-        console.warn("Alignment JSON without header and body is deprecated and will soon stop working. Please update your alignment JSON.");
-        setGrids(contents);
+// load alignment json 
+fetch(alignmentData)
+  .then(response => response.json())
+  .then(contents => {
+    if("header" in contents && "body" in contents) { 
+      if("ref" in contents.header) { 
+        refName = contents.header.ref;
+      } else {
+        console.warn("Alignment JSON header does not have a 'ref' specified!")
       }
-    })
-    .catch(err => console.warn("Couldn't load alignment data: ", err));
-
-
-    // load a colormap json file to be passed to the spectrogram.create method.
-  WaveSurfer.util
-      .fetchFile({ url: root + 'js/hot-colormap.json', responseType: 'json' })
-      .on('success', cM => {
-        colorMap = cM;
-      });
-  // play/pause button
-  document.getElementById("playpause").addEventListener('click', function(e){
-    if(wavesurfers[currentAudioIx].isPlaying()) 
-      wavesurfers[currentAudioIx].pause();
-    else 
-      wavesurfers[currentAudioIx].play();
-  });
-  // mark button
-  document.getElementById("mark").addEventListener('click', function(e){
-    let toMark = getClosestAlignmentIx();
-    markers.push(toMark);
-    // update markers in storage, if possible
-    if(storage) {
-      storage.setItem("markers", JSON.stringify(markers));
+      if("tempi" in contents.header) { 
+        smoothTempi(contents.header.tempi, windowRadius);
+        console.log("SMOOTH TEMPI: ", smoothedTempi);
+      } else { 
+        console.warn("Alignment JSON header does not have 'tempi' specified!")
+      }
+      setGrids(contents.body);
+    } else { 
+      console.warn("Alignment JSON without header and body is deprecated and will soon stop working. Please update your alignment JSON.");
+      setGrids(contents);
     }
-    Object.keys(wavesurfers).forEach((ws) =>  {
-      const t = getCorrespondingTime(ws, toMark);
-      console.log("got corresponding time: ",t) 
-      wavesurfers[ws].addMarker({time: t, color:"red"})
-    })
-  });
-  // play from last marker button
-  document.getElementById("playLastMark").addEventListener('click', () => { 
-    seekToLastMark();
+  })
+  .catch(err => console.warn("Couldn't load alignment data: ", err));
+
+
+  // load a colormap json file to be passed to the spectrogram.create method.
+WaveSurfer.util
+    .fetchFile({ url: root + 'js/hot-colormap.json', responseType: 'json' })
+    .on('success', cM => {
+      colorMap = cM;
+    });
+// play/pause button
+document.getElementById("playpause").addEventListener('click', function(e){
+  if(wavesurfers[currentAudioIx].isPlaying()) 
+    wavesurfers[currentAudioIx].pause();
+  else 
     wavesurfers[currentAudioIx].play();
-  });
+});
+// mark button
+document.getElementById("mark").addEventListener('click', function(e){
+  let toMark = getClosestAlignmentIx();
+  markers.push(toMark);
+  // update markers in storage, if possible
+  if(storage) {
+    storage.setItem("markers", JSON.stringify(markers));
+  }
+  Object.keys(wavesurfers).forEach((ws) =>  {
+    const t = getCorrespondingTime(ws, toMark);
+    console.log("got corresponding time: ",t) 
+    wavesurfers[ws].addMarker({time: t, color:"red"})
+  })
+});
+// play from last marker button
+document.getElementById("playLastMark").addEventListener('click', () => { 
+  seekToLastMark();
+  wavesurfers[currentAudioIx].play();
+});
 
-  // show spectrograms checkbox
-  document.getElementById("showSpectrograms").checked = false;
-  document.getElementById("showSpectrograms").addEventListener('click', (e) => { 
-    let waveforms = document.getElementById("waveforms");
-    if(e.target.checked) {
-      waveforms.classList.add("showSpectrograms");
-    }
-    else {
-      waveforms.classList.remove("showSpectrograms");
-    }
-  });
+// show spectrograms checkbox
+document.getElementById("showSpectrograms").checked = false;
+document.getElementById("showSpectrograms").addEventListener('click', (e) => { 
+  let waveforms = document.getElementById("waveforms");
+  if(e.target.checked) {
+    waveforms.classList.add("showSpectrograms");
+  }
+  else {
+    waveforms.classList.remove("showSpectrograms");
+  }
+});
 
-  // show tempo curves checkbox
-  document.getElementById("showTempoCurves").checked = false;
-  document.getElementById("showTempoCurves").addEventListener('click', (e) => { 
-    let waveforms = document.getElementById("waveforms");
-    if(e.target.checked) {
-      waveforms.classList.add("showTempoCurves");
-    }
-    else {
-      waveforms.classList.remove("showTempoCurves");
-    }
-  });
+// show tempo curves checkbox
+document.getElementById("showTempoCurves").checked = false;
+document.getElementById("showTempoCurves").addEventListener('click', (e) => { 
+  let waveforms = document.getElementById("waveforms");
+  if(e.target.checked) {
+    waveforms.classList.add("showTempoCurves");
+  }
+  else {
+    waveforms.classList.remove("showTempoCurves");
+  }
+});
 
-  // normalize audio checkbox
-  document.getElementById("normalize").checked = false;
-  document.getElementById("normalize").addEventListener('click', (e) => { 
-    reloadWaveforms();
-  });
-  // visualize alignment checkbox
-  document.getElementById("visalign").checked = false;
-  document.getElementById("visalign").addEventListener('click', (e) => { 
-    let display = e.target.checked ? "unset" : "none";
-    Array.from(document.querySelectorAll(".alignment-grid")).forEach(e => e.style.display = display);
-  });
+// normalize audio checkbox
+document.getElementById("normalize").checked = false;
+document.getElementById("normalize").addEventListener('click', (e) => { 
+  reloadWaveforms();
+});
+// visualize alignment checkbox
+document.getElementById("visalign").checked = false;
+document.getElementById("visalign").addEventListener('click', (e) => { 
+  let display = e.target.checked ? "unset" : "none";
+  Array.from(document.querySelectorAll(".alignment-grid")).forEach(e => e.style.display = display);
+});
 
 })

@@ -61,13 +61,13 @@
   display:unset;
 }
 
-waveforms .tempoCurves { 
+#waveforms .tempoCurve { 
   display:none;
+  height:64px;
 }
 
 #waveforms.showTempoCurves .tempoCurve { 
   display:unset;
-  height:64px;
 }
 
 .renditionName { 

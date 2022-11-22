@@ -368,7 +368,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       }
       // restore marks from storage if they exist
       if(storage) { 
-        markersString = storage.getItem("markers");
+        markersString = storage.getItem("markers_"+workId);
         if(markersString) {
           markers = JSON.parse(markersString);
             // apply any markers that may have been loaded from local storage
@@ -398,7 +398,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         markers.splice(markers.indexOf(alignmentIx), 1);
         // update markers in storage, if possible
         if(storage) {
-          storage.setItem("markers", JSON.stringify(markers));
+          storage.setItem("markers_"+workId, JSON.stringify(markers));
         }
         // redraw (remaining) markers for all waveforms
         Object.keys(wavesurfers).forEach((ws) => {
@@ -536,7 +536,7 @@ document.addEventListener('DOMContentLoaded', () => {
     markers.push(toMark);
     // update markers in storage, if possible
     if(storage) {
-      storage.setItem("markers", JSON.stringify(markers));
+      storage.setItem("markers_"+workId, JSON.stringify(markers));
     }
     Object.keys(wavesurfers).forEach((ws) =>  {
       const t = getCorrespondingTime(ws, toMark);

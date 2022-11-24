@@ -1,3 +1,8 @@
+:root {
+  --hoverMarkerColorDefault: green;
+  --hoverMarkerColorDelete: red;
+}
+
 canvas {
   height:100%;
 }
@@ -141,7 +146,22 @@ details {
   border-radius: 5px;
 }
 
-wave marker:not(marker:first-child) div:first-child {  
-  opacity:1 !important;
-  background-color:red !important;
+wave marker div { 
+  opacity:0.5;
+}
+
+wave marker div polygon { 
+  fill:white;
+  stroke:red;
+  stroke-width:5px;
+}
+
+wave marker div:hover {
+  opacity:1;
+  font-weight:bold;
+  color:white;
+}
+  
+wave marker div:hover span {
+  background: var(--hoverMarkerColorDefault);
 }

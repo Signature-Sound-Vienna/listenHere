@@ -4,6 +4,7 @@ let refName = "";
 let loaded = new Set();
 let alignmentGrids = {};
 let currentAudioIx = "";
+let altKey=false; // true if alt key is being pressed
 let storage;
 let colormap;
 let smoothedTempi = {};
@@ -41,6 +42,17 @@ function smoothTempi(tempi, windowRadius = 2) {
   }
 }
 
+function formatTime(t){
+  t = isNaN(t) ? 0 : t;
+  return [t].map(function (time) {
+    return [Math.floor(time % 3600 / 60),
+    // minutes
+    ('00' + Math.floor(time % 60)).slice(-2),
+    // seconds
+    ('000' + Math.floor(time % 1 * 1000)).slice(-3) // milliseconds
+    ].join(':');
+  });
+}
 function seekToLastMark() { 
   if(markers.length) { 
     const currentAlignmentIx = getClosestAlignmentIx();
@@ -75,6 +87,7 @@ function getClosestAlignmentIx(time = wavesurfers[currentAudioIx].getCurrentTime
 function getCorrespondingTime(audioIx, alignmentIx) { 
   // get time position corresponding to current position of current audio, 
   // in the alternative audio with index audioIx
+  console.log("Got ", audioIx, alignmentIx)
   let grid = alignmentGrids[audioIx];
   return grid[alignmentIx];
 }
@@ -303,6 +316,16 @@ function createWavesurfer(filename) {
         labels: true,
         colorMap: colorMap,
         height: 128
+      }),
+      WaveSurfer.cursor.create({
+        showTime: true,
+        opacity: 1,
+        customShowTimeStyle: {
+            'background-color': '#000',
+            color: '#fff',
+            padding: '2px',
+            'font-size': '10px'
+        }
       })
     ]
   });
@@ -316,7 +339,7 @@ function createWavesurfer(filename) {
   // add any user-generated markers
   markers.forEach(m => { 
     const t = getCorrespondingTime(filename, m);
-    wavesurfers[filename].addMarker({time: t, color:"red"});
+    wavesurfers[filename].addMarker({time: t, label: formatTime(t), color:"red"});
   });
 }
 
@@ -457,13 +480,13 @@ function onWavesurferReady(filename) {
   }
   // restore marks from storage if they exist
   if(storage) { 
-    markersString = storage.getItem("markers");
+    markersString = storage.getItem("markers_"+workId);
     if(markersString) {
       markers = JSON.parse(markersString);
         // apply any markers that may have been loaded from local storage
       markers.forEach(m => { 
         const t = getCorrespondingTime(filename, m);
-        wavesurfers[filename].addMarker({time: t, color:"red"});
+        wavesurfers[filename].addMarker({time: t, label: formatTime(t), color:"red"});
       })
     }
   }
@@ -486,42 +509,52 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     wavesurfers[filename].on("seek", () => onWavesurferSeek(filename));
     wavesurfers[filename].on("ready", () => onWavesurferReady(filename));
     wavesurfers[filename].on("marker-click", (e) => {
-      console.log("MARKER CLICKED")
+      console.log("MARKER CLICKED", e)
       if(e.position === "top") { 
         // ignore clicks on filename-label markers
         return;
       }
       // index into audio recordings for clicked marker's waveform
       const clickedAudioIx = e.el.closest(".waveform").dataset.ix;
-      // get corresponding wavesurfer object
-      const clickedSurfer = wavesurfers[clickedAudioIx];
       // look up alignment grid for this audio recording
       const clickedGrid = alignmentGrids[clickedAudioIx];
       // find the index of the time-value corresponding to the clicked marker in this grid
       const alignmentIx = clickedGrid.indexOf(e.time);
-      if(alignmentIx > -1) { 
-        // delete the markers corresponding to this alignment index
-        markers.splice(markers.indexOf(alignmentIx), 1);
-        // update markers in storage, if possible
-        if(storage) {
-          storage.setItem("markers_"+workId, JSON.stringify(markers));
+      if(alignmentIx > -1) {
+        if(altKey) {
+          // delete the markers corresponding to this alignment index
+          markers.splice(markers.indexOf(alignmentIx), 1);
+          // update markers in storage, if possible
+          if(storage) {
+            storage.setItem("markers_"+workId, JSON.stringify(markers));
+          }
+          // redraw (remaining) markers for all waveforms
+          Object.keys(wavesurfers).forEach((ws) => {
+            wavesurfers[ws].clearMarkers();
+            wavesurfers[ws].addMarker({
+              time: 0,
+              label: ws,
+              color:"black",
+              position:"top"
+            })
+            markers.forEach(m => {
+              // get time corresponding to the marker for this audio
+              const t = getCorrespondingTime(ws, m);
+              // draw marker at this time
+              wavesurfers[ws].addMarker({time: t, label: formatTime(t),  color:"red"});
+            })
+            // pause playback 
+            wavesurfers[clickedAudioIx].pause();
+            // restore all marker backgrounds
+            document.querySelectorAll("wave marker div span").forEach(el => el.style.background = "unset");
+          })
+        } else { 
+          // jump playback to the marker, trigger playback
+          wavesurfers[clickedAudioIx].seekTo(
+            getCorrespondingTime(clickedAudioIx, alignmentIx) / wavesurfers[currentAudioIx].getDuration()
+          );
+          wavesurfers[clickedAudioIx].play();
         }
-        // redraw (remaining) markers for all waveforms
-        Object.keys(wavesurfers).forEach((ws) => {
-          wavesurfers[ws].clearMarkers();
-          wavesurfers[ws].addMarker({
-            time: 0,
-            label: ws,
-            color:"black",
-            position:"top"
-          })
-          markers.forEach(m => {
-            // get time corresponding to the marker for this audio
-            const t = getCorrespondingTime(ws, m);
-            // draw marker at this time
-            wavesurfers[ws].addMarker({time: t, color:"red"});
-          })
-        })
       } else { 
         console.error("Could not find grid entry for time ", e.time);
       }
@@ -625,37 +658,56 @@ Array.from(document.getElementsByClassName("renditionCheckbox"))
     r.addEventListener("click", onClickRenditionCheckbox);
   });
 }
+
+function handleKeyEvent(e) { 
+  // note whether alt is being pressed, to modify behaviour when clicking markers
+  // n.b. we can't just check 'e' on the marker click event, because wavesurfer's marker-clicked doesn't persist it
+  altKey = e.altKey;
+  console.log("alt: ", e.altKey)
+}
+
+function handleMouseMove(e) { 
+  if(altKey) {
+    // if we are hovering over a marker / label...
+    document.querySelectorAll("wave marker div span").forEach(el => el.style.background = "unset");
+    document.querySelectorAll("wave marker div:hover span").forEach(el => el.style.background = "red");
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
-// load alignment json 
-fetch(alignmentData)
-  .then(response => response.json())
-  .then(contents => {
-    if("header" in contents && "body" in contents) { 
-      if("ref" in contents.header) { 
-        refName = contents.header.ref;
-      } else {
-        console.warn("Alignment JSON header does not have a 'ref' specified!")
-      }
-      if("tempi" in contents.header) { 
-        smoothTempi(contents.header.tempi, windowRadius);
-        console.log("SMOOTH TEMPI: ", smoothedTempi);
+  document.querySelector("body").addEventListener("keydown", handleKeyEvent);
+  document.querySelector("body").addEventListener("keyup", handleKeyEvent);
+  document.querySelector("body").addEventListener("mousemove", handleMouseMove);
+  // load alignment json 
+  fetch(alignmentData)
+    .then(response => response.json())
+    .then(contents => {
+      if("header" in contents && "body" in contents) { 
+        if("ref" in contents.header) { 
+          refName = contents.header.ref;
+        } else {
+          console.warn("Alignment JSON header does not have a 'ref' specified!")
+        }
+        if("tempi" in contents.header) { 
+          smoothTempi(contents.header.tempi, windowRadius);
+          console.log("SMOOTH TEMPI: ", smoothedTempi);
+        } else { 
+          console.warn("Alignment JSON header does not have 'tempi' specified!")
+        }
+        setGrids(contents.body);
       } else { 
-        console.warn("Alignment JSON header does not have 'tempi' specified!")
+        console.warn("Alignment JSON without header and body is deprecated and will soon stop working. Please update your alignment JSON.");
+        setGrids(contents);
       }
-      setGrids(contents.body);
-    } else { 
-      console.warn("Alignment JSON without header and body is deprecated and will soon stop working. Please update your alignment JSON.");
-      setGrids(contents);
-    }
-  })
-  .catch(err => console.warn("Couldn't load alignment data: ", err));
+    })
+    .catch(err => console.warn("Couldn't load alignment data: ", err));
 
     // load a colormap json file to be passed to the spectrogram.create method.
   WaveSurfer.util
-      .fetchFile({ url: root + 'js/hot-colormap.json', responseType: 'json' })
-      .on('success', cM => {
-        colorMap = cM;
-      });
+    .fetchFile({ url: root + 'js/hot-colormap.json', responseType: 'json' })
+    .on('success', cM => {
+      colorMap = cM;
+    });
   // play/pause button
   document.getElementById("playpause").addEventListener('click', function(e){
     if(wavesurfers[currentAudioIx].isPlaying()) 
@@ -674,8 +726,8 @@ fetch(alignmentData)
     Object.keys(wavesurfers).forEach((ws) =>  {
       const t = getCorrespondingTime(ws, toMark);
       console.log("got corresponding time: ",t) 
-      wavesurfers[ws].addMarker({time: t, color:"red"})
-    })
+      wavesurfers[ws].addMarker({time: t, label: formatTime(t),  color:"red"})
+    });
   });
   // play from last marker button
   document.getElementById("playLastMark").addEventListener('click', () => { 
@@ -683,40 +735,40 @@ fetch(alignmentData)
     wavesurfers[currentAudioIx].play();
   });
 
-// show spectrograms checkbox
-document.getElementById("showSpectrograms").checked = false;
-document.getElementById("showSpectrograms").addEventListener('click', (e) => { 
-  let waveforms = document.getElementById("waveforms");
-  if(e.target.checked) {
-    waveforms.classList.add("showSpectrograms");
-  }
-  else {
-    waveforms.classList.remove("showSpectrograms");
-  }
-});
+  // show spectrograms checkbox
+  document.getElementById("showSpectrograms").checked = false;
+  document.getElementById("showSpectrograms").addEventListener('click', (e) => { 
+    let waveforms = document.getElementById("waveforms");
+    if(e.target.checked) {
+      waveforms.classList.add("showSpectrograms");
+    }
+    else {
+      waveforms.classList.remove("showSpectrograms");
+    }
+  });
 
-// show tempo curves checkbox
-document.getElementById("showTempoCurves").checked = false;
-document.getElementById("showTempoCurves").addEventListener('click', (e) => { 
-  let waveforms = document.getElementById("waveforms");
-  if(e.target.checked) {
-    waveforms.classList.add("showTempoCurves");
-  }
-  else {
-    waveforms.classList.remove("showTempoCurves");
-  }
-});
+  // show tempo curves checkbox
+  document.getElementById("showTempoCurves").checked = false;
+  document.getElementById("showTempoCurves").addEventListener('click', (e) => { 
+    let waveforms = document.getElementById("waveforms");
+    if(e.target.checked) {
+      waveforms.classList.add("showTempoCurves");
+    }
+    else {
+      waveforms.classList.remove("showTempoCurves");
+    }
+  });
 
-// normalize audio checkbox
-document.getElementById("normalize").checked = false;
-document.getElementById("normalize").addEventListener('click', (e) => { 
-  reloadWaveforms();
-});
-// visualize alignment checkbox
-document.getElementById("visalign").checked = false;
-document.getElementById("visalign").addEventListener('click', (e) => { 
-  let display = e.target.checked ? "unset" : "none";
-  Array.from(document.querySelectorAll(".alignment-grid")).forEach(e => e.style.display = display);
-});
+  // normalize audio checkbox
+  document.getElementById("normalize").checked = false;
+  document.getElementById("normalize").addEventListener('click', (e) => { 
+    reloadWaveforms();
+  });
+  // visualize alignment checkbox
+  document.getElementById("visalign").checked = false;
+  document.getElementById("visalign").addEventListener('click', (e) => { 
+    let display = e.target.checked ? "unset" : "none";
+    Array.from(document.querySelectorAll(".alignment-grid")).forEach(e => e.style.display = display);
+  });
 
 })

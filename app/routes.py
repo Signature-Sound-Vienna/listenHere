@@ -9,28 +9,33 @@ def index():
 @app.route("/donau")
 def donau():
     return render_template('listen.html', 
-            data=url_for('static', filename='align/Donau.json'))
+            data=url_for('static', filename='align/Donau.json'),
+            work_id="Donauwalzer")
 @app.route("/Radetzky")
 @app.route("/radetzky")
 def radetzky():
     return render_template('listen.html', 
-            data=url_for('static', filename='align/Radetzky.json'))
+            data=url_for('static', filename='align/Radetzky.json'),
+            work_id="Radetzky")
 @app.route("/Fledermaus")
 @app.route("/fledermaus")
 def fledermaus():
     return render_template('listen.html', 
-            data=url_for('static', filename='align/Fledermaus.json'))
+            data=url_for('static', filename='align/Fledermaus.json'),
+            work_id="Fledermaus")
 @app.route("/midi-test")
 def midi_test():
     return render_template('listen.html', 
-            data=url_for('static', filename='align/midi-test.json'))
+            data=url_for('static', filename='align/midi-test.json'),
+            work_id="midi-test")
 @app.route("/Rosegarden")
 @app.route("/rosegarden")
 def rosegarden():
     return render_template('listen.html', 
             #data=url_for('static', filename='align/Rosegarden-midi.json'))
             #data=url_for('static', filename='align/allDonauRosegarden.json'))
-            data=url_for('static', filename='align/allFledermausRosegarden.json'))
+            data=url_for('static', filename='align/allFledermausRosegarden.json'),
+            work_id="FledermausRosegarden")
 @app.route("/Kaiserwalzer")
 @app.route("/kaiserwalzer")
 @app.route("/Kaiser-Walzer")
@@ -39,22 +44,26 @@ def kaiserwalzer():
     return render_template('listen.html', 
             #data=url_for('static', filename='align/Rosegarden-midi.json'))
             #data=url_for('static', filename='align/allDonauRosegarden.json'))
-            data=url_for('static', filename='align/Kaiserwalzer.json'))
+            data=url_for('static', filename='align/Kaiserwalzer.json'),
+            work_id="Kaiserwalzer")
 @app.route("/ref-bbcso")
 def ref_bbcso():
     return render_template('listen.html', 
             #data=url_for('static', filename='align/Rosegarden-midi.json'))
             #data=url_for('static', filename='align/allDonauRosegarden.json'))
-            data=url_for('static', filename='align/Kaiserwalzer-BBCSO.json'))
+            data=url_for('static', filename='align/Kaiserwalzer-BBCSO.json'),
+            work_id="ref-bbcso")
 @app.route("/ref-midi")
 def ref_midi():
     return render_template('listen.html', 
             #data=url_for('static', filename='align/Rosegarden-midi.json'))
             #data=url_for('static', filename='align/allDonauRosegarden.json'))
-            data=url_for('static', filename='align/Kaiserwalzer-MIDI.json'))
+            data=url_for('static', filename='align/Kaiserwalzer-MIDI.json'),
+            work_id="ref-midi")
 @app.route("/tempo")
 def tempo():
     return render_template('listen.html', 
             #data=url_for('static', filename='align/Rosegarden-midi.json'))
             #data=url_for('static', filename='align/allDonauRosegarden.json'))
-            data=url_for('static', filename='align/KaiserBBC_tempi.json'))
+            data=url_for('static', filename='align/KaiserBBC_tempi.json'),
+            work_id="tempo")

@@ -504,7 +504,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         markers.splice(markers.indexOf(alignmentIx), 1);
         // update markers in storage, if possible
         if(storage) {
-          storage.setItem("markers", JSON.stringify(markers));
+          storage.setItem("markers_"+workId, JSON.stringify(markers));
         }
         // redraw (remaining) markers for all waveforms
         Object.keys(wavesurfers).forEach((ws) => {
@@ -650,39 +650,38 @@ fetch(alignmentData)
   })
   .catch(err => console.warn("Couldn't load alignment data: ", err));
 
-
-  // load a colormap json file to be passed to the spectrogram.create method.
-WaveSurfer.util
-    .fetchFile({ url: root + 'js/hot-colormap.json', responseType: 'json' })
-    .on('success', cM => {
-      colorMap = cM;
-    });
-// play/pause button
-document.getElementById("playpause").addEventListener('click', function(e){
-  if(wavesurfers[currentAudioIx].isPlaying()) 
-    wavesurfers[currentAudioIx].pause();
-  else 
+    // load a colormap json file to be passed to the spectrogram.create method.
+  WaveSurfer.util
+      .fetchFile({ url: root + 'js/hot-colormap.json', responseType: 'json' })
+      .on('success', cM => {
+        colorMap = cM;
+      });
+  // play/pause button
+  document.getElementById("playpause").addEventListener('click', function(e){
+    if(wavesurfers[currentAudioIx].isPlaying()) 
+      wavesurfers[currentAudioIx].pause();
+    else 
+      wavesurfers[currentAudioIx].play();
+  });
+  // mark button
+  document.getElementById("mark").addEventListener('click', function(e){
+    let toMark = getClosestAlignmentIx();
+    markers.push(toMark);
+    // update markers in storage, if possible
+    if(storage) {
+      storage.setItem("markers_"+workId, JSON.stringify(markers));
+    }
+    Object.keys(wavesurfers).forEach((ws) =>  {
+      const t = getCorrespondingTime(ws, toMark);
+      console.log("got corresponding time: ",t) 
+      wavesurfers[ws].addMarker({time: t, color:"red"})
+    })
+  });
+  // play from last marker button
+  document.getElementById("playLastMark").addEventListener('click', () => { 
+    seekToLastMark();
     wavesurfers[currentAudioIx].play();
-});
-// mark button
-document.getElementById("mark").addEventListener('click', function(e){
-  let toMark = getClosestAlignmentIx();
-  markers.push(toMark);
-  // update markers in storage, if possible
-  if(storage) {
-    storage.setItem("markers", JSON.stringify(markers));
-  }
-  Object.keys(wavesurfers).forEach((ws) =>  {
-    const t = getCorrespondingTime(ws, toMark);
-    console.log("got corresponding time: ",t) 
-    wavesurfers[ws].addMarker({time: t, color:"red"})
-  })
-});
-// play from last marker button
-document.getElementById("playLastMark").addEventListener('click', () => { 
-  seekToLastMark();
-  wavesurfers[currentAudioIx].play();
-});
+  });
 
 // show spectrograms checkbox
 document.getElementById("showSpectrograms").checked = false;

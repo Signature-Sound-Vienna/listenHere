@@ -612,11 +612,9 @@ document.addEventListener('DOMContentLoaded', () => {
       switch(e.key) {
         case 't':
           if(timerFrom > 0 && timerFrom === timerTo) {
-            console.log(1, timerFrom, timerTo)
             timerTo = wavesurfers[currentAudioIx].getCurrentTime();
           }
           else {
-            console.log(2, timerFrom, timerTo)
             timerFrom = wavesurfers[currentAudioIx].getCurrentTime();
             timerTo = timerFrom;
           }
@@ -644,6 +642,6 @@ function updateRenderTimer() {
     console.log(timer.start,timer.end);
     timeDelta = timer.end - timer.start;
     timer.updateRender();
-    document.querySelector('region[data-id="timer"]').innerText = timeDelta;
+    document.querySelector('region[data-id="timer"]').innerText = timeDelta.toFixed(3) || ""; // don't display 0
   }
 }

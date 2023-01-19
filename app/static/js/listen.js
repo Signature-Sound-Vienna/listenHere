@@ -6,6 +6,9 @@ let ref;
 let currentAudioIx = "";
 let storage;
 let colormap;
+let timerFrom = 0;
+let timerTo = 0;
+
 try { 
   storage = window.localStorage;
 } catch(err) { 
@@ -258,6 +261,15 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
               padding: '2px',
               'font-size': '10px'
           }
+        }),
+        WaveSurfer.regions.create({
+          regions: [{ 
+            id: "timer",
+            start: 0,
+            end: 0,
+            drag: false,
+            color: "rgba(255, 0, 100, 0.3)"
+          }]
         })
       ]
     });
@@ -434,6 +446,13 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       if(filename !== currentAudioIx)
         swapCurrentAudio(filename);
     });
+    wavesurfers[filename].on("audioprocess", () => {
+      // continually update timer region when opened but not yet closed
+      if(timerFrom === timerTo && timerFrom > 0) { 
+        wavesurfers[filename].regions.list.timer.end = wavesurfers[filename].getCurrentTime();
+        updateRenderTimer();
+      }
+    });
   } else {
     // waveform already loaded...
     let checkbox = document.getElementById(filename).querySelector("input");
@@ -535,10 +554,12 @@ document.addEventListener('DOMContentLoaded', () => {
       });
   // play/pause button
   document.getElementById("playpause").addEventListener('click', function(e){
-    if(wavesurfers[currentAudioIx].isPlaying()) 
-      wavesurfers[currentAudioIx].pause();
-    else 
-      wavesurfers[currentAudioIx].play();
+    if(currentAudioIx) {
+      if(wavesurfers[currentAudioIx].isPlaying()) 
+        wavesurfers[currentAudioIx].pause();
+      else 
+        wavesurfers[currentAudioIx].play();
+    }
   });
   // mark button
   document.getElementById("mark").addEventListener('click', function(e){
@@ -584,4 +605,45 @@ document.addEventListener('DOMContentLoaded', () => {
     Array.from(document.querySelectorAll(".alignment-grid")).forEach(e => e.style.display = display);
   });
 
-})
+  document.getElementById("wrapper").addEventListener('keypress', (e) => {
+    if(currentAudioIx) {
+      let updateTimer = false;
+      console.log(wavesurfers[currentAudioIx].regions.list)
+      switch(e.key) {
+        case 't':
+          if(timerFrom > 0 && timerFrom === timerTo) {
+            console.log(1, timerFrom, timerTo)
+            timerTo = wavesurfers[currentAudioIx].getCurrentTime();
+          }
+          else {
+            console.log(2, timerFrom, timerTo)
+            timerFrom = wavesurfers[currentAudioIx].getCurrentTime();
+            timerTo = timerFrom;
+          }
+          updateTimer = true;
+          break;
+        case 'x':
+          // release timer
+          timerFrom = 0;
+          timerTo = 0;
+          updateTimer = true;
+          break;
+      }
+      if(updateTimer) { 
+        wavesurfers[currentAudioIx].regions.list.timer.start = timerFrom;
+        wavesurfers[currentAudioIx].regions.list.timer.end = timerTo;
+        updateRenderTimer();
+      }
+    }
+  });
+});
+
+function updateRenderTimer() { 
+  if(currentAudioIx) { 
+    let timer = wavesurfers[currentAudioIx].regions.list.timer;
+    console.log(timer.start,timer.end);
+    timeDelta = timer.end - timer.start;
+    timer.updateRender();
+    document.querySelector('region[data-id="timer"]').innerText = timeDelta;
+  }
+}

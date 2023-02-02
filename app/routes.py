@@ -46,3 +46,9 @@ def kaiserwalzer():
             #data=url_for('static', filename='align/allDonauRosegarden.json'))
             data=url_for('static', filename='align/Kaiserwalzer.json'),
             work_id="Kaiserwalzer")
+@app.route("/Pizzicato")
+@app.route("/pizzicato")
+def pizzicato():
+    return render_template('listen.html', 
+            data=url_for('static', filename='align/Pizzicato.json'),
+            work_id="Pizzicato")

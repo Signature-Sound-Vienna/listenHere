@@ -612,9 +612,11 @@ document.addEventListener('DOMContentLoaded', () => {
       switch(e.key) {
         case 't':
           if(timerFrom > 0 && timerFrom === timerTo) {
+            console.log("mid")
             timerTo = wavesurfers[currentAudioIx].getCurrentTime();
           }
           else {
+            console.log("start")
             timerFrom = wavesurfers[currentAudioIx].getCurrentTime();
             timerTo = timerFrom;
           }
@@ -628,8 +630,17 @@ document.addEventListener('DOMContentLoaded', () => {
           break;
       }
       if(updateTimer) { 
+        // walk through all other displayed wavesurfers and cross-apply...
+        Object.keys(wavesurfers).forEach((ws) =>  {
+          const wsFrom = getCorrespondingTime(ws, getClosestAlignmentIx(timerFrom));
+          const wsTo = getCorrespondingTime(ws, getClosestAlignmentIx(timerTo));
+          wavesurfers[ws].regions.list.timer.start = wsFrom;
+          wavesurfers[ws].regions.list.timer.end = wsTo;
+          console.log("SET TIMER: ", wavesurfers[ws].regions.list.timer, ws)
+        })/*
         wavesurfers[currentAudioIx].regions.list.timer.start = timerFrom;
         wavesurfers[currentAudioIx].regions.list.timer.end = timerTo;
+        */
         updateRenderTimer();
       }
     }
@@ -637,11 +648,12 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function updateRenderTimer() { 
-  if(currentAudioIx) { 
-    let timer = wavesurfers[currentAudioIx].regions.list.timer;
+  Object.keys(wavesurfers).forEach((ws) =>  {
+    let timer = wavesurfers[ws].regions.list.timer;
     console.log(timer.start,timer.end);
-    timeDelta = timer.end - timer.start;
     timer.updateRender();
-    document.querySelector('region[data-id="timer"]').innerText = timeDelta.toFixed(3) || ""; // don't display 0
-  }
+    let timeDelta = timer.end - timer.start;
+    document.querySelector('.waveform[data-ix="' + ws + '"] region[data-id="timer"]')
+      .innerText = timeDelta.toFixed(3) || ""; // don't display 0
+  });
 }

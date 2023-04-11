@@ -1,3 +1,4 @@
 app/static/wav
 app/__pycache__
 venv
+.DS_STORE

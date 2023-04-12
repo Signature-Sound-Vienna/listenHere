@@ -52,3 +52,9 @@ def pizzicato():
     return render_template('listen.html', 
             data=url_for('static', filename='align/Pizzicato.json'),
             work_id="Pizzicato")
+@app.route("/Spheres")
+@app.route("/spheres")
+def spheres():
+    return render_template('listen.html', 
+            data=url_for('static', filename='align/Sphärenklänge.json'),
+            work_id="Sphärenklänge")

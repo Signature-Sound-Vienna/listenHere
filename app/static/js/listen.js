@@ -554,12 +554,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
   // play/pause button
   document.getElementById("playpause").addEventListener('click', function(e){
-    if(currentAudioIx) {
-      if(wavesurfers[currentAudioIx].isPlaying()) 
-        wavesurfers[currentAudioIx].pause();
-      else 
-        wavesurfers[currentAudioIx].play();
-    }
+    playpause();
   });
   // mark button
   document.getElementById("mark").addEventListener('click', function(e){
@@ -605,12 +600,14 @@ document.addEventListener('DOMContentLoaded', () => {
     Array.from(document.querySelectorAll(".alignment-grid")).forEach(e => e.style.display = display);
   });
 
-  document.getElementById("wrapper").addEventListener('keypress', (e) => {
+  document.querySelector("body").addEventListener('keypress', (e) => {
+    e.preventDefault();
+    console.log("KEYPRESS: ", e)
     if(currentAudioIx) {
       let updateTimer = false;
       console.log(wavesurfers[currentAudioIx].regions.list)
-      switch(e.key) {
-        case 't':
+      switch(e.code) {
+        case 'KeyT':
           if(timerFrom > 0 && timerFrom === timerTo) {
             console.log("mid")
             timerTo = wavesurfers[currentAudioIx].getCurrentTime();
@@ -622,11 +619,15 @@ document.addEventListener('DOMContentLoaded', () => {
           }
           updateTimer = true;
           break;
-        case 'x':
+        case 'KeyX':
           // release timer
           timerFrom = 0;
           timerTo = 0;
           updateTimer = true;
+          break;
+        case "Space": 
+          // space bar
+          playpause();
           break;
       }
       if(updateTimer) { 
@@ -647,6 +648,22 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
+function playpause() { 
+  if(currentAudioIx) {
+    if(wavesurfers[currentAudioIx].isPlaying()) 
+      wavesurfers[currentAudioIx].pause();
+    else 
+      wavesurfers[currentAudioIx].play();
+  } else { 
+    // if there is at least one waveform loaded, make it active and play it
+    let firstWs = document.querySelector(".waveform");
+    if(firstWs) { 
+      swapCurrentAudio(firstWs.dataset.ix);
+      wavesurfers[currentAudioIx].play();
+    }
+  }
+}
+
 function updateRenderTimer() { 
   Object.keys(wavesurfers).forEach((ws) =>  {
     let timer = wavesurfers[ws].regions.list.timer;
@@ -654,6 +671,8 @@ function updateRenderTimer() {
     timer.updateRender();
     let timeDelta = timer.end - timer.start;
     document.querySelector('.waveform[data-ix="' + ws + '"] region[data-id="timer"]')
-      .innerText = timeDelta.toFixed(3) || ""; // don't display 0
+      .innerHTML = timeDelta 
+        ? `<div class='timerValueContainer'><span>${timeDelta.toFixed(3)}</span></div>` 
+        : ""; // don't display 0
   });
 }

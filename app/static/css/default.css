@@ -136,3 +136,13 @@ wave marker:not(marker:first-child) div:first-child {
   opacity:1 !important;
   background-color:red !important;
 }
+
+.timerValueContainer { 
+  display: flex;
+  justify-content: center;
+}
+.timerValueContainer span { 
+  position:relative;
+  top:2em;
+  font-size:small;
+}

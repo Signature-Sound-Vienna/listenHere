@@ -467,6 +467,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
 function setGrids(grids) { 
   console.log("setting grids: ", grids);
+  grids = "body" in grids ? grids.body : grids;
   alignmentGrids = grids;
   /* separate VPO and other */
   /* for now, hackily use filenames */

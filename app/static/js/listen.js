@@ -467,6 +467,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
 function setGrids(grids) { 
   console.log("setting grids: ", grids);
+  grids = "body" in grids ? grids.body : grids;
   alignmentGrids = grids;
   /* separate VPO and other */
   /* for now, hackily use filenames */
@@ -554,12 +555,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
   // play/pause button
   document.getElementById("playpause").addEventListener('click', function(e){
-    if(currentAudioIx) {
-      if(wavesurfers[currentAudioIx].isPlaying()) 
-        wavesurfers[currentAudioIx].pause();
-      else 
-        wavesurfers[currentAudioIx].play();
-    }
+    playpause();
   });
   // mark button
   document.getElementById("mark").addEventListener('click', function(e){
@@ -605,43 +601,79 @@ document.addEventListener('DOMContentLoaded', () => {
     Array.from(document.querySelectorAll(".alignment-grid")).forEach(e => e.style.display = display);
   });
 
-  document.getElementById("wrapper").addEventListener('keypress', (e) => {
+  document.querySelector("body").addEventListener('keypress', (e) => {
+    e.preventDefault();
+    console.log("KEYPRESS: ", e)
     if(currentAudioIx) {
       let updateTimer = false;
       console.log(wavesurfers[currentAudioIx].regions.list)
-      switch(e.key) {
-        case 't':
+      switch(e.code) {
+        case 'KeyT':
           if(timerFrom > 0 && timerFrom === timerTo) {
+            console.log("mid")
             timerTo = wavesurfers[currentAudioIx].getCurrentTime();
           }
           else {
+            console.log("start")
             timerFrom = wavesurfers[currentAudioIx].getCurrentTime();
             timerTo = timerFrom;
           }
           updateTimer = true;
           break;
-        case 'x':
+        case 'KeyX':
           // release timer
           timerFrom = 0;
           timerTo = 0;
           updateTimer = true;
           break;
+        case "Space": 
+          // space bar
+          playpause();
+          break;
       }
       if(updateTimer) { 
+        // walk through all other displayed wavesurfers and cross-apply...
+        Object.keys(wavesurfers).forEach((ws) =>  {
+          const wsFrom = getCorrespondingTime(ws, getClosestAlignmentIx(timerFrom));
+          const wsTo = getCorrespondingTime(ws, getClosestAlignmentIx(timerTo));
+          wavesurfers[ws].regions.list.timer.start = wsFrom;
+          wavesurfers[ws].regions.list.timer.end = wsTo;
+          console.log("SET TIMER: ", wavesurfers[ws].regions.list.timer, ws)
+        })/*
         wavesurfers[currentAudioIx].regions.list.timer.start = timerFrom;
         wavesurfers[currentAudioIx].regions.list.timer.end = timerTo;
+        */
         updateRenderTimer();
       }
     }
   });
 });
 
-function updateRenderTimer() { 
-  if(currentAudioIx) { 
-    let timer = wavesurfers[currentAudioIx].regions.list.timer;
-    console.log(timer.start,timer.end);
-    timeDelta = timer.end - timer.start;
-    timer.updateRender();
-    document.querySelector('region[data-id="timer"]').innerText = timeDelta.toFixed(3) || ""; // don't display 0
+function playpause() { 
+  if(currentAudioIx) {
+    if(wavesurfers[currentAudioIx].isPlaying()) 
+      wavesurfers[currentAudioIx].pause();
+    else 
+      wavesurfers[currentAudioIx].play();
+  } else { 
+    // if there is at least one waveform loaded, make it active and play it
+    let firstWs = document.querySelector(".waveform");
+    if(firstWs) { 
+      swapCurrentAudio(firstWs.dataset.ix);
+      wavesurfers[currentAudioIx].play();
+    }
   }
+}
+
+function updateRenderTimer() { 
+  Object.keys(wavesurfers).forEach((ws) =>  {
+    let timer = wavesurfers[ws].regions.list.timer;
+    console.log(timer.start,timer.end);
+    timer.updateRender();
+    let timeDelta = timer.end - timer.start;
+    document.querySelector('.waveform[data-ix="' + ws + '"] region[data-id="timer"]')
+      .innerHTML = timeDelta 
+        ? `<div class='timerValueContainer'><span>${timeDelta.toFixed(3)}</span></div>` 
+        : ""; // don't display 0
+  });
 }

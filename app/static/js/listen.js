@@ -2,12 +2,16 @@ let wavesurfers = {};
 let markers = [];
 let loaded = new Set();
 let alignmentGrids = {};
+let scoreAlignment; // score tstamp to ref tstamp maps for onset and offset
+let timemap = []; // verovio timemap
+let meiUri; 
 let ref;
 let currentAudioIx = "";
 let storage;
 let colormap;
 let timerFrom = 0;
 let timerTo = 0;
+let tk; // verovio toolkit
 
 try { 
   storage = window.localStorage;
@@ -161,6 +165,7 @@ function swapCurrentAudio(newAudio) {
 }
 
 function generateCheckboxList(list) {
+  console.log("Generate checkbox list: ", list);
   // generate content for <ul>:
   // <li> containing a checkbox for each list member
   const ul = document.createElement("ul");
@@ -466,13 +471,41 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 }
 
 function setGrids(grids) { 
+  console.log("received grids: ", grids)
+  if("body" in grids) { 
+    if("audio" in grids.body) { 
+      // final version of alignment json
+      alignmentGrids = grids.body.audio;
+      if("header" in grids && "mei" in grids.header &&
+         "score" in grids.body) { 
+        meiUri = grids.header.mei;
+        scoreAlignment = grids.body.score;
+        fetch(meiUri)
+        .then( (response) => response.text() )
+        .then( (mei) => {
+          tk.loadData(mei, {});
+          timemap = tk.renderToTimemap({});
+          console.log("timemap set!", timemap, mei)
+          // HACK, DELETE:
+          markScoreRegion("n1sz9qnz", "ns1f6q2");
+        }).catch(e => { 
+          console.error("Couldn't load MEI: ", e, grids.header.mei);
+        });
+      } else { 
+        console.error("Broken grids received from alignment json file: ", grids);
+      }
+    } else { 
+      // pre-final dev version of alignment json
+      alignmentGrids = grids.body;
+    }   
+  }  else { // old version of alignment json
+    alignmentGrids = grids;
+  }
   console.log("setting grids: ", grids);
-  grids = "body" in grids ? grids.body : grids;
-  alignmentGrids = grids;
   /* separate VPO and other */
   /* for now, hackily use filenames */
   /* in glorious future, use knowledge graph */
-  let filenames = Object.keys(grids);
+  let filenames = Object.keys(alignmentGrids);
   let vpoFiles = filenames.filter(n => n.substr(n.lastIndexOf("/")+1).startsWith("VPO-"));
   vpoFiles = vpoFiles.sort();
   let otherFiles = filenames.filter(n => !vpoFiles.includes(n)).sort();
@@ -538,7 +571,14 @@ function setGrids(grids) {
       r.addEventListener("click", onClickRenditionCheckbox);
     });
 }
+
 document.addEventListener('DOMContentLoaded', () => {
+  // set up Verovio 
+  verovio.module.onRuntimeInitialized = () => {
+    tk = new verovio.toolkit();
+    console.log("Have Verovio toolkit:", tk);
+  }
+
   // load alignment json 
   fetch(alignmentData)
     .then(response => response.json())
@@ -547,7 +587,7 @@ document.addEventListener('DOMContentLoaded', () => {
     })
     .catch(err => console.warn("Couldn't load alignment data: ", err));
 
-    // load a colormap json file to be passed to the spectrogram.create method.
+  // load a colormap json file to be passed to the spectrogram.create method.
   WaveSurfer.util
       .fetchFile({ url: root + 'js/hot-colormap.json', responseType: 'json' })
       .on('success', cM => {
@@ -648,6 +688,42 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
+function markScoreRegion(fromId, toId = "") {
+  if(scoreAlignment && tk) { 
+    try { 
+      let fromTimes = tk.getTimesForElement(fromId);
+      let toTimes = toId ? tk.getTimesForElement(toId) : null;
+      let onsets = fromTimes.realTimeOnsetMilliseconds;
+      // if no toId specified, mark region from onset to offset of fromId; otherwise, mark from onset of fromId to offset of toId
+      let offsets = toTimes ? toTimes.realTimeOffsetMilliseconds : fromTimes.realTimeOffsetMilliseconds;
+      // getTimesForElements returns onset and offset times for identified elements (plus other stuff)
+      // The returned values are arrays, to handle expansions. So we have to handle the arrays.
+      // Return regions in the reference audio corresponding to these onsets and offsets
+      console.log("onsets: ", onsets, "offsets: ", offsets)
+      let refRegions = onsets.map((t, expansionIx) => { 
+        console.log("In loop: ", t, expansionIx)
+          return { 
+            from: scoreAlignment.ref_onset[getClosestScoreTimeIx(t, scoreAlignment.score_onset)],
+            to: scoreAlignment.ref_offset[getClosestScoreTimeIx(offsets[expansionIx], scoreAlignment.score_offset)]
+          }
+      })
+      console.log("I WOULD MARK: ", refRegions);
+    } catch (e) { 
+      console.error("Trouble marking score region: ", e);
+    }
+  } else { 
+    console.warn("Current alignment JSON does not support score alignment");
+  }
+}
+
+function getClosestScoreTimeIx(tInMilliSec, times) { 
+  let t = tInMilliSec / 1000;
+  let closest = times.reduce(function(prev, curr) {
+    return (Math.abs(curr - t) < Math.abs(prev - t) ? curr : prev);
+  });
+  return times.indexOf(closest);
+}
 
 function playpause() { 
   if(currentAudioIx) {

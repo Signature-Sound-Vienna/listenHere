@@ -7,6 +7,7 @@ let timemap = []; // verovio timemap
 let meiUri; 
 let ref;
 let currentAudioIx = "";
+let currentlyAnnotatedRegions = []; // alignment indexes of start and end for each active annotated region
 let storage;
 let colormap;
 let timerFrom = 0;
@@ -36,9 +37,10 @@ function seekToLastMark() {
   }
 }
 
-function getClosestAlignmentIx(time = wavesurfers[currentAudioIx].getCurrentTime()) { 
+function getClosestAlignmentIx(time = wavesurfers[currentAudioIx].getCurrentTime(), audioIx = currentAudioIx) { 
+  console.log("Get closest alignment Ix: ", time, audioIx)
   // return alignment index closest to supplied time (default: current playback position)
-  let currentGrid = alignmentGrids[currentAudioIx]
+  let currentGrid = alignmentGrids[audioIx]
   // find the nearest marker to current playback time
   const lower = currentGrid.filter(t => t <= time);
   // ix for closest marker below current time
@@ -243,6 +245,17 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     vpo.sort((a,b) => a.id > b.id?1:-1).forEach(node=>waveforms.appendChild(node));
     other.sort((a,b) => a.id > b.id?1:-1).forEach(node=>waveforms.appendChild(node));
     // create new wavesurfer instance in the new container
+    let annoRegions = currentlyAnnotatedRegions.map((r, ix) => 
+      WaveSurfer.regions.create({
+        regions: [{
+          id: "anno_region_" + ix,
+          start: getCorrespondingTime(filename, r.from),
+          end: getCorrespondingTime(filename, r.to),
+          drag: false,
+          color: "rgba(200, 130, 80, 0.3)"
+        }]
+      }) 
+    )
     wavesurfers[filename] = WaveSurfer.create({
       container: `#${CSS.escape("waveform-"+filename)+"-wav"}`,
       waveColor: "violet",
@@ -275,7 +288,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
             drag: false,
             color: "rgba(255, 0, 100, 0.3)"
           }]
-        })
+        }),
+        ...annoRegions
       ]
     });
     // add filename label marker
@@ -476,21 +490,25 @@ function setGrids(grids) {
     if("audio" in grids.body) { 
       // final version of alignment json
       alignmentGrids = grids.body.audio;
-      if("header" in grids && "mei" in grids.header &&
-         "score" in grids.body) { 
-        meiUri = grids.header.mei;
-        scoreAlignment = grids.body.score;
-        fetch(meiUri)
-        .then( (response) => response.text() )
-        .then( (mei) => {
-          tk.loadData(mei, {});
-          timemap = tk.renderToTimemap({});
-          console.log("timemap set!", timemap, mei)
-          // HACK, DELETE:
-          markScoreRegion("n1sz9qnz", "ns1f6q2");
-        }).catch(e => { 
-          console.error("Couldn't load MEI: ", e, grids.header.mei);
-        });
+      if("header" in grids) {
+        if("mei" in grids.header && "score" in grids.body) { 
+          meiUri = grids.header.mei;
+          scoreAlignment = grids.body.score;
+          fetch(meiUri)
+          .then( (response) => response.text() )
+          .then( (mei) => {
+            tk.loadData(mei, {});
+            timemap = tk.renderToTimemap({});
+            console.log("timemap set!", timemap, mei)
+            // HACK, DELETE:
+            markScoreRegion("n1sz9qnz", "ns1f6q2");
+          }).catch(e => { 
+            console.error("Couldn't load MEI: ", e, grids.header.mei);
+          });
+        }
+        if("ref" in grids.header) { 
+          referenceAudioIx = grids.header.ref;
+        }
       } else { 
         console.error("Broken grids received from alignment json file: ", grids);
       }
@@ -690,7 +708,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function markScoreRegion(fromId, toId = "") {
-  if(scoreAlignment && tk) { 
+  if(scoreAlignment && tk && referenceAudioIx) { 
     try { 
       let fromTimes = tk.getTimesForElement(fromId);
       let toTimes = toId ? tk.getTimesForElement(toId) : null;
@@ -708,7 +726,13 @@ function markScoreRegion(fromId, toId = "") {
             to: scoreAlignment.ref_offset[getClosestScoreTimeIx(offsets[expansionIx], scoreAlignment.score_offset)]
           }
       })
-      console.log("I WOULD MARK: ", refRegions);
+      // convert to alignment ix 
+      currentlyAnnotatedRegions = refRegions.map(r => { 
+        return {
+          from: getClosestAlignmentIx(r.from, referenceAudioIx), 
+          to: getClosestAlignmentIx(r.to, referenceAudioIx)
+        }
+      });
     } catch (e) { 
       console.error("Trouble marking score region: ", e);
     }

@@ -58,3 +58,7 @@ def spheres():
     return render_template('listen.html', 
             data=url_for('static', filename='align/Sphärenklänge.json'),
             work_id="Sphärenklänge")
+@app.route("/test")
+def test():
+    return render_template('listen.html', 
+            data=url_for('static', filename='align/Kaiserwalzer-score-alignment-test.json'))

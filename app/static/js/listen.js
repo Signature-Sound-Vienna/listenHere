@@ -501,7 +501,7 @@ function setGrids(grids) {
             timemap = tk.renderToTimemap({});
             console.log("timemap set!", timemap, mei)
             // HACK, DELETE:
-            markScoreRegion("n1sz9qnz", "ns1f6q2");
+            markScoreRegion("n1mnf2qt", "n17z8u4g");
           }).catch(e => { 
             console.error("Couldn't load MEI: ", e, grids.header.mei);
           });

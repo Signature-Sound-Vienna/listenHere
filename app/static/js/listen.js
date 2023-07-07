@@ -1,18 +1,21 @@
+import { populateSolidTab, loginAndFetch } from "./solid.js";
+
 let wavesurfers = {};
 let markers = [];
 let loaded = new Set();
 let alignmentGrids = {};
 let scoreAlignment; // score tstamp to ref tstamp maps for onset and offset
 let timemap = []; // verovio timemap
-let meiUri; 
 let ref;
 let currentAudioIx = "";
 let currentlyAnnotatedRegions = []; // alignment indexes of start and end for each active annotated region
-let storage;
-let colormap;
+let referenceAudioIx;
+let colorMap;
 let timerFrom = 0;
 let timerTo = 0;
 let tk; // verovio toolkit
+export let storage;
+export let meiUri; 
 
 try { 
   storage = window.localStorage;
@@ -147,7 +150,7 @@ function swapCurrentAudio(newAudio) {
       behavior: "smooth"
     });
     // seek to new (corresponding) position 
-    transitionToLastMark = document.getElementById(`transitionType`).checked;
+    let transitionToLastMark = document.getElementById(`transitionType`).checked;
     console.log("transitionToLastMark: ", transitionToLastMark)
     let correspondingPosition = currentGrid[closestAlignmentIx];
     let newPosition = correspondingPosition / wavesurfers[currentAudioIx].getDuration();
@@ -500,8 +503,6 @@ function setGrids(grids) {
             tk.loadData(mei, {});
             timemap = tk.renderToTimemap({});
             console.log("timemap set!", timemap, mei)
-            // HACK, DELETE:
-            markScoreRegion("n1mnf2qt", "n17z8u4g");
           }).catch(e => { 
             console.error("Couldn't load MEI: ", e, grids.header.mei);
           });
@@ -591,6 +592,13 @@ function setGrids(grids) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  if(storage.restoreSolidSession) { 
+    // attempt to restore Solid session with fresh data
+    loginAndFetch();
+  }
+  // draw appropriate solid authorization message
+  populateSolidTab();
+
   // set up Verovio 
   verovio.module.onRuntimeInitialized = () => {
     tk = new verovio.toolkit();
@@ -667,6 +675,8 @@ document.addEventListener('DOMContentLoaded', () => {
       console.log(wavesurfers[currentAudioIx].regions.list)
       switch(e.code) {
         case 'KeyT':
+          // HACK FOR DH 2023 temporarily disable in this branch
+          return false
           if(timerFrom > 0 && timerFrom === timerTo) {
             console.log("mid")
             timerTo = wavesurfers[currentAudioIx].getCurrentTime();
@@ -707,7 +717,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
-function markScoreRegion(fromId, toId = "") {
+export function markScoreRegion(fromId, toId = "") {
+  console.log("Marking score region from: ", fromId, " to: ", toId ? toId : fromId);
   if(scoreAlignment && tk && referenceAudioIx) { 
     try { 
       let fromTimes = tk.getTimesForElement(fromId);

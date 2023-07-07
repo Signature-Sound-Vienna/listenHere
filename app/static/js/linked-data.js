@@ -9,6 +9,7 @@ export const nsp = {
   PIM: 'http://www.w3.org/ns/pim/space#',
   RDF: 'http://www.w3.org/1999/02/22-rdf-syntax-ns#',
   RDFS: 'http://www.w3.org/2000/01/rdf-schema#',
+  SCHEMA: 'https://schema.org/'
 };
 
 export const politeness=200; // milliseconds between network requests
@@ -42,7 +43,7 @@ export async function traverseAndFetch(
   })
     .then((resp) => {
       if (resp.status >= 400) {
-        throw Error(resp);
+        throw Error(resp.status);
       } else {
         return resp.json();
       }

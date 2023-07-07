@@ -1,16 +1,21 @@
-import {
-  log,
-  meiFileName,
-  fileLocationType,
-  github, // instance
-  meiFileLocation,
-  storage,
-  version
-} from './main.js';
+//import {
+//  log,
+//  meiFileName,
+//  fileLocationType,
+//  github, // instance
+//  meiFileLocation,
+//  storage,
+//  version
+//} from './main.js';
 
+import { attemptFetchExternalResource, markSelection } from './annotation.js';
 import { 
   nsp, politeness
 } from './linked-data.js';
+
+import { 
+  storage 
+} from './listen.js';
 
 
 export const solid = solidClientAuthentication.default;
@@ -267,6 +272,31 @@ export async function populateSolidTab() {
   if(solid.getDefaultSession().info.isLoggedIn) {
     solidTab.innerHTML = await populateLoggedInSolidTab();
     document.getElementById('solidLogout').addEventListener('click', solidLogout)
+    document.getElementById('fetchExternal').addEventListener("click", () => { 
+      let urlstr = window.prompt("Please enter URL:");
+      if (urlstr) {
+        if (!(urlstr.startsWith('http://') || urlstr.startsWith('https://'))) urlstr = 'https://' + urlstr;
+        try {
+          // ensure working URLs provided
+          attemptFetchExternalResource(
+            new URL(urlstr), // traversal start
+            [new URL(nsp.MAO + 'Selection')], // target types
+            {
+              typeToHandlerMap: {
+                [nsp.MAO + 'Selection']: {
+                  func: markSelection
+                }
+              },
+              followList: [new URL(nsp.LDP + 'contains')], // predicates to traverse
+              fetchMethod: solid.getDefaultSession().info.isLoggedIn ? solid.fetch : fetch
+            }
+          );
+        } catch (e) {
+          // invalid URL
+          console.warn("Could not load external resource:", e);
+        }
+      }
+    })
   } else {
     solidTab.innerHTML = populateLoggedOutSolidTab();
     document.getElementById('solidLogin').addEventListener('click', loginAndFetch)
@@ -300,36 +330,17 @@ export async function getProfile() {
 }
 
 async function populateLoggedInSolidTab() { 
-  const webId = solid.getDefaultSession().info.webId;
-  const solidButton = document.getElementById('solidButton');
-  solidButton.classList.add('clockwise');
-  const profile = await solid.fetch(webId, { 
-    headers: { 
-      Accept: "application/ld+json"
-    }
-  }).then(resp => resp.json())
-    .then(json => jsonld.expand(json))
-    .finally(() => solidButton.classList.remove("clockwise"));
-  let name = webId;
-  // try to find entry for 'me' (i.e. the user's webId) in profile:
-  let me = Array.from(profile).filter(e => "@id" in e && e["@id"] === webId);
-  if(me.length) { 
-    if(me.length > 1) { 
-      console.warn("User's solid profile has multiple entries for their webId!");
-    }
-    if(`${nsp.FOAF}name` in me[0]) {
-      let foafName = me[0][`${nsp.FOAF}name`][0]; // TODO decide what to do in case of multiple foaf:names
-      if(typeof foafName === "string") { 
-        name = foafName;
-      } else if(typeof foafName === "object" && "@value" in foafName) { 
-        name = foafName["@value"];
-      }
-    }     
-  }
-  
-  return `
-  <div>Welcome, <span id='welcomeName' title='${webId}'>${name}</span>!</div>
-  <div><a id="solidLogout">Log out</a></div>`;
+  // traverse and fetch from discovery service
+  let authStatus = document.createElement("div");
+  authStatus.innerHTML = `<a id="solidLogout">Log out</a>`;
+  authStatus.id = "authStatus";
+  let fetchExternal = document.createElement("div");
+  fetchExternal.innerHTML = `Load external data`;
+  fetchExternal.id = "fetchExternal";
+  let populated = document.createElement("div");
+  populated.insertAdjacentElement('afterbegin', authStatus);
+  populated.insertAdjacentElement('afterbegin', fetchExternal);
+  return populated.outerHTML;
 }
 
 function populateLoggedOutSolidTab() {
@@ -343,7 +354,7 @@ function populateLoggedOutSolidTab() {
     <option value="https://trompa-solid.upf.edu">TROMPA @ UPF</option>
     <option value="other">Other...</option>
   `
-  return 'Please <a id="solidLogin">Click here to log in!</a>';
+  return '<div id="authStatus">Please <a id="solidLogin">Click here to log in!</a></div>';
 }
 
 export async function loginAndFetch() {
@@ -363,9 +374,9 @@ export async function loginAndFetch() {
       oidcIssuer: "https://solidcommunity.net",
       // Specify the URL the Solid Identity Provider should redirect the user once logged in,
       // e.g., the current page for a single-page app.
-      redirectUrl: window.location.href,
+      redirectUrl: window.location.href,//"http://localhost:5003/test", // URL("/test", window.location.href).toString(),
       // Provide a name for the application when sending to the Solid Identity Provider
-      clientName: "mei-friend"
+      clientName: "listen-here"
     });
     
   } else { 

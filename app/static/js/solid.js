@@ -344,7 +344,7 @@ async function populateLoggedInSolidTab() {
 }
 
 function populateLoggedOutSolidTab() {
-  // TODO finish
+  let providerContainer = document.createElement("div");
   let provider = document.createElement("select");
   provider.setAttribute("name", "provider");
   provider.setAttribute("id", "providerSelect");
@@ -352,9 +352,12 @@ function populateLoggedOutSolidTab() {
     <option value="https://solidcommunity.net">SolidCommunity.net</option>
     <option value="https://login.inrupt.net">Inrupt</option>
     <option value="https://trompa-solid.upf.edu">TROMPA @ UPF</option>
-    <option value="other">Other...</option>
   `
-  return '<div id="authStatus">Please <a id="solidLogin">Click here to log in!</a></div>';
+  providerContainer.insertAdjacentElement("afterbegin", provider);
+  let msg = document.createElement("div");
+  msg.innerHTML = '<div id="authStatus">Please <a id="solidLogin">Click here to log in!</a></div>';
+  msg.insertAdjacentElement("afterbegin", providerContainer);
+  return msg.outerHTML
 }
 
 export async function loginAndFetch() {
@@ -368,17 +371,22 @@ export async function loginAndFetch() {
   // 2. Start the Login Process if not already logged in.
   if (!solid.getDefaultSession().info.isLoggedIn) {
     storage.restoreSolidSession = true;
-    await solid.login({
-      // Specify the URL of the user's Solid Identity Provider;
-      // e.g., "https://login.inrupt.com".
-      oidcIssuer: "https://solidcommunity.net",
-      // Specify the URL the Solid Identity Provider should redirect the user once logged in,
-      // e.g., the current page for a single-page app.
-      redirectUrl: window.location.href,//"http://localhost:5003/test", // URL("/test", window.location.href).toString(),
-      // Provide a name for the application when sending to the Solid Identity Provider
-      clientName: "listen-here"
-    });
-    
+    let providerEl = document.getElementById("providerSelect");
+    if(providerEl) { 
+      let provider = providerEl.value;
+      await solid.login({
+        // Specify the URL of the user's Solid Identity Provider;
+        // e.g., "https://login.inrupt.com".
+        oidcIssuer: "https://solidcommunity.net",
+        // Specify the URL the Solid Identity Provider should redirect the user once logged in,
+        // e.g., the current page for a single-page app.
+        redirectUrl: window.location.href,//"http://localhost:5003/test", // URL("/test", window.location.href).toString(),
+        // Provide a name for the application when sending to the Solid Identity Provider
+        clientName: "listen-here"
+      });
+    } else { 
+      console.warn("Couldn't handle incoming redirect from Solid: no provider element");
+    }
   } else { 
     populateSolidTab();
     /*

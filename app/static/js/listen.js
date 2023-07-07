@@ -248,6 +248,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     vpo.sort((a,b) => a.id > b.id?1:-1).forEach(node=>waveforms.appendChild(node));
     other.sort((a,b) => a.id > b.id?1:-1).forEach(node=>waveforms.appendChild(node));
     // create new wavesurfer instance in the new container
+    /* HACK (DH 2023): eventually, show all annotated regions
+    * For now, only allow one at a time
+    */
+   /*
     let annoRegions = currentlyAnnotatedRegions.map((r, ix) => 
       WaveSurfer.regions.create({
         regions: [{
@@ -259,6 +263,24 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         }]
       }) 
     )
+    */ 
+   let annoRegions = [];
+   let annoFrom = 0;
+   let annoTo = 0;
+   if(currentlyAnnotatedRegions.length) {
+    annoFrom = currentlyAnnotatedRegions[0].from;
+    annoTo = currentlyAnnotatedRegions[0].to;
+   }
+    annoRegions = WaveSurfer.regions.create({
+      regions: [{
+        id: "anno_region_0",
+        start: getCorrespondingTime(filename, annoFrom),
+        end: getCorrespondingTime(filename, annoTo),
+        drag: false,
+        color: "rgba(200, 130, 80, 0.3)"
+      }]
+    })
+      
     wavesurfers[filename] = WaveSurfer.create({
       container: `#${CSS.escape("waveform-"+filename)+"-wav"}`,
       waveColor: "violet",
@@ -292,7 +314,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
             color: "rgba(255, 0, 100, 0.3)"
           }]
         }),
-        ...annoRegions
+        annoRegions
       ]
     });
     // add filename label marker
@@ -717,6 +739,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
+
+
 export function markScoreRegion(fromId, toId = "") {
   console.log("Marking score region from: ", fromId, " to: ", toId ? toId : fromId);
   if(scoreAlignment && tk && referenceAudioIx) { 
@@ -738,12 +762,18 @@ export function markScoreRegion(fromId, toId = "") {
           }
       })
       // convert to alignment ix 
-      currentlyAnnotatedRegions = refRegions.map(r => { 
+      currentlyAnnotatedRegions = {
+        from: getClosestAlignmentIx(refRegions[0].from, referenceAudioIx),
+        to: getClosestAlignmentIx(refRegions[0].to, referenceAudioIx)
+      }
+      updateRenderAnnoRegion();
+      /* HACK DH 2023, in future handle multiple regions, for now only use the first
+      /*refRegions.map(r => { 
         return {
           from: getClosestAlignmentIx(r.from, referenceAudioIx), 
           to: getClosestAlignmentIx(r.to, referenceAudioIx)
         }
-      });
+      });*/
     } catch (e) { 
       console.error("Trouble marking score region: ", e);
     }
@@ -783,6 +813,22 @@ function updateRenderTimer() {
     timer.updateRender();
     let timeDelta = timer.end - timer.start;
     document.querySelector('.waveform[data-ix="' + ws + '"] region[data-id="timer"]')
+      .innerHTML = timeDelta 
+        ? `<div class='timerValueContainer'><span>${timeDelta.toFixed(3)}</span></div>` 
+        : ""; // don't display 0
+  });
+}
+
+// todo refactor with updateRenderTimer above
+function updateRenderAnnoRegion() { 
+  Object.keys(wavesurfers).forEach((ws) =>  {
+    let region = wavesurfers[ws].regions.list.anno_region_0;
+    region.start = getCorrespondingTime(ws, currentlyAnnotatedRegions.from);
+    region.end = getCorrespondingTime(ws, currentlyAnnotatedRegions.to);
+    console.log(region.start,region.end);
+    region.updateRender();
+    let timeDelta = region.end - region.start;
+    document.querySelector('.waveform[data-ix="' + ws + '"] region[data-id="anno_region_0"]')
       .innerHTML = timeDelta 
         ? `<div class='timerValueContainer'><span>${timeDelta.toFixed(3)}</span></div>` 
         : ""; // don't display 0

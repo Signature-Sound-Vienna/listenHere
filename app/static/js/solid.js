@@ -287,7 +287,11 @@ export async function populateSolidTab() {
                   func: markSelection
                 }
               },
-              followList: [new URL(nsp.LDP + 'contains')], // predicates to traverse
+              followList: [
+                new URL(nsp.LDP + 'contains'),
+                new URL(nsp.MAO + 'setting'),
+                new URL(nsp.FRBR + 'embodiment')
+              ], // predicates to traverse
               fetchMethod: solid.getDefaultSession().info.isLoggedIn ? solid.fetch : fetch
             }
           );

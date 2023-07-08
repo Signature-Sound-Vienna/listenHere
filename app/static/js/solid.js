@@ -280,7 +280,7 @@ export async function populateSolidTab() {
           // ensure working URLs provided
           attemptFetchExternalResource(
             new URL(urlstr), // traversal start
-            [new URL(nsp.MAO + 'Extract')], // target types
+            [new URL(nsp.MAO + 'Selection')], // target types
             {
               typeToHandlerMap: {
                 [nsp.MAO + 'Selection']: {

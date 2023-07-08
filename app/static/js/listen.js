@@ -825,12 +825,13 @@ function updateRenderAnnoRegion() {
     let region = wavesurfers[ws].regions.list.anno_region_0;
     region.start = getCorrespondingTime(ws, currentlyAnnotatedRegions.from);
     region.end = getCorrespondingTime(ws, currentlyAnnotatedRegions.to);
-    console.log(region.start,region.end);
+    console.log(currentlyAnnotatedRegions, region.start,region.end);
     region.updateRender();
     let timeDelta = region.end - region.start;
+    /*
     document.querySelector('.waveform[data-ix="' + ws + '"] region[data-id="anno_region_0"]')
       .innerHTML = timeDelta 
-        ? `<div class='timerValueContainer'><span>${timeDelta.toFixed(3)}</span></div>` 
-        : ""; // don't display 0
+        ? `<div class='regiontimerValueContainer'><span>${timeDelta.toFixed(3)}</span></div>` 
+        : ""; // don't display 0 */
   });
 }

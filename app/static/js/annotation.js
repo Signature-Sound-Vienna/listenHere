@@ -21,7 +21,7 @@ export function attemptFetchExternalResource(url, targetTypes, configObj) {
 
 export function registerExtract(obj, url) { 
     if(nsp.SCHEMA+"about") { 
-        let matching = obj[nsp.SCHEMA+"about"].filter(m => m["@id"] === decodeURI(meiUri))
+        let matching = obj[nsp.SCHEMA+"about"].filter(m => m["@id"] === meiUri)
         if(matching.length){
             console.log("Found matching extract resource: ", obj);
             obj["@id"] = url;
@@ -68,7 +68,7 @@ function setActiveSelection(selections) {
     let matchingSelectionUrls = selections.filter(s => { 
         let selObj = maoSelections[s["@id"]];
         if(selObj && nsp.SCHEMA+"about" in selObj) {
-            let meiMatches = selObj[nsp.SCHEMA+"about"].filter(t => t["@id"] === decodeURI(meiUri) )
+            let meiMatches = selObj[nsp.SCHEMA+"about"].filter(t =>  t["@id"] === meiUri );
             return meiMatches.length;
         } else { 
             return false;
@@ -102,8 +102,7 @@ export function markSelection(obj, url) {
         if(nsp.SCHEMA + "about" in obj) {
             console.log("mao:Selection is about: ", obj[nsp.SCHEMA+"about"]);
             console.log("current meiUri: ", meiUri);
-            // HACK DH 2023 -- decodeURI on next line only because alignment process is stupidly encoding it twice!!! Fix.
-            let selectionResource = obj[nsp.SCHEMA + "about"].filter(f => f["@id"] === decodeURI(meiUri));
+            let selectionResource = obj[nsp.SCHEMA + "about"].filter(f => f["@id"] === meiUri);
             if(selectionResource.length) {
                 console.log("mao:Selection has selection resources: ", selectionResource)
                 // selection is about our current score!

@@ -21,7 +21,10 @@ export function attemptFetchExternalResource(url, targetTypes, configObj) {
 
 export function registerExtract(obj, url) { 
     if(nsp.SCHEMA+"about") { 
-        let matching = obj[nsp.SCHEMA+"about"].filter(m => m["@id"] === meiUri)
+        let matching = obj[nsp.SCHEMA+"about"].filter(m => { 
+            console.log("Inspecting: ", m["@id"], meiUri, decodeURI(meiUri));
+            return (m["@id"] === meiUri || m["@id"] === decodeURI(meiUri));
+        })
         if(matching.length){
             console.log("Found matching extract resource: ", obj);
             obj["@id"] = url;
@@ -102,7 +105,7 @@ export function markSelection(obj, url) {
         if(nsp.SCHEMA + "about" in obj) {
             console.log("mao:Selection is about: ", obj[nsp.SCHEMA+"about"]);
             console.log("current meiUri: ", meiUri);
-            let selectionResource = obj[nsp.SCHEMA + "about"].filter(f => f["@id"] === meiUri);
+            let selectionResource = obj[nsp.SCHEMA + "about"].filter(f => f["@id"] === meiUri || f["@id"] === decodeURI(meiUri));
             if(selectionResource.length) {
                 console.log("mao:Selection has selection resources: ", selectionResource)
                 // selection is about our current score!

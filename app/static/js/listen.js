@@ -228,6 +228,7 @@ function visualiseAlignments() {
 }
 
 function prepareWaveform(filename, playPosition = 0, isPlaying = false) { 
+  console.log("preparing waveform, currently annotated regions:", currentlyAnnotatedRegions);
   // if not yet created, do so:
   if(!(filename in wavesurfers)) { 
     const waveform = document.createElement("div");
@@ -497,6 +498,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         updateRenderTimer();
       }
     });
+
+    // render anno regions
+    if(currentlyAnnotatedRegions) 
+      updateRenderAnnoRegion();
   } else {
     // waveform already loaded...
     let checkbox = document.getElementById(filename).querySelector("input");
@@ -826,8 +831,9 @@ function updateRenderTimer() {
 }
 
 // todo refactor with updateRenderTimer above
-function updateRenderAnnoRegion() { 
+function updateRenderAnnoRegion() {
   Object.keys(wavesurfers).forEach((ws) =>  {
+    console.log("Update render anno regions: ", ws, currentlyAnnotatedRegions);
     let region = wavesurfers[ws].regions.list.anno_region_0;
     region.start = getCorrespondingTime(ws, currentlyAnnotatedRegions.from);
     region.end = getCorrespondingTime(ws, currentlyAnnotatedRegions.to);

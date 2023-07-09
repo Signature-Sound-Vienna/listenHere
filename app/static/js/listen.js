@@ -9,6 +9,8 @@ let timemap = []; // verovio timemap
 let ref;
 let currentAudioIx = "";
 let currentlyAnnotatedRegions = []; // alignment indexes of start and end for each active annotated region
+export let maoSelections = [];
+export let currentlyActiveMaoSelection = "";
 let referenceAudioIx;
 let colorMap;
 let timerFrom = 0;

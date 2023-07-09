@@ -23,6 +23,10 @@ export function attemptFetchExternalResource(url, targetTypes, configObj) {
         })
 }
 
+export function registerExtract(obj) { 
+    console.log("registerExtract called: ", obj);
+}
+
 export function markSelection(obj) { 
     console.log("markSelection called: ", obj)
     if(obj && "@type" in obj && obj["@type"].includes(nsp.MAO + "Selection")) {
@@ -30,7 +34,8 @@ export function markSelection(obj) {
         if(nsp.SCHEMA + "about" in obj) {
             console.log("mao:Selection is about: ", obj[nsp.SCHEMA+"about"]);
             console.log("current meiUri: ", meiUri);
-            let selectionResource = obj[nsp.SCHEMA + "about"].filter(f => f["@id"] === meiUri);
+            // HACK DH 2023 -- decodeURI on next line only because alignment process is stupidly encoding it twice!!! Fix.
+            let selectionResource = obj[nsp.SCHEMA + "about"].filter(f => f["@id"] === decodeURI(meiUri));
             if(selectionResource.length) {
                 console.log("mao:Selection has selection resources: ", selectionResource)
                 // selection is about our current score!

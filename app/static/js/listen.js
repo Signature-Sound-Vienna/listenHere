@@ -516,8 +516,8 @@ function setGrids(grids) {
       // final version of alignment json
       alignmentGrids = grids.body.audio;
       if("header" in grids) {
-        if("mei" in grids.header && "score" in grids.body) { 
-          meiUri = grids.header.mei;
+        if("meiUri" in grids.header && "score" in grids.body) { 
+          meiUri = grids.header.meiUri;
           scoreAlignment = grids.body.score;
           fetch(meiUri)
           .then( (response) => response.text() )
@@ -526,7 +526,7 @@ function setGrids(grids) {
             timemap = tk.renderToTimemap({});
             console.log("timemap set!", timemap, mei)
           }).catch(e => { 
-            console.error("Couldn't load MEI: ", e, grids.header.mei);
+            console.error("Couldn't load MEI: ", e, grids.header.meiUri);
           });
         }
         if("ref" in grids.header) { 

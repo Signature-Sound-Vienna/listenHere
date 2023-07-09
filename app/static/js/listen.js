@@ -1,4 +1,4 @@
-import { populateSolidTab, loginAndFetch } from "./solid.js";
+import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
 
 let wavesurfers = {};
 let markers = [];
@@ -614,6 +614,12 @@ function setGrids(grids) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById("back").addEventListener("click", () => {
+    // TODO hack for DH 2023, improve
+    solidLogout().then(() => 
+      window.location.href = window.location.href.substr(0, window.location.href.indexOf("/listen"))
+    )
+  })
   if(storage.restoreSolidSession) { 
     // attempt to restore Solid session with fresh data
     loginAndFetch();

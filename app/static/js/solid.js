@@ -8,7 +8,7 @@
 //  version
 //} from './main.js';
 
-import { attemptFetchExternalResource, markSelection } from './annotation.js';
+import { attemptFetchExternalResource, markSelection, registerExtract } from './annotation.js';
 import { 
   nsp, politeness
 } from './linked-data.js';
@@ -280,11 +280,14 @@ export async function populateSolidTab() {
           // ensure working URLs provided
           attemptFetchExternalResource(
             new URL(urlstr), // traversal start
-            [new URL(nsp.MAO + 'Selection')], // target types
+            [new URL(nsp.MAO + 'Selection'), new URL(nsp.MAO + 'Extract')], // target types
             {
               typeToHandlerMap: {
                 [nsp.MAO + 'Selection']: {
                   func: markSelection
+                },
+                [nsp.MAO + 'Extract']: { 
+                  func: registerExtract
                 }
               },
               followList: [
@@ -375,6 +378,16 @@ export async function loginAndFetch() {
   // 2. Start the Login Process if not already logged in.
   if (!solid.getDefaultSession().info.isLoggedIn) {
     storage.restoreSolidSession = true;
+    if(alignmentData) { 
+      storage.setItem("alignmentData", alignmentData);
+    } else { 
+      alignmentData = storage.getItem("alignmentData");
+    }
+    if(workId) { 
+      storage.setItem("workId", workId);
+    } else { 
+      workId = storage.getItem("workId");
+    }
     let providerEl = document.getElementById("providerSelect");
     if(providerEl) { 
       let provider = providerEl.value;
@@ -400,8 +413,8 @@ export async function loginAndFetch() {
         */
   }
 }
-export function solidLogout() { 
-  solid.logout().then(() => {
+export async function solidLogout() { 
+  return solid.logout().then(() => {
     storage.removeItem("restoreSolidSession")
     populateSolidTab();
   });

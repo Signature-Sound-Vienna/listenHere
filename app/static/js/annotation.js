@@ -3,11 +3,18 @@
     traverseAndFetch
   } from './linked-data.js'  
   import { 
-    currentlyActiveMaoSelection,
+    currentlyAnnotatedRegions,
+    getCorrespondingTime,
     maoSelections,
     meiUri, 
-    markScoreRegion
+    markScoreRegion,
+    wavesurfers
  } from './listen.js';
+  import {
+    addNewMAOSelectionToExtract
+  } from './solid.js';
+
+const dummyUriPrefix = "https://repo.mdw.ac.at/signature-sound-vienna/media/wav/"; // HACK cheat for DH2023
 
  // Wrapper around traverseAndFetch that reports back errors / progress to 'Load linked data' UI
 export function attemptFetchExternalResource(url, targetTypes, configObj) { 
@@ -53,14 +60,25 @@ function drawExtractUIElement(obj) {
     let addSelections = document.createElement("div");
     addSelections.innerText = "+";
     addSelections.setAttribute("title", "Add currently loaded audio regions to extract as selections");
+    addSelections.classList.add("addSelectionsToExcerptButton");
     extract.insertAdjacentElement("afterbegin", addSelections);
     extract.insertAdjacentElement("afterbegin", label);
     if(nsp.FRBR+"embodiment" in obj) { 
         extract.dataset.selection = obj[nsp.FRBR+"embodiment"];
-        extract.addEventListener("click", (e) => { 
+        extract.addEventListener("click", () => { 
             document.querySelectorAll("maoExtract").forEach(el => el.classList.remove("active"));
             extract.classList.add("active");
             setActiveSelection(obj[nsp.FRBR+"embodiment"]);
+        })
+        addSelections.addEventListener("click", () => { 
+            console.log("Attempting to add selection to extract!")
+            Object.keys(wavesurfers).forEach((ws) =>  {
+                let region = wavesurfers[ws].regions.list.anno_region_0;
+                region.start = getCorrespondingTime(ws, currentlyAnnotatedRegions.from);
+                region.end = getCorrespondingTime(ws, currentlyAnnotatedRegions.to);
+                let audioMediaUri = `${dummyUriPrefix}${ws}#t=${region.start},${region.end}`;
+                addNewMAOSelectionToExtract(ws, [audioMediaUri], extract.id, obj[nsp.RDFS+"label"][0]["@value"]);
+            })
         })
     }
     extractsPanel.insertAdjacentElement("beforeend", extract);
@@ -86,7 +104,7 @@ function setActiveSelection(selections) {
                 // mark from first to last element
                 markScoreRegion(selectedElementIds[0], selectedElementIds[selectedElementIds.length-1]);
             }
-            currentlyActiveMaoSelection = url;
+            //currentlyActiveMaoSelection = url;
         } else { 
             console.warn("setActiveSelection: Attempting to switch to unknown selection ", url);
         }

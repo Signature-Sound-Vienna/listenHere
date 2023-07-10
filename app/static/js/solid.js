@@ -14,7 +14,8 @@ import {
 } from './linked-data.js';
 
 import { 
-  storage 
+  storage,
+  versionString
 } from './listen.js';
 
 
@@ -27,6 +28,7 @@ export const musicalObjectContainer = friendContainer + "mao/";
 export const selectionContainer = musicalObjectContainer + "selection/";
 export const extractContainer = musicalObjectContainer + "extract/";
 export const musicalMaterialContainer = musicalObjectContainer + "musicalMaterial/";
+export const discoveryFragment = "discovery/";
 
 // resource templates
 export const resources = {
@@ -51,8 +53,7 @@ export async function postResource(containerUri, resource) {
   const webId = solid.getDefaultSession().info.webId;
   resource[nsp.DCT + "creator"] = { "@id": webId};
   resource[nsp.DCT + "created"] = new Date(Date.now()).toISOString();
-  const versionString = (env === environments.production ? version : `${env}-${version}`);
-  resource[nsp.DCT + "provenance"] = `Generated using mei-friend v.${versionString}: https://mei-friend.mdw.ac.at`;
+  resource[nsp.DCT + "provenance"] = `Generated using Listen Here v.${versionString}: https://iwk.mdw.ac.at/signature-sound-vienna`;
   return establishContainerResource(containerUri).then((containerUriResource) => {
     return solid.fetch(containerUriResource, {
       method: 'POST',
@@ -83,12 +84,13 @@ export async function postResource(containerUri, resource) {
  * we do this instead.
  */
 export async function safelyPatchResource(uri, patch) {
+  let etag;
   solid.fetch(uri, {
     headers: { 
       Accept: 'application/ld+json'
     }
   }).then(resp => {
-    let etag = resp.headers.get("ETag");
+    etag = resp.headers.get("ETag");
     return resp.json();
   }).then(freshlyFetched => {
     console.log("Found freshlyFetched resource at URI: ", freshlyFetched, uri);
@@ -119,8 +121,6 @@ export async function establishResource(uri, resource) {
   resource["@id"] = uri;
   // check whether a resource exists at uri
   // if not, create one initialised to the supplied resource
-  const solidButton = document.getElementById('solid_logo');
-  solidButton.classList.add('clockwise');
   let resp = await solid.fetch(uri, { 
     method: 'HEAD',
     headers: { 
@@ -150,7 +150,7 @@ export async function establishResource(uri, resource) {
       // another problem...
       log("Sorry, unable to establish resource in your Solid Pod: " + headResp.status + " " + headResp.statusText)
     }
-  }).finally(() => solidButton.classList.remove("clockwise"));
+  });
   return resp;
 }
 
@@ -179,6 +179,7 @@ export async function establishContainerResource(container){
   return getSolidStorage().then(async (storage) => {
     // establish container resource
     let resource = structuredClone(resources.ldpContainer);
+    console.log("attempting to establish resource: ", storage + container, resource)
     return establishResource(storage + container, resource).then(async (resp) => {
       if(resp) {
         if(resp.ok) {
@@ -212,29 +213,71 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
   .catch(e => { console.error("Failed to create nsp.MAO Musical Object:", e) })
 }
 
+export async function establishContainers() { 
+  return establishContainerResource(friendContainer).then(async (storageResource) => { 
+    return establishContainerResource(friendContainer + discoveryFragment).then(async () => { 
+      return establishContainerResource(musicalObjectContainer).then(() => {
+        return storageResource; // return friendContainer URI
+      })
+    })
+  })
+}
+
+export async function addNewMAOSelectionToExtract(fileUri, selectedElements, extractResource, label = "") {
+  return establishContainers().then((storageResource) => { 
+    return createMAOSelection(selectedElements, label).then(async selectionResource => { 
+      // establish a discovery resource if it doesn't already exist
+      let fileUriHash = encodeURIComponent(fileUri);
+      let discoveryUri = storageResource + discoveryFragment + fileUriHash;
+      return establishResource(discoveryUri, { 
+        "@type": nsp.SCHEMA + "ItemList",
+        [nsp.SCHEMA + "description"]: "List of resources about" + fileUri,
+        [nsp.SCHEMA + "itemListOrder"]: nsp.SCHEMA+"itemListUnordered",
+        [nsp.SCHEMA+"about"]: {"@id": fileUri},
+        [nsp.SCHEMA+"itemListElement"]: []
+      }).then(async() => { 
+        // patch the now-established discovery resource
+        return safelyPatchResource(discoveryUri, [
+            {
+              op: "add",
+              // escape ~ and / characters according to JSON POINTER spec
+              // use '-' at end of path specification to indicate new array item to be created
+              path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}embodiment/-`,
+              value: {
+                "@type": `${nsp.FRBR}listItem`,
+                [`${nsp.SCHEMA}additionalType`]: { "@id":`${nsp.MAO}Selection` },
+                [`${nsp.SCHEMA}url`]: { "@id": new URL(selectionResource.url).origin + selectionResource.headers.get("Location") }
+              }
+            },
+        ])
+
+      }).then(async() => { 
+        // patch the extract to point to our new selection resource
+        return safelyPatchResource(extractResource, [
+          {
+            op: "add", 
+            // escape ~ and / characters according to JSON POINTER spec
+            // use '-' at end of path specification to indicate new array item to be created
+            path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}embodiment/-`,
+            value: {
+              "@id": new URL(selectionResource.url).origin + selectionResource.headers.get("Location") 
+            }
+          }
+        ])
+      })
+    })
+  })
+
+}
+
 async function createMAOSelection(selection, label = "") {
   // private function -- called *after* friendContainer and musicalObjectContainer already established
   let resource = structuredClone(resources.maoSelection);
-  let baseFileUri;
-  switch(fileLocationType) { 
-    case 'file':
-      baseFileUri = "https://localhost" + meiFileName; // or should we just not allow local files at all?
-      break;
-    case 'url':
-      baseFileUri = meiFileLocation;
-      break;
-    case 'github':
-      baseFileUri = github.rawGithubUri;
-      break;
-    default: 
-      baseFileUri = meiFileLocation;
-      console.error("Unexpected fileLocationType: ", fileLocationType);
-  }
-  resource[nsp.FRBR + "part"] = selection.map(s => { 
-    return {
-      "@id": `${baseFileUri}#${s}` 
-    } 
-  });
+  resource[nsp.FRBR + "part"] = [
+    {
+      "@id": selection
+    }
+  ];
   if(label) { 
     resource[nsp.RDFS + "label"] = label;
   }
@@ -312,8 +355,6 @@ export async function populateSolidTab() {
 
 export async function getProfile() { 
   const webId = solid.getDefaultSession().info.webId;
-  const solidButton = document.getElementById('solidButton');
-  solidButton.classList.add('clockwise');
   const profile = await solid.fetch(webId, { 
     headers: { 
       Accept: "application/ld+json"
@@ -332,7 +373,7 @@ export async function getProfile() {
       // TODO proper error handling
       console.warn("User profile contains no entry matching their webId: ", profile, webId);
     }
-  }).finally(() => solidButton.classList.remove("clockwise"));
+  });
   return profile;
 }
 

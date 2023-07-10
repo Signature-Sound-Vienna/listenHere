@@ -43,7 +43,7 @@ export async function traverseAndFetch(
   })
     .then((resp) => {
       if (resp.status >= 400) {
-        throw Error(resp.status);
+        console.warn("Couldn't traverseAndFetch resource: ", url, resp.status)
       } else {
         return resp.json();
       }
@@ -92,7 +92,7 @@ export async function traverseAndFetch(
               try {
                 // recur if object is a URL and not in block list
                 if (!'@id' in obj || blockUrlStrings.includes(obj['@id'])) {
-                  throw Error('target is a literal or target URI on blockList');
+                  console.warn("Couldn't raverse and fetch: target is a literal or target URI on blockList");
                 }
                 let objUrl = new URL(obj['@id']);
                 // politely continue traversal

@@ -1,6 +1,7 @@
+export let versionString = "0.5.0";
+
 import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
 
-let wavesurfers = {};
 let markers = [];
 let loaded = new Set();
 let alignmentGrids = {};
@@ -8,9 +9,8 @@ let scoreAlignment; // score tstamp to ref tstamp maps for onset and offset
 let timemap = []; // verovio timemap
 let ref;
 let currentAudioIx = "";
-let currentlyAnnotatedRegions = []; // alignment indexes of start and end for each active annotated region
+export let currentlyAnnotatedRegions = []; // alignment indexes of start and end for each active annotated region
 export let maoSelections = [];
-export let currentlyActiveMaoSelection = "";
 let referenceAudioIx;
 let colorMap;
 let timerFrom = 0;
@@ -18,6 +18,8 @@ let timerTo = 0;
 let tk; // verovio toolkit
 export let storage;
 export let meiUri; 
+export let currentlyActiveMaoSelection = "";
+export let wavesurfers = {};
 
 try { 
   storage = window.localStorage;
@@ -58,7 +60,7 @@ function getClosestAlignmentIx(time = wavesurfers[currentAudioIx].getCurrentTime
   return closestAlignmentIx;
 }
 
-function getCorrespondingTime(audioIx, alignmentIx) { 
+export function getCorrespondingTime(audioIx, alignmentIx) { 
   // get time position corresponding to current position of current audio, 
   // in the alternative audio with index audioIx
   let grid = alignmentGrids[audioIx];

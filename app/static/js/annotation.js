@@ -57,11 +57,22 @@ function drawExtractUIElement(obj) {
         console.warn("Extract without label: ", obj);
     }
     label.classList.add("maoExtract-label");
+    let extractTools = document.createElement("div");
+    extractTools.classList.add("extractTools");
     let addSelections = document.createElement("div");
     addSelections.innerText = "+";
     addSelections.setAttribute("title", "Add currently loaded audio regions to extract as selections");
     addSelections.classList.add("addSelectionsToExcerptButton");
-    extract.insertAdjacentElement("afterbegin", addSelections);
+    let closeExtract = document.createElement("div");
+    closeExtract.innerText = "x";
+    closeExtract.classList.add("closeExtractButton");
+    closeExtract.setAttribute("title", "Remove this extract from current view");
+    closeExtract.addEventListener("click", () => { 
+        extract.remove();
+    })
+    extractTools.insertAdjacentElement("afterbegin", closeExtract);
+    extractTools.insertAdjacentElement("afterbegin", addSelections)
+    extract.insertAdjacentElement("afterbegin", extractTools);
     extract.insertAdjacentElement("afterbegin", label);
     if(nsp.FRBR+"embodiment" in obj) { 
         extract.dataset.selection = obj[nsp.FRBR+"embodiment"];

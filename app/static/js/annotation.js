@@ -30,7 +30,7 @@ export function registerExtract(obj, url) {
     if(nsp.SCHEMA+"about") { 
         let matching = obj[nsp.SCHEMA+"about"].filter(m => { 
             console.log("Inspecting: ", m["@id"], meiUri, decodeURI(meiUri));
-            return (m["@id"] === meiUri || m["@id"] === decodeURI(meiUri));
+            return (m["@id"] === meiUri || m["@id"] === decodeURI(meiUri) || decodeURI(m["@id"] == meiUri));
         })
         if(matching.length){
             console.log("Found matching extract resource: ", obj);
@@ -77,7 +77,7 @@ function drawExtractUIElement(obj) {
                 region.start = getCorrespondingTime(ws, currentlyAnnotatedRegions.from);
                 region.end = getCorrespondingTime(ws, currentlyAnnotatedRegions.to);
                 let audioMediaUri = `${dummyUriPrefix}${ws}#t=${region.start},${region.end}`;
-                addNewMAOSelectionToExtract(ws, [audioMediaUri], extract.id, obj[nsp.RDFS+"label"][0]["@value"]);
+                addNewMAOSelectionToExtract(ws, audioMediaUri, extract.id, obj[nsp.RDFS+"label"][0]["@value"]);
             })
         })
     }
@@ -89,7 +89,9 @@ function setActiveSelection(selections) {
     let matchingSelectionUrls = selections.filter(s => { 
         let selObj = maoSelections[s["@id"]];
         if(selObj && nsp.SCHEMA+"about" in selObj) {
-            let meiMatches = selObj[nsp.SCHEMA+"about"].filter(t =>  t["@id"] === meiUri );
+            let meiMatches = selObj[nsp.SCHEMA+"about"].filter(t =>  
+                t["@id"] === meiUri || decodeURI(t["@id"]) == meiUri || t["@id"] == decodeURI(meiUri)
+            );
             return meiMatches.length;
         } else { 
             return false;
@@ -123,7 +125,9 @@ export function markSelection(obj, url) {
         if(nsp.SCHEMA + "about" in obj) {
             console.log("mao:Selection is about: ", obj[nsp.SCHEMA+"about"]);
             console.log("current meiUri: ", meiUri);
-            let selectionResource = obj[nsp.SCHEMA + "about"].filter(f => f["@id"] === meiUri || f["@id"] === decodeURI(meiUri));
+            let selectionResource = obj[nsp.SCHEMA + "about"].filter(f => 
+                f["@id"] === meiUri || f["@id"] === decodeURI(meiUri) || decodeURI(f["@id"]) === meiUri
+            );
             if(selectionResource.length) {
                 console.log("mao:Selection has selection resources: ", selectionResource)
                 // selection is about our current score!

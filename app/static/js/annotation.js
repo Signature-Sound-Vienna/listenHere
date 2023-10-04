@@ -114,8 +114,7 @@ function setActiveSelection(selections) {
             let obj = maoSelections[url];
             let selectedElementIds = obj[nsp.FRBR + "part"].map(uri => uri["@id"].substr(uri["@id"].lastIndexOf("#")+1));
             if(selectedElementIds.length) { 
-                // mark from first to last element
-                markScoreRegion(selectedElementIds[0], selectedElementIds[selectedElementIds.length-1]);
+                markScoreRegion(selectedElementIds);
             }
             //currentlyActiveMaoSelection = url;
         } else { 

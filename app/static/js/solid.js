@@ -93,8 +93,9 @@ export async function safelyPatchResource(uri, patch) {
     etag = resp.headers.get("ETag");
     return resp.json();
   }).then(freshlyFetched => {
-    console.log("Found freshlyFetched resource at URI: ", freshlyFetched, uri);
-    const patched = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
+    console.log("Found freshlyFetched resource at URI: ", freshlyFetched, uri, patch);
+    const applied = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
+    const patched = applied.newDocument;
     solid.fetch(uri, { 
       method: 'PUT',   
       headers: { 
@@ -239,19 +240,20 @@ export async function addNewMAOSelectionToExtract(fileUri, selectedElements, ext
         // patch the now-established discovery resource
         return safelyPatchResource(discoveryUri, [
             {
-              op: "add",
-              // escape ~ and / characters according to JSON POINTER spec
-              // use '-' at end of path specification to indicate new array item to be created
-              path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}embodiment/-`,
-              value: {
-                "@type": `${nsp.FRBR}listItem`,
-                [`${nsp.SCHEMA}additionalType`]: { "@id":`${nsp.MAO}Selection` },
-                [`${nsp.SCHEMA}url`]: { "@id": new URL(selectionResource.url).origin + selectionResource.headers.get("Location") }
-              }
-            },
-        ])
-
-      }).then(async() => { 
+                op: "add",
+                // escape ~ and / characters according to JSON POINTER spec
+                // use '-' at end of path specification to indicate new array item to be created
+                path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}embodiment/-`,
+                value: {
+                  "@type": `${nsp.FRBR}listItem`,
+                  [`${nsp.SCHEMA}additionalType`]: { "@id":`${nsp.MAO}Selection` },
+                  [`${nsp.SCHEMA}url`]: { "@id": new URL(selectionResource.url).origin + selectionResource.headers.get("Location") }
+                }
+              },
+          ])
+      }).catch(() => { 
+        console.warn("Couldn't pach discovery resource: ", discoveyUri);
+      }).finally(async() => { 
         // patch the extract to point to our new selection resource
         return safelyPatchResource(extractResource, [
           {

@@ -62,7 +62,7 @@ function drawExtractUIElement(obj) {
     let addSelections = document.createElement("div");
     addSelections.innerText = "+";
     addSelections.setAttribute("title", "Add currently loaded audio regions to extract as selections");
-    addSelections.classList.add("addSelectionsToExcerptButton");
+    addSelections.classList.add("addSelectionsToExtractButton");
     let closeExtract = document.createElement("div");
     closeExtract.innerText = "x";
     closeExtract.classList.add("closeExtractButton");

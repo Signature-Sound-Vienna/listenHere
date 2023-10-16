@@ -196,6 +196,19 @@ export async function establishContainerResource(container){
   });
 }
 
+export async function establishDiscoveryResource(currentFileUri) {
+  return establishContainerResource(friendContainer + discoveryFragment).then((discoveryContainer) => {
+    // establish a discovery resource (if it doesn't already exist)
+    const currentFileUriHash = encodeURIComponent(currentFileUri);
+    const discoveryUri = discoveryContainer + currentFileUriHash;
+    return establishResource(discoveryUri, {
+      '@type': nsp.SCHEMA + 'DataCatalog',
+      [nsp.SCHEMA + 'description']: 'Collection of datasets about ' + currentFileUri,
+      [nsp.SCHEMA + 'about']: { '@id': currentFileUri },
+      [nsp.SCHEMA + 'dataset']: [],
+    });
+  });
+}
 
 export async function createMAOMusicalObject(selectedElements, label = "") {
   // Function to build a Musical Object according to the Music Annotation Ontology:
@@ -224,52 +237,48 @@ export async function establishContainers() {
   })
 }
 
-export async function addNewMAOSelectionToExtract(fileUri, selectedElements, extractResource, label = "") {
-  return establishContainers().then((storageResource) => { 
-    return createMAOSelection(selectedElements, label).then(async selectionResource => { 
-      // establish a discovery resource if it doesn't already exist
-      let fileUriHash = encodeURIComponent(fileUri);
-      let discoveryUri = storageResource + discoveryFragment + fileUriHash;
-      return establishResource(discoveryUri, { 
-        "@type": nsp.SCHEMA + "ItemList",
-        [nsp.SCHEMA + "description"]: "List of resources about" + fileUri,
-        [nsp.SCHEMA + "itemListOrder"]: nsp.SCHEMA+"itemListUnordered",
-        [nsp.SCHEMA+"about"]: {"@id": fileUri},
-        [nsp.SCHEMA+"itemListElement"]: []
-      }).then(async() => { 
-        // patch the now-established discovery resource
-        return safelyPatchResource(discoveryUri, [
-            {
-                op: "add",
-                // escape ~ and / characters according to JSON POINTER spec
-                // use '-' at end of path specification to indicate new array item to be created
-                path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}embodiment/-`,
-                value: {
-                  "@type": `${nsp.FRBR}listItem`,
-                  [`${nsp.SCHEMA}additionalType`]: { "@id":`${nsp.MAO}Selection` },
-                  [`${nsp.SCHEMA}url`]: { "@id": new URL(selectionResource.url).origin + selectionResource.headers.get("Location") }
-                }
-              },
-          ])
-      }).catch(() => { 
-        console.warn("Couldn't pach discovery resource: ", discoveyUri);
-      }).finally(async() => { 
-        // patch the extract to point to our new selection resource
-        return safelyPatchResource(extractResource, [
-          {
-            op: "add", 
-            // escape ~ and / characters according to JSON POINTER spec
-            // use '-' at end of path specification to indicate new array item to be created
-            path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}embodiment/-`,
-            value: {
-              "@id": new URL(selectionResource.url).origin + selectionResource.headers.get("Location") 
-            }
-          }
-        ])
-      })
+export async function addNewMAOSelectionToExtract(currentFileUri, selectedElements, extractResource, label = "") {
+  let storageResource;
+  let dataCatalogResource;
+  return establishContainers().then(async (stoRes) => {
+      storageResource = stoRes;
+      return establishDiscoveryResource(currentFileUri);
     })
+  .then(async dataCatRes => { 
+    dataCatalogResource = dataCatRes;
+    return createMAOSelection(selectedElements, dataCatalogResource.url, label);
   })
-
+  .then(async(selectionResource) => { 
+    // patch the now-established discovery resource
+    safelyPatchResource(dataCatalogResource.url, [{
+      op: "add",
+      // escape ~ and / characters according to JSON POINTER spec
+      // use '-' at end of path specification to indicate new array item to be created
+      path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}dataset/-`,
+      value: {
+        "@type": `${nsp.SCHEMA}Dataset`,
+        [`${nsp.SCHEMA}additionalType`]: { "@id":`${nsp.MAO}Selection` },
+        [`${nsp.SCHEMA}url`]: { "@id": new URL(selectionResource.url).origin + selectionResource.headers.get("Location") }
+      }
+    }]).catch(() => { 
+      console.warn("Couldn't pach discovery resource: ", dataCatalogResource.url);
+    })
+    return selectionResource;
+  }).then(async(selectionResource) => { 
+    // patch the extract to point to our new selection resource
+    console.log("in finally, selection resource:", selectionResource)
+    return safelyPatchResource(extractResource, [
+      {
+        op: "add", 
+        // escape ~ and / characters according to JSON POINTER spec
+        // use '-' at end of path specification to indicate new array item to be created
+        path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}embodiment/-`,
+        value: {
+          "@id": new URL(selectionResource.url).origin + selectionResource.headers.get("Location") 
+        }
+      }
+    ])
+  })
 }
 
 async function createMAOSelection(selection, label = "") {

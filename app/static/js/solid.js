@@ -94,8 +94,7 @@ export async function safelyPatchResource(uri, patch) {
     return resp.json();
   }).then(freshlyFetched => {
     console.log("Found freshlyFetched resource at URI: ", freshlyFetched, uri, patch);
-    const applied = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
-    const patched = applied.newDocument;
+    const patched = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
     solid.fetch(uri, { 
       method: 'PUT',   
       headers: { 
@@ -210,7 +209,7 @@ export async function establishDiscoveryResource(currentFileUri) {
   });
 }
 
-export async function createMAOMusicalObject(selectedElements, label = "") {
+/*export async function createMAOMusicalObject(selectedElements, label = "") {
   // Function to build a Musical Object according to the Music Annotation Ontology:
   // https://dl.acm.org/doi/10.1145/3543882.3543891
   // For the purposes of mei-friend, we want to build a composite structure encompassing MusicalMaterial, 
@@ -225,7 +224,86 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
     })
   })
   .catch(e => { console.error("Failed to create nsp.MAO Musical Object:", e) })
+}*/
+
+export async function createMAOMusicalObject(selectedElements, label = '') {
+  // Function to build a Musical Object according to the Music Annotation Ontology:
+  // https://dl.acm.org/doi/10.1145/3543882.3543891
+  // For the purposes of mei-friend, we want to build a composite structure encompassing MusicalMaterial,
+  // Extract, and Selection (see paper)
+  let currentFileUri = getCurrentFileUri();
+  let currentFileUriHash = encodeURIComponent(currentFileUri);
+  let storageResource;
+  return establishContainerResource(friendContainer)
+    .then(async (stoRes) => {
+      storageResource = stoRes;
+      return establishDiscoveryResource(currentFileUri);
+    })
+    .then(async (dataCatalogResource) => {
+      return establishContainerResource(musicalObjectContainer).then(async () => {
+        return createMAOSelection(selectedElements, currentFileUri, dataCatalogResource.url, label).then(
+          async (selectionResource) => {
+            return createMAOExtract(selectionResource, currentFileUri, dataCatalogResource.url, label).then(
+              async (extractResource) => {
+                return createMAOMusicalMaterial(extractResource, currentFileUri, dataCatalogResource.url, label)
+                .then(async (musMatResource) => {
+                    // patch the now-established discovery resource with our new MAO objects
+                    return safelyPatchResource(dataCatalogResource.url, [
+                      {
+                        op: 'add',
+                        // escape ~ and / characters according to JSON POINTER spec
+                        // use '-' at end of path specification to indicate new array item to be created
+                        path: `/${nsp.SCHEMA.replaceAll('~', '~0').replaceAll('/', '~1')}dataset/-`,
+                        value: {
+                          '@type': `${nsp.SCHEMA}Dataset`,
+                          [`${nsp.SCHEMA}additionalType`]: { '@id': `${nsp.MAO}MusicalMaterial` },
+                          [`${nsp.SCHEMA}url`]: {
+                            '@id': new URL(storageResource).origin + musMatResource.headers.get('Location'),
+                          },
+                        },
+                      },
+                      {
+                        op: 'add',
+                        // escape ~ and / characters according to JSON POINTER spec
+                        // use '-' at end of path specification to indicate new array item to be created
+                        path: `/${nsp.SCHEMA.replaceAll('~', '~0').replaceAll('/', '~1')}dataset/-`,
+                        value: {
+                          '@type': `${nsp.SCHEMA}Dataset`,
+                          [`${nsp.SCHEMA}additionalType`]: { '@id': `${nsp.MAO}Extract` },
+                          [`${nsp.SCHEMA}url`]: {
+                            '@id': new URL(storageResource).origin + extractResource.headers.get('Location'),
+                          },
+                        },
+                      },
+                      {
+                        op: 'add',
+                        // escape ~ and / characters according to JSON POINTER spec
+                        // use '-' at end of path specification to indicate new array item to be created
+                        path: `/${nsp.SCHEMA.replaceAll('~', '~0').replaceAll('/', '~1')}dataset/-`,
+                        value: {
+                          '@type': `${nsp.SCHEMA}Dataset`,
+                          [`${nsp.SCHEMA}additionalType`]: { '@id': `${nsp.MAO}Selection` },
+                          [`${nsp.SCHEMA}url`]: {
+                            '@id': new URL(storageResource).origin + selectionResource.headers.get('Location'),
+                          },
+                        },
+                      },
+                    ]).then(() => {
+                      return musMatResource;
+                    }); // finally, return the musMat resource to the UI
+                  });
+                }
+              );
+            }
+          );
+        }
+      );
+    })
+    .catch((e) => {
+      console.error('Failed to create nsp.MAO Musical Object:', e);
+    });
 }
+
 
 export async function establishContainers() { 
   return establishContainerResource(friendContainer).then(async (storageResource) => { 
@@ -246,7 +324,7 @@ export async function addNewMAOSelectionToExtract(currentFileUri, selectedElemen
     })
   .then(async dataCatRes => { 
     dataCatalogResource = dataCatRes;
-    return createMAOSelection(selectedElements, dataCatalogResource.url, label);
+    return createMAOSelection(selectedElements, currentFileUri, dataCatalogResource.url, label);
   })
   .then(async(selectionResource) => { 
     // patch the now-established discovery resource
@@ -254,7 +332,7 @@ export async function addNewMAOSelectionToExtract(currentFileUri, selectedElemen
       op: "add",
       // escape ~ and / characters according to JSON POINTER spec
       // use '-' at end of path specification to indicate new array item to be created
-      path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}dataset/-`,
+      path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll("/", "~1")}dataset/-`,
       value: {
         "@type": `${nsp.SCHEMA}Dataset`,
         [`${nsp.SCHEMA}additionalType`]: { "@id":`${nsp.MAO}Selection` },
@@ -281,7 +359,7 @@ export async function addNewMAOSelectionToExtract(currentFileUri, selectedElemen
   })
 }
 
-async function createMAOSelection(selection, label = "") {
+async function createMAOSelection(selection, aboutUri, discoveryUri, label = "") {
   // private function -- called *after* friendContainer and musicalObjectContainer already established
   let resource = structuredClone(resources.maoSelection);
   resource[nsp.FRBR + "part"] = [
@@ -292,6 +370,17 @@ async function createMAOSelection(selection, label = "") {
   if(label) { 
     resource[nsp.RDFS + "label"] = label;
   }
+  // resource(s) this MAO object is about
+  aboutUri = Array.isArray(aboutUri) ? aboutUri : [aboutUri];
+  resource[nsp.SCHEMA + 'about'] = aboutUri.map((uri) => {
+    return { '@id': uri };
+  });
+  // data catalog resource(s) in our discoveryContainer that point to this MAO object
+  discoveryUri = Array.isArray(discoveryUri) ? discoveryUri : [discoveryUri];
+  resource[nsp.SCHEMA + 'includedInDataCatalog'] = discoveryUri.map((uri) => {
+    return { '@id': uri };
+  });
+
   let response = await postResource(selectionContainer, resource);
   console.log("GOT RESPONSE: ", response);
   return response;

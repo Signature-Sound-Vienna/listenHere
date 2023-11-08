@@ -281,20 +281,18 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     /* HACK (DH 2023): eventually, show all annotated regions
      * For now, only allow one at a time
      */
-    /*
-    let annoRegions = currentlyAnnotatedRegions.map((r, ix) => 
-      WaveSurfer.regions.create({
-        regions: [{
+    let regions = currentlyAnnotatedRegions.map((r, ix) => {
+      return {
           id: "anno_region_" + ix,
           start: getCorrespondingTime(filename, r.from),
           end: getCorrespondingTime(filename, r.to),
           drag: false,
           color: "rgba(200, 130, 80, 0.3)"
-        }]
-      }) 
-    )
-    */
-    let annoRegions = [];
+        }
+    });
+    let annoRegions = WaveSurfer.regions.create({ regions });
+    //let annoRegions = [];
+    /*
     let annoFrom = 0;
     let annoTo = 0;
     if (currentlyAnnotatedRegions.length) {
@@ -311,7 +309,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           color: "rgba(200, 130, 80, 0.3)",
         },
       ],
-    });
+    });*/
 
     wavesurfers[filename] = WaveSurfer.create({
       container: `#${CSS.escape("waveform-" + filename) + "-wav"}`,
@@ -937,8 +935,8 @@ function updateRenderTimer() {
 function updateRenderAnnoRegion() {
   Object.keys(wavesurfers).forEach((ws) => {
     console.log("Update render anno regions: ", ws, currentlyAnnotatedRegions);
-    currentlyAnnotatedRegions.forEach(r => { 
-        let region = wavesurfers[ws].regions.list.anno_region_0;
+    currentlyAnnotatedRegions.forEach((r, ix) => { 
+        let region = wavesurfers[ws].regions.list["anno_region_" + ix];
         region.start = getCorrespondingTime(ws, r.from);
         region.end = getCorrespondingTime(ws, r.to);
         console.log(r, region.start, region.end);

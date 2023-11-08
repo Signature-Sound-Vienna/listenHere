@@ -75,12 +75,19 @@ function drawExtractUIElement(obj) {
     extract.insertAdjacentElement("afterbegin", extractTools);
     extract.insertAdjacentElement("afterbegin", label);
     if(nsp.FRBR+"embodiment" in obj) { 
-        extract.dataset.selection = obj[nsp.FRBR+"embodiment"];
+        extract.dataset.extractUri = obj["@id"];
         extract.addEventListener("click", () => { 
             document.querySelectorAll("maoExtract").forEach(el => el.classList.remove("active"));
             extract.classList.add("active");
-            markScoreRegions(obj[nsp.FRBR+"embodiment"]);
-        })
+            // look up index of selection URI in currently annotated regions
+            let regionIx = currentlyAnnotatedRegions.findIndex(r => r.selection === extract.dataset.extractUri);
+            if(regionIx >= 0) {
+                wavesurfers[currentAudioIx].regions.list["anno_region_" + regionIx].play();
+            } else { 
+                console.log("Couldn't find regionIx for extract: ", extract.dataset.extractUri, currentlyAnnotatedRegions);
+            }
+            //markScoreRegions(obj[nsp.FRBR+"embodiment"]);
+        })/*
         addSelections.addEventListener("click", () => { 
             console.log("Attempting to add selection to extract!")
             Object.keys(wavesurfers).forEach((ws) =>  {
@@ -90,7 +97,7 @@ function drawExtractUIElement(obj) {
                 let audioMediaUri = `${dummyUriPrefix}${ws}#t=${region.start},${region.end}`;
                 addNewMAOSelectionToExtract(ws, audioMediaUri, extract.id, obj[nsp.RDFS+"label"][0]["@value"]);
             })
-        })
+        })*/
     }
     extractsPanel.insertAdjacentElement("beforeend", extract);
 }
@@ -117,7 +124,7 @@ function markScoreRegions(selections) {
                 let selectedElementIds = obj[nsp.FRBR + "part"].map(uri => uri["@id"].substr(uri["@id"].lastIndexOf("#")+1));
                 if(selectedElementIds.length) { 
                     console.log("I was successfully called with selections ", selections)
-                    markScoreRegion(selectedElementIds);
+                    markScoreRegion(selectedElementIds, url);
                 }
             } else { 
                 console.warn("setActiveSelection: Attempting to switch to unknown selection ", url);

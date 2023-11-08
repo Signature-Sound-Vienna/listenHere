@@ -281,16 +281,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     /* HACK (DH 2023): eventually, show all annotated regions
      * For now, only allow one at a time
      */
-    let regions = currentlyAnnotatedRegions.map((r, ix) => {
-      return {
-          id: "anno_region_" + ix,
-          start: getCorrespondingTime(filename, r.from),
-          end: getCorrespondingTime(filename, r.to),
-          drag: false,
-          resize: false,
-          color: "rgba(200, 130, 80, 0.3)"
-        }
-    });
+    let regions = extractCurrentlyAnnotatedRegions(filename);
     let annoRegions = WaveSurfer.regions.create({ regions });
     //let annoRegions = [];
     /*
@@ -553,7 +544,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     });
 
     // render anno regions
-    if (currentlyAnnotatedRegions) updateRenderAnnoRegion();
+    if (currentlyAnnotatedRegions) updateRenderAnnoRegions();
   } else {
     // waveform already loaded...
     let checkbox = document.getElementById(filename).querySelector("input");
@@ -824,7 +815,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-export function markScoreRegion(ids, reset = false) {
+export function markScoreRegion(ids, selectionUrl, reset = false) {
   if(reset) { 
     currentlyAnnotatedRegions = [];
   }
@@ -873,10 +864,11 @@ export function markScoreRegion(ids, reset = false) {
       });
       // convert to alignment ix
       currentlyAnnotatedRegions.push({
+        selection: selectionUrl,
         from: getClosestAlignmentIx(refRegions[0].from, referenceAudioIx),
         to: getClosestAlignmentIx(refRegions[0].to, referenceAudioIx),
       });
-      updateRenderAnnoRegion();
+      updateRenderAnnoRegions();
       /* HACK DH 2023, in future handle multiple regions, for now only use the first
       /*refRegions.map(r => { 
         return {
@@ -934,21 +926,33 @@ function updateRenderTimer() {
 }
 
 // todo refactor with updateRenderTimer above
-function updateRenderAnnoRegion() {
+function updateRenderAnnoRegions() {
+  // HACK dlfm2023: for now do nothing, ensure annots are loaded before wavesurfers
   Object.keys(wavesurfers).forEach((ws) => {
     console.log("Update render anno regions: ", ws, currentlyAnnotatedRegions);
-    currentlyAnnotatedRegions.forEach((r, ix) => { 
-        let region = wavesurfers[ws].regions.list["anno_region_" + ix];
-        region.start = getCorrespondingTime(ws, r.from);
-        region.end = getCorrespondingTime(ws, r.to);
-        console.log(r, region.start, region.end);
-        region.updateRender();
+    let regions = extractCurrentlyAnnotatedRegions(ws);
+    wavesurfers[ws].clearRegions();
+    regions.forEach(r => wavesurfers[ws].addRegion(r));
+
       /*
       let timeDelta = region.end - region.start;
       document.querySelector('.waveform[data-ix="' + ws + '"] region[data-id="anno_region_0"]')
         .innerHTML = timeDelta 
           ? `<div class='regiontimerValueContainer'><span>${timeDelta.toFixed(3)}</span></div>` 
           : ""; // don't display 0 */
-    });
+  });
+}
+
+
+function extractCurrentlyAnnotatedRegions(ws) { 
+  return currentlyAnnotatedRegions.map((r, ix) => {
+    return {
+        id: "anno_region_" + ix,
+        start: getCorrespondingTime(ws, r.from),
+        end: getCorrespondingTime(ws, r.to),
+        drag: false,
+        resize: false,
+        color: "rgba(200, 130, 80, 0.3)"
+      }
   });
 }

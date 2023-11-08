@@ -386,17 +386,19 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           diffMapped
         );
         ctx.clearRect(0, 0, c.width, c.height);
-        ctx.beginPath();
-        ctx.lineWidth = 2;
-        ctx.moveTo(absoluteX, 0);
-        ctx.lineTo(relativeX, c.height / 6);
-        ctx.lineTo(relativeX, 5 * (c.height / 6));
-        ctx.lineTo(absoluteX, c.height);
-        ctx.strokeStyle =
-          diffMapped < 0
-            ? `rgb(${-1 * diffMapped} 100 100)`
-            : `rgb(100 100 ${diffMapped})`;
-        ctx.stroke();
+        if(document.getElementById("visrelalign").checked) {
+          ctx.beginPath();
+          ctx.lineWidth = 2;
+          ctx.moveTo(absoluteX, 0);
+          ctx.lineTo(relativeX, c.height / 6);
+          ctx.lineTo(relativeX, 5 * (c.height / 6));
+          ctx.lineTo(absoluteX, c.height);
+          ctx.strokeStyle =
+            diffMapped < 0
+              ? `rgb(${-1 * diffMapped} 100 100)`
+              : `rgb(100 100 ${diffMapped})`;
+          ctx.stroke();
+        }
       });
     });
     wavesurfers[filename].on("ready", () => {
@@ -444,6 +446,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       const duration = wavesurfers[filename].getDuration();
       // only draw every fifth position to prevent overplotting
       //alignmentGrids[filename].filter((_, ix) => ix % 5 === 0).forEach(gridPos => {
+        /* HACK DLFM2023 remove indicator
       alignmentGrids[filename].forEach((gridPos, gridIx) => {
         // draw a vertical line in three segments:
         // first segment: ABSOLUTE GRID INDEX position
@@ -461,6 +464,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         canvasCtx.lineTo(absoluteX, gridCanvas.height);
       });
       canvasCtx.stroke();
+      */
       let listItem = document.getElementById(filename);
       let status = listItem.querySelector("label").classList;
       status.remove("loading");

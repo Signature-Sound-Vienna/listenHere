@@ -30,10 +30,10 @@ export function registerExtract(obj, url) {
     if(nsp.SCHEMA+"about") { 
         let matching = obj[nsp.SCHEMA+"about"].filter(m => { 
             console.log("Inspecting: ", m["@id"], meiUri, decodeURI(meiUri));
-            return (m["@id"] === meiUri || m["@id"] === decodeURI(meiUri) || decodeURI(m["@id"] == meiUri));
+            return (m["@id"] === meiUri || m["@id"] === decodeURI(meiUri) || decodeURI(m["@id"]) == meiUri);
         })
         if(matching.length){
-            console.log("Found matching extract resource: ", obj);
+            console.log("Found matching extract resource: ", matching[0]["@id"], meiUri);
             obj["@id"] = url;
             drawExtractUIElement(obj);
         }

@@ -287,6 +287,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           start: getCorrespondingTime(filename, r.from),
           end: getCorrespondingTime(filename, r.to),
           drag: false,
+          resize: false,
           color: "rgba(200, 130, 80, 0.3)"
         }
     });
@@ -342,6 +343,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
               start: 0,
               end: 0,
               drag: false,
+              resize: false,
               color: "rgba(255, 0, 100, 0.3)",
             },
           ],

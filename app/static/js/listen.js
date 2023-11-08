@@ -8,7 +8,7 @@ let alignmentGrids = {};
 let scoreAlignment; // score tstamp to ref tstamp maps for onset and offset
 let timemap = []; // verovio timemap
 let ref;
-let currentAudioIx = "";
+export let currentAudioIx = "";
 export let currentlyAnnotatedRegions = []; // alignment indexes of start and end for each active annotated region
 export let maoSelections = [];
 let referenceAudioIx;
@@ -864,7 +864,7 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
       });
       // convert to alignment ix
       currentlyAnnotatedRegions.push({
-        selection: selectionUrl,
+        selection : selectionUrl.href,
         from: getClosestAlignmentIx(refRegions[0].from, referenceAudioIx),
         to: getClosestAlignmentIx(refRegions[0].to, referenceAudioIx),
       });

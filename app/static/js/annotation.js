@@ -3,6 +3,7 @@
     traverseAndFetch
   } from './linked-data.js'  
   import { 
+    currentAudioIx,
     currentlyAnnotatedRegions,
     getCorrespondingTime,
     maoSelections,
@@ -79,13 +80,19 @@ function drawExtractUIElement(obj) {
         extract.addEventListener("click", () => { 
             document.querySelectorAll("maoExtract").forEach(el => el.classList.remove("active"));
             extract.classList.add("active");
-            // look up index of selection URI in currently annotated regions
-            let regionIx = currentlyAnnotatedRegions.findIndex(r => r.selection === extract.dataset.extractUri);
-            if(regionIx >= 0) {
-                wavesurfers[currentAudioIx].regions.list["anno_region_" + regionIx].play();
+            if(nsp.FRBR+"embodiment" in obj) {
+                let mySelections = obj[nsp.FRBR+"embodiment"].map(e => e["@id"]);
+                let regionIx = currentlyAnnotatedRegions.findIndex(r => mySelections.includes(r.selection));
+                if(regionIx >= 0) {
+                    if(currentAudioIx)
+                        wavesurfers[currentAudioIx].regions.list["anno_region_" + regionIx].play();
+                } else { 
+                    console.log("Couldn't find regionIx for extract: ", extract.dataset.selection, currentlyAnnotatedRegions);
+                }
             } else { 
-                console.log("Couldn't find regionIx for extract: ", extract.dataset.extractUri, currentlyAnnotatedRegions);
+                console.warn("Extract without embodiment: ", obj);
             }
+            // look up index of selection URI in currently annotated regions
             //markScoreRegions(obj[nsp.FRBR+"embodiment"]);
         })/*
         addSelections.addEventListener("click", () => { 

@@ -824,7 +824,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-export function markScoreRegion(ids) {
+export function markScoreRegion(ids, reset = false) {
+  if(reset) { 
+    currentlyAnnotatedRegions = [];
+  }
   console.log("Marking score region for ids: ", ids);
   // iterate over ids, attempting to find the first and last note that the tk can getTimesForElements on
   if (scoreAlignment && tk && referenceAudioIx) {
@@ -869,10 +872,10 @@ export function markScoreRegion(ids) {
         };
       });
       // convert to alignment ix
-      currentlyAnnotatedRegions = {
+      currentlyAnnotatedRegions.push({
         from: getClosestAlignmentIx(refRegions[0].from, referenceAudioIx),
         to: getClosestAlignmentIx(refRegions[0].to, referenceAudioIx),
-      };
+      });
       updateRenderAnnoRegion();
       /* HACK DH 2023, in future handle multiple regions, for now only use the first
       /*refRegions.map(r => { 
@@ -934,16 +937,18 @@ function updateRenderTimer() {
 function updateRenderAnnoRegion() {
   Object.keys(wavesurfers).forEach((ws) => {
     console.log("Update render anno regions: ", ws, currentlyAnnotatedRegions);
-    let region = wavesurfers[ws].regions.list.anno_region_0;
-    region.start = getCorrespondingTime(ws, currentlyAnnotatedRegions.from);
-    region.end = getCorrespondingTime(ws, currentlyAnnotatedRegions.to);
-    console.log(currentlyAnnotatedRegions, region.start, region.end);
-    region.updateRender();
-    let timeDelta = region.end - region.start;
-    /*
-    document.querySelector('.waveform[data-ix="' + ws + '"] region[data-id="anno_region_0"]')
-      .innerHTML = timeDelta 
-        ? `<div class='regiontimerValueContainer'><span>${timeDelta.toFixed(3)}</span></div>` 
-        : ""; // don't display 0 */
+    currentlyAnnotatedRegions.forEach(r => { 
+        let region = wavesurfers[ws].regions.list.anno_region_0;
+        region.start = getCorrespondingTime(ws, r.from);
+        region.end = getCorrespondingTime(ws, r.to);
+        console.log(r, region.start, region.end);
+        region.updateRender();
+      /*
+      let timeDelta = region.end - region.start;
+      document.querySelector('.waveform[data-ix="' + ws + '"] region[data-id="anno_region_0"]')
+        .innerHTML = timeDelta 
+          ? `<div class='regiontimerValueContainer'><span>${timeDelta.toFixed(3)}</span></div>` 
+          : ""; // don't display 0 */
+    });
   });
 }

@@ -79,7 +79,7 @@ function drawExtractUIElement(obj) {
         extract.addEventListener("click", () => { 
             document.querySelectorAll("maoExtract").forEach(el => el.classList.remove("active"));
             extract.classList.add("active");
-            setActiveSelection(obj[nsp.FRBR+"embodiment"]);
+            markScoreRegions(obj[nsp.FRBR+"embodiment"]);
         })
         addSelections.addEventListener("click", () => { 
             console.log("Attempting to add selection to extract!")
@@ -95,8 +95,9 @@ function drawExtractUIElement(obj) {
     extractsPanel.insertAdjacentElement("beforeend", extract);
 }
 
-function setActiveSelection(selections) { 
-    // use first selection corresponding to current MEI
+function markScoreRegions(selections) { 
+    console.log("I was initially called with selections ", selections)
+    // use only selections corresponding to current MEI
     let matchingSelectionUrls = selections.filter(s => { 
         let selObj = maoSelections[s["@id"]];
         if(selObj && nsp.SCHEMA+"about" in selObj) {
@@ -109,17 +110,19 @@ function setActiveSelection(selections) {
         }
     });
     if(matchingSelectionUrls.length) { 
-        let url = matchingSelectionUrls[0]["@id"];
-        if(url in maoSelections) { 
-            let obj = maoSelections[url];
-            let selectedElementIds = obj[nsp.FRBR + "part"].map(uri => uri["@id"].substr(uri["@id"].lastIndexOf("#")+1));
-            if(selectedElementIds.length) { 
-                markScoreRegion(selectedElementIds);
+        matchingSelectionUrls.forEach(s => {
+            let url = s["@id"];
+            if(url in maoSelections) { 
+                let obj = maoSelections[url];
+                let selectedElementIds = obj[nsp.FRBR + "part"].map(uri => uri["@id"].substr(uri["@id"].lastIndexOf("#")+1));
+                if(selectedElementIds.length) { 
+                    console.log("I was successfully called with selections ", selections)
+                    markScoreRegion(selectedElementIds);
+                }
+            } else { 
+                console.warn("setActiveSelection: Attempting to switch to unknown selection ", url);
             }
-            //currentlyActiveMaoSelection = url;
-        } else { 
-            console.warn("setActiveSelection: Attempting to switch to unknown selection ", url);
-        }
+            })
     } else { 
         console.warn("setActiveSelection supplied without any selections matching the current meiUrl:", selections);
     }
@@ -143,7 +146,8 @@ export function markSelection(obj, url) {
                 // selection is about our current score!
                 if(nsp.FRBR + "part" in obj) { 
                     console.log("mao:Selection has parts: ", obj[nsp.FRBR + "part"])
-                    maoSelections[url] = obj;
+                    maoSelections[url] = obj; 
+                    markScoreRegions([{"@id": url}]);
                     //setActiveSelection(url);
                     /*
                     let selectedElementIds = obj[nsp.FRBR + "part"].map(uri => uri["@id"].substr(uri["@id"].lastIndexOf("#")+1));

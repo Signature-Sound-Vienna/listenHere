@@ -1,15 +1,16 @@
 <!DOCTYPE html>
   <head>
-    <title>SSV Align</title>
+    <title>Listen Here!</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/default.css') }}" />
   </head>
   <body>
     Please choose a piece to listen to:
-    <p><a href="/donau">An der schönen blauen Donau</a></p>
-    <p><a href="/radetzky">Radetzky-Marsch</a></p>
-    <p><a href="/fledermaus">Fledermaus Overtüre</a></p>
-    <p><a href="/Kaiserwalzer">Kaiserwalzer</a></p>
-    <p><a href="/Pizzicato">Pizzicato Polka</a></p>
-    <p><a href="/Spheres">Sphärenklänge</a></p>
+    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/donau.json') }}&work=Donauwalzer">An der schönen blauen Donau</a></p>
+    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/radetzky.json') }}&work=Radetzky">Radetzky-Marsch</a></p>
+    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/fledermaus.json') }}&work=Fledermaus">Fledermaus Overtüre</a></p>
+    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/kaiserwalzer.json') }}&work=Kaiserwalzer">Kaiserwalzer</a></p>
+    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/pizzicato.json') }}&work=Pizzicato">Pizzicato Polka</a></p>
+    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/sphaerenklaenge.json') }}&work=Sphärenklänge">Sphärenklänge</a></p>
+    <!--<p><a href="/Spheres">Sphärenklänge</a></p>-->
   </body>
 </html>

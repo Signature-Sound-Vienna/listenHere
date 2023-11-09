@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@inrupt/solid-client-authn-browser": "^1.16.0",
+    "jsonld": "^8.2.0"
+  }
+}

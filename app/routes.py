@@ -63,6 +63,12 @@ def spheres():
     return render_template('listen.html', 
             data=url_for('static', filename='align/scoreAlign/sphaerenklaenge.json'),
             work_id="Sphärenklänge")
+@app.route("/Eljen")
+@app.route("/eljen")
+def eljen():
+    return render_template('listen.html', 
+            data=url_for('static', filename='align/scoreAlign/eljen.json'),
+            work_id="Eljen")
 @app.route("/test")
 def test():
     return render_template('listen.html', 

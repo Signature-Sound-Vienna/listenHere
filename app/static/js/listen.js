@@ -600,19 +600,24 @@ function setGrids(grids) {
     alignmentGrids = grids;
   }
   console.log("setting grids: ", grids);
-  /* separate VPO and other */
+  /* separate VPO, external, and other */
   /* for now, hackily use filenames */
   /* in glorious future, use knowledge graph */
   let filenames = Object.keys(alignmentGrids);
   let vpoFiles = filenames.filter((n) =>
     n.substr(n.lastIndexOf("/") + 1).startsWith("VPO-")
   );
+  let extFiles = filenames.filter((n) => 
+    n.substr(n.lastIndexOf("/") + 1).startsWith("ext-")
+  );
   vpoFiles = vpoFiles.sort();
-  let otherFiles = filenames.filter((n) => !vpoFiles.includes(n)).sort();
+  extFiles = extFiles.sort();
+  let otherFiles = filenames.filter((n) => !vpoFiles.includes(n) && !extFiles.includes(n)).sort();
   otherFiles = otherFiles.sort();
 
   const vpoList = generateCheckboxList(vpoFiles);
   const otherList = generateCheckboxList(otherFiles);
+  const extList = generateCheckboxList(extFiles);
 
   const listSelectors = `<span class='listSelectors'>
     <span class='all'>All</span><span class='none'>None</span>
@@ -633,13 +638,23 @@ function setGrids(grids) {
   otherFoldout.innerHTML += listSelectors;
   otherFoldout.appendChild(otherList);
 
+  const extFoldout = document.createElement("details");
+  const extSummary = document.createElement("summary");
+
+  extSummary.innerText = "External";
+  extFoldout.appendChild(extSummary);
+  extFoldout.innerHTML += listSelectors;
+  extFoldout.appendChild(extList);
+
   const audiosElement = document.getElementById("audios");
 
   vpoFoldout.open = true;
   otherFoldout.open = true;
+  extFoldout.open = true;
 
   audiosElement.appendChild(vpoFoldout);
   audiosElement.appendChild(otherFoldout);
+  audiosElement.appendChild(extFoldout);
 
   // list selectors
   Array.from(document.querySelectorAll(".listSelectors .all")).forEach(

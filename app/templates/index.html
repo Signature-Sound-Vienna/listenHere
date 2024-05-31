@@ -4,15 +4,7 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/default.css') }}" />
   </head>
   <body>
-    Please choose a piece to listen to:
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/donau.json') }}&work=Donauwalzer">An der schönen blauen Donau</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/radetzky.json') }}&work=Radetzky">Radetzky-Marsch</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/fledermaus.json') }}&work=Fledermaus">Fledermaus Overtüre</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/kaiserwalzer.json') }}&work=Kaiserwalzer">Kaiserwalzer</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/pizzicato.json') }}&work=Pizzicato">Pizzicato Polka</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/sphaerenklaenge.json') }}&work=Sphärenklänge">Sphärenklänge</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/Vergnügungszug.json') }}&work=Vergnügungszug">Vergnügungszug</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/eljen.json') }}&work=eljen">Eljen a Magyar!</a></p>
-    <!--<p><a href="/Spheres">Sphärenklänge</a></p>-->
+    <pre>Please place your test alignment as 'test.json' inside app/static/align/, and then click on the following link:</pre>
+    <p><a href="/test">Alignment interface</a></p>
   </body>
 </html>

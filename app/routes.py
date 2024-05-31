@@ -1,4 +1,4 @@
-from flask import Flask, url_for, render_template
+from flask import url_for, render_template, redirect
 from app import app
 
 @app.route("/")
@@ -71,5 +71,4 @@ def eljen():
             work_id="Eljen")
 @app.route("/test")
 def test():
-    return render_template('listen.html', 
-            data=url_for('static', filename='align/Kaiserwalzer-score-alignment-test.json'))
+    return redirect("/listen?data=/static/align/test.json&work=test", code=302)

@@ -7,6 +7,9 @@ let loaded = new Set();
 let alignmentGrids = {};
 let scoreAlignment; // score tstamp to ref tstamp maps for onset and offset
 let timemap = []; // verovio timemap
+let mei = null; // MEI XML
+let meiDOM = null; // MEI DOM
+let parser = new DOMParser(); // XML parser for MEI
 let ref;
 export let currentAudioIx = "";
 export let currentlyAnnotatedRegions = []; // alignment indexes of start and end for each active annotated region
@@ -386,7 +389,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           diffMapped
         );
         ctx.clearRect(0, 0, c.width, c.height);
-        if(document.getElementById("visrelalign").checked) {
+        if (document.getElementById("visrelalign").checked) {
           ctx.beginPath();
           ctx.lineWidth = 2;
           ctx.moveTo(absoluteX, 0);
@@ -446,7 +449,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       const duration = wavesurfers[filename].getDuration();
       // only draw every fifth position to prevent overplotting
       //alignmentGrids[filename].filter((_, ix) => ix % 5 === 0).forEach(gridPos => {
-        /* HACK DLFM2023 remove indicator
+      /* HACK DLFM2023 remove indicator
       alignmentGrids[filename].forEach((gridPos, gridIx) => {
         // draw a vertical line in three segments:
         // first segment: ABSOLUTE GRID INDEX position
@@ -561,7 +564,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
   }
 }
 
-function setGrids(grids) {
+async function setGrids(grids) {
   console.log("received grids: ", grids);
   if ("body" in grids) {
     if ("audio" in grids.body) {
@@ -571,16 +574,20 @@ function setGrids(grids) {
         if ("meiUri" in grids.header && "score" in grids.body) {
           meiUri = grids.header.meiUri;
           scoreAlignment = grids.body.score;
-          fetch(meiUri)
+          console.log("starting MEI fetch: ", meiUri);
+          await fetch(meiUri)
             .then((response) => response.text())
-            .then((mei) => {
+            .then((meiXml) => {
+              mei = meiXml;
+              meiDOM = parser.parseFromString(mei, "application/xml");
               tk.loadData(mei, {});
-              timemap = tk.renderToTimemap({});
+              timemap = tk.renderToTimemap({ includeMeasures: true });
               console.log("timemap set!", timemap, mei);
             })
             .catch((e) => {
               console.error("Couldn't load MEI: ", e, grids.header.meiUri);
             });
+          console.log("MEI fetched: ", meiUri);
         }
         if ("ref" in grids.header) {
           referenceAudioIx = grids.header.ref;
@@ -607,12 +614,14 @@ function setGrids(grids) {
   let vpoFiles = filenames.filter((n) =>
     n.substr(n.lastIndexOf("/") + 1).startsWith("VPO-")
   );
-  let extFiles = filenames.filter((n) => 
+  let extFiles = filenames.filter((n) =>
     n.substr(n.lastIndexOf("/") + 1).startsWith("ext-")
   );
   vpoFiles = vpoFiles.sort();
   extFiles = extFiles.sort();
-  let otherFiles = filenames.filter((n) => !vpoFiles.includes(n) && !extFiles.includes(n)).sort();
+  let otherFiles = filenames
+    .filter((n) => !vpoFiles.includes(n) && !extFiles.includes(n))
+    .sort();
   otherFiles = otherFiles.sort();
 
   const vpoList = generateCheckboxList(vpoFiles);
@@ -835,7 +844,7 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 export function markScoreRegion(ids, selectionUrl, reset = false) {
-  if(reset) { 
+  if (reset) {
     currentlyAnnotatedRegions = [];
   }
   console.log("Marking score region for ids: ", ids);
@@ -844,6 +853,25 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
     let fromId, toId;
     let fromTimes, toTimes;
     for (let id of ids) {
+      console.log("MEI DOM: ", meiDOM);
+      console.log("Looking for id: ", id);
+      let el = meiDOM.querySelector("[*|id='" + id + "']");
+      if (!el) {
+        console.warn("Couldn't find element with id: ", id);
+        continue;
+      }
+      if (el.tagName === "measure") {
+        // get the first note in the measure
+        let firstNote = el.querySelector("note");
+        if (firstNote) {
+          id = firstNote.getAttribute("xml:id");
+          console.log("Using first note in measure: ", id);
+        } else {
+          console.warn("Measure has no notes, skipping: ", id);
+          continue;
+        }
+      }
+      console.log("Determined from ID to be: ", id);
       fromTimes = tk.getTimesForElement(id);
       if (Object.keys(fromTimes).length) {
         fromId = id;
@@ -851,6 +879,23 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
       }
     }
     for (let id of ids.reverse()) {
+      let el = meiDOM.querySelector("[*|id='" + id + "']");
+      if (!el) {
+        console.warn("Couldn't find element with id: ", id);
+        continue;
+      }
+      if (el.tagName === "measure") {
+        // get the last note in the measure
+        let lastNote = el.querySelector("note:last-of-type");
+        if (lastNote) {
+          id = lastNote.getAttribute("xml:id");
+          console.log("Using last note in measure: ", id);
+        } else {
+          console.warn("Measure has no notes, skipping: ", id);
+          continue;
+        }
+      }
+      console.log("Determined to ID to be: ", id);
       toTimes = tk.getTimesForElement(id);
       if (Object.keys(toTimes).length) {
         toId = id;
@@ -866,7 +911,20 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
       // getTimesForElements returns onset and offset times for identified elements (plus other stuff)
       // The returned values are arrays, to handle expansions. So we have to handle the arrays.
       // Return regions in the reference audio corresponding to these onsets and offsets
-      console.log("fromId: ", fromId, "toId: ",toId, "fromTimes", fromTimes, "toTimes", toTimes,"onsets: ", onsets, "offsets: ", offsets);
+      console.log(
+        "fromId: ",
+        fromId,
+        "toId: ",
+        toId,
+        "fromTimes",
+        fromTimes,
+        "toTimes",
+        toTimes,
+        "onsets: ",
+        onsets,
+        "offsets: ",
+        offsets
+      );
       let refRegions = onsets.map((t, expansionIx) => {
         console.log("In loop: ", t, expansionIx);
         return {
@@ -883,7 +941,7 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
       });
       // convert to alignment ix
       currentlyAnnotatedRegions.push({
-        selection : selectionUrl.href,
+        selection: selectionUrl.href,
         from: getClosestAlignmentIx(refRegions[0].from, referenceAudioIx),
         to: getClosestAlignmentIx(refRegions[0].to, referenceAudioIx),
       });
@@ -951,9 +1009,9 @@ function updateRenderAnnoRegions() {
     console.log("Update render anno regions: ", ws, currentlyAnnotatedRegions);
     let regions = extractCurrentlyAnnotatedRegions(ws);
     wavesurfers[ws].clearRegions();
-    regions.forEach(r => wavesurfers[ws].addRegion(r));
+    regions.forEach((r) => wavesurfers[ws].addRegion(r));
 
-      /*
+    /*
       let timeDelta = region.end - region.start;
       document.querySelector('.waveform[data-ix="' + ws + '"] region[data-id="anno_region_0"]')
         .innerHTML = timeDelta 
@@ -962,16 +1020,15 @@ function updateRenderAnnoRegions() {
   });
 }
 
-
-function extractCurrentlyAnnotatedRegions(ws) { 
+function extractCurrentlyAnnotatedRegions(ws) {
   return currentlyAnnotatedRegions.map((r, ix) => {
     return {
-        id: "anno_region_" + ix,
-        start: getCorrespondingTime(ws, r.from),
-        end: getCorrespondingTime(ws, r.to),
-        drag: false,
-        resize: false,
-        color: "rgba(200, 130, 80, 0.3)"
-      }
+      id: "anno_region_" + ix,
+      start: getCorrespondingTime(ws, r.from),
+      end: getCorrespondingTime(ws, r.to),
+      drag: false,
+      resize: false,
+      color: "rgba(200, 130, 80, 0.3)",
+    };
   });
 }

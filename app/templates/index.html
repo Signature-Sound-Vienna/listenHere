@@ -1,18 +1,63 @@
 <!DOCTYPE html>
+<html>
   <head>
     <title>Listen Here!</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/default.css') }}" />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/default.css') }}"
+    />
   </head>
-  <body>
-    Please choose a piece to listen to:
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/donau.json') }}&work=Donauwalzer">An der schönen blauen Donau</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/radetzky.json') }}&work=Radetzky">Radetzky-Marsch</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/fledermaus.json') }}&work=Fledermaus">Fledermaus Overtüre</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/kaiserwalzer.json') }}&work=Kaiserwalzer">Kaiserwalzer</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/pizzicato.json') }}&work=Pizzicato">Pizzicato Polka</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/sphaerenklaenge.json') }}&work=Sphärenklänge">Sphärenklänge</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/Vergnügungszug.json') }}&work=Vergnügungszug">Vergnügungszug</a></p>
-    <p><a href="/listen?data={{ url_for('static', filename='align/scoreAlign/eljen.json') }}&work=eljen">Eljen a Magyar!</a></p>
-    <!--<p><a href="/Spheres">Sphärenklänge</a></p>-->
+  <body id="splash">
+    <!-- Splash page for Listen Here! -->
+    <div id="logo">
+      <img
+        src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}"
+        height="140"
+        alt="Logo"
+      />
+    </div>
+    <p>
+      Welcome to the <em>Listen Here!</em> environment for tool-assisted close
+      listening to aligned performance collections. A publicly accessible
+      version of this tool will be available shortly. In the meantime, have a
+      look at the tool's
+      <a href="https://github.com/Signature-Sound-Vienna/alignment"
+        >alignment workflow</a
+      >
+      (based on
+      <a href="https://github.com/meinardmueller/SyncToolbox">SyncToolbox</a>)
+      to begin preparing your own aligned performance collections.
+    </p>
+    <p>
+      The tool and its associated Web-native digital musicology environment are
+      described in
+      <a href="https://doi.org/10.1145/3625135.3625144">this publication</a>. A
+      further publication with extended detail is under review.
+    </p>
+    <p>
+      <a href="https://github.com/Signature-Sound-Vienna/ListenHere"
+        >The tool's open-source codebase</a
+      >
+      is written in JavaScript and Python Flask, licensed under
+      <a
+        href="https://github.com/Signature-Sound-Vienna/ListenHere/blob/main/LICENSE.md"
+        >AGPL-3.0</a
+      >, developed within
+      <a href="https://github.com/signature-sound-vienna"
+        >Signature Sound Vienna</a
+      >, a research project funded by the
+      <a href="https://fwf.ac.at" target="_blank">
+        FWF – Austrian Science Fund</a
+      >
+      (<a href="https://doi.org/10.55776/P34664" target="_blank">P 34664-G</a>).
+      Hosting is provided by the
+      <a href="https://iwk.mdw.ac.at" target="_blank"
+        >Department of Music Acoustics – Wiener Klangstil</a
+      >
+      at the
+      <a href="https://mdw.ac.at" target="_blank"
+        >mdw – University of Music and Performing Arts Vienna</a
+      >.
+    </p>
   </body>
 </html>

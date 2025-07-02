@@ -200,3 +200,49 @@ wave marker:not(marker:first-child) div:first-child {
 #fetchExternal { 
   min-width:120px;
 }
+
+#splash {
+  background: linear-gradient(135deg, #f8fafc 0%, #e0e7ef 100%);
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Segoe UI', 'Helvetica Neue', Arial, 'Liberation Sans', sans-serif;
+  color: #2d3748;
+  letter-spacing: 0.01em;
+}
+
+#splash #logo {
+  margin-bottom: 2em;
+  filter: drop-shadow(0 4px 16px rgba(0,0,0,0.08));
+}
+
+#splash p {
+  max-width: 600px;
+  background: rgba(255,255,255,0.85);
+  border-radius: 12px;
+  padding: 1.5em 2em;
+  margin: 1em 0;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+  font-size: 1.15em;
+  line-height: 1.6;
+}
+
+#splash a {
+  color: #2563eb;
+  text-decoration: none;
+  border-bottom: 1px dotted #2563eb;
+  transition: color 0.2s, border-bottom 0.2s;
+}
+
+#splash a:hover {
+  color: #1e40af;
+  border-bottom: 1px solid #1e40af;
+}
+
+#splash em {
+  font-style: italic;
+  color: #7c3aed;
+  font-weight: 600;
+}

@@ -860,14 +860,20 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
         console.warn("Couldn't find element with id: ", id);
         continue;
       }
-      if (el.tagName === "measure") {
-        // get the first note in the measure
-        let firstNote = el.querySelector("note");
-        if (firstNote) {
-          id = firstNote.getAttribute("xml:id");
-          console.log("Using first note in measure: ", id);
+      if (el.tagName !== "note") {
+        // get the first note in the closest measure
+        let measure = el.closest("measure");
+        if (measure) {
+          let firstNote = measure.querySelector("note");
+          if (firstNote) {
+            id = firstNote.getAttribute("xml:id");
+            console.log("Using first note in measure: ", id);
+          } else {
+            console.warn("Measure has no notes, skipping: ", id);
+            continue;
+          }
         } else {
-          console.warn("Measure has no notes, skipping: ", id);
+          console.warn("Element is not within a measure, skipping: ", id);
           continue;
         }
       }
@@ -884,14 +890,20 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
         console.warn("Couldn't find element with id: ", id);
         continue;
       }
-      if (el.tagName === "measure") {
-        // get the last note in the measure
-        let lastNote = el.querySelector("note:last-of-type");
-        if (lastNote) {
-          id = lastNote.getAttribute("xml:id");
-          console.log("Using last note in measure: ", id);
+      if (el.tagName !== "note") {
+        // get the last note in the closest measure
+        let measure = el.closest("measure");
+        if (measure) {
+          let lastNote = measure.querySelector("note:last-of-type");
+          if (lastNote) {
+            id = lastNote.getAttribute("xml:id");
+            console.log("Using last note in measure: ", id);
+          } else {
+            console.warn("Measure has no notes, skipping: ", id);
+            continue;
+          }
         } else {
-          console.warn("Measure has no notes, skipping: ", id);
+          console.warn("Element is not within a measure, skipping: ", id);
           continue;
         }
       }
@@ -903,11 +915,9 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
       }
     }
     if (fromTimes) {
-      let onsets = fromTimes.realTimeOnsetMilliseconds;
+      let onsets = fromTimes.tstampOn;
       // if no toId specified, mark region from onset to offset of fromId; otherwise, mark from onset of fromId to offset of toId
-      let offsets = toTimes
-        ? toTimes.realTimeOffsetMilliseconds
-        : fromTimes.realTimeOffsetMilliseconds;
+      let offsets = toTimes ? toTimes.tstampOff : fromTimes.tstampOff;
       // getTimesForElements returns onset and offset times for identified elements (plus other stuff)
       // The returned values are arrays, to handle expansions. So we have to handle the arrays.
       // Return regions in the reference audio corresponding to these onsets and offsets

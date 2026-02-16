@@ -358,7 +358,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       wavesurfers[filename].addMarker({ time: t, color: "red" });
     });
     wavesurfers[filename].load(root + "wav/" + filename);
-    wavesurfers[filename].on("seek", () => {
+    function updatePositionIndicator() {
       // work out current alignment grid index
       let currentGridIx =
         alignmentGrids[filename].findIndex(
@@ -371,7 +371,6 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // iterate through all positionIndicatorCanvases, drawing in current ix position for that canvas
       const canvases = document.getElementsByClassName("position-indicator");
       Array.from(canvases).forEach((c) => {
-        //c.width = c.width; // clear
         const file = c.closest(".waveform").dataset["ix"];
         const ctx = c.getContext("2d");
         const correspondingSeconds = alignmentGrids[file][currentGridIx];
@@ -380,14 +379,6 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           (currentGridIx / alignmentGrids[filename].length) * c.width;
         const relativeX = (correspondingSeconds / duration) * c.width;
         const diffMapped = Math.floor((255 * (absoluteX - relativeX)) / 100);
-        console.log(
-          "abs: ",
-          absoluteX,
-          "rel: ",
-          relativeX,
-          "mapped: ",
-          diffMapped,
-        );
         ctx.clearRect(0, 0, c.width, c.height);
         if (document.getElementById("visrelalign").checked) {
           ctx.beginPath();
@@ -403,6 +394,9 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           ctx.stroke();
         }
       });
+    }
+    wavesurfers[filename].on("seek", () => {
+      updatePositionIndicator();
     });
     wavesurfers[filename].on("ready", () => {
       // signal file is ready in filename list
@@ -539,6 +533,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       if (filename !== currentAudioIx) swapCurrentAudio(filename);
     });
     wavesurfers[filename].on("audioprocess", () => {
+      // update position indicator during playback
+      updatePositionIndicator();
       // continually update timer region when opened but not yet closed
       if (timerFrom === timerTo && timerFrom > 0) {
         wavesurfers[filename].regions.list.timer.end =

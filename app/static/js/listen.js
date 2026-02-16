@@ -39,14 +39,14 @@ function seekToLastMark() {
     else lastMarker = 0;
     wavesurfers[currentAudioIx].seekTo(
       getCorrespondingTime(currentAudioIx, lastMarker) /
-        wavesurfers[currentAudioIx].getDuration()
+        wavesurfers[currentAudioIx].getDuration(),
     );
   }
 }
 
 function getClosestAlignmentIx(
   time = wavesurfers[currentAudioIx].getCurrentTime(),
-  audioIx = currentAudioIx
+  audioIx = currentAudioIx,
 ) {
   console.log("Get closest alignment Ix: ", time, audioIx);
   // return alignment index closest to supplied time (default: current playback position)
@@ -107,7 +107,7 @@ function onClickRenditionCheckbox(e) {
   let label = checkbox.parentElement.querySelector("label");
   let waveform = document.getElementById("waveform-" + e.target.value + "-wav");
   let spectrogram = document.getElementById(
-    "waveform-" + e.target.value + "-spec"
+    "waveform-" + e.target.value + "-spec",
   );
   if (!checked) {
     e.stopPropagation(); // hide from other handler
@@ -140,7 +140,7 @@ function swapCurrentAudio(newAudio) {
     console.log("Pausing current: ", currentAudioIx);
     console.log(
       "Current duration: ",
-      wavesurfers[currentAudioIx].getDuration()
+      wavesurfers[currentAudioIx].getDuration(),
     );
     const wasPlaying = wavesurfers[currentAudioIx].isPlaying();
     wavesurfers[currentAudioIx].pause();
@@ -155,7 +155,7 @@ function swapCurrentAudio(newAudio) {
     console.log("new audio grid: ", alignmentGrids[currentAudioIx]);
     console.log("new duration: ", wavesurfers[currentAudioIx].getDuration());
     let newWaveform = document.getElementById(
-      `waveform-${currentAudioIx}` + "-wav"
+      `waveform-${currentAudioIx}` + "-wav",
     );
     // highlight as active
     newWaveform.classList.add("active");
@@ -182,7 +182,7 @@ function swapCurrentAudio(newAudio) {
   } else {
     currentAudioIx = newAudio;
     const newActiveWaveform = document.getElementById(
-      `waveform-${currentAudioIx}` + "-wav"
+      `waveform-${currentAudioIx}` + "-wav",
     );
     if (newActiveWaveform) {
       newActiveWaveform.classList.add("active");
@@ -251,7 +251,7 @@ function visualiseAlignments() {
 function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
   console.log(
     "preparing waveform, currently annotated regions:",
-    currentlyAnnotatedRegions
+    currentlyAnnotatedRegions,
   );
   // if not yet created, do so:
   if (!(filename in wavesurfers)) {
@@ -269,10 +269,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     waveforms.appendChild(waveform);
     // now resort waveforms to maintain order, prioritizing VPO
     let vpo = [...waveforms.children].filter((n) =>
-      n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-")
+      n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-"),
     );
     let other = [...waveforms.children].filter(
-      (n) => !n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-")
+      (n) => !n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-"),
     );
     vpo
       .sort((a, b) => (a.id > b.id ? 1 : -1))
@@ -360,13 +360,13 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     wavesurfers[filename].load(root + "wav/" + filename);
     wavesurfers[filename].on("seek", () => {
       // work out current alignment grid index
-      const currentGridIx =
+      let currentGridIx =
         alignmentGrids[filename].findIndex(
-          (n) => n > wavesurfers[filename].getCurrentTime()
+          (n) => n > wavesurfers[filename].getCurrentTime(),
         ) + 1;
-      if (currentGridIx < 0) {
+      if (currentGridIx <= 0) {
         // reset if can't find, e.g. because reached end
-        currentGridIx = 0;
+        currentGridIx = alignmentGrids[filename].length - 1;
       }
       // iterate through all positionIndicatorCanvases, drawing in current ix position for that canvas
       const canvases = document.getElementsByClassName("position-indicator");
@@ -386,7 +386,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           "rel: ",
           relativeX,
           "mapped: ",
-          diffMapped
+          diffMapped,
         );
         ctx.clearRect(0, 0, c.width, c.height);
         if (document.getElementById("visrelalign").checked) {
@@ -410,7 +410,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       console.log("READY:...", filename);
       // create alignment grid and position indicator canvases from waveform canvas
       const waveCanvas = document.querySelector(
-        `.waveform[data-ix='${filename}']>wave>canvas`
+        `.waveform[data-ix='${filename}']>wave>canvas`,
       );
       const waveStyle = waveCanvas.style;
       const gridCanvas = document.createElement("canvas");
@@ -420,24 +420,27 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       gridCanvas.classList.add("alignment-grid");
       gridCanvas.width = waveCanvas.width;
       gridCanvas.height = waveCanvas.height;
-      gridStyle.zIndex = waveStyle.zIndex - 2;
+      const baseZIndex = parseInt(waveStyle.zIndex) || 2;
+      gridStyle.zIndex = baseZIndex - 2;
       gridStyle.position = "absolute";
       gridStyle.top = waveStyle.top;
       gridStyle.left = waveStyle.left;
       gridStyle.bottom = waveStyle.bottom;
       gridStyle.right = waveStyle.right;
+      gridStyle.pointerEvents = "none";
       gridStyle.display = document.getElementById("visalign").checked
         ? "unset"
         : "none";
       positionIndicatorCanvas.classList.add("position-indicator");
       positionIndicatorCanvas.width = waveCanvas.width;
       positionIndicatorCanvas.height = waveCanvas.height;
-      positionIndicatorStyle.zIndex = waveStyle.zIndex - 1;
+      positionIndicatorStyle.zIndex = baseZIndex - 1;
       positionIndicatorStyle.position = "absolute";
       positionIndicatorStyle.top = waveStyle.top;
       positionIndicatorStyle.left = waveStyle.left;
       positionIndicatorStyle.bottom = waveStyle.bottom;
       positionIndicatorStyle.right = waveStyle.right;
+      positionIndicatorStyle.pointerEvents = "none";
       //      positionIndicatorStyle.display = document.getElementById("visalign").checked ? "unset" : "none";
       waveCanvas.parentNode.insertBefore(gridCanvas, waveCanvas);
       waveCanvas.parentNode.insertBefore(positionIndicatorCanvas, waveCanvas);
@@ -447,9 +450,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // draw alignment grid
       // for each grid position, figure out x-coord by doing (seconds / duration) * canvas-width
       const duration = wavesurfers[filename].getDuration();
-      // only draw every fifth position to prevent overplotting
-      //alignmentGrids[filename].filter((_, ix) => ix % 5 === 0).forEach(gridPos => {
-      /* HACK DLFM2023 remove indicator
+      // draw alignment grid lines
       alignmentGrids[filename].forEach((gridPos, gridIx) => {
         // draw a vertical line in three segments:
         // first segment: ABSOLUTE GRID INDEX position
@@ -458,16 +459,12 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         const absoluteX =
           (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
         const relativeX = (gridPos / duration) * gridCanvas.width;
-        const diffMapped = Math.floor((255 * (absoluteX - relativeX)) / 100);
-        //canvasCtx.beginPath();
-        //canvasCtx.strokeStyle = diffMapped < 0 ? `rgb(${-1*diffMapped} 0 0)` : `rgb(0 0 ${diffMapped})`;
         canvasCtx.moveTo(absoluteX, 0);
         canvasCtx.lineTo(relativeX, gridCanvas.height / 6);
         canvasCtx.lineTo(relativeX, 5 * (gridCanvas.height / 6));
         canvasCtx.lineTo(absoluteX, gridCanvas.height);
       });
       canvasCtx.stroke();
-      */
       let listItem = document.getElementById(filename);
       let status = listItem.querySelector("label").classList;
       status.remove("loading");
@@ -595,7 +592,7 @@ async function setGrids(grids) {
       } else {
         console.error(
           "Broken grids received from alignment json file: ",
-          grids
+          grids,
         );
       }
     } else {
@@ -612,10 +609,10 @@ async function setGrids(grids) {
   /* in glorious future, use knowledge graph */
   let filenames = Object.keys(alignmentGrids);
   let vpoFiles = filenames.filter((n) =>
-    n.substr(n.lastIndexOf("/") + 1).startsWith("VPO-")
+    n.substr(n.lastIndexOf("/") + 1).startsWith("VPO-"),
   );
   let extFiles = filenames.filter((n) =>
-    n.substr(n.lastIndexOf("/") + 1).startsWith("ext-")
+    n.substr(n.lastIndexOf("/") + 1).startsWith("ext-"),
   );
   vpoFiles = vpoFiles.sort();
   extFiles = extFiles.sort();
@@ -670,37 +667,37 @@ async function setGrids(grids) {
     (selector) =>
       selector.addEventListener("click", (e) => {
         let checkboxes = Array.from(
-          e.target.closest("details").querySelectorAll("input")
+          e.target.closest("details").querySelectorAll("input"),
         );
         checkboxes.forEach((cb) => {
           // we're doing work in clickhandlers, so can't just set checked value
           if (!cb.checked) cb.click();
         });
-      })
+      }),
   );
   Array.from(document.querySelectorAll(".listSelectors .none")).forEach(
     (selector) =>
       selector.addEventListener("click", (e) => {
         let checkboxes = Array.from(
-          e.target.closest("details").querySelectorAll("input")
+          e.target.closest("details").querySelectorAll("input"),
         );
         checkboxes.forEach((cb) => {
           // we're doing work in clickhandlers, so can't just unset checked value
           if (cb.checked) cb.click();
         });
-      })
+      }),
   );
 
   // rendition selectors
   Array.from(document.getElementsByClassName("renditionName")).forEach(
     (r, ix) => {
       r.addEventListener("click", onClickRenditionName);
-    }
+    },
   );
   Array.from(document.getElementsByClassName("renditionCheckbox")).forEach(
     (r, ix) => {
       r.addEventListener("click", onClickRenditionCheckbox);
-    }
+    },
   );
 }
 
@@ -711,8 +708,8 @@ document.addEventListener("DOMContentLoaded", () => {
       () =>
         (window.location.href = window.location.href.substr(
           0,
-          window.location.href.indexOf("/listen")
-        ))
+          window.location.href.indexOf("/listen"),
+        )),
     );
   });
   if (storage.restoreSolidSession) {
@@ -787,7 +784,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("visalign").addEventListener("click", (e) => {
     let display = e.target.checked ? "unset" : "none";
     Array.from(document.querySelectorAll(".alignment-grid")).forEach(
-      (e) => (e.style.display = display)
+      (e) => (e.style.display = display),
     );
   });
 
@@ -827,7 +824,7 @@ document.addEventListener("DOMContentLoaded", () => {
         Object.keys(wavesurfers).forEach((ws) => {
           const wsFrom = getCorrespondingTime(
             ws,
-            getClosestAlignmentIx(timerFrom)
+            getClosestAlignmentIx(timerFrom),
           );
           const wsTo = getCorrespondingTime(ws, getClosestAlignmentIx(timerTo));
           wavesurfers[ws].regions.list.timer.start = wsFrom;
@@ -933,7 +930,7 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
         "onsets: ",
         onsets,
         "offsets: ",
-        offsets
+        offsets,
       );
       let refRegions = onsets.map((t, expansionIx) => {
         console.log("In loop: ", t, expansionIx);
@@ -944,7 +941,7 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
           to: scoreAlignment.ref_offset[
             getClosestScoreTimeIx(
               offsets[expansionIx],
-              scoreAlignment.score_offset
+              scoreAlignment.score_offset,
             )
           ],
         };
@@ -965,7 +962,7 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
       });*/
     } else {
       console.warn(
-        "Verovio couldn't find onset / offset times for any of the selection IDs. Were any notes selected?"
+        "Verovio couldn't find onset / offset times for any of the selection IDs. Were any notes selected?",
       );
     }
   } else {
@@ -1003,10 +1000,10 @@ function updateRenderTimer() {
     timer.updateRender();
     let timeDelta = timer.end - timer.start;
     document.querySelector(
-      '.waveform[data-ix="' + ws + '"] region[data-id="timer"]'
+      '.waveform[data-ix="' + ws + '"] region[data-id="timer"]',
     ).innerHTML = timeDelta
       ? `<div class='timerValueContainer'><span>${timeDelta.toFixed(
-          3
+          3,
         )}</span></div>`
       : ""; // don't display 0
   });

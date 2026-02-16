@@ -1,4 +1,4 @@
-export let versionString = "0.6.0";
+export { versionString, versionDate };
 
 import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
 

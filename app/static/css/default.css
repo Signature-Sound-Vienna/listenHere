@@ -214,19 +214,74 @@ wave marker:not(marker:first-child) div:first-child {
 }
 
 #splash #logo {
-  margin-bottom: 2em;
+  margin-bottom: 0.5em;
   filter: drop-shadow(0 4px 16px rgba(0,0,0,0.08));
 }
 
-#splash p {
-  max-width: 600px;
-  background: rgba(255,255,255,0.85);
-  border-radius: 12px;
-  padding: 1.5em 2em;
-  margin: 1em 0;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.04);
-  font-size: 1.15em;
+#splash-card {
+  background: rgba(255,255,255,0.9);
+  border-radius: 16px;
+  padding: 2em 2.5em;
+  max-width: 720px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+  text-align: center;
+}
+
+#splash-card h1 {
+  margin: 0 0 0.1em;
+  font-size: 1.8em;
+  color: #1e293b;
+}
+
+#splash-card h1 .version {
+  font-size: 0.45em;
+  color: #94a3b8;
+  font-weight: 400;
+  vertical-align: middle;
+}
+
+#splash-card .tagline {
+  margin: 0 0 1em;
+  font-size: 1em;
+  color: #64748b;
+  font-style: italic;
+  background: none;
+  box-shadow: none;
+  padding: 0;
+}
+
+#splash-card .usage-box {
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 0.5em 1em;
+  margin: 0.8em 0;
+  font-size: 1.05em;
+}
+
+#splash-card .usage-box code {
+  color: #7c3aed;
+  font-weight: 600;
+}
+
+#splash-card p {
+  text-align: center;
+  font-size: 0.95em;
   line-height: 1.6;
+  margin: 0.8em 0;
+  background: none;
+  box-shadow: none;
+  padding: 0;
+  max-width: none;
+}
+
+#splash-card footer {
+  margin-top: 1.2em;
+  padding-top: 0.8em;
+  border-top: 1px solid #e2e8f0;
+  font-size: 0.8em;
+  color: #94a3b8;
+  line-height: 1.8;
 }
 
 #splash a {
@@ -241,8 +296,14 @@ wave marker:not(marker:first-child) div:first-child {
   border-bottom: 1px solid #1e40af;
 }
 
-#splash em {
-  font-style: italic;
-  color: #7c3aed;
-  font-weight: 600;
+#error-banner {
+  background: #fce4e4;
+  border: 1px solid #c0392b;
+  border-radius: 8px;
+  padding: 0.8em 1.2em;
+  margin: 0 auto 1em;
+  max-width: 720px;
+  color: #721c24;
+  font-size: 0.95em;
+  text-align: left;
 }

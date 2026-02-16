@@ -7,6 +7,8 @@
       let params = new URL(window.location.toLocaleString()).searchParams;
       let alignmentData = {{ data | tojson }};
       let workId = alignmentData;
+      let versionString = {{ version | tojson }};
+      let versionDate = {{ version_date | tojson }};
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/fast-json-patch/3.1.1/fast-json-patch.min.js"></script>
     <script type = "module" src="{{ url_for('static', filename='js/listen.js') }}"></script>

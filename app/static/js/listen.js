@@ -1,4 +1,4 @@
-export let versionString = "0.5.0";
+export let versionString = "0.6.0";
 
 import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
 
@@ -28,6 +28,22 @@ try {
   storage = window.localStorage;
 } catch (err) {
   console.warn("unable to access local storage: ", err);
+}
+
+function resolveAudioUrl(filename) {
+  // If ?useLocal is present, override with local base URL
+  let useLocal = params.get("useLocal");
+  if (useLocal !== null) {
+    let base = useLocal || "http://127.0.0.1:8080";
+    let name = filename.split("/").pop();
+    return base.replace(/\/$/, "") + "/" + name;
+  }
+  // Full URLs: load directly from the web
+  if (filename.startsWith("http://") || filename.startsWith("https://")) {
+    return filename;
+  }
+  // Relative paths: load from local static files
+  return root + "wav/" + filename;
 }
 
 function seekToLastMark() {
@@ -357,7 +373,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       const t = getCorrespondingTime(filename, m);
       wavesurfers[filename].addMarker({ time: t, color: "red" });
     });
-    wavesurfers[filename].load(root + "wav/" + filename);
+    wavesurfers[filename].load(resolveAudioUrl(filename));
     function updatePositionIndicator() {
       // work out current alignment grid index
       let currentGridIx =
@@ -699,13 +715,8 @@ async function setGrids(grids) {
 
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("back").addEventListener("click", () => {
-    // TODO hack for DH 2023, improve
     solidLogout().then(
-      () =>
-        (window.location.href = window.location.href.substr(
-          0,
-          window.location.href.indexOf("/listen"),
-        )),
+      () => (window.location.href = window.location.origin + "/"),
     );
   });
   if (storage.restoreSolidSession) {

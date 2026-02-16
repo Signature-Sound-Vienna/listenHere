@@ -52,9 +52,8 @@ export async function postResource(containerUri, resource) {
   const webId = solid.getDefaultSession().info.webId;
   resource[nsp.DCT + "creator"] = { "@id": webId };
   resource[nsp.DCT + "created"] = new Date(Date.now()).toISOString();
-  resource[
-    nsp.DCT + "provenance"
-  ] = `Generated using Listen Here v.${versionString}: https://iwk.mdw.ac.at/signature-sound-vienna`;
+  resource[nsp.DCT + "provenance"] =
+    `Generated using Listen Here v.${versionString}: https://iwk.mdw.ac.at/signature-sound-vienna`;
   return establishContainerResource(containerUri)
     .then((containerUriResource) => {
       return solid
@@ -84,7 +83,7 @@ export async function postResource(containerUri, resource) {
             "Couldn't post resource to container: ",
             e,
             containerUriResource,
-            resource
+            resource,
           );
         });
     })
@@ -131,7 +130,7 @@ export async function safelyPatchResource(uri, patch) {
         .then((putResp) => {
           if (putResp.status === 412) {
             console.info(
-              "Precondition failed: resource has changed while we were trying to patch it. Retrying..."
+              "Precondition failed: resource has changed while we were trying to patch it. Retrying...",
             );
             setTimeout(safelyPatchResource(uri, patch), politeness);
           } else if (putResp.status >= 400) {
@@ -175,7 +174,7 @@ export async function establishResource(uri, resource) {
             log(
               "Sorry, network error while trying to initialize resource at ",
               uri,
-              e
+              e,
             );
           });
         return putResp;
@@ -185,7 +184,7 @@ export async function establishResource(uri, resource) {
           "Unauthorized - please provide mei-friend application access to your Solid Pod: " +
             headResp.status +
             " " +
-            headResp.statusText
+            headResp.statusText,
         );
         return headResp;
       } else {
@@ -194,7 +193,7 @@ export async function establishResource(uri, resource) {
           "Sorry, unable to establish resource in your Solid Pod: " +
             headResp.status +
             " " +
-            headResp.statusText
+            headResp.statusText,
         );
       }
     });
@@ -213,7 +212,7 @@ export async function getSolidStorage() {
         } else {
           console.warn(
             "Unexpected pim:storage object in your Solid Pod profile: ",
-            profile
+            profile,
           );
         }
       }
@@ -221,7 +220,7 @@ export async function getSolidStorage() {
     } else {
       log(
         "Sorry, couldn't establish storage location from your Solid Pod's profile ",
-        profile
+        profile,
       );
       throw Error(profile);
     }
@@ -235,7 +234,7 @@ export async function establishContainerResource(container) {
     console.log(
       "attempting to establish resource: ",
       storage + container,
-      resource
+      resource,
     );
     return establishResource(storage + container, resource)
       .then(async (resp) => {
@@ -253,8 +252,8 @@ export async function establishContainerResource(container) {
         console.error(
           "Couldn't establish resource:",
           storage + container,
-          resource
-        )
+          resource,
+        ),
       );
   });
 }
@@ -272,7 +271,7 @@ export async function establishDiscoveryResource(currentFileUri) {
         [nsp.SCHEMA + "about"]: { "@id": currentFileUri },
         [nsp.SCHEMA + "dataset"]: [],
       });
-    }
+    },
   );
 }
 
@@ -313,19 +312,19 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
             selectedElements,
             currentFileUri,
             dataCatalogResource.url,
-            label
+            label,
           ).then(async (selectionResource) => {
             return createMAOExtract(
               selectionResource,
               currentFileUri,
               dataCatalogResource.url,
-              label
+              label,
             ).then(async (extractResource) => {
               return createMAOMusicalMaterial(
                 extractResource,
                 currentFileUri,
                 dataCatalogResource.url,
-                label
+                label,
               ).then(async (musMatResource) => {
                 // patch the now-established discovery resource with our new MAO objects
                 return safelyPatchResource(dataCatalogResource.url, [
@@ -335,7 +334,7 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
                     // use '-' at end of path specification to indicate new array item to be created
                     path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll(
                       "/",
-                      "~1"
+                      "~1",
                     )}dataset/-`,
                     value: {
                       "@type": `${nsp.SCHEMA}Dataset`,
@@ -355,7 +354,7 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
                     // use '-' at end of path specification to indicate new array item to be created
                     path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll(
                       "/",
-                      "~1"
+                      "~1",
                     )}dataset/-`,
                     value: {
                       "@type": `${nsp.SCHEMA}Dataset`,
@@ -375,7 +374,7 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
                     // use '-' at end of path specification to indicate new array item to be created
                     path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll(
                       "/",
-                      "~1"
+                      "~1",
                     )}dataset/-`,
                     value: {
                       "@type": `${nsp.SCHEMA}Dataset`,
@@ -395,7 +394,7 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
               });
             });
           });
-        }
+        },
       );
     })
     .catch((e) => {
@@ -407,13 +406,13 @@ export async function establishContainers() {
   return establishContainerResource(friendContainer).then(
     async (storageResource) => {
       return establishContainerResource(
-        friendContainer + discoveryFragment
+        friendContainer + discoveryFragment,
       ).then(async () => {
         return establishContainerResource(musicalObjectContainer).then(() => {
           return storageResource; // return friendContainer URI
         });
       });
-    }
+    },
   );
 }
 
@@ -421,7 +420,7 @@ export async function addNewMAOSelectionToExtract(
   currentFileUri,
   selectedElements,
   extractResource,
-  label = ""
+  label = "",
 ) {
   let storageResource;
   let dataCatalogResource;
@@ -436,7 +435,7 @@ export async function addNewMAOSelectionToExtract(
         selectedElements,
         currentFileUri,
         dataCatalogResource.url,
-        label
+        label,
       );
     })
     .then(async (selectionResource) => {
@@ -448,7 +447,7 @@ export async function addNewMAOSelectionToExtract(
           // use '-' at end of path specification to indicate new array item to be created
           path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll(
             "/",
-            "~1"
+            "~1",
           )}dataset/-`,
           value: {
             "@type": `${nsp.SCHEMA}Dataset`,
@@ -463,7 +462,7 @@ export async function addNewMAOSelectionToExtract(
       ]).catch(() => {
         console.warn(
           "Couldn't pach discovery resource: ",
-          dataCatalogResource.url
+          dataCatalogResource.url,
         );
       });
       return selectionResource;
@@ -478,7 +477,7 @@ export async function addNewMAOSelectionToExtract(
           // use '-' at end of path specification to indicate new array item to be created
           path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll(
             "/",
-            "~1"
+            "~1",
           )}embodiment/-`,
           value: {
             "@id":
@@ -494,7 +493,7 @@ async function createMAOSelection(
   selection,
   aboutUri,
   discoveryUri,
-  label = ""
+  label = "",
 ) {
   // private function -- called *after* friendContainer and musicalObjectContainer already established
   let resource = structuredClone(resources.maoSelection);
@@ -582,7 +581,7 @@ export async function populateSolidTab() {
               fetchMethod: fetch /* solid.getDefaultSession().info.isLoggedIn
                 ? solid.fetch
                 : fetch,*/,
-            }
+            },
           );
         } catch (e) {
           // invalid URL
@@ -610,13 +609,13 @@ export async function getProfile() {
     .then((json) => jsonld.expand(json))
     .then((profile) => {
       let me = Array.from(profile).filter(
-        (e) => "@id" in e && e["@id"] === webId
+        (e) => "@id" in e && e["@id"] === webId,
       );
       if (me.length) {
         if (me.length > 1) {
           console.warn(
             "User profile contains multiple entries for webId: ",
-            me
+            me,
           );
         }
         return me[0];
@@ -625,7 +624,7 @@ export async function getProfile() {
         console.warn(
           "User profile contains no entry matching their webId: ",
           profile,
-          webId
+          webId,
         );
       }
     });
@@ -680,11 +679,6 @@ export async function loginAndFetch() {
     } else {
       alignmentData = storage.getItem("alignmentData");
     }
-    if (workId) {
-      storage.setItem("workId", workId);
-    } else {
-      workId = storage.getItem("workId");
-    }
     let providerEl = document.getElementById("providerSelect");
     if (providerEl) {
       let provider = providerEl.value;
@@ -700,7 +694,7 @@ export async function loginAndFetch() {
       });
     } else {
       console.warn(
-        "Couldn't handle incoming redirect from Solid: no provider element"
+        "Couldn't handle incoming redirect from Solid: no provider element",
       );
     }
   } else {

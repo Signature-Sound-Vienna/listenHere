@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
   <head>
     <title>Listen Here!</title>
@@ -9,6 +9,23 @@
   </head>
   <body id="splash">
     <!-- Splash page for Listen Here! -->
+    {% if error %}
+    <div
+      id="error-banner"
+      style="
+        background: #fce4e4;
+        border: 1px solid #c0392b;
+        border-radius: 8px;
+        padding: 1em 1.5em;
+        margin: 1em auto;
+        max-width: 600px;
+        color: #721c24;
+        font-size: 1em;
+      "
+    >
+      <strong>Error:</strong> {{ error }}
+    </div>
+    {% endif %}
     <div id="logo">
       <img
         src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}"

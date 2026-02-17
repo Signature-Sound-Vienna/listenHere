@@ -6,6 +6,16 @@
       let root = "{{ url_for('static', filename='') }}";
       let params = new URL(window.location.toLocaleString()).searchParams;
       let alignmentData = {{ data | tojson }};
+      // If alignment was stored in sessionStorage (from /align page), load it
+      if (alignmentData === "session") {
+        let stored = sessionStorage.getItem("listenHereAlignment");
+        if (stored) {
+          try {
+            window._sessionAlignment = JSON.parse(stored);
+            sessionStorage.removeItem("listenHereAlignment");
+          } catch(e) { console.error("Failed to parse session alignment:", e); }
+        }
+      }
       let workId = alignmentData;
       let versionString = {{ version | tojson }};
       let versionDate = {{ version_date | tojson }};

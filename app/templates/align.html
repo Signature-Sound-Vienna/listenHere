@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Listen Here! — Align</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/default.css') }}" />
+  </head>
+  <body id="align-page">
+    <div id="align-card">
+      <div id="logo">
+        <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="80" alt="Logo" />
+      </div>
+      <h1>Align Audio Files</h1>
+      <p class="align-hint">
+        Drop a folder of audio files (or select them individually) to compute
+        a DTW-based chroma alignment. The result is a JSON file you can open in
+        <a href="/">Listen Here!</a>
+      </p>
+
+      <!-- File selection -->
+      <div id="align-file-actions">
+        <button id="align-dir-btn" style="display:none;">Choose Folder</button>
+        <button id="align-files-btn">Choose Files</button>
+        <input type="file" id="align-file-input" multiple
+               accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac" style="display:none;" />
+      </div>
+      <div id="align-drop-zone">
+        <span>or drag &amp; drop audio files here</span>
+      </div>
+
+      <!-- File list + reference selector -->
+      <div id="align-file-list-container" style="display:none;">
+        <h3>Selected files</h3>
+        <table id="align-file-table">
+          <thead><tr><th>File</th><th>Ref</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <button id="align-start-btn">Start Alignment</button>
+      </div>
+
+      <!-- Progress -->
+      <div id="align-progress" style="display:none;">
+        <div id="align-progress-bar-container">
+          <div id="align-progress-bar"></div>
+        </div>
+        <p id="align-progress-text">Initializing...</p>
+      </div>
+
+      <!-- Results -->
+      <div id="align-results" style="display:none;">
+        <h3>Alignment complete!</h3>
+        <button id="align-download-btn">Download alignment JSON</button>
+        <button id="align-open-btn">Open in Listen Here!</button>
+      </div>
+
+      <footer>
+        <a href="/">← Back to Listen Here!</a> ·
+        <span class="version">v{{ version }}</span>
+      </footer>
+    </div>
+
+    <script>
+      const TARGET_SR = 22050;
+      const workerUrl = "{{ url_for('static', filename='js/align-worker.js') }}";
+      let selectedFiles = [];    // Array of File objects
+      let alignmentResult = null;
+
+      /* --- Audio decoding --- */
+
+      async function decodeAudio(file) {
+        const arrayBuf = await file.arrayBuffer();
+        // Decode to any sample rate first
+        const audioCtx = new AudioContext();
+        const decoded = await audioCtx.decodeAudioData(arrayBuf);
+        await audioCtx.close();
+
+        // Resample to TARGET_SR, mono
+        const offlineCtx = new OfflineAudioContext(
+          1, // mono
+          Math.ceil(decoded.duration * TARGET_SR),
+          TARGET_SR
+        );
+        const source = offlineCtx.createBufferSource();
+        source.buffer = decoded;
+        source.connect(offlineCtx.destination);
+        source.start(0);
+        const resampled = await offlineCtx.startRendering();
+        return resampled.getChannelData(0); // Float32Array
+      }
+
+      /* --- File handling --- */
+
+      function addFiles(files) {
+        const audioExts = /\.(mp3|wav|ogg|flac|m4a|aac|wma|opus)$/i;
+        for (const f of files) {
+          if (audioExts.test(f.name) || f.type.startsWith("audio/")) {
+            if (!selectedFiles.some(s => s.name === f.name)) {
+              selectedFiles.push(f);
+            }
+          }
+        }
+        renderFileTable();
+      }
+
+      function renderFileTable() {
+        const container = document.getElementById("align-file-list-container");
+        const tbody = document.querySelector("#align-file-table tbody");
+        tbody.innerHTML = "";
+        if (selectedFiles.length === 0) {
+          container.style.display = "none";
+          return;
+        }
+        container.style.display = "";
+        selectedFiles.forEach((f, i) => {
+          const tr = document.createElement("tr");
+          const tdName = document.createElement("td");
+          tdName.textContent = f.name;
+          const tdRef = document.createElement("td");
+          tdRef.style.textAlign = "center";
+          const radio = document.createElement("input");
+          radio.type = "radio";
+          radio.name = "ref";
+          radio.value = f.name;
+          if (i === 0) radio.checked = true;
+          tdRef.appendChild(radio);
+          tr.appendChild(tdName);
+          tr.appendChild(tdRef);
+          tbody.appendChild(tr);
+        });
+      }
+
+      /* --- Alignment --- */
+
+      async function startAlignment() {
+        if (selectedFiles.length < 2) {
+          alert("Please select at least 2 audio files.");
+          return;
+        }
+        const refName = document.querySelector('input[name="ref"]:checked').value;
+
+        // Show progress, hide controls
+        document.getElementById("align-file-list-container").style.display = "none";
+        document.getElementById("align-file-actions").style.display = "none";
+        document.getElementById("align-drop-zone").style.display = "none";
+        const progressEl = document.getElementById("align-progress");
+        const progressBar = document.getElementById("align-progress-bar");
+        const progressText = document.getElementById("align-progress-text");
+        progressEl.style.display = "";
+
+        // Decode all audio files sequentially (to limit peak memory)
+        const audios = [];
+        for (let i = 0; i < selectedFiles.length; i++) {
+          const f = selectedFiles[i];
+          progressText.textContent = `Decoding audio: ${f.name} (${i + 1}/${selectedFiles.length})`;
+          progressBar.style.width = `${5 + 5 * i / selectedFiles.length}%`;
+          try {
+            const samples = await decodeAudio(f);
+            audios.push({ name: f.name, samples });
+          } catch (err) {
+            progressText.textContent = `Error decoding ${f.name}: ${err.message}`;
+            return;
+          }
+        }
+        progressText.textContent = "Starting alignment worker...";
+        progressBar.style.width = "10%";
+
+        // Launch Web Worker
+        const worker = new Worker(workerUrl);
+        worker.onmessage = function (e) {
+          if (e.data.type === "progress") {
+            progressText.textContent = e.data.message;
+            if (e.data.pct >= 0) {
+              progressBar.style.width = e.data.pct + "%";
+            }
+          } else if (e.data.type === "result") {
+            alignmentResult = e.data.alignment;
+            progressEl.style.display = "none";
+            document.getElementById("align-results").style.display = "";
+            worker.terminate();
+          } else if (e.data.type === "error") {
+            progressText.textContent = "Error: " + e.data.message;
+            progressBar.style.width = "100%";
+            progressBar.style.background = "#ef4444";
+            worker.terminate();
+          }
+        };
+        worker.onerror = function (err) {
+          progressText.textContent = "Worker error: " + err.message;
+          progressBar.style.background = "#ef4444";
+        };
+
+        // Transfer audio buffers (zero-copy)
+        const transferables = audios.map(a => a.samples.buffer);
+        worker.postMessage(
+          { type: "align", audios, refName },
+          transferables
+        );
+      }
+
+      /* --- Results --- */
+
+      function downloadJSON() {
+        if (!alignmentResult) return;
+        const blob = new Blob(
+          [JSON.stringify(alignmentResult, null, 2)],
+          { type: "application/json" }
+        );
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "alignment.json";
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function openInListenHere() {
+        if (!alignmentResult) return;
+        // Store alignment in sessionStorage, navigate to listen page
+        const json = JSON.stringify(alignmentResult);
+        try {
+          sessionStorage.setItem("listenHereAlignment", json);
+          window.location.href = "/?align=session&useFiles";
+        } catch (err) {
+          alert("Alignment too large for session storage. Please download the JSON and use it with ?align=<url>&useFiles.");
+        }
+      }
+
+      /* --- Event wiring --- */
+
+      document.addEventListener("DOMContentLoaded", () => {
+        // Directory picker (Chromium only)
+        const dirBtn = document.getElementById("align-dir-btn");
+        if (typeof window.showDirectoryPicker === "function") {
+          dirBtn.style.display = "";
+          dirBtn.addEventListener("click", async () => {
+            try {
+              const dirHandle = await window.showDirectoryPicker();
+              const files = [];
+              for await (const entry of dirHandle.values()) {
+                if (entry.kind === "file") files.push(await entry.getFile());
+              }
+              addFiles(files);
+            } catch (e) {
+              if (e.name !== "AbortError") console.warn("Dir picker error:", e);
+            }
+          });
+        }
+
+        // File input
+        const filesBtn = document.getElementById("align-files-btn");
+        const fileInput = document.getElementById("align-file-input");
+        filesBtn.addEventListener("click", () => fileInput.click());
+        fileInput.addEventListener("change", () => {
+          if (fileInput.files.length) addFiles(Array.from(fileInput.files));
+        });
+
+        // Drag and drop (whole card)
+        const card = document.getElementById("align-card");
+        card.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          document.getElementById("align-drop-zone").classList.add("drag-over");
+        });
+        card.addEventListener("dragleave", (e) => {
+          document.getElementById("align-drop-zone").classList.remove("drag-over");
+        });
+        card.addEventListener("drop", (e) => {
+          e.preventDefault();
+          document.getElementById("align-drop-zone").classList.remove("drag-over");
+          if (e.dataTransfer.files.length) addFiles(Array.from(e.dataTransfer.files));
+        });
+
+        // Start alignment
+        document.getElementById("align-start-btn").addEventListener("click", startAlignment);
+
+        // Results
+        document.getElementById("align-download-btn").addEventListener("click", downloadJSON);
+        document.getElementById("align-open-btn").addEventListener("click", openInListenHere);
+      });
+    </script>
+  </body>
+</html>

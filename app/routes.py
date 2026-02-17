@@ -62,6 +62,10 @@ def index():
         error = request.args.get("error")
         return render_template('index.html', error=error)
 
+    # Special case: alignment stored in sessionStorage (from /align page)
+    if align_url == "session":
+        return render_template('listen.html', data="session")
+
     # Fetch and validate the alignment JSON server-side
     try:
         req = urllib.request.Request(align_url, headers={"User-Agent": "ListenHere/1.0"})
@@ -144,3 +148,7 @@ def eljen():
 @app.route("/test")
 def test():
     return redirect(f"/?align=/static/align/test.json", code=302)
+
+@app.route("/align")
+def align():
+    return render_template('align.html')

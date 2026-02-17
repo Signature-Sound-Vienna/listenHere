@@ -806,12 +806,17 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   // load alignment json
-  fetch(alignmentData)
-    .then((response) => response.json())
-    .then((contents) => {
-      setGrids(contents);
-    })
-    .catch((err) => console.warn("Couldn't load alignment data: ", err));
+  if (alignmentData === "session" && window._sessionAlignment) {
+    // Alignment from in-browser align tool (via sessionStorage)
+    setGrids(window._sessionAlignment);
+  } else {
+    fetch(alignmentData)
+      .then((response) => response.json())
+      .then((contents) => {
+        setGrids(contents);
+      })
+      .catch((err) => console.warn("Couldn't load alignment data: ", err));
+  }
 
   // load a colormap json file to be passed to the spectrogram.create method.
   WaveSurfer.util

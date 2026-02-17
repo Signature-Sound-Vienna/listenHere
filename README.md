@@ -13,7 +13,7 @@ Listen Here! is publicly hosted at **https://listen-here.mdw.ac.at**.
 To use it with your own aligned audio, you need:
 
 1. An **alignment JSON file** hosted at a publicly accessible URL (see [Alignment JSON format](#alignment-json-format) below).
-2. **Audio files** hosted on a web server — either publicly, or on your local machine.
+2. **Audio files**, either hosted on a web server, or on your local machine.
 
 ### Basic usage
 
@@ -44,6 +44,22 @@ If your audio files are on your local computer rather than on a public server, y
    When `useLocal` is specified, the tool extracts only the filename from each audio key in the alignment JSON and loads it from your local server instead. If you omit the URL value (i.e., just `&useLocal`), it defaults to `http://127.0.0.1:8080`. This behaviour is useful when publishing Linked Data about audio files that cannot be put online, e.g., for copyright reasons.
 
 > **Note:** `serve_local.py` is a minimal CORS-enabled HTTP file server. It accepts any local directory path (absolute or relative) and an optional port number (default: 8080).
+
+### Loading audio directly from your computer (no server needed)
+
+If you prefer not to run a local file server, you can use the `?useFiles` parameter to load audio files directly from your computer using your browser's built-in file picker:
+
+```
+https://listen-here.mdw.ac.at/?align=<URL_of_your_alignment_JSON>&useFiles
+```
+
+When `useFiles` is specified, the tool will show an overlay listing the audio files referenced by the alignment JSON. You can then:
+
+- **Choose a folder** (on Chrome/Edge) to automatically match all audio files in it, or
+- **Choose individual files** (all browsers) to select specific audio files, or
+- **Drag and drop** audio files directly onto the overlay.
+
+Files are matched by filename — the tool strips any directory path from the alignment JSON keys and matches against the names of your selected files. Audio data stays entirely in your browser and is never uploaded anywhere.
 
 ## Alignment JSON format
 

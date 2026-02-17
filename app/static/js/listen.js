@@ -1,4 +1,6 @@
-export { versionString, versionDate };
+// Re-export globals set by the template's inline <script>
+export let versionString = window.versionString;
+export let versionDate = window.versionDate;
 
 import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
 
@@ -24,6 +26,10 @@ export let meiUri;
 export let currentlyActiveMaoSelection = "";
 export let wavesurfers = {};
 
+// File picker: maps alignment audio keys to blob URLs from user-selected files
+let fileBlobUrls = new Map();
+let useFilesMode = false;
+
 try {
   storage = window.localStorage;
 } catch (err) {
@@ -31,6 +37,10 @@ try {
 }
 
 function resolveAudioUrl(filename) {
+  // If ?useFiles is active and we have a blob URL for this file, use it
+  if (useFilesMode && fileBlobUrls.has(filename)) {
+    return fileBlobUrls.get(filename);
+  }
   // If ?useLocal is present, override with local base URL
   let useLocal = params.get("useLocal");
   if (useLocal !== null) {
@@ -711,6 +721,9 @@ async function setGrids(grids) {
       r.addEventListener("click", onClickRenditionCheckbox);
     },
   );
+
+  // If ?useFiles mode is active, show file picker overlay
+  showFilePickerIfNeeded();
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -1045,4 +1058,133 @@ function extractCurrentlyAnnotatedRegions(ws) {
       color: "rgba(200, 130, 80, 0.3)",
     };
   });
+}
+
+// --- File picker logic for ?useFiles mode ---
+
+// Expected audio keys from the alignment JSON (set during setGrids)
+let expectedAudioKeys = [];
+
+function extractFilename(key) {
+  // Extract just the filename from an alignment key (which may be a path or URL)
+  return key.split("/").pop();
+}
+
+function initFilePicker() {
+  const overlay = document.getElementById("file-picker-overlay");
+  const listEl = document.getElementById("file-picker-list");
+  const progressEl = document.getElementById("file-picker-progress");
+  const continueBtn = document.getElementById("file-picker-continue");
+  const dirBtn = document.getElementById("file-picker-dir-btn");
+  const filesBtn = document.getElementById("file-picker-files-btn");
+  const fileInput = document.getElementById("file-picker-input");
+  const dropZone = document.getElementById("file-picker-card");
+
+  // Show directory picker button on browsers that support it (Chromium)
+  if (typeof window.showDirectoryPicker === "function") {
+    dirBtn.style.display = "";
+  }
+
+  // Populate expected file list
+  function renderFileList() {
+    listEl.innerHTML = "";
+    let matched = 0;
+    expectedAudioKeys.forEach((key) => {
+      const name = extractFilename(key);
+      const li = document.createElement("li");
+      const isMatched = fileBlobUrls.has(key);
+      li.className = isMatched ? "matched" : "missing";
+      li.innerHTML = `<span class="status-icon"></span><span class="filename">${name}</span>`;
+      listEl.appendChild(li);
+      if (isMatched) matched++;
+    });
+    progressEl.textContent = `${matched} of ${expectedAudioKeys.length} files matched`;
+    if (matched > 0) {
+      continueBtn.style.display = "";
+      continueBtn.textContent =
+        matched === expectedAudioKeys.length
+          ? "Continue"
+          : `Continue with ${matched} of ${expectedAudioKeys.length}`;
+    }
+  }
+
+  function matchFiles(files) {
+    // Build a map of lowercase filename -> File for quick lookup
+    const filesByName = new Map();
+    for (const f of files) {
+      filesByName.set(f.name.toLowerCase(), f);
+    }
+    // Match against expected audio keys
+    for (const key of expectedAudioKeys) {
+      if (fileBlobUrls.has(key)) continue; // already matched
+      const expectedName = extractFilename(key).toLowerCase();
+      if (filesByName.has(expectedName)) {
+        const file = filesByName.get(expectedName);
+        fileBlobUrls.set(key, URL.createObjectURL(file));
+      }
+    }
+    renderFileList();
+  }
+
+  // Directory picker (Chromium only)
+  dirBtn.addEventListener("click", async () => {
+    try {
+      const dirHandle = await window.showDirectoryPicker();
+      const files = [];
+      for await (const entry of dirHandle.values()) {
+        if (entry.kind === "file") {
+          files.push(await entry.getFile());
+        }
+      }
+      matchFiles(files);
+    } catch (e) {
+      if (e.name !== "AbortError") console.warn("Directory picker error:", e);
+    }
+  });
+
+  // File input (universal fallback)
+  filesBtn.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    if (fileInput.files.length) {
+      matchFiles(Array.from(fileInput.files));
+    }
+  });
+
+  // Drag and drop
+  dropZone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    dropZone.classList.add("drag-over");
+  });
+  dropZone.addEventListener("dragleave", () => {
+    dropZone.classList.remove("drag-over");
+  });
+  dropZone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dropZone.classList.remove("drag-over");
+    if (e.dataTransfer.files.length) {
+      matchFiles(Array.from(e.dataTransfer.files));
+    }
+  });
+
+  // Continue button
+  continueBtn.addEventListener("click", () => {
+    overlay.style.display = "none";
+  });
+
+  renderFileList();
+  overlay.style.display = "flex";
+}
+
+function showFilePickerIfNeeded() {
+  if (params.get("useFiles") !== null) {
+    useFilesMode = true;
+    expectedAudioKeys = Object.keys(alignmentGrids);
+    // Show the "Manage files" button and wire it to reopen the overlay
+    const manageBtn = document.getElementById("manage-files-btn");
+    manageBtn.style.display = "";
+    manageBtn.addEventListener("click", () => {
+      document.getElementById("file-picker-overlay").style.display = "flex";
+    });
+    initFilePicker();
+  }
 }

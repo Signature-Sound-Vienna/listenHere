@@ -23,6 +23,28 @@
     <script src="{{ url_for('static', filename='npm/node_modules/jsonld/dist/jsonld.min.js')}}"></script>
   </head>
   <body>
+    <!-- File picker overlay (shown when ?useFiles is active) -->
+    <div id="file-picker-overlay" style="display:none;">
+      <div id="file-picker-card">
+        <h2>Load Audio Files</h2>
+        <p class="file-picker-hint">
+          The alignment references audio files that must be loaded from your computer.
+          Select a folder or individual files to match them.
+        </p>
+        <div id="file-picker-actions">
+          <button id="file-picker-dir-btn" style="display:none;">Choose Folder</button>
+          <button id="file-picker-files-btn">Choose Files</button>
+          <input type="file" id="file-picker-input" multiple accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac,.wma" style="display:none;" />
+        </div>
+        <p class="file-picker-drop-hint">or drag &amp; drop audio files anywhere on this panel</p>
+        <div id="file-picker-status">
+          <div id="file-picker-progress"></div>
+          <ul id="file-picker-list"></ul>
+        </div>
+        <button id="file-picker-continue" style="display:none;">Continue</button>
+      </div>
+    </div>
+
     <div id="logo">
       <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="140" alt="Logo" />
     </div>
@@ -52,6 +74,7 @@
             <input type="checkbox" id="visrelalign"/>
             <label for="visrelalign">Show relative position</label>
           </span>
+          <button id="manage-files-btn" style="display:none;">Manage files</button>
           <div id="audios"></div>
       </nav>
       <div id="content-wrapper">

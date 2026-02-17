@@ -448,24 +448,33 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       }
     });
     function updatePositionIndicator() {
-      // work out current alignment grid index
-      let currentGridIx =
-        alignmentGrids[filename].findIndex(
-          (n) => n > wavesurfers[filename].getCurrentTime(),
-        ) + 1;
-      if (currentGridIx <= 0) {
-        // reset if can't find, e.g. because reached end
-        currentGridIx = alignmentGrids[filename].length - 1;
+      // work out current alignment grid index via binary search
+      const grid = alignmentGrids[filename];
+      const currentTime = wavesurfers[filename].getCurrentTime();
+      let lo = 0,
+        hi = grid.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (grid[mid] <= currentTime) lo = mid + 1;
+        else hi = mid;
+      }
+      // lo is now the first index where grid[lo] > currentTime;
+      // subtract 1 to get the last index at or before currentTime
+      let currentGridIx = Math.max(0, lo - 1);
+      if (currentGridIx <= 0 && currentTime > grid[grid.length - 1]) {
+        // past the end
+        currentGridIx = grid.length - 1;
       }
       // iterate through all positionIndicatorCanvases, drawing in current ix position for that canvas
       const canvases = document.getElementsByClassName("position-indicator");
+      const playingDuration = wavesurfers[filename].getDuration();
       Array.from(canvases).forEach((c) => {
         const file = c.closest(".waveform").dataset["ix"];
         const ctx = c.getContext("2d");
         const correspondingSeconds = alignmentGrids[file][currentGridIx];
         const duration = wavesurfers[file].getDuration();
-        const absoluteX =
-          (currentGridIx / alignmentGrids[filename].length) * c.width;
+        // absoluteX: where the playing file's cursor actually is (proportional position)
+        const absoluteX = (currentTime / playingDuration) * c.width;
         const relativeX = (correspondingSeconds / duration) * c.width;
         const diffMapped = Math.floor((255 * (absoluteX - relativeX)) / 100);
         ctx.clearRect(0, 0, c.width, c.height);
@@ -510,6 +519,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       gridStyle.left = waveStyle.left;
       gridStyle.bottom = waveStyle.bottom;
       gridStyle.right = waveStyle.right;
+      gridStyle.width = waveStyle.width;
+      gridStyle.height = waveStyle.height;
       gridStyle.pointerEvents = "none";
       gridStyle.display = document.getElementById("visalign").checked
         ? "unset"
@@ -523,6 +534,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       positionIndicatorStyle.left = waveStyle.left;
       positionIndicatorStyle.bottom = waveStyle.bottom;
       positionIndicatorStyle.right = waveStyle.right;
+      positionIndicatorStyle.width = waveStyle.width;
+      positionIndicatorStyle.height = waveStyle.height;
       positionIndicatorStyle.pointerEvents = "none";
       //      positionIndicatorStyle.display = document.getElementById("visalign").checked ? "unset" : "none";
       waveCanvas.parentNode.insertBefore(gridCanvas, waveCanvas);

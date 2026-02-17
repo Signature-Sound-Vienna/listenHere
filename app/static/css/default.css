@@ -59,6 +59,11 @@ canvas {
   height:128px !important;
 }
 
+/* Fix progress wave (played portion) vertical alignment */
+#waveforms wave wave {
+  top: 0 !important;
+}
+
 #waveforms .waveform:not(.active) wave wave { 
   /* prevent cursor on non-active waveforms */
   display:none !important;

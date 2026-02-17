@@ -30,6 +30,55 @@ export let wavesurfers = {};
 let fileBlobUrls = new Map();
 let useFilesMode = false;
 
+// HTTP Basic Auth: scoped per-origin to avoid leaking credentials
+// Maps origin string -> { credentials, requestHeaders } xhr options
+// NOTE: WaveSurfer v4 uses `xhr` with `requestHeaders: [{key, value}]`.
+// When upgrading to WaveSurfer v7, change to `fetchParams` with standard
+// `headers: { Authorization: 'Basic ...' }` — update xhrOptionsForUrl().
+let authByOrigin = new Map();
+let authPromptedOrigins = new Set();
+
+function getOrigin(url) {
+  try { return new URL(url).origin; }
+  catch { return null; }
+}
+
+function xhrOptionsForUrl(url) {
+  const origin = getOrigin(url);
+  if (origin && authByOrigin.has(origin)) {
+    return authByOrigin.get(origin);
+  }
+  return {};
+}
+
+function promptForAuth(failedUrl) {
+  const origin = getOrigin(failedUrl);
+  if (!origin || authPromptedOrigins.has(origin)) return false;
+  authPromptedOrigins.add(origin);
+  const user = prompt(`Audio server ${origin} requires authentication.\nUsername:`);
+  if (user === null) return false;
+  const pass = prompt("Password:");
+  if (pass === null) return false;
+  const token = btoa(user + ":" + pass);
+  authByOrigin.set(origin, {
+    requestHeaders: [
+      { key: 'Authorization', value: 'Basic ' + token }
+    ]
+  });
+  return true;
+}
+
+function reloadWaveformsForOrigin(authedOrigin) {
+  // Only reload waveforms whose audio URL matches the authenticated origin
+  for (const [filename, ws] of Object.entries(wavesurfers)) {
+    const url = resolveAudioUrl(filename);
+    if (getOrigin(url) === authedOrigin) {
+      ws.params.xhr = authByOrigin.get(authedOrigin);
+      ws.load(url);
+    }
+  }
+}
+
 try {
   storage = window.localStorage;
 } catch (err) {
@@ -337,6 +386,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       waveColor: "violet",
       progressColor: "purple",
       normalize: document.getElementById("normalize").checked,
+      xhr: xhrOptionsForUrl(resolveAudioUrl(filename)),
       plugins: [
         WaveSurfer.markers.create({}),
         WaveSurfer.spectrogram.create({
@@ -384,6 +434,16 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       wavesurfers[filename].addMarker({ time: t, color: "red" });
     });
     wavesurfers[filename].load(resolveAudioUrl(filename));
+    // Handle 401 errors: prompt for credentials and retry (scoped to origin)
+    wavesurfers[filename].on('error', function(err) {
+      if (err && err.message && err.message.includes('401')) {
+        const url = resolveAudioUrl(filename);
+        const origin = getOrigin(url);
+        if (promptForAuth(url)) {
+          reloadWaveformsForOrigin(origin);
+        }
+      }
+    });
     function updatePositionIndicator() {
       // work out current alignment grid index
       let currentGridIx =

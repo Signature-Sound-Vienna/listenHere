@@ -39,8 +39,11 @@ let authByOrigin = new Map();
 let authPromptedOrigins = new Set();
 
 function getOrigin(url) {
-  try { return new URL(url).origin; }
-  catch { return null; }
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
 }
 
 function xhrOptionsForUrl(url) {
@@ -55,15 +58,15 @@ function promptForAuth(failedUrl) {
   const origin = getOrigin(failedUrl);
   if (!origin || authPromptedOrigins.has(origin)) return false;
   authPromptedOrigins.add(origin);
-  const user = prompt(`Audio server ${origin} requires authentication.\nUsername:`);
+  const user = prompt(
+    `Audio server ${origin} requires authentication.\nUsername:`,
+  );
   if (user === null) return false;
   const pass = prompt("Password:");
   if (pass === null) return false;
   const token = btoa(user + ":" + pass);
   authByOrigin.set(origin, {
-    requestHeaders: [
-      { key: 'Authorization', value: 'Basic ' + token }
-    ]
+    requestHeaders: [{ key: "Authorization", value: "Basic " + token }],
   });
   return true;
 }
@@ -435,8 +438,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     });
     wavesurfers[filename].load(resolveAudioUrl(filename));
     // Handle 401 errors: prompt for credentials and retry (scoped to origin)
-    wavesurfers[filename].on('error', function(err) {
-      if (err && err.message && err.message.includes('401')) {
+    wavesurfers[filename].on("error", function (err) {
+      if (err && err.message && err.message.includes("401")) {
         const url = resolveAudioUrl(filename);
         const origin = getOrigin(url);
         if (promptForAuth(url)) {
@@ -643,8 +646,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
   }
 }
 
+let loadedAlignmentJSON = null; // Full alignment object for download
+
 async function setGrids(grids) {
   console.log("received grids: ", grids);
+  loadedAlignmentJSON = grids;
   if ("body" in grids) {
     if ("audio" in grids.body) {
       // final version of alignment json
@@ -804,6 +810,24 @@ document.addEventListener("DOMContentLoaded", () => {
     tk = new verovio.toolkit();
     console.log("Have Verovio toolkit:", tk);
   };
+
+  // Download JSON button
+  const dlBtn = document.getElementById("download-json-btn");
+  if (dlBtn) {
+    dlBtn.addEventListener("click", () => {
+      if (!loadedAlignmentJSON) return;
+      const blob = new Blob([JSON.stringify(loadedAlignmentJSON, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "alignment.json";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+    if (alignmentData === "session") dlBtn.style.display = "";
+  }
 
   // load alignment json
   if (alignmentData === "session" && window._sessionAlignment) {

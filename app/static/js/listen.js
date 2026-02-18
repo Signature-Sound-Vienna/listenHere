@@ -389,6 +389,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       waveColor: "violet",
       progressColor: "purple",
       normalize: document.getElementById("normalize").checked,
+      responsive: true,
       xhr: xhrOptionsForUrl(resolveAudioUrl(filename)),
       plugins: [
         WaveSurfer.markers.create({}),
@@ -540,27 +541,46 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       //      positionIndicatorStyle.display = document.getElementById("visalign").checked ? "unset" : "none";
       waveCanvas.parentNode.insertBefore(gridCanvas, waveCanvas);
       waveCanvas.parentNode.insertBefore(positionIndicatorCanvas, waveCanvas);
-      const canvasCtx = gridCanvas.getContext("2d");
-      canvasCtx.lineWidth = 1;
-      canvasCtx.strokeStyle = "#b0b0b055";
-      // draw alignment grid
-      // for each grid position, figure out x-coord by doing (seconds / duration) * canvas-width
-      const duration = wavesurfers[filename].getDuration();
-      // draw alignment grid lines
-      alignmentGrids[filename].forEach((gridPos, gridIx) => {
-        // draw a vertical line in three segments:
-        // first segment: ABSOLUTE GRID INDEX position
-        // second segment: RELATIVE DURATION position
-        // third segment: ABSOLUTE GRID INDEX position
-        const absoluteX =
-          (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
-        const relativeX = (gridPos / duration) * gridCanvas.width;
-        canvasCtx.moveTo(absoluteX, 0);
-        canvasCtx.lineTo(relativeX, gridCanvas.height / 6);
-        canvasCtx.lineTo(relativeX, 5 * (gridCanvas.height / 6));
-        canvasCtx.lineTo(absoluteX, gridCanvas.height);
-      });
-      canvasCtx.stroke();
+
+      // Function to draw (or redraw) the alignment grid
+      function drawAlignmentGrid() {
+        const currentWaveCanvas = document.querySelector(
+          `.waveform[data-ix='${filename}']>wave>canvas`,
+        );
+        if (!currentWaveCanvas) return;
+        // Resize overlay canvases to match current wave canvas
+        gridCanvas.width = currentWaveCanvas.width;
+        gridCanvas.height = currentWaveCanvas.height;
+        gridStyle.width = currentWaveCanvas.style.width;
+        gridStyle.height = currentWaveCanvas.style.height;
+        positionIndicatorCanvas.width = currentWaveCanvas.width;
+        positionIndicatorCanvas.height = currentWaveCanvas.height;
+        positionIndicatorStyle.width = currentWaveCanvas.style.width;
+        positionIndicatorStyle.height = currentWaveCanvas.style.height;
+        // Redraw grid lines
+        const ctx = gridCanvas.getContext("2d");
+        ctx.clearRect(0, 0, gridCanvas.width, gridCanvas.height);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "#b0b0b055";
+        ctx.beginPath();
+        const dur = wavesurfers[filename].getDuration();
+        alignmentGrids[filename].forEach((gridPos, gridIx) => {
+          const absoluteX =
+            (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
+          const relativeX = (gridPos / dur) * gridCanvas.width;
+          ctx.moveTo(absoluteX, 0);
+          ctx.lineTo(relativeX, gridCanvas.height / 6);
+          ctx.lineTo(relativeX, 5 * (gridCanvas.height / 6));
+          ctx.lineTo(absoluteX, gridCanvas.height);
+        });
+        ctx.stroke();
+      }
+
+      // Initial draw
+      drawAlignmentGrid();
+
+      // Redraw overlays when WaveSurfer redraws on resize
+      wavesurfers[filename].on("waveform-ready", drawAlignmentGrid);
       let listItem = document.getElementById(filename);
       let status = listItem.querySelector("label").classList;
       status.remove("loading");

@@ -151,6 +151,52 @@ function redrawAllMarkers() {
   });
 }
 
+// --- Resize handling ---
+
+function showWaveformOverlays() {
+  document.querySelectorAll("#waveforms .waveform").forEach((wf) => {
+    // Hide the inner wave element (canvas + markers)
+    const wave = wf.querySelector("wave");
+    if (wave) wave.style.visibility = "hidden";
+    showWaveformOverlay(wf, "Redrawing\u2026");
+  });
+}
+
+function showWaveformOverlay(wfEl, statusText) {
+  let overlay = wfEl.querySelector(".wf-resize-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.className = "wf-resize-overlay";
+    overlay.innerHTML =
+      '<div class="resize-spinner"></div><span class="wf-overlay-status"></span>';
+    wfEl.appendChild(overlay);
+  }
+  const statusEl = overlay.querySelector(".wf-overlay-status");
+  if (statusEl) statusEl.textContent = statusText || "";
+  overlay.style.display = "flex";
+}
+
+function updateWaveformOverlayStatus(wfEl, statusText) {
+  const overlay = wfEl.querySelector(".wf-resize-overlay");
+  if (!overlay) return;
+  const statusEl = overlay.querySelector(".wf-overlay-status");
+  if (statusEl) statusEl.textContent = statusText || "";
+}
+
+function hideWaveformOverlay(wfEl) {
+  const overlay = wfEl.querySelector(".wf-resize-overlay");
+  if (overlay) overlay.style.display = "none";
+  const wave = wfEl.querySelector("wave");
+  if (wave) wave.style.visibility = "";
+}
+
+window.addEventListener("resize", () => {
+  if (Object.keys(wavesurfers).length === 0) return;
+  // Immediately clear all markers so stale positions aren't visible
+  Object.keys(wavesurfers).forEach((ws) => wavesurfers[ws].clearMarkers());
+  showWaveformOverlays();
+});
+
 // --- Close-listening mode ---
 
 function enterCloseListeningMode(markerArrayIndex) {
@@ -525,6 +571,17 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       wavesurfers[filename].addMarker({ time: t, color: "red" });
     });
     wavesurfers[filename].load(resolveAudioUrl(filename));
+    // Show loading overlay immediately
+    const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+    showWaveformOverlay(wfEl, "Loading audio\u2026");
+    // Update overlay with download progress
+    wavesurfers[filename].on("loading", (pct) => {
+      if (pct < 100) {
+        updateWaveformOverlayStatus(wfEl, `Loading audio\u2026 ${pct}%`);
+      } else {
+        updateWaveformOverlayStatus(wfEl, "Rendering waveform\u2026");
+      }
+    });
     // Handle 401 errors: prompt for credentials and retry (scoped to origin)
     wavesurfers[filename].on("error", function (err) {
       if (err && err.message && err.message.includes("401")) {
@@ -666,8 +723,33 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // Initial draw
       drawAlignmentGrid();
 
-      // Redraw overlays when WaveSurfer redraws on resize
-      wavesurfers[filename].on("waveform-ready", drawAlignmentGrid);
+      // Hide the initial-load overlay
+      const readyWfEl = document.querySelector(
+        `.waveform[data-ix='${filename}']`,
+      );
+      if (readyWfEl) hideWaveformOverlay(readyWfEl);
+
+      // Redraw overlays and markers when WaveSurfer redraws on resize
+      wavesurfers[filename].on("redraw", () => {
+        drawAlignmentGrid();
+        // Redraw markers for this specific waveform
+        wavesurfers[filename].clearMarkers();
+        wavesurfers[filename].addMarker({
+          time: 0,
+          label: filename,
+          color: "black",
+          position: "top",
+        });
+        markers.forEach((m, i) => {
+          const t = getCorrespondingTime(filename, m);
+          const color =
+            closeListeningMode && activeMarkerIx === i ? "#8b0000" : "red";
+          wavesurfers[filename].addMarker({ time: t, color });
+        });
+        // Hide this waveform's resize overlay
+        const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+        if (wfEl) hideWaveformOverlay(wfEl);
+      });
       let listItem = document.getElementById(filename);
       let status = listItem.querySelector("label").classList;
       status.remove("loading");
@@ -1133,10 +1215,8 @@ document.addEventListener("DOMContentLoaded", () => {
       case "Numpad0": {
         // Jump to nth waveform (1-9 = 1st-9th, 0 = 10th)
         const visible = getVisibleWaveforms();
-        const n =
-          e.code === "Digit0" || e.code === "Numpad0"
-            ? 9
-            : parseInt(e.code.charAt(5)) - 1;
+        const digit = e.code.replace(/^(Digit|Numpad)/, "");
+        const n = digit === "0" ? 9 : parseInt(digit) - 1;
         if (n < visible.length) {
           swapCurrentAudio(visible[n]);
           if (!wavesurfers[currentAudioIx].isPlaying()) {

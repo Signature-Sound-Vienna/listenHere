@@ -136,12 +136,48 @@ details {
   padding-left:1em;
 }
 
+/* Per-waveform resize overlay */
 .waveform {
+  position: relative;
   margin-bottom: .2em;
   border: 1px solid black;
   border-top:0px;
   border-bottom-right-radius: 5px;
   border-bottom-left-radius: 5px;
+}
+
+.wf-resize-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.85);
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  border-radius: inherit;
+  gap: 0.4em;
+}
+
+.wf-overlay-status {
+  font-size: 0.8em;
+  color: #64748b;
+}
+
+.resize-spinner {
+  width: 20px;
+  height: 20px;
+  border: 3px solid #e2e8f0;
+  border-top-color: #7c3aed;
+  border-radius: 50%;
+  animation: resize-spin 0.7s linear infinite;
+}
+
+@keyframes resize-spin {
+  to { transform: rotate(360deg); }
 }
 
 .spectrogram{

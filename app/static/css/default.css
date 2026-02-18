@@ -642,6 +642,65 @@ wave marker:not(marker:first-child) div:first-child {
   transition: width 0.3s ease;
 }
 
+#align-progress-elapsed {
+  color: #2563eb;
+  font-size: 0.85em;
+  font-weight: 600;
+  margin: 0.3em 0;
+  min-height: 1.3em;
+}
+
+#align-step-list-container {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+  margin-bottom: 0.6em;
+}
+
+#align-step-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.3em 0;
+}
+
+#align-step-list li {
+  padding: 0.25em 0.8em;
+  font-size: 0.82em;
+  color: #475569;
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+
+#align-step-list li .step-icon {
+  flex-shrink: 0;
+  width: 1.2em;
+  text-align: center;
+}
+
+#align-step-list li.running {
+  color: #2563eb;
+  font-weight: 500;
+}
+
+#align-step-list li.done {
+  color: #16a34a;
+}
+
+#align-step-list li.done .step-icon {
+  color: #16a34a;
+  font-weight: 700;
+}
+
+.step-time {
+  margin-left: auto;
+  font-size: 0.9em;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+
 #align-progress-text {
   color: #475569;
   font-size: 0.85em;

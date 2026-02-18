@@ -25,11 +25,25 @@ function reportProgress(message, pct) {
   });
 }
 
+/* Post structured step updates for the progress list */
+function reportStep(phase, step, file, index, total, elapsed) {
+  self.postMessage({
+    type: "step",
+    phase: String(phase),
+    step: String(step),
+    file: file != null ? String(file) : null,
+    index: index != null ? Number(index) : null,
+    total: total != null ? Number(total) : null,
+    elapsed: elapsed != null ? Number(elapsed) : null,
+  });
+}
+
 const PYTHON_CODE = `
 import numpy as np
 from scipy.signal import stft
 from scipy.interpolate import interp1d
-from js import reportProgress
+from js import reportProgress, reportStep
+import time as _time
 
 SR = 22050
 FEATURE_RATE = 10   # Hz — keeps DTW matrices manageable
@@ -171,11 +185,15 @@ def bulk_align(audio_dict, ref_name):
     chromas = {}
     durations = {}
     for i, name in enumerate(filenames):
+        reportStep("features", "start", name, i + 1, n, None)
         reportProgress(f"Extracting features: {name} ({i+1}/{n})",
                        int(10 + 20 * i / n))
+        t0 = _time.time()
         audio = audio_dict[name]
         chromas[name] = compute_chroma(audio)
         durations[name] = len(audio) / SR
+        elapsed = _time.time() - t0
+        reportStep("features", "done", name, i + 1, n, elapsed)
 
     # Free raw audio to save memory
     del audio_dict
@@ -193,14 +211,18 @@ def bulk_align(audio_dict, ref_name):
             result[name] = ref_grid.tolist()
         else:
             pair_count += 1
+            reportStep("align", "start", name, pair_count, total_pairs, None)
             reportProgress(
                 f"Aligning: {name} ({pair_count}/{total_pairs})",
                 int(30 + 65 * pair_count / total_pairs)
             )
+            t0 = _time.time()
             result[name] = align_pair(
                 chromas[ref_name], chromas[name],
                 ref_duration, durations[name]
             )
+            elapsed = _time.time() - t0
+            reportStep("align", "done", name, pair_count, total_pairs, elapsed)
 
     reportProgress("Done!", 100)
     return {

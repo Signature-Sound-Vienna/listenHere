@@ -42,6 +42,10 @@
         <div id="align-progress-bar-container">
           <div id="align-progress-bar"></div>
         </div>
+        <p id="align-progress-elapsed"></p>
+        <div id="align-step-list-container">
+          <ul id="align-step-list"></ul>
+        </div>
         <p id="align-progress-text">Initializing...</p>
       </div>
 
@@ -144,7 +148,40 @@
         const progressEl = document.getElementById("align-progress");
         const progressBar = document.getElementById("align-progress-bar");
         const progressText = document.getElementById("align-progress-text");
+        const stepList = document.getElementById("align-step-list");
+        const elapsedEl = document.getElementById("align-progress-elapsed");
         progressEl.style.display = "";
+        stepList.innerHTML = "";
+
+        const alignStartTime = performance.now();
+        // Update the overall elapsed timer every second
+        const elapsedTimer = setInterval(() => {
+          const secs = ((performance.now() - alignStartTime) / 1000).toFixed(0);
+          elapsedEl.textContent = `Elapsed: ${secs}s`;
+        }, 1000);
+        elapsedEl.textContent = "Elapsed: 0s";
+
+        function addStep(label) {
+          const li = document.createElement("li");
+          li.className = "align-step running";
+          li.innerHTML = `<span class="step-icon">&#9676;</span> ${label}`;
+          li.dataset.startTime = performance.now();
+          stepList.appendChild(li);
+          li.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          return li;
+        }
+
+        function completeStep(li, elapsed) {
+          if (!li) return;
+          li.classList.remove("running");
+          li.classList.add("done");
+          const icon = li.querySelector(".step-icon");
+          if (icon) icon.innerHTML = "&#10003;";
+          const timeStr = elapsed != null
+            ? elapsed.toFixed(1)
+            : ((performance.now() - parseFloat(li.dataset.startTime)) / 1000).toFixed(1);
+          li.innerHTML += `<span class="step-time">${timeStr}s</span>`;
+        }
 
         // Decode all audio files sequentially (to limit peak memory)
         const audios = [];
@@ -152,11 +189,14 @@
           const f = selectedFiles[i];
           progressText.textContent = `Decoding audio: ${f.name} (${i + 1}/${selectedFiles.length})`;
           progressBar.style.width = `${5 + 5 * i / selectedFiles.length}%`;
+          const li = addStep(`Decode: ${f.name}`);
           try {
             const samples = await decodeAudio(f);
             audios.push({ name: f.name, samples });
+            completeStep(li);
           } catch (err) {
             progressText.textContent = `Error decoding ${f.name}: ${err.message}`;
+            clearInterval(elapsedTimer);
             return;
           }
         }
@@ -165,18 +205,37 @@
 
         // Launch Web Worker
         const worker = new Worker(workerUrl);
+        // Track active step <li> elements for worker phases
+        const activeSteps = {};
+
         worker.onmessage = function (e) {
-          if (e.data.type === "progress") {
+          if (e.data.type === "step") {
+            const d = e.data;
+            const key = d.phase + ":" + d.file;
+            if (d.step === "start") {
+              const phaseLabel = d.phase === "features" ? "Features" : "Align";
+              const li = addStep(`${phaseLabel}: ${d.file} (${d.index}/${d.total})`);
+              activeSteps[key] = li;
+            } else if (d.step === "done") {
+              completeStep(activeSteps[key], d.elapsed);
+              delete activeSteps[key];
+            }
+          } else if (e.data.type === "progress") {
             progressText.textContent = e.data.message;
             if (e.data.pct >= 0) {
               progressBar.style.width = e.data.pct + "%";
             }
           } else if (e.data.type === "result") {
+            clearInterval(elapsedTimer);
+            const totalSecs = ((performance.now() - alignStartTime) / 1000).toFixed(1);
+            elapsedEl.textContent = `Total time: ${totalSecs}s`;
             alignmentResult = e.data.alignment;
-            progressEl.style.display = "none";
+            progressBar.style.width = "100%";
+            progressText.textContent = "";
             document.getElementById("align-results").style.display = "";
             worker.terminate();
           } else if (e.data.type === "error") {
+            clearInterval(elapsedTimer);
             progressText.textContent = "Error: " + e.data.message;
             progressBar.style.width = "100%";
             progressBar.style.background = "#ef4444";
@@ -184,6 +243,7 @@
           }
         };
         worker.onerror = function (err) {
+          clearInterval(elapsedTimer);
           progressText.textContent = "Worker error: " + err.message;
           progressBar.style.background = "#ef4444";
         };

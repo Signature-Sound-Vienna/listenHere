@@ -768,7 +768,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       }
       // restore marks from storage if they exist
       if (storage) {
-        markersString = storage.getItem("markers_" + workId);
+        let markersString = storage.getItem("markers_" + workId);
         if (markersString) {
           markers = JSON.parse(markersString);
           // apply any markers that may have been loaded from local storage
@@ -1812,14 +1812,14 @@ function initGlobalJsonDrop() {
       .then((data) => {
         if (data.body && data.body.audio && data.header && data.header.ref) {
           // Destroy existing waveforms
-          wavesurfers.forEach((ws) => ws.destroy());
-          wavesurfers = [];
+          Object.values(wavesurfers).forEach((ws) => ws.destroy());
+          wavesurfers = {};
           // Clear containers
           document.querySelectorAll(".wfContainer").forEach((c) => c.remove());
           // Reset state
           alignmentGrids = {};
           fileBlobUrls.clear();
-          markers = {};
+          markers = [];
           loadedAlignmentJSON = data;
           workId = jsonFile.name;
           // Enable local mode

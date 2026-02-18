@@ -117,20 +117,6 @@ function resolveAudioUrl(filename) {
   return root + "wav/" + filename;
 }
 
-function seekToLastMark() {
-  if (markers.length) {
-    const currentAlignmentIx = getClosestAlignmentIx();
-    const prevMarkers = markers.filter((m) => m <= currentAlignmentIx);
-    let lastMarker;
-    if (prevMarkers.length) lastMarker = prevMarkers[prevMarkers.length - 1];
-    else lastMarker = 0;
-    wavesurfers[currentAudioIx].seekTo(
-      getCorrespondingTime(currentAudioIx, lastMarker) /
-        wavesurfers[currentAudioIx].getDuration(),
-    );
-  }
-}
-
 // --- Marker redraw helper ---
 // Redraws all markers on all wavesurfers, highlighting the active marker in close-listening mode
 function redrawAllMarkers() {
@@ -379,16 +365,10 @@ function swapCurrentAudio(newAudio) {
       behavior: "smooth",
     });
     // seek to new (corresponding) position
-    let transitionToLastMark =
-      document.getElementById(`transitionType`).checked;
-    console.log("transitionToLastMark: ", transitionToLastMark);
     let correspondingPosition = currentGrid[closestAlignmentIx];
     let newPosition =
       correspondingPosition / wavesurfers[currentAudioIx].getDuration();
     wavesurfers[currentAudioIx].seekTo(newPosition);
-    if (transitionToLastMark) {
-      seekToLastMark();
-    }
     if (wasPlaying) wavesurfers[currentAudioIx].play();
   } else {
     currentAudioIx = newAudio;
@@ -1059,12 +1039,6 @@ document.addEventListener("DOMContentLoaded", () => {
       wavesurfers[ws].addMarker({ time: t, color: "red" });
     });
   });
-  // play from last marker button
-  document.getElementById("playLastMark").addEventListener("click", () => {
-    seekToLastMark();
-    wavesurfers[currentAudioIx].play();
-  });
-
   // show spectrograms checkbox
   document.getElementById("showSpectrograms").checked = false;
   document.getElementById("showSpectrograms").addEventListener("click", (e) => {

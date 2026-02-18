@@ -422,6 +422,44 @@ wave marker:not(marker:first-child) div:first-child {
   margin: 0 0 1em;
 }
 
+#file-picker-json-status {
+  margin-bottom: 0.8em;
+  font-size: 0.9em;
+}
+
+.json-status-ok {
+  color: #16a34a;
+  font-weight: 500;
+}
+
+.json-status-missing {
+  color: #dc2626;
+  font-weight: 500;
+}
+
+/* Global drop overlay for JSON replacement */
+#json-drop-overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(37, 99, 235, 0.12);
+  border: 3px dashed #2563eb;
+  z-index: 9999;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+#json-drop-overlay .drop-label {
+  background: #2563eb;
+  color: #fff;
+  padding: 1em 2em;
+  border-radius: 12px;
+  font-size: 1.2em;
+  font-weight: 600;
+  box-shadow: 0 4px 16px rgba(37, 99, 235, 0.3);
+}
+
 #file-picker-status {
   text-align: left;
   max-height: 40vh;

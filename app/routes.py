@@ -59,6 +59,9 @@ def validate_alignment_json(data):
 def index():
     align_url = request.args.get("align")
     if not align_url:
+        # If ?useFiles is present without ?align=, serve listen page in local mode
+        if request.args.get("useFiles") is not None:
+            return render_template('listen.html', data="local")
         error = request.args.get("error")
         return render_template('index.html', error=error)
 

@@ -1019,10 +1019,14 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // load alignment json
-  if (alignmentData === "session" && window._sessionAlignment) {
+  if (alignmentData === "local") {
+    // Local mode: alignment will be provided via file picker
+    // Just show the file picker, alignment loading happens there
+    showFilePickerIfNeeded();
+  } else if (alignmentData === "session" && window._sessionAlignment) {
     // Alignment from in-browser align tool (via sessionStorage)
     setGrids(window._sessionAlignment);
-  } else {
+  } else if (alignmentData !== "local") {
     fetch(alignmentData)
       .then((response) => response.json())
       .then((contents) => {
@@ -1538,10 +1542,27 @@ function extractCurrentlyAnnotatedRegions(ws) {
 
 // Expected audio keys from the alignment JSON (set during setGrids)
 let expectedAudioKeys = [];
+let alignmentLoadedFromFile = false; // true when JSON was loaded via file picker
 
 function extractFilename(key) {
   // Extract just the filename from an alignment key (which may be a path or URL)
   return key.split("/").pop();
+}
+
+function processPickedJsonFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        resolve(data);
+      } catch (e) {
+        reject(new Error("Invalid JSON: " + e.message));
+      }
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
 }
 
 function initFilePicker() {
@@ -1553,15 +1574,32 @@ function initFilePicker() {
   const filesBtn = document.getElementById("file-picker-files-btn");
   const fileInput = document.getElementById("file-picker-input");
   const dropZone = document.getElementById("file-picker-card");
+  const jsonStatusEl = document.getElementById("file-picker-json-status");
 
   // Show directory picker button on browsers that support it (Chromium)
   if (typeof window.showDirectoryPicker === "function") {
     dirBtn.style.display = "";
   }
 
+  function updateJsonStatus() {
+    if (!jsonStatusEl) return;
+    if (expectedAudioKeys.length > 0) {
+      const name = alignmentLoadedFromFile ? "local file" : "URL";
+      jsonStatusEl.innerHTML = `<span class="json-status-ok">&#10003; Alignment JSON loaded (${expectedAudioKeys.length} audio entries, from ${name})</span>`;
+    } else {
+      jsonStatusEl.innerHTML = `<span class="json-status-missing">No alignment JSON loaded yet \u2014 include a .json file</span>`;
+    }
+  }
+
   // Populate expected file list
   function renderFileList() {
     listEl.innerHTML = "";
+    if (expectedAudioKeys.length === 0) {
+      progressEl.textContent = "";
+      continueBtn.style.display = "none";
+      updateJsonStatus();
+      return;
+    }
     let matched = 0;
     expectedAudioKeys.forEach((key) => {
       const name = extractFilename(key);
@@ -1579,7 +1617,49 @@ function initFilePicker() {
         matched === expectedAudioKeys.length
           ? "Continue"
           : `Continue with ${matched} of ${expectedAudioKeys.length}`;
+    } else {
+      continueBtn.style.display = "none";
     }
+    updateJsonStatus();
+  }
+
+  async function handleFiles(files) {
+    // Separate JSON from audio files
+    const jsonFiles = [];
+    const audioFiles = [];
+    for (const f of files) {
+      if (f.name.toLowerCase().endsWith(".json")) {
+        jsonFiles.push(f);
+      } else {
+        audioFiles.push(f);
+      }
+    }
+    // Process the first JSON file found (if any)
+    if (jsonFiles.length > 0) {
+      try {
+        const data = await processPickedJsonFile(jsonFiles[0]);
+        // Validate basic structure
+        if (data.body && data.body.audio && data.header && data.header.ref) {
+          alignmentLoadedFromFile = true;
+          // Clear old blob URLs and audio keys
+          fileBlobUrls.clear();
+          expectedAudioKeys = Object.keys(data.body.audio);
+          // Store the alignment data for use when continue is clicked
+          window._pendingLocalAlignment = data;
+          // Set workId from the JSON filename
+          workId = jsonFiles[0].name;
+          renderFileList();
+        } else {
+          alert(
+            "The JSON file does not appear to be a valid alignment file.\nExpected: {header: {ref: ...}, body: {audio: {...}}}",
+          );
+        }
+      } catch (e) {
+        alert("Error reading JSON file: " + e.message);
+      }
+    }
+    // Match audio files
+    matchFiles(audioFiles);
   }
 
   function matchFiles(files) {
@@ -1610,7 +1690,7 @@ function initFilePicker() {
           files.push(await entry.getFile());
         }
       }
-      matchFiles(files);
+      handleFiles(files);
     } catch (e) {
       if (e.name !== "AbortError") console.warn("Directory picker error:", e);
     }
@@ -1620,7 +1700,7 @@ function initFilePicker() {
   filesBtn.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
     if (fileInput.files.length) {
-      matchFiles(Array.from(fileInput.files));
+      handleFiles(Array.from(fileInput.files));
     }
   });
 
@@ -1636,13 +1716,19 @@ function initFilePicker() {
     e.preventDefault();
     dropZone.classList.remove("drag-over");
     if (e.dataTransfer.files.length) {
-      matchFiles(Array.from(e.dataTransfer.files));
+      handleFiles(Array.from(e.dataTransfer.files));
     }
   });
 
   // Continue button
   continueBtn.addEventListener("click", () => {
     overlay.style.display = "none";
+    // If alignment was loaded from a local JSON file, apply it now
+    if (window._pendingLocalAlignment) {
+      const data = window._pendingLocalAlignment;
+      window._pendingLocalAlignment = null;
+      setGrids(data);
+    }
   });
 
   renderFileList();
@@ -1650,15 +1736,108 @@ function initFilePicker() {
 }
 
 function showFilePickerIfNeeded() {
-  if (params.get("useFiles") !== null) {
+  if (params.get("useFiles") !== null || alignmentData === "local") {
     useFilesMode = true;
-    expectedAudioKeys = Object.keys(alignmentGrids);
+    // If we already have alignment grids (from URL), populate expected keys
+    if (
+      Object.keys(alignmentGrids).length > 0 &&
+      expectedAudioKeys.length === 0
+    ) {
+      expectedAudioKeys = Object.keys(alignmentGrids);
+    }
     // Show the "Manage files" button and wire it to reopen the overlay
     const manageBtn = document.getElementById("manage-files-btn");
-    manageBtn.style.display = "";
-    manageBtn.addEventListener("click", () => {
-      document.getElementById("file-picker-overlay").style.display = "flex";
-    });
-    initFilePicker();
+    if (manageBtn && manageBtn.style.display === "none") {
+      manageBtn.style.display = "";
+      manageBtn.addEventListener("click", () => {
+        document.getElementById("file-picker-overlay").style.display = "flex";
+      });
+    }
+    // Show download button (useful once alignment is loaded from file)
+    const dlBtn = document.getElementById("download-json-btn");
+    if (dlBtn && alignmentData === "local") dlBtn.style.display = "";
+    if (!showFilePickerIfNeeded._initialized) {
+      showFilePickerIfNeeded._initialized = true;
+      initFilePicker();
+    }
   }
 }
+
+// --- Global drag-and-drop for JSON replacement ---
+// When the file picker overlay is NOT showing, allow dropping a JSON file
+// anywhere on the page to replace the current alignment.
+function initGlobalJsonDrop() {
+  let dragCounter = 0;
+  const dropOverlay = document.getElementById("json-drop-overlay");
+  if (!dropOverlay) return;
+
+  document.addEventListener("dragenter", (e) => {
+    // Don't show global overlay if file picker is visible
+    if (document.getElementById("file-picker-overlay").style.display === "flex")
+      return;
+    dragCounter++;
+    if (dragCounter === 1) {
+      dropOverlay.style.display = "flex";
+    }
+  });
+
+  document.addEventListener("dragleave", (e) => {
+    dragCounter--;
+    if (dragCounter <= 0) {
+      dragCounter = 0;
+      dropOverlay.style.display = "none";
+    }
+  });
+
+  document.addEventListener("dragover", (e) => {
+    // Only if file picker overlay is not showing
+    if (
+      document.getElementById("file-picker-overlay").style.display !== "flex"
+    ) {
+      e.preventDefault();
+    }
+  });
+
+  document.addEventListener("drop", (e) => {
+    dragCounter = 0;
+    dropOverlay.style.display = "none";
+    // Don't handle if file picker overlay is showing (it has its own handler)
+    if (document.getElementById("file-picker-overlay").style.display === "flex")
+      return;
+    e.preventDefault();
+    const files = Array.from(e.dataTransfer.files);
+    const jsonFile = files.find((f) => f.name.toLowerCase().endsWith(".json"));
+    if (!jsonFile) return;
+    processPickedJsonFile(jsonFile)
+      .then((data) => {
+        if (data.body && data.body.audio && data.header && data.header.ref) {
+          // Destroy existing waveforms
+          wavesurfers.forEach((ws) => ws.destroy());
+          wavesurfers = [];
+          // Clear containers
+          document.querySelectorAll(".wfContainer").forEach((c) => c.remove());
+          // Reset state
+          alignmentGrids = {};
+          fileBlobUrls.clear();
+          markers = {};
+          loadedAlignmentJSON = data;
+          workId = jsonFile.name;
+          // Enable local mode
+          useFilesMode = true;
+          alignmentLoadedFromFile = true;
+          // Apply new alignment
+          setGrids(data);
+        } else {
+          alert(
+            "The dropped JSON file does not appear to be a valid alignment file.",
+          );
+        }
+      })
+      .catch((err) => {
+        alert("Error reading dropped JSON: " + err.message);
+      });
+  });
+}
+
+// Initialize global JSON drop handler
+initGlobalJsonDrop();

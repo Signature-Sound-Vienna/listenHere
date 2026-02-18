@@ -16,7 +16,7 @@
           } catch(e) { console.error("Failed to parse session alignment:", e); }
         }
       }
-      let workId = alignmentData;
+      let workId = alignmentData === "local" ? "local" : alignmentData;
       let versionString = {{ version | tojson }};
       let versionDate = {{ version_date | tojson }};
     </script>
@@ -33,20 +33,25 @@
     <script src="{{ url_for('static', filename='npm/node_modules/jsonld/dist/jsonld.min.js')}}"></script>
   </head>
   <body>
+    <!-- Global drop overlay for JSON replacement -->
+    <div id="json-drop-overlay">
+      <div class="drop-label">Drop alignment JSON to load</div>
+    </div>
     <!-- File picker overlay (shown when ?useFiles is active) -->
     <div id="file-picker-overlay" style="display:none;">
       <div id="file-picker-card">
-        <h2>Load Audio Files</h2>
+        <h2>Load Files</h2>
         <p class="file-picker-hint">
-          The alignment references audio files that must be loaded from your computer.
-          Select a folder or individual files to match them.
+          Select or drag &amp; drop your alignment JSON and audio files.
+          Audio files will be matched to the alignment automatically.
         </p>
         <div id="file-picker-actions">
           <button id="file-picker-dir-btn" style="display:none;">Choose Folder</button>
           <button id="file-picker-files-btn">Choose Files</button>
-          <input type="file" id="file-picker-input" multiple accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac,.wma" style="display:none;" />
+          <input type="file" id="file-picker-input" multiple accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac,.wma,.json" style="display:none;" />
         </div>
-        <p class="file-picker-drop-hint">or drag &amp; drop audio files anywhere on this panel</p>
+        <p class="file-picker-drop-hint">or drag &amp; drop files anywhere on this panel</p>
+        <div id="file-picker-json-status"></div>
         <div id="file-picker-status">
           <div id="file-picker-progress"></div>
           <ul id="file-picker-list"></ul>

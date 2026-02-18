@@ -21,6 +21,11 @@ let colorMap;
 let timerFrom = 0;
 let timerTo = 0;
 let tk; // verovio toolkit
+
+// seconds by which to nudge markers when arrow keys pressed in close-listening mode
+const smallMarkerNudge = 0.02;
+const bigMarkerNudge = 0.1;
+
 export let storage;
 export let meiUri;
 export let currentlyActiveMaoSelection = "";
@@ -37,6 +42,10 @@ let useFilesMode = false;
 // `headers: { Authorization: 'Basic ...' }` — update xhrOptionsForUrl().
 let authByOrigin = new Map();
 let authPromptedOrigins = new Set();
+
+// Close-listening mode state
+let closeListeningMode = false;
+let activeMarkerIx = null; // index into markers[] array
 
 function getOrigin(url) {
   try {
@@ -122,6 +131,85 @@ function seekToLastMark() {
   }
 }
 
+// --- Marker redraw helper ---
+// Redraws all markers on all wavesurfers, highlighting the active marker in close-listening mode
+function redrawAllMarkers() {
+  Object.keys(wavesurfers).forEach((ws) => {
+    wavesurfers[ws].clearMarkers();
+    wavesurfers[ws].addMarker({
+      time: 0,
+      label: ws,
+      color: "black",
+      position: "top",
+    });
+    markers.forEach((m, i) => {
+      const t = getCorrespondingTime(ws, m);
+      const color =
+        closeListeningMode && activeMarkerIx === i ? "#8b0000" : "red";
+      wavesurfers[ws].addMarker({ time: t, color });
+    });
+  });
+}
+
+// --- Close-listening mode ---
+
+function enterCloseListeningMode(markerArrayIndex) {
+  if (markers.length === 0) return;
+  closeListeningMode = true;
+  activeMarkerIx =
+    markerArrayIndex != null ? markerArrayIndex : findClosestMarkerIndex();
+  redrawAllMarkers();
+  seekToActiveMarker();
+  updateCloseListeningBadge();
+}
+
+function exitCloseListeningMode() {
+  closeListeningMode = false;
+  activeMarkerIx = null;
+  redrawAllMarkers();
+  updateCloseListeningBadge();
+}
+
+function seekToActiveMarker() {
+  if (activeMarkerIx == null || !currentAudioIx) return;
+  const alignIx = markers[activeMarkerIx];
+  const t = getCorrespondingTime(currentAudioIx, alignIx);
+  const duration = wavesurfers[currentAudioIx].getDuration();
+  wavesurfers[currentAudioIx].seekTo(t / duration);
+}
+
+function findClosestMarkerIndex() {
+  // Find the closest marker at or before current playback position.
+  // If none, use the closest marker in the future.
+  if (markers.length === 0) return null;
+  const currentAlignIx = getClosestAlignmentIx();
+  // Build sorted array of {markerArrayIndex, alignmentIx}
+  const sorted = markers.map((m, i) => ({ i, m })).sort((a, b) => a.m - b.m);
+  // Find closest at or before current position
+  let best = null;
+  for (const entry of sorted) {
+    if (entry.m <= currentAlignIx) best = entry;
+  }
+  if (best != null) return best.i;
+  // No marker in the past; use closest in the future
+  return sorted[0].i;
+}
+
+function getSortedMarkerIndices() {
+  // Returns indices into markers[] sorted by their alignment grid position
+  return markers
+    .map((m, i) => ({ i, m }))
+    .sort((a, b) => a.m - b.m)
+    .map((x) => x.i);
+}
+
+function updateCloseListeningBadge() {
+  const badge = document.getElementById("close-listening-badge");
+  if (badge) {
+    badge.style.display = closeListeningMode ? "" : "none";
+  }
+}
+
 function getClosestAlignmentIx(
   time = wavesurfers[currentAudioIx].getCurrentTime(),
   audioIx = currentAudioIx,
@@ -129,17 +217,16 @@ function getClosestAlignmentIx(
   console.log("Get closest alignment Ix: ", time, audioIx);
   // return alignment index closest to supplied time (default: current playback position)
   let currentGrid = alignmentGrids[audioIx];
-  // find the nearest marker to current playback time
+  // find the last grid entry at or below target time
   const lower = currentGrid.filter((t) => t <= time);
-  // ix for closest marker below current time
-  let closestAlignmentIx = lower.length;
-  // if next marker (closest above current time) is closer, switch to it
-  if (
-    closestAlignmentIx < currentGrid.length &&
-    time - currentGrid[closestAlignmentIx] > currentGrid[closestAlignmentIx + 1]
-  )
-    closestAlignmentIx += 1;
-  return closestAlignmentIx;
+  const belowIx = lower.length - 1; // last index at or below time
+  const aboveIx = lower.length; // first index above time
+  if (belowIx < 0) return 0; // time is before grid start
+  if (aboveIx >= currentGrid.length) return belowIx; // time is past grid end
+  // return whichever is closer (prefer earlier on tie)
+  const distBelow = time - currentGrid[belowIx];
+  const distAbove = currentGrid[aboveIx] - time;
+  return distAbove < distBelow ? aboveIx : belowIx;
 }
 
 export function getCorrespondingTime(audioIx, alignmentIx) {
@@ -616,37 +703,24 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         // ignore clicks on filename-label markers
         return;
       }
-      // index into audio recordings for clicked marker's waveform
+      // Find the alignment grid index for the clicked marker
       const clickedAudioIx = e.el.closest(".waveform").dataset.ix;
-      // get corresponding wavesurfer object
-      const clickedSurfer = wavesurfers[clickedAudioIx];
-      // look up alignment grid for this audio recording
       const clickedGrid = alignmentGrids[clickedAudioIx];
-      // find the index of the time-value corresponding to the clicked marker in this grid
       const alignmentIx = clickedGrid.indexOf(e.time);
       if (alignmentIx > -1) {
-        // delete the markers corresponding to this alignment index
-        markers.splice(markers.indexOf(alignmentIx), 1);
-        // update markers in storage, if possible
-        if (storage) {
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        // Find which index in the markers array this corresponds to
+        const markerArrayIx = markers.indexOf(alignmentIx);
+        if (markerArrayIx > -1) {
+          if (closeListeningMode) {
+            // Already in close-listening mode: make clicked marker active
+            activeMarkerIx = markerArrayIx;
+            redrawAllMarkers();
+            seekToActiveMarker();
+          } else {
+            // Enter close-listening mode with the clicked marker as active
+            enterCloseListeningMode(markerArrayIx);
+          }
         }
-        // redraw (remaining) markers for all waveforms
-        Object.keys(wavesurfers).forEach((ws) => {
-          wavesurfers[ws].clearMarkers();
-          wavesurfers[ws].addMarker({
-            time: 0,
-            label: ws,
-            color: "black",
-            position: "top",
-          });
-          markers.forEach((m) => {
-            // get time corresponding to the marker for this audio
-            const t = getCorrespondingTime(ws, m);
-            // draw marker at this time
-            wavesurfers[ws].addMarker({ time: t, color: "red" });
-          });
-        });
       } else {
         console.error("Could not find grid entry for time ", e.time);
       }
@@ -948,17 +1022,93 @@ document.addEventListener("DOMContentLoaded", () => {
 
     switch (e.code) {
       case "ArrowUp": {
-        // Switch to previous waveform
+        // Switch to previous waveform (works in both modes)
         const visible = getVisibleWaveforms();
         const idx = visible.indexOf(currentAudioIx);
         if (idx > 0) swapCurrentAudio(visible[idx - 1]);
         break;
       }
       case "ArrowDown": {
-        // Switch to next waveform
+        // Switch to next waveform (works in both modes)
         const visible = getVisibleWaveforms();
         const idx = visible.indexOf(currentAudioIx);
         if (idx < visible.length - 1) swapCurrentAudio(visible[idx + 1]);
+        break;
+      }
+      case "ArrowLeft": {
+        if (closeListeningMode && activeMarkerIx != null) {
+          if (e.shiftKey) {
+            // Nudge active marker left by constant time: Shift+Alt = 20ms, Shift = 100ms
+            const delta = e.altKey ? smallMarkerNudge : bigMarkerNudge;
+            const currentTime = getCorrespondingTime(
+              currentAudioIx,
+              markers[activeMarkerIx],
+            );
+            const targetTime = currentTime - delta;
+            if (targetTime >= 0) {
+              const newIx = getClosestAlignmentIx(targetTime, currentAudioIx);
+              // Only update if actually different from current position
+              if (newIx !== markers[activeMarkerIx]) {
+                markers[activeMarkerIx] = newIx;
+                if (storage)
+                  storage.setItem("markers_" + workId, JSON.stringify(markers));
+                redrawAllMarkers();
+                seekToActiveMarker();
+              }
+            }
+          } else {
+            // If past active marker, seek back to it; else go to previous
+            const currentTime = wavesurfers[currentAudioIx].getCurrentTime();
+            const activeTime = getCorrespondingTime(
+              currentAudioIx,
+              markers[activeMarkerIx],
+            );
+            if (currentTime > activeTime + 0.05) {
+              seekToActiveMarker();
+            } else {
+              const sorted = getSortedMarkerIndices();
+              const pos = sorted.indexOf(activeMarkerIx);
+              if (pos > 0) {
+                activeMarkerIx = sorted[pos - 1];
+                redrawAllMarkers();
+                seekToActiveMarker();
+              }
+            }
+          }
+        }
+        break;
+      }
+      case "ArrowRight": {
+        if (closeListeningMode && activeMarkerIx != null) {
+          if (e.shiftKey) {
+            // Nudge active marker right by constant time: Shift+Alt = 20ms, Shift = 100ms
+            const delta = e.altKey ? smallMarkerNudge : bigMarkerNudge;
+            const currentTime = getCorrespondingTime(
+              currentAudioIx,
+              markers[activeMarkerIx],
+            );
+            const gridLength = alignmentGrids[currentAudioIx].length;
+            const targetTime = currentTime + delta;
+            const newIx = getClosestAlignmentIx(targetTime, currentAudioIx);
+            // Only update if actually different and in bounds
+            if (newIx !== markers[activeMarkerIx] && newIx < gridLength) {
+              markers[activeMarkerIx] = newIx;
+              if (storage)
+                storage.setItem("markers_" + workId, JSON.stringify(markers));
+              redrawAllMarkers();
+              seekToActiveMarker();
+            }
+          } else {
+            // Navigate to next marker
+            const sorted = getSortedMarkerIndices();
+            const pos = sorted.indexOf(activeMarkerIx);
+            if (pos < sorted.length - 1) {
+              activeMarkerIx = sorted[pos + 1];
+              redrawAllMarkers();
+              seekToActiveMarker();
+            }
+          }
+        }
         break;
       }
       case "Digit1":
@@ -970,10 +1120,23 @@ document.addEventListener("DOMContentLoaded", () => {
       case "Digit7":
       case "Digit8":
       case "Digit9":
-      case "Digit0": {
+      case "Digit0":
+      case "Numpad1":
+      case "Numpad2":
+      case "Numpad3":
+      case "Numpad4":
+      case "Numpad5":
+      case "Numpad6":
+      case "Numpad7":
+      case "Numpad8":
+      case "Numpad9":
+      case "Numpad0": {
         // Jump to nth waveform (1-9 = 1st-9th, 0 = 10th)
         const visible = getVisibleWaveforms();
-        const n = e.code === "Digit0" ? 9 : parseInt(e.code.charAt(5)) - 1;
+        const n =
+          e.code === "Digit0" || e.code === "Numpad0"
+            ? 9
+            : parseInt(e.code.charAt(5)) - 1;
         if (n < visible.length) {
           swapCurrentAudio(visible[n]);
           if (!wavesurfers[currentAudioIx].isPlaying()) {
@@ -989,39 +1152,64 @@ document.addEventListener("DOMContentLoaded", () => {
         if (storage) {
           storage.setItem("markers_" + workId, JSON.stringify(markers));
         }
-        Object.keys(wavesurfers).forEach((ws) => {
-          const t = getCorrespondingTime(ws, toMark);
-          wavesurfers[ws].addMarker({ time: t, color: "red" });
-        });
+        if (closeListeningMode) {
+          // Make the newly added marker active
+          activeMarkerIx = markers.length - 1;
+          redrawAllMarkers();
+          seekToActiveMarker();
+        } else {
+          Object.keys(wavesurfers).forEach((ws) => {
+            const t = getCorrespondingTime(ws, toMark);
+            wavesurfers[ws].addMarker({ time: t, color: "red" });
+          });
+        }
         break;
       }
+      case "Delete":
       case "Backspace": {
-        // Delete the most recent marker at or before current playback position
-        const currentAlignIx = getClosestAlignmentIx();
-        const prevMarkers = markers
-          .map((m, i) => ({ m, i }))
-          .filter((x) => x.m <= currentAlignIx)
-          .sort((a, b) => b.m - a.m);
-        if (prevMarkers.length) {
-          const toDelete = prevMarkers[0];
-          markers.splice(toDelete.i, 1);
+        // Delete active marker (close-listening mode only)
+        if (closeListeningMode && activeMarkerIx != null) {
+          const deletedAlignIx = markers[activeMarkerIx];
+          markers.splice(activeMarkerIx, 1);
           if (storage) {
             storage.setItem("markers_" + workId, JSON.stringify(markers));
           }
-          // Redraw all markers
-          Object.keys(wavesurfers).forEach((ws) => {
-            wavesurfers[ws].clearMarkers();
-            wavesurfers[ws].addMarker({
-              time: 0,
-              label: ws,
-              color: "black",
-              position: "top",
-            });
-            markers.forEach((m) => {
-              const t = getCorrespondingTime(ws, m);
-              wavesurfers[ws].addMarker({ time: t, color: "red" });
-            });
-          });
+          if (markers.length === 0) {
+            exitCloseListeningMode();
+          } else {
+            // Select the marker closest in time to the deleted one,
+            // preferring the one just before it
+            let bestIx = 0;
+            let bestDist = Infinity;
+            for (let i = 0; i < markers.length; i++) {
+              const dist = markers[i] - deletedAlignIx;
+              const absDist = Math.abs(dist);
+              if (absDist < bestDist || (absDist === bestDist && dist < 0)) {
+                bestDist = absDist;
+                bestIx = i;
+              }
+            }
+            activeMarkerIx = bestIx;
+            redrawAllMarkers();
+            seekToActiveMarker();
+          }
+        }
+        break;
+      }
+      case "KeyC": {
+        // Toggle close-listening mode
+        if (closeListeningMode) {
+          exitCloseListeningMode();
+        } else if (markers.length > 0) {
+          // Enter with closest marker to current playback position
+          const closestIdx = findClosestMarkerIndex();
+          enterCloseListeningMode(closestIdx);
+        }
+        break;
+      }
+      case "Escape": {
+        if (closeListeningMode) {
+          exitCloseListeningMode();
         }
         break;
       }

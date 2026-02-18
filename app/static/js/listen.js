@@ -930,54 +930,138 @@ document.addEventListener("DOMContentLoaded", () => {
     );
   });
 
-  document.querySelector("body").addEventListener("keypress", (e) => {
-    e.preventDefault();
-    console.log("KEYPRESS: ", e);
-    if (currentAudioIx) {
-      let updateTimer = false;
-      console.log(wavesurfers[currentAudioIx].regions.list);
-      switch (e.code) {
-        case "KeyT":
-          // HACK FOR DH 2023 temporarily disable in this branch
-          return false;
-          if (timerFrom > 0 && timerFrom === timerTo) {
-            console.log("mid");
-            timerTo = wavesurfers[currentAudioIx].getCurrentTime();
-          } else {
-            console.log("start");
-            timerFrom = wavesurfers[currentAudioIx].getCurrentTime();
-            timerTo = timerFrom;
+  document.querySelector("body").addEventListener("keydown", (e) => {
+    // Don't intercept when typing in an input/textarea
+    if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    console.log("KEYDOWN: ", e);
+    if (!currentAudioIx) return;
+
+    // --- Helper: get ordered list of visible (checked) waveform filenames ---
+    function getVisibleWaveforms() {
+      return Array.from(document.querySelectorAll("#waveforms .waveform"))
+        .map((el) => el.dataset.ix)
+        .filter((name) => name in wavesurfers);
+    }
+
+    let handled = true;
+    let updateTimer = false;
+
+    switch (e.code) {
+      case "ArrowUp": {
+        // Switch to previous waveform
+        const visible = getVisibleWaveforms();
+        const idx = visible.indexOf(currentAudioIx);
+        if (idx > 0) swapCurrentAudio(visible[idx - 1]);
+        break;
+      }
+      case "ArrowDown": {
+        // Switch to next waveform
+        const visible = getVisibleWaveforms();
+        const idx = visible.indexOf(currentAudioIx);
+        if (idx < visible.length - 1) swapCurrentAudio(visible[idx + 1]);
+        break;
+      }
+      case "Digit1":
+      case "Digit2":
+      case "Digit3":
+      case "Digit4":
+      case "Digit5":
+      case "Digit6":
+      case "Digit7":
+      case "Digit8":
+      case "Digit9":
+      case "Digit0": {
+        // Jump to nth waveform (1-9 = 1st-9th, 0 = 10th)
+        const visible = getVisibleWaveforms();
+        const n = e.code === "Digit0" ? 9 : parseInt(e.code.charAt(5)) - 1;
+        if (n < visible.length) {
+          swapCurrentAudio(visible[n]);
+          if (!wavesurfers[currentAudioIx].isPlaying()) {
+            wavesurfers[currentAudioIx].play();
           }
-          updateTimer = true;
-          break;
-        case "KeyX":
-          // release timer
-          timerFrom = 0;
-          timerTo = 0;
-          updateTimer = true;
-          break;
-        case "Space":
-          // space bar
-          playpause();
-          break;
+        }
+        break;
       }
-      if (updateTimer) {
-        // walk through all other displayed wavesurfers and cross-apply...
+      case "KeyM": {
+        // Add marker at current playback position
+        const toMark = getClosestAlignmentIx();
+        markers.push(toMark);
+        if (storage) {
+          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        }
         Object.keys(wavesurfers).forEach((ws) => {
-          const wsFrom = getCorrespondingTime(
-            ws,
-            getClosestAlignmentIx(timerFrom),
-          );
-          const wsTo = getCorrespondingTime(ws, getClosestAlignmentIx(timerTo));
-          wavesurfers[ws].regions.list.timer.start = wsFrom;
-          wavesurfers[ws].regions.list.timer.end = wsTo;
-          console.log("SET TIMER: ", wavesurfers[ws].regions.list.timer, ws);
-        }); /*
-        wavesurfers[currentAudioIx].regions.list.timer.start = timerFrom;
-        wavesurfers[currentAudioIx].regions.list.timer.end = timerTo;
-        */
-        updateRenderTimer();
+          const t = getCorrespondingTime(ws, toMark);
+          wavesurfers[ws].addMarker({ time: t, color: "red" });
+        });
+        break;
       }
+      case "Backspace": {
+        // Delete the most recent marker at or before current playback position
+        const currentAlignIx = getClosestAlignmentIx();
+        const prevMarkers = markers
+          .map((m, i) => ({ m, i }))
+          .filter((x) => x.m <= currentAlignIx)
+          .sort((a, b) => b.m - a.m);
+        if (prevMarkers.length) {
+          const toDelete = prevMarkers[0];
+          markers.splice(toDelete.i, 1);
+          if (storage) {
+            storage.setItem("markers_" + workId, JSON.stringify(markers));
+          }
+          // Redraw all markers
+          Object.keys(wavesurfers).forEach((ws) => {
+            wavesurfers[ws].clearMarkers();
+            wavesurfers[ws].addMarker({
+              time: 0,
+              label: ws,
+              color: "black",
+              position: "top",
+            });
+            markers.forEach((m) => {
+              const t = getCorrespondingTime(ws, m);
+              wavesurfers[ws].addMarker({ time: t, color: "red" });
+            });
+          });
+        }
+        break;
+      }
+      case "KeyT":
+        // HACK FOR DH 2023 temporarily disable in this branch
+        return false;
+        if (timerFrom > 0 && timerFrom === timerTo) {
+          timerTo = wavesurfers[currentAudioIx].getCurrentTime();
+        } else {
+          timerFrom = wavesurfers[currentAudioIx].getCurrentTime();
+          timerTo = timerFrom;
+        }
+        updateTimer = true;
+        break;
+      case "KeyX":
+        // release timer
+        timerFrom = 0;
+        timerTo = 0;
+        updateTimer = true;
+        break;
+      case "Space":
+        playpause();
+        break;
+      default:
+        handled = false;
+    }
+
+    if (handled) e.preventDefault();
+
+    if (updateTimer) {
+      Object.keys(wavesurfers).forEach((ws) => {
+        const wsFrom = getCorrespondingTime(
+          ws,
+          getClosestAlignmentIx(timerFrom),
+        );
+        const wsTo = getCorrespondingTime(ws, getClosestAlignmentIx(timerTo));
+        wavesurfers[ws].regions.list.timer.start = wsFrom;
+        wavesurfers[ws].regions.list.timer.end = wsTo;
+      });
+      updateRenderTimer();
     }
   });
 });

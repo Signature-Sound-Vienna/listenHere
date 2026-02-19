@@ -316,6 +316,52 @@ wave marker:not(marker:first-child) div:first-child {
   max-width: none;
 }
 
+#splash-card p.help-text {
+  font-size: 0.85em;
+  color: #64748b;
+  margin-top: 0.4em;
+}
+
+.action-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75em;
+  margin: 1em 0 0.5em;
+}
+
+#splash .action-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+  background: #f1f5f9;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 0.9em 1.1em;
+  text-align: left;
+  color: #1e293b;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  text-decoration: none;
+}
+
+#splash .action-card:hover {
+  background: #e8eef6;
+  border-color: #2563eb;
+  box-shadow: 0 2px 10px rgba(37,99,235,0.12);
+  color: #1e293b;
+}
+
+#splash .action-card strong {
+  font-size: 1em;
+  color: #2563eb;
+  font-weight: 600;
+}
+
+#splash .action-card span {
+  font-size: 0.83em;
+  color: #64748b;
+  line-height: 1.4;
+}
+
 #splash-card footer {
   margin-top: 1.2em;
   padding-top: 0.8em;

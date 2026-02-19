@@ -1,44 +1,80 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
   <head>
     <title>Listen Here! — Align</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/default.css') }}" />
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/default.css') }}"
+    />
+    <script
+      src="{{ url_for('static', filename='js/verovio-toolkit-wasm.js') }}"
+      defer
+    ></script>
   </head>
   <body id="align-page">
     <div id="align-card">
       <div id="logo">
-        <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="80" alt="Logo" />
+        <img
+          src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}"
+          height="80"
+          alt="Logo"
+        />
       </div>
       <h1>Align Audio Files</h1>
       <p class="align-hint">
-        Drop a folder of audio files (or select them individually) to compute
-        a DTW-based chroma alignment. The result is a JSON file you can open in
+        Drop a folder of audio files (or select them individually) to compute a
+        DTW-based chroma alignment. The result is a JSON file you can open in
         <a href="/">Listen Here!</a>
       </p>
 
       <!-- File selection -->
       <div id="align-file-actions">
-        <button id="align-dir-btn" style="display:none;">Choose Folder</button>
+        <button id="align-dir-btn" style="display: none">Choose Folder</button>
         <button id="align-files-btn">Choose Files</button>
-        <input type="file" id="align-file-input" multiple
-               accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac" style="display:none;" />
+        <input
+          type="file"
+          id="align-file-input"
+          multiple
+          accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac"
+          style="display: none"
+        />
       </div>
       <div id="align-drop-zone">
         <span>or drag &amp; drop audio files here</span>
       </div>
 
+      <!-- Optional MEI URI for score alignment -->
+      <div id="align-mei-section">
+        <label for="align-mei-input">
+          <strong>MEI URI</strong>
+          <span class="align-mei-hint"
+            >(optional — adds score–performance alignment)</span
+          >
+        </label>
+        <input
+          type="url"
+          id="align-mei-input"
+          placeholder="https://example.com/score.mei"
+        />
+      </div>
+
       <!-- File list + reference selector -->
-      <div id="align-file-list-container" style="display:none;">
+      <div id="align-file-list-container" style="display: none">
         <h3>Selected files</h3>
         <table id="align-file-table">
-          <thead><tr><th>File</th><th>Ref</th></tr></thead>
+          <thead>
+            <tr>
+              <th>File</th>
+              <th>Ref</th>
+            </tr>
+          </thead>
           <tbody></tbody>
         </table>
         <button id="align-start-btn">Start Alignment</button>
       </div>
 
       <!-- Progress -->
-      <div id="align-progress" style="display:none;">
+      <div id="align-progress" style="display: none">
         <div id="align-progress-bar-container">
           <div id="align-progress-bar"></div>
         </div>
@@ -50,7 +86,7 @@
       </div>
 
       <!-- Results -->
-      <div id="align-results" style="display:none;">
+      <div id="align-results" style="display: none">
         <h3>Alignment complete!</h3>
         <button id="align-download-btn">Download alignment JSON</button>
         <button id="align-open-btn">Open in Listen Here!</button>
@@ -64,9 +100,52 @@
 
     <script>
       const TARGET_SR = 22050;
-      const workerUrl = "{{ url_for('static', filename='js/align-worker.js') }}";
-      let selectedFiles = [];    // Array of File objects
+      const workerUrl =
+        "{{ url_for('static', filename='js/align-worker.js') }}";
+      let selectedFiles = []; // Array of File objects
       let alignmentResult = null;
+
+      /* --- Verovio MIDI rendering --- */
+
+      let _verovioTk = null;
+      const _verovioPromise = new Promise((resolve) => {
+        // Will be resolved when verovio WASM is ready
+        window._resolveVerovio = resolve;
+      });
+
+      // Set up the onRuntimeInitialized callback once DOM is ready
+      // (verovio-toolkit-wasm.js is defer, so verovio global exists by DOMContentLoaded)
+      document.addEventListener("DOMContentLoaded", () => {
+        if (typeof verovio === "undefined") return;
+        if (verovio.module.calledRun) {
+          // WASM already initialized (unlikely but safe to handle)
+          _verovioTk = new verovio.toolkit();
+          window._resolveVerovio(_verovioTk);
+        } else {
+          verovio.module.onRuntimeInitialized = () => {
+            _verovioTk = new verovio.toolkit();
+            window._resolveVerovio(_verovioTk);
+          };
+        }
+      });
+
+      async function fetchMeiMidi(meiUri) {
+        const tk = await _verovioPromise;
+        const resp = await fetch(meiUri);
+        if (!resp.ok)
+          throw new Error(`Could not fetch MEI (HTTP ${resp.status})`);
+        const meiText = await resp.text();
+        const loaded = tk.loadData(meiText);
+        if (!loaded) throw new Error("Verovio could not parse the MEI data");
+        const midiBase64 = tk.renderToMIDI();
+        if (!midiBase64 || midiBase64.length === 0)
+          throw new Error("Verovio produced empty MIDI output");
+        // Decode base64 → Uint8Array
+        const binary = atob(midiBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return bytes;
+      }
 
       /* --- Audio decoding --- */
 
@@ -81,7 +160,7 @@
         const offlineCtx = new OfflineAudioContext(
           1, // mono
           Math.ceil(decoded.duration * TARGET_SR),
-          TARGET_SR
+          TARGET_SR,
         );
         const source = offlineCtx.createBufferSource();
         source.buffer = decoded;
@@ -97,7 +176,7 @@
         const audioExts = /\.(mp3|wav|ogg|flac|m4a|aac|wma|opus)$/i;
         for (const f of files) {
           if (audioExts.test(f.name) || f.type.startsWith("audio/")) {
-            if (!selectedFiles.some(s => s.name === f.name)) {
+            if (!selectedFiles.some((s) => s.name === f.name)) {
               selectedFiles.push(f);
             }
           }
@@ -139,10 +218,13 @@
           alert("Please select at least 2 audio files.");
           return;
         }
-        const refName = document.querySelector('input[name="ref"]:checked').value;
+        const refName = document.querySelector(
+          'input[name="ref"]:checked',
+        ).value;
 
         // Show progress, hide controls
-        document.getElementById("align-file-list-container").style.display = "none";
+        document.getElementById("align-file-list-container").style.display =
+          "none";
         document.getElementById("align-file-actions").style.display = "none";
         document.getElementById("align-drop-zone").style.display = "none";
         const progressEl = document.getElementById("align-progress");
@@ -177,9 +259,13 @@
           li.classList.add("done");
           const icon = li.querySelector(".step-icon");
           if (icon) icon.innerHTML = "&#10003;";
-          const timeStr = elapsed != null
-            ? elapsed.toFixed(1)
-            : ((performance.now() - parseFloat(li.dataset.startTime)) / 1000).toFixed(1);
+          const timeStr =
+            elapsed != null
+              ? elapsed.toFixed(1)
+              : (
+                  (performance.now() - parseFloat(li.dataset.startTime)) /
+                  1000
+                ).toFixed(1);
           li.innerHTML += `<span class="step-time">${timeStr}s</span>`;
         }
 
@@ -188,7 +274,7 @@
         for (let i = 0; i < selectedFiles.length; i++) {
           const f = selectedFiles[i];
           progressText.textContent = `Decoding audio: ${f.name} (${i + 1}/${selectedFiles.length})`;
-          progressBar.style.width = `${5 + 5 * i / selectedFiles.length}%`;
+          progressBar.style.width = `${5 + (5 * i) / selectedFiles.length}%`;
           const li = addStep(`Decode: ${f.name}`);
           try {
             const samples = await decodeAudio(f);
@@ -203,6 +289,22 @@
         progressText.textContent = "Starting alignment worker...";
         progressBar.style.width = "10%";
 
+        // Optionally fetch MEI and render to MIDI for score alignment
+        let meiMidi = null;
+        const meiUri = document.getElementById("align-mei-input").value.trim();
+        if (meiUri) {
+          progressText.textContent = "Loading MEI and rendering to MIDI…";
+          const meiLi = addStep("Render MEI → MIDI");
+          try {
+            meiMidi = await fetchMeiMidi(meiUri);
+            completeStep(meiLi);
+          } catch (err) {
+            progressText.textContent = `MEI error: ${err.message}`;
+            clearInterval(elapsedTimer);
+            return;
+          }
+        }
+
         // Launch Web Worker
         const worker = new Worker(workerUrl);
         // Track active step <li> elements for worker phases
@@ -213,8 +315,17 @@
             const d = e.data;
             const key = d.phase + ":" + d.file;
             if (d.step === "start") {
-              const phaseLabel = d.phase === "features" ? "Features" : "Align";
-              const li = addStep(`${phaseLabel}: ${d.file} (${d.index}/${d.total})`);
+              let label;
+              if (d.phase === "score") {
+                label = d.file;
+              } else {
+                const phaseLabel =
+                  d.phase === "features" ? "Features" : "Align";
+                const counter =
+                  d.index != null ? ` (${d.index}/${d.total})` : "";
+                label = `${phaseLabel}: ${d.file}${counter}`;
+              }
+              const li = addStep(label);
               activeSteps[key] = li;
             } else if (d.step === "done") {
               completeStep(activeSteps[key], d.elapsed);
@@ -227,7 +338,10 @@
             }
           } else if (e.data.type === "result") {
             clearInterval(elapsedTimer);
-            const totalSecs = ((performance.now() - alignStartTime) / 1000).toFixed(1);
+            const totalSecs = (
+              (performance.now() - alignStartTime) /
+              1000
+            ).toFixed(1);
             elapsedEl.textContent = `Total time: ${totalSecs}s`;
             alignmentResult = e.data.alignment;
             progressBar.style.width = "100%";
@@ -248,11 +362,18 @@
           progressBar.style.background = "#ef4444";
         };
 
-        // Transfer audio buffers (zero-copy)
-        const transferables = audios.map(a => a.samples.buffer);
+        // Transfer audio buffers (zero-copy) and optionally MIDI bytes
+        const transferables = audios.map((a) => a.samples.buffer);
+        if (meiMidi) transferables.push(meiMidi.buffer);
         worker.postMessage(
-          { type: "align", audios, refName },
-          transferables
+          {
+            type: "align",
+            audios,
+            refName,
+            meiMidi: meiMidi || null,
+            meiUri: meiUri || "",
+          },
+          transferables,
         );
       }
 
@@ -260,10 +381,9 @@
 
       function downloadJSON() {
         if (!alignmentResult) return;
-        const blob = new Blob(
-          [JSON.stringify(alignmentResult, null, 2)],
-          { type: "application/json" }
-        );
+        const blob = new Blob([JSON.stringify(alignmentResult, null, 2)], {
+          type: "application/json",
+        });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -280,7 +400,9 @@
           sessionStorage.setItem("listenHereAlignment", json);
           window.location.href = "/?align=session&useFiles";
         } catch (err) {
-          alert("Alignment too large for session storage. Please download the JSON and use it with ?align=<url>&useFiles.");
+          alert(
+            "Alignment too large for session storage. Please download the JSON and use it with ?align=<url>&useFiles.",
+          );
         }
       }
 
@@ -320,20 +442,31 @@
           document.getElementById("align-drop-zone").classList.add("drag-over");
         });
         card.addEventListener("dragleave", (e) => {
-          document.getElementById("align-drop-zone").classList.remove("drag-over");
+          document
+            .getElementById("align-drop-zone")
+            .classList.remove("drag-over");
         });
         card.addEventListener("drop", (e) => {
           e.preventDefault();
-          document.getElementById("align-drop-zone").classList.remove("drag-over");
-          if (e.dataTransfer.files.length) addFiles(Array.from(e.dataTransfer.files));
+          document
+            .getElementById("align-drop-zone")
+            .classList.remove("drag-over");
+          if (e.dataTransfer.files.length)
+            addFiles(Array.from(e.dataTransfer.files));
         });
 
         // Start alignment
-        document.getElementById("align-start-btn").addEventListener("click", startAlignment);
+        document
+          .getElementById("align-start-btn")
+          .addEventListener("click", startAlignment);
 
         // Results
-        document.getElementById("align-download-btn").addEventListener("click", downloadJSON);
-        document.getElementById("align-open-btn").addEventListener("click", openInListenHere);
+        document
+          .getElementById("align-download-btn")
+          .addEventListener("click", downloadJSON);
+        document
+          .getElementById("align-open-btn")
+          .addEventListener("click", openInListenHere);
       });
     </script>
   </body>

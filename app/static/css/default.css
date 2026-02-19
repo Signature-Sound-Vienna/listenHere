@@ -650,6 +650,43 @@ wave marker:not(marker:first-child) div:first-child {
   color: #2563eb;
 }
 
+/* Optional MEI URI input */
+#align-mei-section {
+  margin-bottom: 1.2em;
+}
+
+#align-mei-section label {
+  display: block;
+  font-size: 0.9em;
+  color: #475569;
+  margin-bottom: 0.4em;
+}
+
+.align-mei-hint {
+  font-weight: normal;
+  color: #94a3b8;
+  font-size: 0.85em;
+  margin-left: 0.4em;
+}
+
+#align-mei-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5em 0.7em;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.9em;
+  color: #1e293b;
+  background: #f8fafc;
+  transition: border-color 0.15s;
+}
+
+#align-mei-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  background: #fff;
+}
+
 /* File table */
 #align-file-list-container h3 {
   margin: 0.8em 0 0.4em;

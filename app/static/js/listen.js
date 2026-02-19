@@ -35,6 +35,11 @@ export let wavesurfers = {};
 let fileBlobUrls = new Map();
 let useFilesMode = false;
 
+// Synthesised MEI waveform: key used in wavesurfers / alignmentGrids for the synth track
+const SYNTH_MEI_KEY = "Score (synthesised from MEI)";
+// Maps SYNTH_MEI_KEY -> blob URL once synthesis is done, or the sentinel '__pending__'
+const _synthBlobUrls = new Map();
+
 // HTTP Basic Auth: scoped per-origin to avoid leaking credentials
 // Maps origin string -> { credentials, requestHeaders } xhr options
 // NOTE: WaveSurfer v4 uses `xhr` with `requestHeaders: [{key, value}]`.
@@ -98,6 +103,11 @@ try {
 }
 
 function resolveAudioUrl(filename) {
+  // Synthesised MEI audio: return blob URL once ready, or null while still being synthesised
+  if (_synthBlobUrls.has(filename)) {
+    const _u = _synthBlobUrls.get(filename);
+    return _u === "__pending__" ? null : _u;
+  }
   // If ?useFiles is active and we have a blob URL for this file, use it
   if (useFilesMode && fileBlobUrls.has(filename)) {
     return fileBlobUrls.get(filename);
@@ -550,10 +560,15 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       const t = getCorrespondingTime(filename, m);
       wavesurfers[filename].addMarker({ time: t, color: "red" });
     });
-    wavesurfers[filename].load(resolveAudioUrl(filename));
-    // Show loading overlay immediately
+    // Start loading (deferred for synth entries until the blob URL is available)
     const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
-    showWaveformOverlay(wfEl, "Loading audio\u2026");
+    const _audioUrl = resolveAudioUrl(filename);
+    if (_audioUrl) {
+      wavesurfers[filename].load(_audioUrl);
+      showWaveformOverlay(wfEl, "Loading audio\u2026");
+    } else {
+      showWaveformOverlay(wfEl, "Synthesising audio from MEI\u2026");
+    }
     // Update overlay with download progress
     wavesurfers[filename].on("loading", (pct) => {
       if (pct < 100) {
@@ -815,6 +830,332 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
   }
 }
 
+// --- MEI synthesised waveform helpers ---
+
+/**
+ * Interpolate a synth-audio alignment grid from the score body's ref_onset / synth_onset
+ * arrays.  For each time in refGrid, returns the corresponding time in the synth audio.
+ */
+function _interpAlignmentGrid(refGrid, refOnsets, synthOnsets) {
+  if (!refOnsets || !refOnsets.length || !synthOnsets)
+    return Array.from(refGrid, () => 0);
+  const n = refOnsets.length;
+  const pairs = Array.from({ length: n }, (_, i) => [
+    refOnsets[i],
+    synthOnsets[i],
+  ]).sort((a, b) => a[0] - b[0]);
+  const xs = pairs.map((p) => p[0]),
+    ys = pairs.map((p) => p[1]);
+  const slope0 = n > 1 ? (ys[1] - ys[0]) / Math.max(xs[1] - xs[0], 1e-9) : 0;
+  const slopeN =
+    n > 1 ? (ys[n - 1] - ys[n - 2]) / Math.max(xs[n - 1] - xs[n - 2], 1e-9) : 0;
+  return Array.from(refGrid, (t) => {
+    if (t <= xs[0]) return Math.max(0, ys[0] + slope0 * (t - xs[0]));
+    if (t >= xs[n - 1]) return ys[n - 1] + slopeN * (t - xs[n - 1]);
+    let lo = 0,
+      hi = n - 1;
+    while (hi - lo > 1) {
+      const m = (lo + hi) >> 1;
+      if (xs[m] <= t) lo = m;
+      else hi = m;
+    }
+    return (
+      ys[lo] +
+      ((t - xs[lo]) / Math.max(xs[hi] - xs[lo], 1e-9)) * (ys[hi] - ys[lo])
+    );
+  });
+}
+
+/**
+ * Parse a Standard MIDI File (Uint8Array) into { tpq, tempoChanges, notes }.
+ * tempoChanges: [{tick, tempo}] sorted ascending.
+ * notes: [{s, e, p, v}] = start/end tick, pitch, velocity.
+ */
+function _jsParseMidi(bytes) {
+  let p = 0;
+  const r4 = () => {
+    const v =
+      ((bytes[p] << 24) |
+        (bytes[p + 1] << 16) |
+        (bytes[p + 2] << 8) |
+        bytes[p + 3]) >>>
+      0;
+    p += 4;
+    return v;
+  };
+  const r2 = () => {
+    const v = (bytes[p] << 8) | bytes[p + 1];
+    p += 2;
+    return v;
+  };
+  const rb = () => bytes[p++];
+  const rv = () => {
+    let v = 0;
+    for (;;) {
+      const b = rb();
+      v = (v << 7) | (b & 0x7f);
+      if (!(b & 0x80)) break;
+    }
+    return v;
+  };
+  p = 4;
+  const hlen = r4();
+  r2();
+  const nTracks = r2();
+  const tpq = r2();
+  p = 8 + hlen;
+  const tempoChanges = [{ tick: 0, tempo: 500000 }];
+  const notes = [];
+  for (let tr = 0; tr < nTracks; tr++) {
+    if (bytes[p] !== 0x4d) break; // 'M' of 'MTrk'
+    p += 4;
+    const tlen = r4();
+    const endPos = p + tlen;
+    let tick = 0,
+      rs = 0;
+    const active = new Map();
+    while (p < endPos) {
+      tick += rv();
+      let b = bytes[p];
+      if (b === 0xff) {
+        p++;
+        const mtype = rb();
+        const mlen = rv();
+        if (mtype === 0x51 && mlen === 3)
+          tempoChanges.push({
+            tick,
+            tempo: (bytes[p] << 16) | (bytes[p + 1] << 8) | bytes[p + 2],
+          });
+        p += mlen;
+      } else if (b === 0xf0 || b === 0xf7) {
+        p++;
+        p += rv();
+      } else {
+        if (b & 0x80) {
+          rs = b;
+          p++;
+        }
+        const kind = (rs >> 4) & 0xf;
+        if (kind === 0x9) {
+          const pitch = rb(),
+            vel = rb();
+          if (vel > 0) active.set((rs & 0xf) * 128 + pitch, { tick, vel });
+          else {
+            const k = (rs & 0xf) * 128 + pitch;
+            if (active.has(k)) {
+              const s = active.get(k);
+              notes.push({ s: s.tick, e: tick, p: pitch, v: s.vel });
+              active.delete(k);
+            }
+          }
+        } else if (kind === 0x8) {
+          const pitch = rb();
+          rb();
+          const k = (rs & 0xf) * 128 + pitch;
+          if (active.has(k)) {
+            const s = active.get(k);
+            notes.push({ s: s.tick, e: tick, p: pitch, v: s.vel });
+            active.delete(k);
+          }
+        } else if (kind === 0xa || kind === 0xb || kind === 0xe) {
+          p += 2;
+        } else if (kind === 0xc || kind === 0xd) {
+          p += 1;
+        }
+      }
+    }
+    active.forEach((s, k) =>
+      notes.push({ s: s.tick, e: tick, p: k % 128, v: s.vel }),
+    );
+    p = endPos;
+  }
+  tempoChanges.sort((a, b) => a.tick - b.tick);
+  notes.sort((a, b) => a.s - b.s);
+  return { tpq, tempoChanges, notes };
+}
+
+/** Convert a MIDI tick to wall-clock seconds using a tempo-change list. */
+function _jsTickToSec(tick, tpq, tcs) {
+  let secs = 0,
+    pt = 0,
+    pu = 500000;
+  for (const { tick: ct, tempo: cu } of tcs) {
+    if (ct >= tick) break;
+    secs += (((ct - pt) / tpq) * pu) / 1e6;
+    pt = ct;
+    pu = cu;
+  }
+  return secs + (((tick - pt) / tpq) * pu) / 1e6;
+}
+
+/**
+ * Synthesise MIDI notes to a WAV Blob using OfflineAudioContext.
+ * Each note becomes a band-limited sawtooth oscillator (natural harmonic series)
+ * with a simple attack/release envelope.  SR = 22050 Hz mono.
+ */
+async function _jsSynthToWav(notes, tpq, tempoChanges) {
+  if (!notes.length) return null;
+  const SR = 22050;
+  const maxEndTick = notes.reduce((m, n) => Math.max(m, n.e), 0);
+  const duration = _jsTickToSec(maxEndTick, tpq, tempoChanges) + 0.5;
+  const nSamples = Math.ceil(duration * SR);
+  const ctx = new OfflineAudioContext(1, nSamples, SR);
+  const ATK = 0.01,
+    REL = 0.03;
+  for (const note of notes) {
+    const ts = _jsTickToSec(note.s, tpq, tempoChanges);
+    if (ts >= duration) continue;
+    const te = Math.min(
+      duration - 0.01,
+      _jsTickToSec(note.e, tpq, tempoChanges),
+    );
+    const noteDur = Math.max(0.02, te - ts);
+    const amp = (note.v / 127) * 0.12;
+    const osc = ctx.createOscillator();
+    osc.type = "sawtooth";
+    osc.frequency.value = 440 * Math.pow(2, (note.p - 69) / 12);
+    const gain = ctx.createGain();
+    const g = gain.gain;
+    g.setValueAtTime(0, ts);
+    g.linearRampToValueAtTime(amp, ts + Math.min(ATK, noteDur * 0.3));
+    g.setValueAtTime(amp, Math.max(ts + ATK, ts + noteDur - REL));
+    g.linearRampToValueAtTime(0, ts + noteDur);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(ts);
+    osc.stop(ts + noteDur + 0.005);
+  }
+  const audioBuffer = await ctx.startRendering();
+  // Peak-normalise in-place
+  const ch = audioBuffer.getChannelData(0);
+  let peak = 0;
+  for (let i = 0; i < ch.length; i++)
+    if (Math.abs(ch[i]) > peak) peak = Math.abs(ch[i]);
+  if (peak > 1e-6) for (let i = 0; i < ch.length; i++) ch[i] /= peak;
+  return _audioBufferToWavBlob(audioBuffer);
+}
+
+/** Encode a mono AudioBuffer as a 16-bit PCM WAV Blob. */
+function _audioBufferToWavBlob(buffer) {
+  const ch = buffer.getChannelData(0);
+  const SR = buffer.sampleRate;
+  const n = ch.length;
+  const dataBytes = n * 2;
+  const ab = new ArrayBuffer(44 + dataBytes);
+  const v = new DataView(ab);
+  const ws = (o, s) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i));
+  };
+  ws(0, "RIFF");
+  v.setUint32(4, 36 + dataBytes, true);
+  ws(8, "WAVE");
+  ws(12, "fmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, SR, true);
+  v.setUint32(28, SR * 2, true);
+  v.setUint16(32, 2, true);
+  v.setUint16(34, 16, true);
+  ws(36, "data");
+  v.setUint32(40, dataBytes, true);
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(-1, Math.min(1, ch[i]));
+    v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([ab], { type: "audio/wav" });
+}
+
+/**
+ * Orchestrate synth-waveform creation:
+ *   1. Build alignment grid synchronously (must be ready before WaveSurfer "ready" fires)
+ *   2. Register key as pending → prepareWaveform shows "Synthesising..." overlay
+ *   3. Create WaveSurfer skeleton immediately (user sees spinner right away)
+ *   4. Async: decode MIDI, synthesise, register blob URL, load into WaveSurfer
+ */
+async function _buildAndPrepareSynthWaveform(
+  synthKey,
+  scoreData,
+  refKey,
+  midiB64,
+) {
+  // ---- Synchronous phase (must complete before first await) ----
+  // Parse MIDI first so we can compute synth timings synchronously,
+  // then set the alignment grid BEFORE calling prepareWaveform / before
+  // WaveSurfer's 'ready' event could ever fire.
+  let midiBytes;
+  try {
+    const bin = atob(midiB64);
+    midiBytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) midiBytes[i] = bin.charCodeAt(i);
+  } catch (err) {
+    console.error("MEI MIDI decode failed:", err);
+    return;
+  }
+
+  let tpq, tempoChanges, notes;
+  try {
+    ({ tpq, tempoChanges, notes } = _jsParseMidi(midiBytes));
+  } catch (err) {
+    console.error("MEI MIDI parse failed:", err);
+    return;
+  }
+
+  // Compute alignment grid: map ref times → synth times.
+  // Prefer synth_onset from the JSON (populated by the latest worker);
+  // for older JSONs that lack it, derive from the MIDI note timings directly.
+  const refOnsets = scoreData.ref_onset || [];
+  const synthOnsets =
+    scoreData.synth_onset && scoreData.synth_onset.length === refOnsets.length
+      ? scoreData.synth_onset
+      : refOnsets.map((_, i) => {
+          if (i < notes.length)
+            return _jsTickToSec(notes[i].s, tpq, tempoChanges);
+          return i > 0
+            ? _jsTickToSec(notes[notes.length - 1].s, tpq, tempoChanges)
+            : 0;
+        });
+  alignmentGrids[synthKey] = _interpAlignmentGrid(
+    alignmentGrids[refKey] || [],
+    refOnsets,
+    synthOnsets,
+  );
+
+  // Register as pending BEFORE prepareWaveform so resolveAudioUrl returns null
+  _synthBlobUrls.set(synthKey, "__pending__");
+
+  // Create WaveSurfer skeleton — alignment grid is already set so drawAlignmentGrid
+  // inside the 'ready' handler will have data to work with.
+  prepareWaveform(synthKey);
+
+  // ---- Async phase ----
+  const getWfEl = () =>
+    document.querySelector(`.waveform[data-ix='${synthKey}']`);
+  try {
+    updateWaveformOverlayStatus(
+      getWfEl(),
+      `Synthesising audio from MEI\u2026 (${notes.length.toLocaleString()}\u00a0notes)`,
+    );
+    const wavBlob = await _jsSynthToWav(notes, tpq, tempoChanges);
+    if (!wavBlob) throw new Error("synthesis produced no audio");
+
+    const blobUrl = URL.createObjectURL(wavBlob);
+    _synthBlobUrls.set(synthKey, blobUrl);
+
+    const ws = wavesurfers[synthKey];
+    if (ws) {
+      updateWaveformOverlayStatus(getWfEl(), "Loading audio\u2026");
+      ws.load(blobUrl);
+    }
+  } catch (err) {
+    console.error("MEI waveform synthesis failed:", err);
+    updateWaveformOverlayStatus(
+      getWfEl(),
+      `\u26a0 Synthesis failed: ${err.message}`,
+    );
+  }
+}
+
 let loadedAlignmentJSON = null; // Full alignment object for download
 
 async function setGrids(grids) {
@@ -828,6 +1169,10 @@ async function setGrids(grids) {
         if ("meiUri" in grids.header && "score" in grids.body) {
           meiUri = grids.header.meiUri;
           scoreAlignment = grids.body.score;
+          // Reserve a slot in alignmentGrids for the synth waveform (filled later)
+          if (scoreAlignment) {
+            alignmentGrids[SYNTH_MEI_KEY] = []; // placeholder; computed in _buildAndPrepareSynthWaveform
+          }
           console.log("starting MEI fetch: ", meiUri);
           await fetch(meiUri)
             .then((response) => response.text())
@@ -874,7 +1219,10 @@ async function setGrids(grids) {
   vpoFiles = vpoFiles.sort();
   extFiles = extFiles.sort();
   let otherFiles = filenames
-    .filter((n) => !vpoFiles.includes(n) && !extFiles.includes(n))
+    .filter(
+      (n) =>
+        !vpoFiles.includes(n) && !extFiles.includes(n) && n !== SYNTH_MEI_KEY,
+    )
     .sort();
   otherFiles = otherFiles.sort();
 
@@ -919,6 +1267,17 @@ async function setGrids(grids) {
   audiosElement.appendChild(otherFoldout);
   audiosElement.appendChild(extFoldout);
 
+  // Score foldout: synthesised MEI waveform (only when score alignment data is present)
+  if (SYNTH_MEI_KEY in alignmentGrids) {
+    const synthFoldout = document.createElement("details");
+    synthFoldout.open = true;
+    const synthSummary = document.createElement("summary");
+    synthSummary.innerText = "Score";
+    synthFoldout.appendChild(synthSummary);
+    synthFoldout.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
+    audiosElement.appendChild(synthFoldout);
+  }
+
   // list selectors
   Array.from(document.querySelectorAll(".listSelectors .all")).forEach(
     (selector) =>
@@ -959,6 +1318,23 @@ async function setGrids(grids) {
 
   // If ?useFiles mode is active, show file picker overlay
   showFilePickerIfNeeded();
+
+  // Kick off async MEI-to-audio synthesis for the score waveform entry
+  if (
+    SYNTH_MEI_KEY in alignmentGrids &&
+    grids.body &&
+    grids.body.score &&
+    grids.header &&
+    grids.header.ref
+  ) {
+    const _midiB64 = tk.renderToMIDI();
+    _buildAndPrepareSynthWaveform(
+      SYNTH_MEI_KEY,
+      grids.body.score,
+      grids.header.ref,
+      _midiB64,
+    );
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {

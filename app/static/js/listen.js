@@ -149,6 +149,16 @@ function redrawAllMarkers() {
 
 // --- Resize handling ---
 
+let _resizeDebounce = null;
+// Queue of filenames waiting for a resize-triggered drawBuffer() call.
+// Processed one at a time: each waveform's "redraw" handler shifts the next
+// entry and calls drawBuffer() on it, preventing simultaneous redraws.
+let _resizeQueue = [];
+
+// Per-waveform closures that repaint the position indicator on every canvas.
+// Registered in each waveform's "ready" handler.
+const _positionUpdaters = {};
+
 function showWaveformOverlays() {
   document.querySelectorAll("#waveforms .waveform").forEach((wf) => {
     // Hide the inner wave element (canvas + markers)
@@ -188,9 +198,26 @@ function hideWaveformOverlay(wfEl) {
 
 window.addEventListener("resize", () => {
   if (Object.keys(wavesurfers).length === 0) return;
-  // Immediately clear all markers so stale positions aren't visible
+  // Immediately hide everything so nothing stale is visible during the resize.
   Object.keys(wavesurfers).forEach((ws) => wavesurfers[ws].clearMarkers());
   showWaveformOverlays();
+  // Debounce: once resizing settles, call drawBuffer() on every loaded waveform.
+  // With responsive:false, drawBuffer() is the only thing that repaints WaveSurfer's
+  // canvas and fires "redraw".  Each waveform reveals itself immediately when its
+  // own "redraw" fires.
+  clearTimeout(_resizeDebounce);
+  _resizeDebounce = setTimeout(() => {
+    _resizeQueue = Array.from(loaded);
+    if (_resizeQueue.length === 0) {
+      document
+        .querySelectorAll("#waveforms .waveform")
+        .forEach((wf) => hideWaveformOverlay(wf));
+      return;
+    }
+    // Kick off the first waveform; each subsequent one is triggered from
+    // within the "redraw" handler once the previous finishes.
+    wavesurfers[_resizeQueue.shift()].drawBuffer();
+  }, 150);
 });
 
 // --- Close-listening mode ---
@@ -512,7 +539,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       waveColor: "violet",
       progressColor: "purple",
       normalize: document.getElementById("normalize").checked,
-      responsive: true,
+      responsive: false, // we call drawBuffer() ourselves on resize for precise coordination
       xhr: xhrOptionsForUrl(resolveAudioUrl(filename)),
       plugins: [
         WaveSurfer.markers.create({}),
@@ -683,19 +710,19 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
       // Function to draw (or redraw) the alignment grid
       function drawAlignmentGrid() {
-        const currentWaveCanvas = document.querySelector(
-          `.waveform[data-ix='${filename}']>wave>canvas`,
-        );
-        if (!currentWaveCanvas) return;
-        // Resize overlay canvases to match current wave canvas
-        gridCanvas.width = currentWaveCanvas.width;
-        gridCanvas.height = currentWaveCanvas.height;
-        gridStyle.width = currentWaveCanvas.style.width;
-        gridStyle.height = currentWaveCanvas.style.height;
-        positionIndicatorCanvas.width = currentWaveCanvas.width;
-        positionIndicatorCanvas.height = currentWaveCanvas.height;
-        positionIndicatorStyle.width = currentWaveCanvas.style.width;
-        positionIndicatorStyle.height = currentWaveCanvas.style.height;
+        // Use the waveCanvas reference captured at ready-time rather than
+        // re-querying: querySelector('>wave>canvas') would return our own
+        // gridCanvas (inserted before waveCanvas) and read stale dimensions.
+        if (!waveCanvas || !waveCanvas.parentNode) return;
+        // Sync our overlay canvas dimensions to WaveSurfer's canvas
+        gridCanvas.width = waveCanvas.width;
+        gridCanvas.height = waveCanvas.height;
+        gridStyle.width = waveCanvas.style.width;
+        gridStyle.height = waveCanvas.style.height;
+        positionIndicatorCanvas.width = waveCanvas.width;
+        positionIndicatorCanvas.height = waveCanvas.height;
+        positionIndicatorStyle.width = waveCanvas.style.width;
+        positionIndicatorStyle.height = waveCanvas.style.height;
         // Redraw grid lines
         const ctx = gridCanvas.getContext("2d");
         ctx.clearRect(0, 0, gridCanvas.width, gridCanvas.height);
@@ -715,6 +742,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         ctx.stroke();
       }
 
+      // Register this waveform's position-updater so it can be called
+      // after resize (the updater reads currentTime from this file's wavesurfer
+      // and repaints every position-indicator canvas).
+      _positionUpdaters[filename] = updatePositionIndicator;
+
       // Initial draw
       drawAlignmentGrid();
 
@@ -724,10 +756,12 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       );
       if (readyWfEl) hideWaveformOverlay(readyWfEl);
 
-      // Redraw overlays and markers when WaveSurfer redraws on resize
+      // "redraw" fires after drawBuffer() completes — WaveSurfer's canvas is
+      // already at the new dimensions when this runs.
       wavesurfers[filename].on("redraw", () => {
+        // Resize our overlay canvases and repaint grid lines.
         drawAlignmentGrid();
-        // Redraw markers for this specific waveform
+        // Restore markers (drawBuffer clears them).
         wavesurfers[filename].clearMarkers();
         wavesurfers[filename].addMarker({
           time: 0,
@@ -741,9 +775,21 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
             closeListeningMode && activeMarkerIx === i ? "#8b0000" : "red";
           wavesurfers[filename].addMarker({ time: t, color });
         });
-        // Hide this waveform's resize overlay
+
+        // Reveal this waveform immediately now that its canvas, alignment grid,
+        // and position indicator are all correctly sized and painted.
         const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
         if (wfEl) hideWaveformOverlay(wfEl);
+        if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
+          _positionUpdaters[currentAudioIx]();
+        }
+        // Trigger the next waveform in the resize queue (if any).
+        // Deferred with setTimeout so the browser can paint this waveform
+        // before starting the next drawBuffer() — otherwise the entire chain
+        // runs synchronously in one task and nothing paints until all are done.
+        if (_resizeQueue.length > 0) {
+          setTimeout(() => wavesurfers[_resizeQueue.shift()].drawBuffer(), 0);
+        }
       });
       let listItem = document.getElementById(filename);
       let status = listItem.querySelector("label").classList;

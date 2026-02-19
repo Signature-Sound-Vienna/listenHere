@@ -13,12 +13,14 @@
  *   10 min audio (~6000 frames): ~20-60 sec/pair
  *   15 min audio (~9000 frames): ~45-120 sec/pair
  *
- * Score-to-audio alignment (synthesis approach):
- *   MIDI → additive sine-wave synthesis (SR = 22050 Hz)
- *   Same STFT chroma pipeline as real audio → comparable feature spaces
- *   SCORE_FEATURE_RATE = 16 Hz; Sakoe-Chiba band keeps DTW memory bounded
- *   Anti-diagonal vectorised DTW (~100× faster than pure-Python loop)
- *   Typical wall time for a 5-10 min piece: 10-40 sec
+ * Memory notes:
+ *   Chroma and onset streaming: STFT is never materialised as a full matrix.
+ *   Peak extra memory per recording ≈ CHUNK (256) * n_fft floats ≈ 1 MB,
+ *   independent of recording length (works for 30+ min files).
+ *
+ * Score-to-audio alignment:
+ *   MIDI → additive sine-wave synthesis → same streaming chroma pipeline.
+ *   Two-level DTW: pool features ×2 → unconstrained coarse DTW → interpolate notes.
  */
 
 importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.4/full/pyodide.js");
@@ -70,20 +72,34 @@ ONSET_N_FFT = 1024       # short window (46 ms) for sharp onset detection
 ONSET_WEIGHT = 2.0       # chroma scale-up factor at detected onsets
 
 
-def _stft_mag(audio, n_fft, hop):
-    """Memory-efficient chunked magnitude STFT in float32.
-    Processes CHUNK frames at a time so peak transient memory is
-    ~CHUNK * n_fft * 8 bytes regardless of audio length.
-    Returns shape (n_fft//2+1, n_frames), dtype float32.
-    """
+def _stft_setup(audio, n_fft, hop):
+    """Shared STFT prep: pad audio, build window, compute n_frames and byte stride."""
     audio = np.asarray(audio, dtype=np.float32)
-    # Pad so every frame is fully contained
     audio_pad = np.concatenate([audio, np.zeros(n_fft, dtype=np.float32)])
     window = np.hanning(n_fft).astype(np.float32)
     n_frames = max(1, (len(audio) - n_fft) // hop + 1)
-    mag = np.zeros((n_fft // 2 + 1, n_frames), dtype=np.float32)
-    CHUNK = 256   # ~4 MB windowed + ~4 MB spec at N_FFT=4096
-    s = audio_pad.strides[0]
+    return audio_pad, window, n_frames, audio_pad.strides[0]
+
+
+def _pitch_class_map(n_fft):
+    """Pre-compute boolean valid-bin mask and per-bin pitch-class (0-11) for chroma folding."""
+    freqs = np.fft.rfftfreq(n_fft, d=1.0 / SR)
+    valid = freqs > 50
+    midi_f = 69.0 + 12.0 * np.log2(np.maximum(freqs[valid], 1e-9) / 440.0)
+    return valid, (np.round(midi_f).astype(int) % 12)
+
+
+def compute_chroma(audio, n_fft=None, hop=None):
+    """12-bin L2-normalised chroma — fully streaming.
+    Peak extra memory: ~CHUNK*(n_fft + 12) floats, independent of audio length.
+    """
+    if n_fft is None: n_fft = N_FFT
+    if hop  is None: hop  = HOP
+    audio_pad, window, n_frames, s = _stft_setup(audio, n_fft, hop)
+    valid, pc = _pitch_class_map(n_fft)
+    pc_masks = [pc == i for i in range(12)]
+    CHUNK = 256
+    chroma = np.zeros((12, n_frames), dtype=np.float32)
     for cs in range(0, n_frames, CHUNK):
         ce = min(n_frames, cs + CHUNK)
         frames = np.lib.stride_tricks.as_strided(
@@ -91,62 +107,61 @@ def _stft_mag(audio, n_fft, hop):
             shape=(ce - cs, n_fft),
             strides=(s * hop, s)
         )
-        windowed = frames * window
-        spec = np.fft.rfft(windowed, axis=1)
-        mag[:, cs:ce] = np.abs(spec).astype(np.float32).T
-        del windowed, spec
-    return mag
-
-
-def _mag_to_chroma(mag, n_fft):
-    """Fold a magnitude STFT (n_fft//2+1, n_frames) into 12-bin L2-norm chroma (float32)."""
-    freqs = np.fft.rfftfreq(n_fft, d=1.0 / SR)  # Hz per bin
-    valid = freqs > 50
-    freqs_v = freqs[valid]
-    mag_v = mag[valid, :]
-    midi_f = 69.0 + 12.0 * np.log2(np.maximum(freqs_v, 1e-9) / 440.0)
-    pitch_class = np.round(midi_f).astype(int) % 12
-    chroma = np.zeros((12, mag_v.shape[1]), dtype=np.float32)
-    for pc in range(12):
-        mask = pitch_class == pc
-        if np.any(mask):
-            chroma[pc] = mag_v[mask].sum(axis=0)
-    del mag_v
-    norms = np.linalg.norm(chroma, axis=0, keepdims=True)
-    norms[norms < 1e-8] = 1.0
-    chroma /= norms
-    return chroma  # (12, n_frames), float32
-
-
-def compute_chroma(audio):
-    """12-bin chroma features from audio (audio-to-audio alignment rate)."""
-    mag = _stft_mag(audio, N_FFT, HOP)
-    chroma = _mag_to_chroma(mag, N_FFT)
-    del mag
-    return chroma  # (12, n_frames)
+        spec = np.fft.rfft(frames * window, axis=1)
+        mag = np.abs(spec[:, valid]).astype(np.float32)   # (chunk, valid_bins)
+        del spec
+        ch = np.zeros((12, ce - cs), dtype=np.float32)
+        for i, mask in enumerate(pc_masks):
+            if np.any(mask):
+                ch[i] = mag[:, mask].sum(axis=1)
+        norms = np.linalg.norm(ch, axis=0, keepdims=True)
+        norms[norms < 1e-8] = 1.0
+        chroma[:, cs:ce] = ch / norms
+        del mag, ch
+    return chroma   # (12, n_frames), float32
 
 
 def compute_chroma_score(audio):
     """12-bin chroma at SCORE_HOP resolution for score-to-audio alignment."""
-    mag = _stft_mag(audio, SCORE_N_FFT, SCORE_HOP)
-    chroma = _mag_to_chroma(mag, SCORE_N_FFT)
-    del mag
-    return chroma  # (12, n_frames)
+    return compute_chroma(audio, n_fft=SCORE_N_FFT, hop=SCORE_HOP)
 
 
 def compute_onset_strength(audio):
-    """Spectral-flux onset strength, same temporal grid as compute_chroma_score.
-    Uses a short ONSET_N_FFT window for fine temporal resolution.
-    Returns (n_frames,) float32, normalised to [0, 1].
+    """Spectral-flux onset strength — fully streaming.
+    Uses ONSET_N_FFT short window for temporal resolution; same hop as chroma_score.
+    Peak extra memory: 2 * ONSET_N_FFT/2 floats (current + prev frame).
     """
-    mag = _stft_mag(audio, ONSET_N_FFT, SCORE_HOP)  # (bins, n_frames)
-    # Half-wave rectified spectral difference averaged across bins
-    flux = np.maximum(np.float32(0.0), mag[:, 1:] - mag[:, :-1]).mean(axis=0)
-    del mag
-    flux = np.concatenate([[np.float32(0.0)], flux.astype(np.float32)])
-    # Smooth with a 5-tap boxcar to suppress single-bin noise
+    n_fft = ONSET_N_FFT
+    hop   = SCORE_HOP
+    audio_pad, window, n_frames, s = _stft_setup(audio, n_fft, hop)
+    CHUNK = 256
+    flux = np.zeros(n_frames, dtype=np.float32)
+    prev_frame = None                                # last mag row of previous chunk
+    for cs in range(0, n_frames, CHUNK):
+        ce = min(n_frames, cs + CHUNK)
+        frames = np.lib.stride_tricks.as_strided(
+            audio_pad[cs * hop:],
+            shape=(ce - cs, n_fft),
+            strides=(s * hop, s)
+        )
+        spec = np.fft.rfft(frames * window, axis=1)
+        mag = np.abs(spec).astype(np.float32)       # (chunk, bins)
+        del spec
+        if prev_frame is not None:
+            # Prepend last frame of previous chunk for cross-boundary flux
+            ext  = np.vstack([prev_frame[np.newaxis, :], mag])  # (chunk+1, bins)
+            diff = np.maximum(np.float32(0), ext[1:] - ext[:-1])
+            flux[cs:ce] = diff.mean(axis=1)
+        else:
+            # First chunk: frame 0 has no predecessor → flux = 0
+            flux[cs] = np.float32(0.0)
+            if ce > cs + 1:
+                diff = np.maximum(np.float32(0), mag[1:] - mag[:-1])
+                flux[cs + 1:ce] = diff.mean(axis=1)
+        prev_frame = mag[-1].copy()
+        del mag
     kernel = np.ones(5, dtype=np.float32) / np.float32(5.0)
-    flux = np.convolve(flux, kernel, mode='same')
+    flux = np.convolve(flux, kernel, mode='same').astype(np.float32)
     mx = flux.max()
     if mx > 1e-8:
         flux /= mx
@@ -295,51 +310,146 @@ def dtw_band(C, band):
     return np.array([path_i, path_j])
 
 
-def dtw(C):
-    """Standard DTW on cost matrix C (N x M). Returns warping path (2, L)."""
+def _dtw_f32(C):
+    """Unconstrained DTW in float32 (lower memory than float64).
+    Intended for small coarse cost matrices only.
+    Returns warping path (2, L).
+    """
     N, M = C.shape
-    D = np.full((N, M), np.inf, dtype=np.float64)
+    D = np.full((N, M), np.inf, dtype=np.float32)
     D[0, 0] = C[0, 0]
-
-    # First row
     for j in range(1, M):
         D[0, j] = D[0, j - 1] + C[0, j]
-    # First column
     for i in range(1, N):
         D[i, 0] = D[i - 1, 0] + C[i, 0]
-
-    # Fill matrix
-    report_every = max(1, N // 20)
     for i in range(1, N):
-        if i % report_every == 0:
-            reportProgress(f"  DTW progress: {100 * i // N}%")
         for j in range(1, M):
             D[i, j] = C[i, j] + min(D[i-1, j-1], D[i-1, j], D[i, j-1])
-
-    # Backtrack (prefer diagonal moves for temporal consistency)
     i, j = N - 1, M - 1
-    path_i, path_j = [i], [j]
+    pi, pj = [i], [j]
+    while i > 0 or j > 0:
+        if i == 0: j -= 1
+        elif j == 0: i -= 1
+        else:
+            d, v, h = float(D[i-1,j-1]), float(D[i-1,j]), float(D[i,j-1])
+            if d <= v and d <= h: i -= 1; j -= 1
+            elif v <= h: i -= 1
+            else: j -= 1
+        pi.append(i); pj.append(j)
+    pi.reverse(); pj.reverse()
+    return np.array([pi, pj])
+
+
+def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
+    """Streaming band DTW guided by per-row column bounds.
+
+    Memory profile (regardless of audio length):
+      - d_prev / d_cur: two float32 rows of width M  (~70 KB for 8400 frames)
+      - par: (N, max_bw) int8 parent matrix           (~1-4 MB for band ≤ 500)
+      - cost vector:  (bw,) float32 per row            negligible
+
+    The sequential left-to-right dependency within each row is handled by the
+    recurrence   d_cur[k] = costs[k] + min(d_prev[j−1], d_prev[j], d_cur[k−1])
+    which is computed with a vectorised "prefix min" trick to avoid O(N×bw)
+    pure-Python scalar iterations.
+
+    ref_chroma : (12, N) float32
+    other_chroma: (12, M) float32
+    j_lo, j_hi : (N,) int32  inclusive band col bounds per row
+    Returns warping path (2, L).
+    """
+    N = ref_chroma.shape[1]
+    M = other_chroma.shape[1]
+    max_bw = int(np.max(j_hi - j_lo + 1))
+
+    # Parent pointer matrix — 0=diag, 1=vert, 2=horiz (int8 to minimise memory)
+    par = np.zeros((N, max_bw), dtype=np.int8)
+
+    # Rolling previous / current accumulated cost (full M width; inf = not in band)
+    INF = np.float32(np.inf)
+    d_prev = np.full(M, INF, dtype=np.float32)
+
+    for i in range(N):
+        lo = int(j_lo[i]); hi = int(j_hi[i]); bw = hi - lo + 1
+
+        # ── cost vector for this row's band (one fast matmul) ──────────────
+        costs = np.clip(
+            1.0 - ref_chroma[:, i] @ other_chroma[:, lo : hi + 1],
+            0, 2
+        ).astype(np.float32)                                  # (bw,)
+
+        # ── diagonal and vertical predecessors (numpy, no loop) ────────────
+        # d_prev[lo-1 : hi] for diagonal; pad with inf at the left boundary
+        if lo > 0:
+            diag_pred = d_prev[lo - 1 : hi]                  # (bw,)
+        else:
+            diag_pred = np.concatenate([[INF], d_prev[lo : hi]])   # (bw,)
+        vert_pred = d_prev[lo : hi + 1]                       # (bw,)
+        base = costs + np.minimum(diag_pred, vert_pred)       # best non-horiz
+
+        # ── horizontal predecessor (sequential dep) via prefix-min trick ───
+        # d_cur[k] = min(base[k], d_cur[k-1] + costs[k])
+        # Let prefix[k] = cumsum(costs)[k], g[k] = d_cur[k] - prefix[k]
+        # Then g[k] = min(base[k] - prefix[k], g[k-1])
+        #           = min_{k'<=k}(base[k'] - prefix[k'])
+        # → fully vectorisable with np.minimum.accumulate
+        prefix = np.cumsum(costs)
+        g_vals  = base - prefix                               # (bw,)
+        if i == 0 and lo == 0:
+            g_vals[0] = costs[0] - prefix[0]   # origin cell: D[0,0]=costs[0]
+        cum_g   = np.minimum.accumulate(g_vals)               # (bw,)
+        d_cur   = prefix + cum_g                              # (bw,) final accumulated costs
+
+        # Fix up the origin cell (i=0, j=0 must equal costs[0])
+        if i == 0 and lo == 0:
+            d_cur[0] = costs[0]
+
+        # ── parent pointers (one numpy pass per row) ───────────────────────
+        # For each k: was the horizontal option better than diag/vert?
+        # "best k0 for horiz ending at k" is argmin of g_vals[0..k]
+        # If cum_g[k] < base[k] - prefix[k], horiz from some k0 < k was used.
+        # We need the actual k0 to store correct parents but for the path we
+        # only need one choice: 0=diag/vert, 2=horiz (see backtrack below).
+        use_horiz = (d_cur < base)                            # (bw,) bool
+        # Among diag/vert: which predecessor was better?
+        use_vert  = (~use_horiz) & (vert_pred <= diag_pred)
+        par_row = par[i, :bw]
+        par_row[:] = np.where(use_horiz, np.int8(2),
+                     np.where(use_vert,  np.int8(1),
+                                         np.int8(0)))
+        # Origin override
+        if i == 0 and lo == 0:
+            par_row[0] = np.int8(3)  # start marker
+
+        # ── update rolling prev row ────────────────────────────────────────
+        if i > 0:
+            old_lo = int(j_lo[i - 1]); old_hi = int(j_hi[i - 1])
+            d_prev[old_lo : old_hi + 1] = INF
+        d_prev[lo : hi + 1] = d_cur
+
+    # ── Backtrack from (N-1, M-1) or nearest reachable in band ────────────
+    i = N - 1
+    j = min(M - 1, int(j_hi[i]))
+    pi, pj = [i], [j]
     while i > 0 or j > 0:
         if i == 0:
             j -= 1
         elif j == 0:
             i -= 1
         else:
-            d = D[i-1, j-1]
-            v = D[i-1, j]
-            h = D[i, j-1]
-            if d <= v and d <= h:
-                i -= 1; j -= 1
-            elif v <= h:
-                i -= 1
+            lo = int(j_lo[i]); k = j - lo
+            bw_i = int(j_hi[i]) - lo + 1
+            if 0 <= k < bw_i:
+                p = int(par[i, k])
+                if p == 0 or p == 3: i -= 1; j -= 1   # diag / start
+                elif p == 1: i -= 1                     # vert
+                else:        j -= 1                     # horiz
             else:
-                j -= 1
-        path_i.append(i)
-        path_j.append(j)
-
-    path_i.reverse()
-    path_j.reverse()
-    return np.array([path_i, path_j])
+                # Out-of-band fallback — shouldn't happen with correct slack
+                i -= 1; j -= 1
+        pi.append(i); pj.append(j)
+    pi.reverse(); pj.reverse()
+    return np.array([pi, pj])
 
 
 def make_monotonic(wp):
@@ -360,25 +470,72 @@ def make_monotonic(wp):
 
 
 def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
-    """Align two recordings via chroma DTW. Returns transferred annotations."""
-    # Cost matrix: cosine distance (= 1 - dot product for L2-normalized vectors)
-    C = 1.0 - ref_chroma.T @ other_chroma
-    np.clip(C, 0, 2, out=C)
-    C = C.astype(np.float32)
+    """Two-level memory-efficient DTW alignment.
 
-    # DTW
-    wp = dtw(C)
-    del C   # free memory before backtrack result is used
+    Level 1 — Coarse (4× pool):
+      Unconstrained DTW on ~2100-frame features.
+      Cost matrix: (N/4 × M/4) float32  ≈ 17 MB for 14-min recordings.
+      Accumulator: same size float32     ≈ 17 MB.
+      Captures global tempo drift.
+
+    Level 2 — Fine (guided band):
+      cost computed on-the-fly via dot product — no N×M cost matrix.
+      Rolling d_prev row: M float32      ≈ 33 KB for 8400 frames.
+      Parent matrix: (N × band) int8    ≈ 1-4 MB.
+      Tight Sakoe-Chiba band derived from coarse path ± SLACK frames.
+    """
+    N, M = ref_chroma.shape[1], other_chroma.shape[1]
+
+    # ── Level 1: coarse unconstrained DTW ────────────────────────────────
+    COARSE = 4
+    rc = _pool_features(ref_chroma, COARSE)
+    oc = _pool_features(other_chroma, COARSE)
+    Nc, Mc = rc.shape[1], oc.shape[1]
+
+    Cc = (1.0 - rc.T @ oc).clip(0, 2).astype(np.float32)
+    del rc, oc
+    wp_c = _dtw_f32(Cc)
+    del Cc
+
+    # ── Build fine-resolution per-row band bounds from coarse path ───────
+    # Linearly interpolate the coarse warping path to fine frames,
+    # then expand by ±SLACK to give the fine DTW room to move.
+    SLACK = 80   # fine frames each side (~8 sec at 10 Hz)
+
+    # Map every coarse path step to fine (row_i, col_j) coordinates
+    fi_pts = wp_c[0].astype(np.float32) * COARSE   # fine row
+    fj_pts = wp_c[1].astype(np.float32) * COARSE   # fine col (centre of coarse block)
+
+    # Interpolate centre column for every fine row
+    if len(fi_pts) > 1:
+        fj_centre = np.interp(
+            np.arange(N, dtype=np.float32),
+            fi_pts, fj_pts
+        ).astype(np.float32)
+    else:
+        fj_centre = np.full(N, fj_pts[0], dtype=np.float32)
+
+    j_lo = np.maximum(0,     (fj_centre - SLACK).astype(np.int32))
+    j_hi = np.minimum(M - 1, (fj_centre + SLACK + COARSE).astype(np.int32))
+
+    # Enforce monotonicity of band (required for streaming DTW correctness)
+    for fi in range(1, N):
+        if j_lo[fi] < j_lo[fi - 1]: j_lo[fi] = j_lo[fi - 1]
+        if j_hi[fi] < j_hi[fi - 1]: j_hi[fi] = j_hi[fi - 1]
+
+    del wp_c, fj_centre, fi_pts, fj_pts
+
+    # ── Level 2: guided band streaming DTW ───────────────────────────────
+    wp = _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi)
     wp = make_monotonic(wp)
 
-    # Convert frame indices to times
-    n_ref = ref_chroma.shape[1]
+    # ── Convert frame indices → times → transfer annotation grid ─────────
+    n_ref   = ref_chroma.shape[1]
     n_other = other_chroma.shape[1]
-    ref_times = wp[0].astype(np.float64) * ref_duration / max(n_ref - 1, 1)
+    ref_times   = wp[0].astype(np.float64) * ref_duration   / max(n_ref   - 1, 1)
     other_times = wp[1].astype(np.float64) * other_duration / max(n_other - 1, 1)
 
-    # Transfer isochronous reference annotations to other recording
-    ref_grid = np.arange(0, ref_duration, ANNOTATION_STEP)
+    ref_grid   = np.arange(0, ref_duration, ANNOTATION_STEP)
     transferred = interp1d(
         ref_times, other_times, kind='linear', fill_value='extrapolate'
     )(ref_grid)

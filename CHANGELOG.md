@@ -1,4 +1,6 @@
 # Listen Here! CHANGELOG.md
+### 0.8.0
+* Implement in-browser score synthesis and alignment
 
 ### 0.7.0
 * Implement in-browser alignment functionality

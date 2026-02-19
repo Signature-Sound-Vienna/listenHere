@@ -2096,7 +2096,9 @@ function initFilePicker() {
   filesBtn.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
     if (fileInput.files.length) {
-      handleFiles(Array.from(fileInput.files));
+      const files = Array.from(fileInput.files);
+      fileInput.value = ""; // reset so the same file can be re-picked
+      handleFiles(files);
     }
   });
 

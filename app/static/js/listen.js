@@ -1557,6 +1557,16 @@ document.addEventListener("DOMContentLoaded", () => {
               }
             }
           }
+        } else {
+          // Normal mode: seek backwards
+          // plain=10s, Shift=5s, Shift+Alt=1s
+          const delta = e.shiftKey ? (e.altKey ? 1 : 5) : 10;
+          const ws = wavesurfers[currentAudioIx];
+          const dur = ws.getDuration();
+          if (dur > 0) {
+            const newTime = Math.max(0, ws.getCurrentTime() - delta);
+            ws.seekTo(newTime / dur);
+          }
         }
         break;
       }
@@ -1589,6 +1599,16 @@ document.addEventListener("DOMContentLoaded", () => {
               redrawAllMarkers();
               seekToActiveMarker();
             }
+          }
+        } else {
+          // Normal mode: seek forwards
+          // plain=10s, Shift=5s, Shift+Alt=1s
+          const delta = e.shiftKey ? (e.altKey ? 1 : 5) : 10;
+          const ws = wavesurfers[currentAudioIx];
+          const dur = ws.getDuration();
+          if (dur > 0) {
+            const newTime = Math.min(dur, ws.getCurrentTime() + delta);
+            ws.seekTo(newTime / dur);
           }
         }
         break;

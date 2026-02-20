@@ -70,6 +70,29 @@
           </thead>
           <tbody></tbody>
         </table>
+        <div id="align-peaks-row">
+          <label>
+            <input type="checkbox" id="align-peaks-checkbox" />
+            Include pre-calculated waveform envelope (peaks)
+          </label>
+          <div id="align-peaks-count-wrap" style="display: none">
+            &nbsp;
+            <input
+              type="number"
+              id="align-peaks-count"
+              value="4096"
+              min="128"
+              max="16384"
+              step="128"
+              style="width: 5em"
+            />
+            pts/track
+            <span
+              id="align-peaks-size-estimate"
+              style="font-size: smaller; color: #555"
+            ></span>
+          </div>
+        </div>
         <button id="align-start-btn">Start Alignment</button>
       </div>
 
@@ -209,6 +232,7 @@
           tr.appendChild(tdRef);
           tbody.appendChild(tr);
         });
+        updatePeakSizeEstimate();
       }
 
       /* --- Alignment --- */
@@ -221,6 +245,16 @@
         const refName = document.querySelector(
           'input[name="ref"]:checked',
         ).value;
+        const peaksChecked = document.getElementById(
+          "align-peaks-checkbox",
+        ).checked;
+        const peakCount = peaksChecked
+          ? Math.max(
+              128,
+              parseInt(document.getElementById("align-peaks-count").value) ||
+                4096,
+            )
+          : 0;
 
         // Show progress, hide controls
         document.getElementById("align-file-list-container").style.display =
@@ -372,6 +406,7 @@
             refName,
             meiMidi: meiMidi || null,
             meiUri: meiUri || "",
+            peakCount,
           },
           transferables,
         );
@@ -394,16 +429,38 @@
 
       function openInListenHere() {
         if (!alignmentResult) return;
-        // Store alignment in sessionStorage, navigate to listen page
         const json = JSON.stringify(alignmentResult);
+        const sizeBytes = json.length;
+        const proceed =
+          sizeBytes > 4 * 1024 * 1024
+            ? confirm(
+                `The alignment data is ${(sizeBytes / 1024 / 1024).toFixed(1)} MB, which may exceed the 5 MB sessionStorage limit. Click OK to try anyway, or Cancel to download instead.`,
+              )
+            : true;
+        if (!proceed) return;
         try {
           sessionStorage.setItem("listenHereAlignment", json);
           window.location.href = "/?align=session&useFiles";
         } catch (err) {
           alert(
-            "Alignment too large for session storage. Please download the JSON and use it with ?align=<url>&useFiles.",
+            "Could not save to sessionStorage (data too large). Please download the JSON and open it via URL.",
           );
         }
+      }
+
+      function updatePeakSizeEstimate() {
+        const checkbox = document.getElementById("align-peaks-checkbox");
+        const countInput = document.getElementById("align-peaks-count");
+        const estimateEl = document.getElementById("align-peaks-size-estimate");
+        if (!checkbox || !checkbox.checked) return;
+        const n = Math.max(128, parseInt(countInput.value) || 4096);
+        // Each float in JSON takes ~9 chars on average (e.g. "0.123456,")
+        const sizeBytes = n * Math.max(selectedFiles.length, 1) * 9;
+        const sizeStr =
+          sizeBytes < 1024 * 1024
+            ? `${Math.round(sizeBytes / 1024)} KB`
+            : `${(sizeBytes / 1024 / 1024).toFixed(1)} MB`;
+        estimateEl.textContent = `≈ ${sizeStr} added to JSON`;
       }
 
       /* --- Event wiring --- */
@@ -459,6 +516,18 @@
         document
           .getElementById("align-start-btn")
           .addEventListener("click", startAlignment);
+
+        // Peaks checkbox + count input
+        const peaksCheckbox = document.getElementById("align-peaks-checkbox");
+        const peaksCountWrap = document.getElementById(
+          "align-peaks-count-wrap",
+        );
+        const peaksCountInput = document.getElementById("align-peaks-count");
+        peaksCheckbox.addEventListener("change", () => {
+          peaksCountWrap.style.display = peaksCheckbox.checked ? "" : "none";
+          updatePeakSizeEstimate();
+        });
+        peaksCountInput.addEventListener("input", updatePeakSizeEstimate);
 
         // Results
         document

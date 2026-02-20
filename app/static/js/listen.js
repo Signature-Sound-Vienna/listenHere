@@ -37,6 +37,7 @@ export let wavesurfers = {};
 const _regionsPlugins = {}; // filename -> RegionsPlugin instance
 const _timerRegions = {}; // filename -> timer Region object
 const _spectrogramPlugins = {}; // filename -> SpectrogramPlugin instance
+const _waveformPeaks = {}; // filename -> { peaks: number[], duration: number } when pre-computed
 
 // File picker: maps alignment audio keys to blob URLs from user-selected files
 let fileBlobUrls = new Map();
@@ -543,6 +544,7 @@ function reloadWaveforms() {
     wavesurfers[ws].destroy();
     delete _regionsPlugins[ws];
     delete _timerRegions[ws];
+    delete _spectrogramPlugins[ws];
   });
   wavesurfers = {};
   // forget waveform elements (and spectorgrams)
@@ -622,7 +624,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     });
     // Hide spectrogram by default; show only when checkbox is checked
     if (_specPlugin.wrapper) {
-      _specPlugin.wrapper.style.display = document.getElementById("showSpectrograms").checked ? "" : "none";
+      _specPlugin.wrapper.style.display = document.getElementById(
+        "showSpectrograms",
+      ).checked
+        ? ""
+        : "none";
     }
     // Add timer region and any annotated regions to the shared RegionsPlugin
     _timerRegions[filename] = _regPlugin.addRegion({
@@ -639,7 +645,14 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
     const _audioUrl = resolveAudioUrl(filename);
     if (_audioUrl) {
-      wavesurfers[filename].load(_audioUrl);
+      // If pre-computed peaks are available, pass them to load() so WaveSurfer
+      // can render the waveform shape immediately (before full audio decode).
+      const _peakInfo = _waveformPeaks[filename];
+      if (_peakInfo && _peakInfo.peaks && _peakInfo.duration) {
+        wavesurfers[filename].load(_audioUrl, [_peakInfo.peaks], _peakInfo.duration);
+      } else {
+        wavesurfers[filename].load(_audioUrl);
+      }
       showWaveformOverlay(wfEl, "Loading audio\u2026");
     } else {
       showWaveformOverlay(wfEl, "Synthesising audio from MEI\u2026");
@@ -1279,6 +1292,14 @@ async function setGrids(grids) {
     if ("audio" in grids.body) {
       // final version of alignment json
       alignmentGrids = grids.body.audio;
+      // Normalise entries that carry inline peak data {times, peaks, duration}
+      // to plain time arrays, stashing peak info in _waveformPeaks.
+      for (const [key, val] of Object.entries(alignmentGrids)) {
+        if (val && !Array.isArray(val) && Array.isArray(val.times)) {
+          _waveformPeaks[key] = { peaks: val.peaks, duration: val.duration };
+          alignmentGrids[key] = val.times;
+        }
+      }
       if ("header" in grids) {
         if ("meiUri" in grids.header && "score" in grids.body) {
           meiUri = grids.header.meiUri;

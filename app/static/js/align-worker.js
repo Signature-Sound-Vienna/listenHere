@@ -542,19 +542,38 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
     return transferred.tolist()
 
 
-def bulk_align(audio_dict, ref_name):
+def compute_peaks(samples, n_peaks):
+    """Downsample audio to n_peaks max-amplitude values for waveform preview.
+    Divides the signal into n_peaks equal windows and takes the max abs value
+    of each window.  Values are in [0, max_amp] (WaveSurfer normalises them).
+    """
+    n = len(samples)
+    if n == 0 or n_peaks <= 0:
+        return []
+    n_trim = (n // n_peaks) * n_peaks
+    if n_trim == 0:
+        # Audio shorter than n_peaks samples — upsample by index replication
+        idx = np.linspace(0, n - 1, n_peaks).astype(np.int32)
+        return np.abs(samples)[idx].tolist()
+    peaks = np.abs(samples[:n_trim]).reshape(n_peaks, -1).max(axis=1)
+    return peaks.tolist()
+
+
+def bulk_align(audio_dict, ref_name, peak_count=0):
     """
     Align multiple recordings to a reference.
     audio_dict: {filename: np.array of float32 samples at 22050 Hz}
     ref_name: filename of the reference recording
+    peak_count: if > 0, include waveform peak data (n points per track)
     Returns: alignment JSON structure
     """
     filenames = list(audio_dict.keys())
     n = len(filenames)
 
-    # Extract chroma features
+    # Extract chroma features (and optionally peaks while audio is still in memory)
     chromas = {}
     durations = {}
+    peaks_data = {}
     for i, name in enumerate(filenames):
         reportStep("features", "start", name, i + 1, n, None)
         reportProgress(f"Extracting features: {name} ({i+1}/{n})",
@@ -563,6 +582,8 @@ def bulk_align(audio_dict, ref_name):
         audio = audio_dict[name]
         chromas[name] = compute_chroma(audio)
         durations[name] = len(audio) / SR
+        if peak_count > 0:
+            peaks_data[name] = compute_peaks(audio, peak_count)
         elapsed = _time.time() - t0
         reportStep("features", "done", name, i + 1, n, elapsed)
 
@@ -579,7 +600,7 @@ def bulk_align(audio_dict, ref_name):
     total_pairs = max(1, n - 1)
     for name in filenames:
         if name == ref_name:
-            result[name] = ref_grid.tolist()
+            times = ref_grid.tolist()
         else:
             pair_count += 1
             reportStep("align", "start", name, pair_count, total_pairs, None)
@@ -588,12 +609,20 @@ def bulk_align(audio_dict, ref_name):
                 int(30 + 65 * pair_count / total_pairs)
             )
             t0 = _time.time()
-            result[name] = align_pair(
+            times = align_pair(
                 chromas[ref_name], chromas[name],
                 ref_duration, durations[name]
             )
             elapsed = _time.time() - t0
             reportStep("align", "done", name, pair_count, total_pairs, elapsed)
+        if peaks_data:
+            result[name] = {
+                "times": times,
+                "peaks": peaks_data[name],
+                "duration": round(durations[name], 6),
+            }
+        else:
+            result[name] = times
 
     reportProgress("Done!", 100)
     return {
@@ -828,7 +857,7 @@ self.onmessage = async function (e) {
       if (!pyodideReady) pyodideReady = initPyodide();
       const pyodide = await pyodideReady;
 
-      const { audios, refName, meiMidi, meiUri } = e.data;
+      const { audios, refName, meiMidi, meiUri, peakCount } = e.data;
       // audios: [{name: string, samples: Float32Array}, ...]
 
       // Pass each audio buffer to Python globals
@@ -838,6 +867,7 @@ self.onmessage = async function (e) {
       }
       pyodide.globals.set("_n_audios", audios.length);
       pyodide.globals.set("_ref_name", refName);
+      pyodide.globals.set("_peak_count", peakCount || 0);
       pyodide.globals.set("_has_mei", !!(meiMidi && meiMidi.length > 0));
       if (meiMidi && meiMidi.length > 0) {
         pyodide.globals.set("_midi_bytes", meiMidi);
@@ -861,7 +891,7 @@ for i in range(int(_n_audios)):
 # Keep a copy of the reference audio for optional score alignment
 ref_audio_copy = audio_dict[str(_ref_name)].copy() if bool(_has_mei) else None
 
-result = bulk_align(audio_dict, str(_ref_name))
+result = bulk_align(audio_dict, str(_ref_name), peak_count=int(_peak_count))
 del audio_dict
 
 # Score alignment if MEI MIDI was provided

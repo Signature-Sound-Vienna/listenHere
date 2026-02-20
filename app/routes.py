@@ -23,10 +23,22 @@ def validate_alignment_json(data):
     if len(audio) == 0:
         return False, "'audio' must contain at least one entry"
     for key, val in audio.items():
-        if not isinstance(val, list):
-            return False, "Each audio entry must be an array of times"
-        if not all(isinstance(t, (int, float)) for t in val):
-            return False, "Audio time arrays must contain only numbers"
+        if isinstance(val, list):
+            # Plain array of times (no precomputed peaks)
+            if not all(isinstance(t, (int, float)) for t in val):
+                return False, f"Audio entry '{key}': time values must be numbers"
+        elif isinstance(val, dict):
+            # Inline format with precomputed peaks: {times, peaks, duration}
+            if "times" not in val or not isinstance(val["times"], list):
+                return False, f"Audio entry '{key}' must have a 'times' array"
+            if not all(isinstance(t, (int, float)) for t in val["times"]):
+                return False, f"Audio entry '{key}' times must contain only numbers"
+            if "peaks" in val and not isinstance(val["peaks"], list):
+                return False, f"Audio entry '{key}' peaks must be an array"
+            if "duration" in val and not isinstance(val["duration"], (int, float)):
+                return False, f"Audio entry '{key}' duration must be a number"
+        else:
+            return False, f"Audio entry '{key}' must be an array of times or an object with times/peaks/duration"
     if "header" not in data:
         return False, "Missing required 'header' field"
     header = data["header"]

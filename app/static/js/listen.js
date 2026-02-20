@@ -418,7 +418,12 @@ function swapCurrentAudio(newAudio) {
     );
     const wasPlaying = wavesurfers[currentAudioIx].isPlaying();
     wavesurfers[currentAudioIx].pause();
-    let closestAlignmentIx = getClosestAlignmentIx();
+    // In close-listening mode, seek to the active marker; otherwise follow
+    // the current playback position.
+    let closestAlignmentIx =
+      closeListeningMode && activeMarkerIx != null
+        ? markers[activeMarkerIx]
+        : getClosestAlignmentIx();
     document
       .getElementById(`waveform-${currentAudioIx}` + "-wav")
       .classList.remove("active");

@@ -777,9 +777,12 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         });
 
         // Reveal this waveform immediately now that its canvas, alignment grid,
-        // and position indicator are all correctly sized and painted.
+        // and position indicator are all correctly sized and painted —
+        // but only if the waveform has actually finished loading.  If synthesis
+        // is still in progress when a resize fires, drawBuffer() triggers
+        // "redraw" on a blank canvas; keep the spinner until "ready" fires.
         const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
-        if (wfEl) hideWaveformOverlay(wfEl);
+        if (wfEl && loaded.has(filename)) hideWaveformOverlay(wfEl);
         if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
           _positionUpdaters[currentAudioIx]();
         }
@@ -1034,58 +1037,97 @@ function _jsTickToSec(tick, tpq, tcs) {
   return secs + (((tick - pt) / tpq) * pu) / 1e6;
 }
 
+/** Format seconds as "Xs" or "Mm\u00a0SSs". */
+function _fmtSec(s) {
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60);
+  return `${m}m\u00a0${String(Math.round(s % 60)).padStart(2, "0")}s`;
+}
+
 /**
- * Synthesise MIDI notes to a WAV Blob using OfflineAudioContext.
- * Each note becomes a band-limited sawtooth oscillator (natural harmonic series)
- * with a simple attack/release envelope.  SR = 22050 Hz mono.
+ * Synthesise MIDI notes directly to a WAV Blob via additive PCM sample writing.
+ *
+ * OfflineAudioContext creates one OscillatorNode + one GainNode per note —
+ * for a large score (18k+ notes) that's tens of thousands of Web Audio nodes
+ * and takes several minutes.  Writing samples directly into a Float32Array is
+ * O(total_note_samples) instead of O(nodes), and completes in a few seconds.
+ *
+ * onProgress(elapsedSec, estimatedTotalSec) — called every ~50 ms of real time.
  */
-async function _jsSynthToWav(notes, tpq, tempoChanges) {
+async function _jsSynthToWav(notes, tpq, tempoChanges, onProgress) {
   if (!notes.length) return null;
   const SR = 22050;
   const maxEndTick = notes.reduce((m, n) => Math.max(m, n.e), 0);
   const duration = _jsTickToSec(maxEndTick, tpq, tempoChanges) + 0.5;
   const nSamples = Math.ceil(duration * SR);
-  const ctx = new OfflineAudioContext(1, nSamples, SR);
-  const ATK = 0.01,
-    REL = 0.03;
-  for (const note of notes) {
+  const out = new Float32Array(nSamples);
+
+  const ATK_S = Math.round(0.01 * SR);
+  const REL_S = Math.round(0.03 * SR);
+  const total = notes.length;
+  const renderStart = performance.now();
+  let lastYield = renderStart;
+
+  for (let ni = 0; ni < total; ni++) {
+    const note = notes[ni];
     const ts = _jsTickToSec(note.s, tpq, tempoChanges);
     if (ts >= duration) continue;
+
     const te = Math.min(
       duration - 0.01,
       _jsTickToSec(note.e, tpq, tempoChanges),
     );
     const noteDur = Math.max(0.02, te - ts);
     const amp = (note.v / 127) * 0.12;
-    const osc = ctx.createOscillator();
-    osc.type = "sawtooth";
-    osc.frequency.value = 440 * Math.pow(2, (note.p - 69) / 12);
-    const gain = ctx.createGain();
-    const g = gain.gain;
-    g.setValueAtTime(0, ts);
-    g.linearRampToValueAtTime(amp, ts + Math.min(ATK, noteDur * 0.3));
-    g.setValueAtTime(amp, Math.max(ts + ATK, ts + noteDur - REL));
-    g.linearRampToValueAtTime(0, ts + noteDur);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(ts);
-    osc.stop(ts + noteDur + 0.005);
+    const phaseInc = (440 * Math.pow(2, (note.p - 69) / 12)) / SR;
+
+    const iStart = Math.round(ts * SR);
+    const iEnd = Math.min(nSamples, Math.round((ts + noteDur) * SR));
+    const atkSamples = Math.min(ATK_S, Math.round(noteDur * 0.3 * SR));
+    const sustainEnd = Math.max(iStart + atkSamples, iEnd - REL_S);
+
+    let phase = 0;
+    for (let i = iStart; i < iEnd; i++) {
+      phase += phaseInc;
+      if (phase >= 1) phase -= 1;
+      const saw = 2 * phase - 1;
+      const si = i - iStart;
+      let env;
+      if (si < atkSamples) {
+        env = si / atkSamples;
+      } else if (i >= sustainEnd) {
+        env = Math.max(0, (iEnd - i) / REL_S);
+      } else {
+        env = 1;
+      }
+      out[i] += saw * amp * env;
+    }
+
+    // Yield to the event loop every ~50 ms so progress updates and paints can fire.
+    const now = performance.now();
+    if (now - lastYield > 50) {
+      if (onProgress) {
+        const elapsed = (now - renderStart) / 1000;
+        const frac = (ni + 1) / total;
+        onProgress(elapsed, elapsed / frac);
+      }
+      await new Promise((r) => setTimeout(r, 0));
+      lastYield = performance.now();
+    }
   }
-  const audioBuffer = await ctx.startRendering();
-  // Peak-normalise in-place
-  const ch = audioBuffer.getChannelData(0);
+
+  // Peak-normalise
   let peak = 0;
-  for (let i = 0; i < ch.length; i++)
-    if (Math.abs(ch[i]) > peak) peak = Math.abs(ch[i]);
-  if (peak > 1e-6) for (let i = 0; i < ch.length; i++) ch[i] /= peak;
-  return _audioBufferToWavBlob(audioBuffer);
+  for (let i = 0; i < nSamples; i++)
+    if (Math.abs(out[i]) > peak) peak = Math.abs(out[i]);
+  if (peak > 1e-6) for (let i = 0; i < nSamples; i++) out[i] /= peak;
+
+  return _float32ToWavBlob(out, SR);
 }
 
-/** Encode a mono AudioBuffer as a 16-bit PCM WAV Blob. */
-function _audioBufferToWavBlob(buffer) {
-  const ch = buffer.getChannelData(0);
-  const SR = buffer.sampleRate;
-  const n = ch.length;
+/** Encode a mono Float32Array as a 16-bit PCM WAV Blob. */
+function _float32ToWavBlob(samples, SR) {
+  const n = samples.length;
   const dataBytes = n * 2;
   const ab = new ArrayBuffer(44 + dataBytes);
   const v = new DataView(ab);
@@ -1106,10 +1148,15 @@ function _audioBufferToWavBlob(buffer) {
   ws(36, "data");
   v.setUint32(40, dataBytes, true);
   for (let i = 0; i < n; i++) {
-    const s = Math.max(-1, Math.min(1, ch[i]));
+    const s = Math.max(-1, Math.min(1, samples[i]));
     v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
   return new Blob([ab], { type: "audio/wav" });
+}
+
+/** Encode a mono AudioBuffer as a 16-bit PCM WAV Blob. */
+function _audioBufferToWavBlob(buffer) {
+  return _float32ToWavBlob(buffer.getChannelData(0), buffer.sampleRate);
 }
 
 /**
@@ -1182,7 +1229,20 @@ async function _buildAndPrepareSynthWaveform(
       getWfEl(),
       `Synthesising audio from MEI\u2026 (${notes.length.toLocaleString()}\u00a0notes)`,
     );
-    const wavBlob = await _jsSynthToWav(notes, tpq, tempoChanges);
+    const wavBlob = await _jsSynthToWav(
+      notes,
+      tpq,
+      tempoChanges,
+      (elapsed, estimated) => {
+        const elStr = _fmtSec(elapsed);
+        const estStr =
+          estimated !== null ? `, est. ${_fmtSec(estimated)} total` : "";
+        updateWaveformOverlayStatus(
+          getWfEl(),
+          `Synthesising audio from MEI\u2026 ${elStr}${estStr}`,
+        );
+      },
+    );
     if (!wavBlob) throw new Error("synthesis produced no audio");
 
     const blobUrl = URL.createObjectURL(wavBlob);
@@ -1969,12 +2029,16 @@ function processPickedJsonFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
-      try {
-        const data = JSON.parse(reader.result);
-        resolve(data);
-      } catch (e) {
-        reject(new Error("Invalid JSON: " + e.message));
-      }
+      // Yield one browser frame before the (potentially long) synchronous
+      // JSON.parse so any pending UI updates (e.g. "Reading…" indicator)
+      // get a chance to paint.
+      setTimeout(() => {
+        try {
+          resolve(JSON.parse(reader.result));
+        } catch (e) {
+          reject(new Error("Invalid JSON: " + e.message));
+        }
+      }, 0);
     };
     reader.onerror = () => reject(reader.error);
     reader.readAsText(file);
@@ -2052,6 +2116,11 @@ function initFilePicker() {
     }
     // Process the first JSON file found (if any)
     if (jsonFiles.length > 0) {
+      // Give immediate feedback so the user knows their pick registered
+      // (large files can take several seconds to read + parse).
+      if (jsonStatusEl) {
+        jsonStatusEl.innerHTML = `<span class="json-status-pending">&#8987; Reading ${jsonFiles[0].name}…</span>`;
+      }
       try {
         const data = await processPickedJsonFile(jsonFiles[0]);
         // Validate basic structure
@@ -2115,11 +2184,16 @@ function initFilePicker() {
   // File input (universal fallback)
   filesBtn.addEventListener("click", () => fileInput.click());
   fileInput.addEventListener("change", () => {
-    if (fileInput.files.length) {
+    // Defer by one task to work around a Firefox quirk where .files may not
+    // be fully populated yet when the change event fires on the first
+    // programmatic .click() of a display:none input.
+    setTimeout(() => {
       const files = Array.from(fileInput.files);
       fileInput.value = ""; // reset so the same file can be re-picked
-      handleFiles(files);
-    }
+      if (files.length) {
+        handleFiles(files);
+      }
+    }, 0);
   });
 
   // Drag and drop

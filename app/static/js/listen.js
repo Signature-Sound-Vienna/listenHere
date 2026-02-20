@@ -3,10 +3,10 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
-import WaveSurfer from "../npm/node_modules/wavesurfer.js/dist/wavesurfer.esm.js";
-import SpectrogramPlugin from "../npm/node_modules/wavesurfer.js/dist/plugins/spectrogram.esm.js";
-import RegionsPlugin from "../npm/node_modules/wavesurfer.js/dist/plugins/regions.esm.js";
-import HoverPlugin from "../npm/node_modules/wavesurfer.js/dist/plugins/hover.esm.js";
+import WaveSurfer from "../vendor/wavesurfer.esm.js";
+import SpectrogramPlugin from "../vendor/wavesurfer-spectrogram.esm.js";
+import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
+import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
 
 let markers = [];
 let loaded = new Set();
@@ -649,7 +649,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // can render the waveform shape immediately (before full audio decode).
       const _peakInfo = _waveformPeaks[filename];
       if (_peakInfo && _peakInfo.peaks && _peakInfo.duration) {
-        wavesurfers[filename].load(_audioUrl, [_peakInfo.peaks], _peakInfo.duration);
+        wavesurfers[filename].load(
+          _audioUrl,
+          [_peakInfo.peaks],
+          _peakInfo.duration,
+        );
       } else {
         wavesurfers[filename].load(_audioUrl);
       }

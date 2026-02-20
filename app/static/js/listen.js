@@ -50,6 +50,10 @@ let authPromptedOrigins = new Set();
 
 // Close-listening mode state
 let closeListeningMode = false;
+
+// jumpToTarget mode: show numbered overlays on on-screen waveforms
+let _jumpToTargetActive = false;
+let _jumpToTargetWaveforms = []; // snapshot of badged waveforms for the current session
 let activeMarkerIx = null; // index into markers[] array
 
 function getOrigin(url) {
@@ -194,6 +198,42 @@ function hideWaveformOverlay(wfEl) {
   if (overlay) overlay.style.display = "none";
   const wave = wfEl.querySelector("wave");
   if (wave) wave.style.visibility = "";
+}
+
+// --- Alt-mode number overlay helpers ---
+
+/** Returns .waveform elements that are >25% visible in the viewport, in DOM order. */
+function _getOnScreenWaveforms() {
+  const vpTop = 0;
+  const vpBottom = window.innerHeight;
+  return Array.from(document.querySelectorAll("#waveforms .waveform")).filter(
+    (el) => {
+      if (!(el.dataset.ix in wavesurfers)) return false;
+      const r = el.getBoundingClientRect();
+      if (r.height === 0) return false;
+      const visible = Math.min(r.bottom, vpBottom) - Math.max(r.top, vpTop);
+      return visible / r.height > 0.25;
+    },
+  );
+}
+
+/** Insert numbered badges on the first 10 on-screen waveforms. */
+function _showAltNumbers() {
+  _hideAltNumbers();
+  _jumpToTargetWaveforms = _getOnScreenWaveforms().slice(0, 10);
+  _jumpToTargetWaveforms.forEach((el, i) => {
+    const badge = document.createElement("div");
+    badge.className = "wf-alt-number";
+    // 1–9 for slots 0–8, 0 for the 10th slot
+    badge.textContent = String(i === 9 ? 0 : i + 1);
+    el.appendChild(badge);
+  });
+}
+
+/** Remove all number badges. */
+function _hideAltNumbers() {
+  document.querySelectorAll(".wf-alt-number").forEach((b) => b.remove());
+  _jumpToTargetWaveforms = [];
 }
 
 window.addEventListener("resize", () => {
@@ -1673,6 +1713,16 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         break;
       }
+      case "AltLeft":
+      case "AltRight": {
+        // Show numbered overlays on visible waveforms; suppress browser Alt behaviour.
+        // Do not activate when Shift is held (user may be nudging markers or seeking).
+        if (!e.repeat && !e.shiftKey && !_jumpToTargetActive) {
+          _jumpToTargetActive = true;
+          _showAltNumbers();
+        }
+        break;
+      }
       case "Digit1":
       case "Digit2":
       case "Digit3":
@@ -1693,15 +1743,18 @@ document.addEventListener("DOMContentLoaded", () => {
       case "Numpad8":
       case "Numpad9":
       case "Numpad0": {
-        // Jump to nth waveform (1-9 = 1st-9th, 0 = 10th)
-        const visible = getVisibleWaveforms();
-        const digit = e.code.replace(/^(Digit|Numpad)/, "");
-        const n = digit === "0" ? 9 : parseInt(digit) - 1;
-        if (n < visible.length) {
-          swapCurrentAudio(visible[n]);
-          if (!wavesurfers[currentAudioIx].isPlaying()) {
-            wavesurfers[currentAudioIx].play();
+        // Jump to nth on-screen waveform while Alt is held (1–9 = 1st–9th, 0 = 10th)
+        if (_jumpToTargetActive) {
+          const digit = e.code.replace(/^(Digit|Numpad)/, "");
+          const n = digit === "0" ? 9 : parseInt(digit) - 1;
+          if (n < _jumpToTargetWaveforms.length) {
+            swapCurrentAudio(_jumpToTargetWaveforms[n].dataset.ix);
+            if (!wavesurfers[currentAudioIx].isPlaying()) {
+              wavesurfers[currentAudioIx].play();
+            }
           }
+        } else {
+          handled = false;
         }
         break;
       }
@@ -1810,6 +1863,17 @@ document.addEventListener("DOMContentLoaded", () => {
         wavesurfers[ws].regions.list.timer.end = wsTo;
       });
       updateRenderTimer();
+    }
+  });
+
+  // Alt keyup: exit alt mode and clear number badges
+  document.querySelector("body").addEventListener("keyup", (e) => {
+    if (
+      (e.code === "AltLeft" || e.code === "AltRight") &&
+      _jumpToTargetActive
+    ) {
+      _jumpToTargetActive = false;
+      _hideAltNumbers();
     }
   });
 });

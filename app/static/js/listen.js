@@ -3,6 +3,11 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
+import WaveSurfer from "../npm/node_modules/wavesurfer.js/dist/wavesurfer.esm.js";
+// SpectrogramPlugin re-integration pending shadow-DOM container redesign (v7 always renders inside WaveSurfer wrapper).
+// import SpectrogramPlugin from "../npm/node_modules/wavesurfer.js/dist/plugins/spectrogram.esm.js";
+import RegionsPlugin from "../npm/node_modules/wavesurfer.js/dist/plugins/regions.esm.js";
+import HoverPlugin from "../npm/node_modules/wavesurfer.js/dist/plugins/hover.esm.js";
 
 let markers = [];
 let loaded = new Set();
@@ -30,6 +35,8 @@ export let storage;
 export let meiUri;
 export let currentlyActiveMaoSelection = "";
 export let wavesurfers = {};
+const _regionsPlugins = {}; // filename -> RegionsPlugin instance
+const _timerRegions = {}; // filename -> timer Region object
 
 // File picker: maps alignment audio keys to blob URLs from user-selected files
 let fileBlobUrls = new Map();
@@ -41,10 +48,7 @@ const SYNTH_MEI_KEY = "Score (synthesised from MEI)";
 const _synthBlobUrls = new Map();
 
 // HTTP Basic Auth: scoped per-origin to avoid leaking credentials
-// Maps origin string -> { credentials, requestHeaders } xhr options
-// NOTE: WaveSurfer v4 uses `xhr` with `requestHeaders: [{key, value}]`.
-// When upgrading to WaveSurfer v7, change to `fetchParams` with standard
-// `headers: { Authorization: 'Basic ...' }` — update xhrOptionsForUrl().
+// Maps origin string -> fetchParams objects: { headers: { Authorization: 'Basic ...' } }
 let authByOrigin = new Map();
 let authPromptedOrigins = new Set();
 
@@ -84,7 +88,7 @@ function promptForAuth(failedUrl) {
   if (pass === null) return false;
   const token = btoa(user + ":" + pass);
   authByOrigin.set(origin, {
-    requestHeaders: [{ key: "Authorization", value: "Basic " + token }],
+    headers: { Authorization: "Basic " + token },
   });
   return true;
 }
@@ -94,7 +98,7 @@ function reloadWaveformsForOrigin(authedOrigin) {
   for (const [filename, ws] of Object.entries(wavesurfers)) {
     const url = resolveAudioUrl(filename);
     if (getOrigin(url) === authedOrigin) {
-      ws.params.xhr = authByOrigin.get(authedOrigin);
+      ws.setOptions({ fetchParams: authByOrigin.get(authedOrigin) });
       ws.load(url);
     }
   }
@@ -135,18 +139,13 @@ function resolveAudioUrl(filename) {
 // Redraws all markers on all wavesurfers, highlighting the active marker in close-listening mode
 function redrawAllMarkers() {
   Object.keys(wavesurfers).forEach((ws) => {
-    wavesurfers[ws].clearMarkers();
-    wavesurfers[ws].addMarker({
-      time: 0,
-      label: ws,
-      color: "black",
-      position: "top",
-    });
+    _clearMarkers(ws);
+    _addMarker(ws, { time: 0, label: ws, color: "black", position: "top" });
     markers.forEach((m, i) => {
       const t = getCorrespondingTime(ws, m);
       const color =
         closeListeningMode && activeMarkerIx === i ? "#8b0000" : "red";
-      wavesurfers[ws].addMarker({ time: t, color });
+      _addMarker(ws, { time: t, color, alignIx: m });
     });
   });
 }
@@ -154,10 +153,6 @@ function redrawAllMarkers() {
 // --- Resize handling ---
 
 let _resizeDebounce = null;
-// Queue of filenames waiting for a resize-triggered drawBuffer() call.
-// Processed one at a time: each waveform's "redraw" handler shifts the next
-// entry and calls drawBuffer() on it, preventing simultaneous redraws.
-let _resizeQueue = [];
 
 // Per-waveform closures that repaint the position indicator on every canvas.
 // Registered in each waveform's "ready" handler.
@@ -165,9 +160,6 @@ const _positionUpdaters = {};
 
 function showWaveformOverlays() {
   document.querySelectorAll("#waveforms .waveform").forEach((wf) => {
-    // Hide the inner wave element (canvas + markers)
-    const wave = wf.querySelector("wave");
-    if (wave) wave.style.visibility = "hidden";
     showWaveformOverlay(wf, "Redrawing\u2026");
   });
 }
@@ -196,8 +188,65 @@ function updateWaveformOverlayStatus(wfEl, statusText) {
 function hideWaveformOverlay(wfEl) {
   const overlay = wfEl.querySelector(".wf-resize-overlay");
   if (overlay) overlay.style.display = "none";
-  const wave = wfEl.querySelector("wave");
-  if (wave) wave.style.visibility = "";
+}
+
+// --- Custom marker system (replaces WaveSurfer v4 markers plugin) ---
+
+function _clearMarkers(filename) {
+  const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+  if (!wfEl) return;
+  wfEl.querySelectorAll(".ws-marker").forEach((el) => el.remove());
+}
+
+function _addMarker(
+  filename,
+  { time, label, color = "red", position = "bottom", alignIx } = {},
+) {
+  const ws = wavesurfers[filename];
+  if (!ws) return null;
+  const duration = ws.getDuration();
+  const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+  if (!wfEl) return null;
+  const pct =
+    duration > 0 ? Math.max(0, Math.min(100, (time / duration) * 100)) : 0;
+  const marker = document.createElement("div");
+  marker.className = "ws-marker";
+  marker.dataset.time = time;
+  marker.dataset.position = position;
+  if (alignIx != null) marker.dataset.alignIx = alignIx;
+  marker.style.left = `${pct}%`;
+  marker.style.color = color;
+  if (label) {
+    const lbl = document.createElement("span");
+    lbl.className = "ws-marker-label";
+    lbl.textContent = label;
+    marker.appendChild(lbl);
+  }
+  marker.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    _onMarkerClick(filename, marker);
+  });
+  wfEl.appendChild(marker);
+  return marker;
+}
+
+function _onMarkerClick(filename, markerEl) {
+  if (markerEl.dataset.position === "top") return;
+  const alignIxStr = markerEl.dataset.alignIx;
+  if (alignIxStr == null) return;
+  const alignmentIx = parseInt(alignIxStr);
+  const markerArrayIx = markers.indexOf(alignmentIx);
+  if (markerArrayIx > -1) {
+    if (closeListeningMode) {
+      activeMarkerIx = markerArrayIx;
+      redrawAllMarkers();
+      seekToActiveMarker();
+    } else {
+      enterCloseListeningMode(markerArrayIx);
+    }
+  } else {
+    console.error("Could not find marker with alignIx", alignmentIx);
+  }
 }
 
 // --- Alt-mode number overlay helpers ---
@@ -238,26 +287,11 @@ function _hideAltNumbers() {
 
 window.addEventListener("resize", () => {
   if (Object.keys(wavesurfers).length === 0) return;
-  // Immediately hide everything so nothing stale is visible during the resize.
-  Object.keys(wavesurfers).forEach((ws) => wavesurfers[ws].clearMarkers());
+  // Clear custom markers immediately (positions shift when container width changes).
+  Object.keys(wavesurfers).forEach((ws) => _clearMarkers(ws));
+  // Show spinners; WaveSurfer v7's built-in ResizeObserver triggers rerenders per
+  // waveform, each of which hides its own overlay in its "redrawcomplete" handler.
   showWaveformOverlays();
-  // Debounce: once resizing settles, call drawBuffer() on every loaded waveform.
-  // With responsive:false, drawBuffer() is the only thing that repaints WaveSurfer's
-  // canvas and fires "redraw".  Each waveform reveals itself immediately when its
-  // own "redraw" fires.
-  clearTimeout(_resizeDebounce);
-  _resizeDebounce = setTimeout(() => {
-    _resizeQueue = Array.from(loaded);
-    if (_resizeQueue.length === 0) {
-      document
-        .querySelectorAll("#waveforms .waveform")
-        .forEach((wf) => hideWaveformOverlay(wf));
-      return;
-    }
-    // Kick off the first waveform; each subsequent one is triggered from
-    // within the "redraw" handler once the previous finishes.
-    wavesurfers[_resizeQueue.shift()].drawBuffer();
-  }, 150);
 });
 
 // --- Close-listening mode ---
@@ -500,7 +534,11 @@ function reloadWaveforms() {
   }
   // get current play position of active wavesurfer
   // destroy current wavesurfers
-  prevLoaded.forEach((ws) => wavesurfers[ws].destroy());
+  prevLoaded.forEach((ws) => {
+    wavesurfers[ws].destroy();
+    delete _regionsPlugins[ws];
+    delete _timerRegions[ws];
+  });
   wavesurfers = {};
   // forget waveform elements (and spectorgrams)
   document.getElementById("waveforms").replaceChildren();
@@ -511,12 +549,9 @@ function reloadWaveforms() {
 function visualiseAlignments() {
   // go through all wavesurfers, throw out user-defined markers, and instead draw in alignment positions as markers
   Object.keys(wavesurfers).forEach((ws) => {
-    wavesurfers[ws].clearMarkers();
+    _clearMarkers(ws);
     alignmentGrids[ws].forEach((t) => {
-      wavesurfers[ws].addMarker({ time: t, color: "red" });
-      wavesurfers[ws].on("hover", (e) => {
-        console.log("HOVER: ", e);
-      });
+      _addMarker(ws, { time: t, color: "red" });
     });
   });
 }
@@ -554,84 +589,38 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       .sort((a, b) => (a.id > b.id ? 1 : -1))
       .forEach((node) => waveforms.appendChild(node));
     // create new wavesurfer instance in the new container
-    /* HACK (DH 2023): eventually, show all annotated regions
-     * For now, only allow one at a time
-     */
+    const _regPlugin = RegionsPlugin.create();
+    // Note: SpectrogramPlugin v7 ignores the `container` option and always renders
+    // inside the WaveSurfer shadow DOM.  Spectrogram support will be re-integrated
+    // in a follow-up task once the shadow-DOM rendering approach is designed.
+    const _hoverPlugin = HoverPlugin.create({
+      lineColor: "#000",
+      labelColor: "#fff",
+      labelBackground: "#000",
+      labelSize: "10px",
+    });
+    _regionsPlugins[filename] = _regPlugin;
     let regions = extractCurrentlyAnnotatedRegions(filename);
-    let annoRegions = WaveSurfer.regions.create({ regions });
-    //let annoRegions = [];
-    /*
-    let annoFrom = 0;
-    let annoTo = 0;
-    if (currentlyAnnotatedRegions.length) {
-      annoFrom = currentlyAnnotatedRegions[0].from;
-      annoTo = currentlyAnnotatedRegions[0].to;
-    }
-    annoRegions = WaveSurfer.regions.create({
-      regions: [
-        {
-          id: "anno_region_0",
-          start: getCorrespondingTime(filename, annoFrom),
-          end: getCorrespondingTime(filename, annoTo),
-          drag: false,
-          color: "rgba(200, 130, 80, 0.3)",
-        },
-      ],
-    });*/
-
     wavesurfers[filename] = WaveSurfer.create({
       container: `#${CSS.escape("waveform-" + filename) + "-wav"}`,
       waveColor: "violet",
       progressColor: "purple",
       normalize: document.getElementById("normalize").checked,
-      responsive: false, // we call drawBuffer() ourselves on resize for precise coordination
-      xhr: xhrOptionsForUrl(resolveAudioUrl(filename)),
-      plugins: [
-        WaveSurfer.markers.create({}),
-        WaveSurfer.spectrogram.create({
-          wavesurfer: wavesurfers[filename],
-          container: `#${CSS.escape("waveform-" + filename + "-spec")}`,
-          labels: true,
-          colorMap: colorMap,
-          height: 128,
-        }),
-        WaveSurfer.cursor.create({
-          showTime: true,
-          opacity: 1,
-          customShowTimeStyle: {
-            "background-color": "#000",
-            color: "#fff",
-            padding: "2px",
-            "font-size": "10px",
-          },
-        }),
-        WaveSurfer.regions.create({
-          regions: [
-            {
-              id: "timer",
-              start: 0,
-              end: 0,
-              drag: false,
-              resize: false,
-              color: "rgba(255, 0, 100, 0.3)",
-            },
-          ],
-        }),
-        annoRegions,
-      ],
+      height: 128,
+      fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)),
+      plugins: [_regPlugin, _hoverPlugin],
     });
-    // add filename label marker
-    wavesurfers[filename].addMarker({
-      time: 0,
-      label: filename,
-      color: "black",
-      position: "top",
+    // Add timer region and any annotated regions to the shared RegionsPlugin
+    _timerRegions[filename] = _regPlugin.addRegion({
+      id: "timer",
+      start: 0,
+      end: 0,
+      drag: false,
+      resize: false,
+      color: "rgba(255, 0, 100, 0.3)",
     });
-    // add any user-generated markers
-    markers.forEach((m) => {
-      const t = getCorrespondingTime(filename, m);
-      wavesurfers[filename].addMarker({ time: t, color: "red" });
-    });
+    regions.forEach((r) => _regPlugin.addRegion(r));
+
     // Start loading (deferred for synth entries until the blob URL is available)
     const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
     const _audioUrl = resolveAudioUrl(filename);
@@ -705,69 +694,61 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         }
       });
     }
-    wavesurfers[filename].on("seek", () => {
+    wavesurfers[filename].on("interaction", () => {
       updatePositionIndicator();
     });
     wavesurfers[filename].on("ready", () => {
       // signal file is ready in filename list
       loaded.add(filename);
       console.log("READY:...", filename);
-      // create alignment grid and position indicator canvases from waveform canvas
-      const waveCanvas = document.querySelector(
-        `.waveform[data-ix='${filename}']>wave>canvas`,
+      // In WaveSurfer v7 the canvas lives inside a shadow root; we cannot
+      // query it from outside.  Size our overlay canvases to the container
+      // and keep them in sync via the "redrawcomplete" event.
+      const WAVE_HEIGHT = wavesurfers[filename].options.height || 128;
+      const readyWfContainer = document.querySelector(
+        `.waveform[data-ix='${filename}']`,
       );
-      const waveStyle = waveCanvas.style;
       const gridCanvas = document.createElement("canvas");
       const gridStyle = gridCanvas.style;
       const positionIndicatorCanvas = document.createElement("canvas");
       const positionIndicatorStyle = positionIndicatorCanvas.style;
       gridCanvas.classList.add("alignment-grid");
-      gridCanvas.width = waveCanvas.width;
-      gridCanvas.height = waveCanvas.height;
-      const baseZIndex = parseInt(waveStyle.zIndex) || 2;
-      gridStyle.zIndex = baseZIndex - 2;
+      gridCanvas.width = readyWfContainer.clientWidth;
+      gridCanvas.height = WAVE_HEIGHT;
+      gridStyle.zIndex = "2";
       gridStyle.position = "absolute";
-      gridStyle.top = waveStyle.top;
-      gridStyle.left = waveStyle.left;
-      gridStyle.bottom = waveStyle.bottom;
-      gridStyle.right = waveStyle.right;
-      gridStyle.width = waveStyle.width;
-      gridStyle.height = waveStyle.height;
+      gridStyle.top = "0";
+      gridStyle.left = "0";
+      gridStyle.width = "100%";
+      gridStyle.height = WAVE_HEIGHT + "px";
       gridStyle.pointerEvents = "none";
       gridStyle.display = document.getElementById("visalign").checked
         ? "unset"
         : "none";
       positionIndicatorCanvas.classList.add("position-indicator");
-      positionIndicatorCanvas.width = waveCanvas.width;
-      positionIndicatorCanvas.height = waveCanvas.height;
-      positionIndicatorStyle.zIndex = baseZIndex - 1;
+      positionIndicatorCanvas.width = readyWfContainer.clientWidth;
+      positionIndicatorCanvas.height = WAVE_HEIGHT;
+      positionIndicatorStyle.zIndex = "3";
       positionIndicatorStyle.position = "absolute";
-      positionIndicatorStyle.top = waveStyle.top;
-      positionIndicatorStyle.left = waveStyle.left;
-      positionIndicatorStyle.bottom = waveStyle.bottom;
-      positionIndicatorStyle.right = waveStyle.right;
-      positionIndicatorStyle.width = waveStyle.width;
-      positionIndicatorStyle.height = waveStyle.height;
+      positionIndicatorStyle.top = "0";
+      positionIndicatorStyle.left = "0";
+      positionIndicatorStyle.width = "100%";
+      positionIndicatorStyle.height = WAVE_HEIGHT + "px";
       positionIndicatorStyle.pointerEvents = "none";
-      //      positionIndicatorStyle.display = document.getElementById("visalign").checked ? "unset" : "none";
-      waveCanvas.parentNode.insertBefore(gridCanvas, waveCanvas);
-      waveCanvas.parentNode.insertBefore(positionIndicatorCanvas, waveCanvas);
+      readyWfContainer.appendChild(gridCanvas);
+      readyWfContainer.appendChild(positionIndicatorCanvas);
 
       // Function to draw (or redraw) the alignment grid
       function drawAlignmentGrid() {
-        // Use the waveCanvas reference captured at ready-time rather than
-        // re-querying: querySelector('>wave>canvas') would return our own
-        // gridCanvas (inserted before waveCanvas) and read stale dimensions.
-        if (!waveCanvas || !waveCanvas.parentNode) return;
-        // Sync our overlay canvas dimensions to WaveSurfer's canvas
-        gridCanvas.width = waveCanvas.width;
-        gridCanvas.height = waveCanvas.height;
-        gridStyle.width = waveCanvas.style.width;
-        gridStyle.height = waveCanvas.style.height;
-        positionIndicatorCanvas.width = waveCanvas.width;
-        positionIndicatorCanvas.height = waveCanvas.height;
-        positionIndicatorStyle.width = waveCanvas.style.width;
-        positionIndicatorStyle.height = waveCanvas.style.height;
+        // Size our overlay canvases to the container width; readyWfContainer
+        // is captured at ready-time and stays valid for this waveform's lifetime.
+        if (!readyWfContainer || !readyWfContainer.isConnected) return;
+        const w = readyWfContainer.clientWidth;
+        const h = wavesurfers[filename].options.height || 128;
+        gridCanvas.width = w;
+        gridCanvas.height = h;
+        positionIndicatorCanvas.width = w;
+        positionIndicatorCanvas.height = h;
         // Redraw grid lines
         const ctx = gridCanvas.getContext("2d");
         ctx.clearRect(0, 0, gridCanvas.width, gridCanvas.height);
@@ -801,14 +782,14 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       );
       if (readyWfEl) hideWaveformOverlay(readyWfEl);
 
-      // "redraw" fires after drawBuffer() completes — WaveSurfer's canvas is
-      // already at the new dimensions when this runs.
-      wavesurfers[filename].on("redraw", () => {
+      // "redrawcomplete" fires after each WaveSurfer render cycle — both on the
+      // initial load and on any automatic resize triggered by its ResizeObserver.
+      wavesurfers[filename].on("redrawcomplete", () => {
         // Resize our overlay canvases and repaint grid lines.
         drawAlignmentGrid();
-        // Restore markers (drawBuffer clears them).
-        wavesurfers[filename].clearMarkers();
-        wavesurfers[filename].addMarker({
+        // Restore markers (canvas has been redrawn, marker positions must refresh).
+        _clearMarkers(filename);
+        _addMarker(filename, {
           time: 0,
           label: filename,
           color: "black",
@@ -818,26 +799,18 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           const t = getCorrespondingTime(filename, m);
           const color =
             closeListeningMode && activeMarkerIx === i ? "#8b0000" : "red";
-          wavesurfers[filename].addMarker({ time: t, color });
+          _addMarker(filename, { time: t, color, alignIx: m });
         });
 
-        // Reveal this waveform immediately now that its canvas, alignment grid,
-        // and position indicator are all correctly sized and painted —
-        // but only if the waveform has actually finished loading.  If synthesis
-        // is still in progress when a resize fires, drawBuffer() triggers
-        // "redraw" on a blank canvas; keep the spinner until "ready" fires.
+        // Reveal this waveform once its canvas, alignment grid, and position
+        // indicator are all correctly sized and painted — but only if audio
+        // has actually finished loading (not during synthesis).
         const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
         if (wfEl && loaded.has(filename)) hideWaveformOverlay(wfEl);
         if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
           _positionUpdaters[currentAudioIx]();
         }
-        // Trigger the next waveform in the resize queue (if any).
-        // Deferred with setTimeout so the browser can paint this waveform
-        // before starting the next drawBuffer() — otherwise the entire chain
-        // runs synchronously in one task and nothing paints until all are done.
-        if (_resizeQueue.length > 0) {
-          setTimeout(() => wavesurfers[_resizeQueue.shift()].drawBuffer(), 0);
-        }
+        // No _resizeQueue needed: v7 rerenders each waveform independently.
       });
       let listItem = document.getElementById(filename);
       let status = listItem.querySelector("label").classList;
@@ -860,43 +833,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         let markersString = storage.getItem("markers_" + workId);
         if (markersString) {
           markers = JSON.parse(markersString);
-          // apply any markers that may have been loaded from local storage
-          markers.forEach((m) => {
-            const t = getCorrespondingTime(filename, m);
-            wavesurfers[filename].addMarker({ time: t, color: "red" });
-          });
+          // markers are rendered by the "redrawcomplete" handler
         }
       }
     });
-    wavesurfers[filename].on("marker-click", (e) => {
-      console.log("MARKER CLICKED");
-      if (e.position === "top") {
-        // ignore clicks on filename-label markers
-        return;
-      }
-      // Find the alignment grid index for the clicked marker
-      const clickedAudioIx = e.el.closest(".waveform").dataset.ix;
-      const clickedGrid = alignmentGrids[clickedAudioIx];
-      const alignmentIx = clickedGrid.indexOf(e.time);
-      if (alignmentIx > -1) {
-        // Find which index in the markers array this corresponds to
-        const markerArrayIx = markers.indexOf(alignmentIx);
-        if (markerArrayIx > -1) {
-          if (closeListeningMode) {
-            // Already in close-listening mode: make clicked marker active
-            activeMarkerIx = markerArrayIx;
-            redrawAllMarkers();
-            seekToActiveMarker();
-          } else {
-            // Enter close-listening mode with the clicked marker as active
-            enterCloseListeningMode(markerArrayIx);
-          }
-        }
-      } else {
-        console.error("Could not find grid entry for time ", e.time);
-      }
-    });
-    wavesurfers[filename].on("seek", (e) => {
+    wavesurfers[filename].on("interaction", () => {
       if (filename !== currentAudioIx) swapCurrentAudio(filename);
     });
     wavesurfers[filename].on("audioprocess", () => {
@@ -904,8 +845,9 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       updatePositionIndicator();
       // continually update timer region when opened but not yet closed
       if (timerFrom === timerTo && timerFrom > 0) {
-        wavesurfers[filename].regions.list.timer.end =
-          wavesurfers[filename].getCurrentTime();
+        _timerRegions[filename].setOptions({
+          end: wavesurfers[filename].getCurrentTime(),
+        });
         updateRenderTimer();
       }
     });
@@ -1543,11 +1485,12 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // load a colormap json file to be passed to the spectrogram.create method.
-  WaveSurfer.util
-    .fetchFile({ url: root + "js/hot-colormap.json", responseType: "json" })
-    .on("success", (cM) => {
+  fetch(root + "js/hot-colormap.json")
+    .then((r) => r.json())
+    .then((cM) => {
       colorMap = cM;
-    });
+    })
+    .catch((err) => console.warn("Couldn't load colormap:", err));
   // play/pause button
   document.getElementById("playpause").addEventListener("click", function (e) {
     playpause();
@@ -1563,7 +1506,7 @@ document.addEventListener("DOMContentLoaded", () => {
     Object.keys(wavesurfers).forEach((ws) => {
       const t = getCorrespondingTime(ws, toMark);
       console.log("got corresponding time: ", t);
-      wavesurfers[ws].addMarker({ time: t, color: "red" });
+      _addMarker(ws, { time: t, color: "red", alignIx: toMark });
     });
   });
   // show spectrograms checkbox
@@ -1787,7 +1730,7 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
           Object.keys(wavesurfers).forEach((ws) => {
             const t = getCorrespondingTime(ws, toMark);
-            wavesurfers[ws].addMarker({ time: t, color: "red" });
+            _addMarker(ws, { time: t, color: "red", alignIx: toMark });
           });
         }
         break;
@@ -1873,8 +1816,7 @@ document.addEventListener("DOMContentLoaded", () => {
           getClosestAlignmentIx(timerFrom),
         );
         const wsTo = getCorrespondingTime(ws, getClosestAlignmentIx(timerTo));
-        wavesurfers[ws].regions.list.timer.start = wsFrom;
-        wavesurfers[ws].regions.list.timer.end = wsTo;
+        _timerRegions[ws].setOptions({ start: wsFrom, end: wsTo });
       });
       updateRenderTimer();
     }
@@ -2047,17 +1989,13 @@ function playpause() {
 
 function updateRenderTimer() {
   Object.keys(wavesurfers).forEach((ws) => {
-    let timer = wavesurfers[ws].regions.list.timer;
-    console.log(timer.start, timer.end);
-    timer.updateRender();
-    let timeDelta = timer.end - timer.start;
-    document.querySelector(
-      '.waveform[data-ix="' + ws + '"] region[data-id="timer"]',
-    ).innerHTML = timeDelta
-      ? `<div class='timerValueContainer'><span>${timeDelta.toFixed(
-          3,
-        )}</span></div>`
-      : ""; // don't display 0
+    const timer = _timerRegions[ws];
+    if (!timer) return;
+    const timeDelta = timer.end - timer.start;
+    // Note: injecting a label into the timer region element is not supported
+    // in WaveSurfer v7 (shadow DOM). The region is rendered automatically;
+    // a future implementation could overlay a label div on the container.
+    console.log("timer:", timer.start, timer.end, "delta:", timeDelta);
   });
 }
 
@@ -2066,16 +2004,15 @@ function updateRenderAnnoRegions() {
   // HACK dlfm2023: for now do nothing, ensure annots are loaded before wavesurfers
   Object.keys(wavesurfers).forEach((ws) => {
     console.log("Update render anno regions: ", ws, currentlyAnnotatedRegions);
+    const regPlugin = _regionsPlugins[ws];
+    if (!regPlugin) return;
     let regions = extractCurrentlyAnnotatedRegions(ws);
-    wavesurfers[ws].clearRegions();
-    regions.forEach((r) => wavesurfers[ws].addRegion(r));
-
-    /*
-      let timeDelta = region.end - region.start;
-      document.querySelector('.waveform[data-ix="' + ws + '"] region[data-id="anno_region_0"]')
-        .innerHTML = timeDelta 
-          ? `<div class='regiontimerValueContainer'><span>${timeDelta.toFixed(3)}</span></div>` 
-          : ""; // don't display 0 */
+    // Remove only annotation regions, preserving the timer region
+    regPlugin
+      .getRegions()
+      .filter((r) => r.id !== "timer")
+      .forEach((r) => r.remove());
+    regions.forEach((r) => regPlugin.addRegion(r));
   });
 }
 

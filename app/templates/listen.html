@@ -24,11 +24,7 @@
     <script type = "module" src="{{ url_for('static', filename='js/listen.js') }}"></script>
     <script type = "module" src="{{ url_for('static', filename='js/solid.js') }}"></script>
     <script src="{{ url_for('static', filename='js/verovio-toolkit-wasm.js') }}" defer></script>
-    <script src="{{ url_for('static', filename='js/wavesurfer.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/wavesurfer.markers.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/wavesurfer.spectrogram.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/wavesurfer.cursor.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/wavesurfer.regions.min.js') }}"></script>
+    <!-- WaveSurfer v7 is imported as an ES module directly in listen.js -->
     <script src="{{ url_for('static', filename='npm/node_modules/@inrupt/solid-client-authn-browser/dist/solid-client-authn.bundle.js') }}"></script>
     <script src="{{ url_for('static', filename='npm/node_modules/jsonld/dist/jsonld.min.js')}}"></script>
   </head>

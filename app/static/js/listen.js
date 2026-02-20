@@ -1748,7 +1748,8 @@ document.addEventListener("DOMContentLoaded", () => {
       case "Numpad8":
       case "Numpad9":
       case "Numpad0": {
-        // Jump to nth on-screen waveform while Alt is held (1–9 = 1st–9th, 0 = 10th)
+        // Jump-to-target mode (Alt held): jump to nth badged on-screen waveform.
+        // Normal mode: jump to nth waveform in the full list (first 10, regardless of scroll).
         if (_jumpToTargetActive) {
           const digit = e.code.replace(/^(Digit|Numpad)/, "");
           const n = digit === "0" ? 9 : parseInt(digit) - 1;
@@ -1759,7 +1760,15 @@ document.addEventListener("DOMContentLoaded", () => {
             }
           }
         } else {
-          handled = false;
+          const digit = e.code.replace(/^(Digit|Numpad)/, "");
+          const n = digit === "0" ? 9 : parseInt(digit) - 1;
+          const allWaveforms = getVisibleWaveforms();
+          if (n < allWaveforms.length) {
+            swapCurrentAudio(allWaveforms[n]);
+            if (!wavesurfers[currentAudioIx].isPlaying()) {
+              wavesurfers[currentAudioIx].play();
+            }
+          }
         }
         break;
       }

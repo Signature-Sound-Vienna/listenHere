@@ -4,8 +4,7 @@ export let versionDate = window.versionDate;
 
 import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
 import WaveSurfer from "../npm/node_modules/wavesurfer.js/dist/wavesurfer.esm.js";
-// SpectrogramPlugin re-integration pending shadow-DOM container redesign (v7 always renders inside WaveSurfer wrapper).
-// import SpectrogramPlugin from "../npm/node_modules/wavesurfer.js/dist/plugins/spectrogram.esm.js";
+import SpectrogramPlugin from "../npm/node_modules/wavesurfer.js/dist/plugins/spectrogram.esm.js";
 import RegionsPlugin from "../npm/node_modules/wavesurfer.js/dist/plugins/regions.esm.js";
 import HoverPlugin from "../npm/node_modules/wavesurfer.js/dist/plugins/hover.esm.js";
 
@@ -37,6 +36,7 @@ export let currentlyActiveMaoSelection = "";
 export let wavesurfers = {};
 const _regionsPlugins = {}; // filename -> RegionsPlugin instance
 const _timerRegions = {}; // filename -> timer Region object
+const _spectrogramPlugins = {}; // filename -> SpectrogramPlugin instance
 
 // File picker: maps alignment audio keys to blob URLs from user-selected files
 let fileBlobUrls = new Map();
@@ -461,6 +461,11 @@ function swapCurrentAudio(newAudio) {
     document
       .getElementById(`waveform-${currentAudioIx}` + "-wav")
       .classList.remove("active");
+    // Reset the demoted waveform's canvas clip-path to 0 (WaveSurfer v7 uses
+    // a clip-path on the canvases div to show only the unplayed region; the
+    // CSS ::part(progress) hides the progress overlay on inactive waveforms,
+    // but the clip-path persists and makes the beginning appear blank).
+    wavesurfers[currentAudioIx].seekTo(0);
     // swap to new audio and alignment grid
     currentAudioIx = newAudio;
     console.log("new audio ix: ", currentAudioIx);
@@ -590,9 +595,14 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       .forEach((node) => waveforms.appendChild(node));
     // create new wavesurfer instance in the new container
     const _regPlugin = RegionsPlugin.create();
-    // Note: SpectrogramPlugin v7 ignores the `container` option and always renders
-    // inside the WaveSurfer shadow DOM.  Spectrogram support will be re-integrated
-    // in a follow-up task once the shadow-DOM rendering approach is designed.
+    // SpectrogramPlugin v7 renders inside wavesurfer.getWrapper() (regular DOM, not shadow DOM).
+    // We register it as a plugin and imperatively show/hide its .wrapper element.
+    const _specPlugin = SpectrogramPlugin.create({
+      fftSamples: 512,
+      height: 128,
+      colorMap: colorMap || "gray",
+    });
+    _spectrogramPlugins[filename] = _specPlugin;
     const _hoverPlugin = HoverPlugin.create({
       lineColor: "#000",
       labelColor: "#fff",
@@ -608,8 +618,12 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       normalize: document.getElementById("normalize").checked,
       height: 128,
       fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)),
-      plugins: [_regPlugin, _hoverPlugin],
+      plugins: [_regPlugin, _specPlugin, _hoverPlugin],
     });
+    // Hide spectrogram by default; show only when checkbox is checked
+    if (_specPlugin.wrapper) {
+      _specPlugin.wrapper.style.display = document.getElementById("showSpectrograms").checked ? "" : "none";
+    }
     // Add timer region and any annotated regions to the shared RegionsPlugin
     _timerRegions[filename] = _regPlugin.addRegion({
       id: "timer",
@@ -807,6 +821,13 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         // has actually finished loading (not during synthesis).
         const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
         if (wfEl && loaded.has(filename)) hideWaveformOverlay(wfEl);
+        // If this is an inactive waveform, reset its canvas clip-path to 0.
+        // WaveSurfer v7 applies a clip-path to the canvases div matching the
+        // playback position; the ::part(progress) CSS hides the progress bar
+        // but does not clear the clip-path, leaving the beginning blank.
+        if (filename !== currentAudioIx) {
+          wavesurfers[filename].seekTo(0);
+        }
         if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
           _positionUpdaters[currentAudioIx]();
         }
@@ -1512,12 +1533,14 @@ document.addEventListener("DOMContentLoaded", () => {
   // show spectrograms checkbox
   document.getElementById("showSpectrograms").checked = false;
   document.getElementById("showSpectrograms").addEventListener("click", (e) => {
-    let waveforms = document.getElementById("waveforms");
-    if (e.target.checked) {
-      waveforms.classList.add("showSpectrograms");
-    } else {
-      waveforms.classList.remove("showSpectrograms");
-    }
+    const show = e.target.checked;
+    // SpectrogramPlugin v7 renders inside the WaveSurfer wrapper (not in the
+    // separate .spectrogram divs), so we toggle each plugin's own wrapper element.
+    Object.values(_spectrogramPlugins).forEach((plugin) => {
+      if (plugin.wrapper) {
+        plugin.wrapper.style.display = show ? "" : "none";
+      }
+    });
   });
 
   // normalize audio checkbox

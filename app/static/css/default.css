@@ -612,8 +612,22 @@ details {
   width: 100%;
 }
 
-/* === Alignment page === */
+/* === Alignment panel (embedded in listen page) === */
 
+#align-panel {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: linear-gradient(135deg, #f8fafc 0%, #e0e7ef 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Segoe UI', 'Helvetica Neue', Arial, 'Liberation Sans', sans-serif;
+  color: #2d3748;
+  overflow-y: auto;
+}
+
+/* Legacy standalone page (align.html) */
 #align-page {
   background: linear-gradient(135deg, #f8fafc 0%, #e0e7ef 100%);
   min-height: 100vh;
@@ -623,6 +637,12 @@ details {
   margin: 0;
   font-family: 'Segoe UI', 'Helvetica Neue', Arial, 'Liberation Sans', sans-serif;
   color: #2d3748;
+}
+
+#align-panel #align-logo {
+  margin-bottom: 0.3em;
+  filter: drop-shadow(0 4px 16px rgba(0,0,0,0.08));
+  text-align: center;
 }
 
 #align-card {

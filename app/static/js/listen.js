@@ -6,6 +6,11 @@ import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
+import {
+  initAlignPanel,
+  configure as configureAlign,
+  setVerovioPromise,
+} from "./align.js";
 
 let markers = [];
 let loaded = new Set();
@@ -1446,6 +1451,38 @@ async function setGrids(grids) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Align → Listen in-memory handoff
+// Called by align.js when alignment completes (no page reload needed).
+// ---------------------------------------------------------------------------
+function onAlignmentComplete(alignmentResult, files) {
+  // Create blob URLs for each audio file so WaveSurfer can load them
+  files.forEach((f) => fileBlobUrls.set(f.name, URL.createObjectURL(f)));
+  useFilesMode = true;
+  loadedAlignmentJSON = alignmentResult;
+  workId = "in-browser-alignment";
+
+  // Collapse the align panel and show listen UI
+  const alignPanel = document.getElementById("align-panel");
+  if (alignPanel) alignPanel.style.display = "none";
+
+  // Show download button so user can save the result
+  const dlBtn = document.getElementById("download-json-btn");
+  if (dlBtn) dlBtn.style.display = "";
+
+  // Show manage-files button in case user wants to re-match files
+  const manageBtn = document.getElementById("manage-files-btn");
+  if (manageBtn && manageBtn.style.display === "none") {
+    manageBtn.style.display = "";
+    manageBtn.addEventListener("click", () => {
+      document.getElementById("file-picker-overlay").style.display = "flex";
+    });
+  }
+
+  // Load alignment data → build waveforms
+  setGrids(alignmentResult);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("back").addEventListener("click", () => {
     solidLogout().then(
@@ -1460,10 +1497,32 @@ document.addEventListener("DOMContentLoaded", () => {
   populateSolidTab();
 
   // set up Verovio
-  verovio.module.onRuntimeInitialized = () => {
-    tk = new verovio.toolkit();
-    console.log("Have Verovio toolkit:", tk);
-  };
+  const _verovioReady = new Promise((resolve) => {
+    if (typeof verovio !== "undefined" && verovio.module.calledRun) {
+      tk = new verovio.toolkit();
+      resolve(tk);
+    } else if (typeof verovio !== "undefined") {
+      verovio.module.onRuntimeInitialized = () => {
+        tk = new verovio.toolkit();
+        console.log("Have Verovio toolkit:", tk);
+        resolve(tk);
+      };
+    }
+  });
+  setVerovioPromise(_verovioReady);
+
+  // --- Align panel integration ---
+  if (window.alignMode === "align") {
+    const alignPanel = document.getElementById("align-panel");
+    if (alignPanel) {
+      alignPanel.style.display = "flex";
+      configureAlign({
+        workerUrl: root + "js/align-worker.js",
+        onComplete: onAlignmentComplete,
+      });
+      initAlignPanel();
+    }
+  }
 
   // Download JSON button
   const dlBtn = document.getElementById("download-json-btn");
@@ -1480,17 +1539,17 @@ document.addEventListener("DOMContentLoaded", () => {
       a.click();
       URL.revokeObjectURL(url);
     });
-    if (alignmentData === "session") dlBtn.style.display = "";
+    if (alignmentData === "session") dlBtn.style.display = ""; // legacy fallback
   }
 
   // load alignment json
-  if (alignmentData === "local") {
+  if (window.alignMode === "align") {
+    // Align mode: alignment will be produced in-browser via the align panel.
+    // Nothing to load yet — onAlignmentComplete() will call setGrids().
+  } else if (alignmentData === "local") {
     // Local mode: alignment will be provided via file picker
     // Just show the file picker, alignment loading happens there
     showFilePickerIfNeeded();
-  } else if (alignmentData === "session" && window._sessionAlignment) {
-    // Alignment from in-browser align tool (via sessionStorage)
-    setGrids(window._sessionAlignment);
   } else if (alignmentData !== "local") {
     fetch(alignmentData)
       .then((response) => response.json())

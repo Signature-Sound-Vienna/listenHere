@@ -70,16 +70,22 @@ def validate_alignment_json(data):
 @app.route("/")
 def index():
     align_url = request.args.get("align")
+    mode = request.args.get("mode", "")
+
+    # ?mode=align — in-browser alignment workflow
+    if mode == "align":
+        return render_template('listen.html', data="none", mode="align")
+
     if not align_url:
         # If ?useFiles is present without ?align=, serve listen page in local mode
         if request.args.get("useFiles") is not None:
-            return render_template('listen.html', data="local")
+            return render_template('listen.html', data="local", mode="listen")
         error = request.args.get("error")
         return render_template('index.html', error=error)
 
-    # Special case: alignment stored in sessionStorage (from /align page)
+    # Legacy: alignment stored in sessionStorage (from old /align page)
     if align_url == "session":
-        return render_template('listen.html', data="session")
+        return render_template('listen.html', data="session", mode="listen")
 
     # Fetch and validate the alignment JSON server-side
     try:
@@ -101,7 +107,7 @@ def index():
         return render_template('index.html',
                                error=f"Invalid alignment data: {escape(err)}")
 
-    return render_template('listen.html', data=align_url)
+    return render_template('listen.html', data=align_url, mode="listen")
 
 
 SSV_AUDIO = "https://w3id.org/ssv/audio/"
@@ -166,4 +172,4 @@ def test():
 
 @app.route("/align")
 def align():
-    return render_template('align.html')
+    return redirect("/?mode=align", code=302)

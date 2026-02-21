@@ -3,22 +3,13 @@
     <title>Listen Here!</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/default.css') }}" />
     <script> 
-      let root = "{{ url_for('static', filename='') }}";
-      let params = new URL(window.location.toLocaleString()).searchParams;
-      let alignmentData = {{ data | tojson }};
-      // If alignment was stored in sessionStorage (from /align page), load it
-      if (alignmentData === "session") {
-        let stored = sessionStorage.getItem("listenHereAlignment");
-        if (stored) {
-          try {
-            window._sessionAlignment = JSON.parse(stored);
-            sessionStorage.removeItem("listenHereAlignment");
-          } catch(e) { console.error("Failed to parse session alignment:", e); }
-        }
-      }
-      let workId = alignmentData === "local" ? "local" : alignmentData;
-      let versionString = {{ version | tojson }};
-      let versionDate = {{ version_date | tojson }};
+      var root = "{{ url_for('static', filename='') }}";
+      var params = new URL(window.location.toLocaleString()).searchParams;
+      var alignmentData = {{ data | tojson }};
+      var alignMode = {{ mode | tojson }};
+      var workId = alignmentData === "local" ? "local" : alignmentData;
+      var versionString = {{ version | tojson }};
+      var versionDate = {{ version_date | tojson }};
     </script>
     <script src="{{ url_for('static', filename='vendor/fast-json-patch.min.js') }}"></script>
     <script type = "module" src="{{ url_for('static', filename='js/listen.js') }}"></script>
@@ -29,6 +20,82 @@
     <script src="{{ url_for('static', filename='vendor/jsonld.min.js') }}"></script>
   </head>
   <body>
+    <!-- Align panel (shown when mode=align) -->
+    <div id="align-panel" style="display:none;">
+      <div id="align-card">
+        <div id="align-logo">
+          <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="80" alt="Logo" />
+        </div>
+        <h1>Align Audio Files</h1>
+        <p class="align-hint">
+          Drop a folder of audio files (or select them individually) to compute a
+          DTW-based chroma alignment.
+        </p>
+
+        <!-- File selection -->
+        <div id="align-file-actions">
+          <button id="align-dir-btn" style="display:none">Choose Folder</button>
+          <button id="align-files-btn">Choose Files</button>
+          <input type="file" id="align-file-input" multiple
+            accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac" style="display:none" />
+        </div>
+        <div id="align-drop-zone">
+          <span>or drag &amp; drop audio files here</span>
+        </div>
+
+        <!-- Optional MEI URI for score alignment -->
+        <div id="align-mei-section">
+          <label for="align-mei-input">
+            <strong>MEI URI</strong>
+            <span class="align-mei-hint">(optional — adds score–performance alignment)</span>
+          </label>
+          <input type="url" id="align-mei-input" placeholder="https://example.com/score.mei" />
+        </div>
+
+        <!-- File list + reference selector -->
+        <div id="align-file-list-container" style="display:none">
+          <h3>Selected files</h3>
+          <table id="align-file-table">
+            <thead><tr><th>File</th><th>Ref</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <div id="align-peaks-row">
+            <label>
+              <input type="checkbox" id="align-peaks-checkbox" />
+              Include pre-calculated waveform envelope (peaks)
+            </label>
+            <div id="align-peaks-count-wrap" style="display:none">
+              &nbsp;
+              <input type="number" id="align-peaks-count" value="4096"
+                min="128" max="16384" step="128" style="width:5em" />
+              pts/track
+              <span id="align-peaks-size-estimate" style="font-size:smaller;color:#555"></span>
+            </div>
+          </div>
+          <button id="align-start-btn">Start Alignment</button>
+        </div>
+
+        <!-- Progress -->
+        <div id="align-progress" style="display:none">
+          <div id="align-progress-bar-container">
+            <div id="align-progress-bar"></div>
+          </div>
+          <p id="align-progress-elapsed"></p>
+          <div id="align-step-list-container">
+            <ul id="align-step-list"></ul>
+          </div>
+          <p id="align-progress-text">Initializing...</p>
+        </div>
+
+        <!-- Results -->
+        <div id="align-results" style="display:none">
+          <h3>Alignment complete!</h3>
+          <button id="align-download-btn">Download alignment JSON</button>
+          <button id="align-open-btn">Listen!</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Global drop overlay for JSON replacement -->
     <div id="json-drop-overlay">
       <div class="drop-label">Drop alignment JSON to load</div>

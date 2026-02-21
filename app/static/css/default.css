@@ -62,10 +62,6 @@ canvas {
   display: none !important;
 }
 
-#waveforms .spectrogram { 
-  display:none;
-}
-
 /* Custom marker lines (replaces WaveSurfer v4 markers plugin) */
 .ws-marker {
   position: absolute;
@@ -86,14 +82,6 @@ canvas {
   white-space: nowrap;
   pointer-events: none;
   user-select: none;
-}
-
-#waveforms .spec-labels { 
-  position:absolute !important;
-}
-
-#waveforms.showSpectrograms .spectrogram{
-  display:unset;
 }
 
 .renditionName { 
@@ -209,15 +197,7 @@ details {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 
-.spectrogram{
-  border-top:1px solid black;
-  border-left:1px solid black;
-  border-right:1px solid black;
-  border-top-left-radius:5px;
-  border-top-right-radius:5px;
-}
-
-#waveforms:not(.showSpectrograms) .waveform { 
+#waveforms .waveform { 
   border-top: 1px solid black;
   border-radius: 5px;
 }
@@ -944,3 +924,4 @@ details {
   color: #1e40af;
   border-bottom-style: solid;
 }
+

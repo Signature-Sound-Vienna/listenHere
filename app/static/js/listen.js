@@ -4,7 +4,6 @@ export let versionDate = window.versionDate;
 
 import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
-import SpectrogramPlugin from "../vendor/wavesurfer-spectrogram.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
 
@@ -36,7 +35,6 @@ export let currentlyActiveMaoSelection = "";
 export let wavesurfers = {};
 const _regionsPlugins = {}; // filename -> RegionsPlugin instance
 const _timerRegions = {}; // filename -> timer Region object
-const _spectrogramPlugins = {}; // filename -> SpectrogramPlugin instance
 const _waveformPeaks = {}; // filename -> { peaks: number[], duration: number } when pre-computed
 
 // File picker: maps alignment audio keys to blob URLs from user-selected files
@@ -415,21 +413,15 @@ function onClickRenditionCheckbox(e) {
   let checked = checkbox.checked;
   let label = checkbox.parentElement.querySelector("label");
   let waveform = document.getElementById("waveform-" + e.target.value + "-wav");
-  let spectrogram = document.getElementById(
-    "waveform-" + e.target.value + "-spec",
-  );
   if (!checked) {
     e.stopPropagation(); // hide from other handler
     waveform.style.display = "none";
-    spectrogram.style.display = "none";
     checkbox.checked = false;
     label.classList.remove("ready");
     label.classList.add("loading");
   } else if (label.classList.contains("loading")) {
     e.stopPropagation(); // hide from other handler
     waveform.style.display = "unset";
-    if (document.getElementById("showSpectrograms").checked)
-      spectrogram.style.display = "unset";
     checkbox.checked = true;
     label.classList.remove("loading");
     label.classList.add("ready");
@@ -544,7 +536,6 @@ function reloadWaveforms() {
     wavesurfers[ws].destroy();
     delete _regionsPlugins[ws];
     delete _timerRegions[ws];
-    delete _spectrogramPlugins[ws];
   });
   wavesurfers = {};
   // forget waveform elements (and spectorgrams)
@@ -574,13 +565,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     waveform.id = "waveform-" + filename + "-wav";
     waveform.dataset.ix = filename;
     waveform.classList.add("waveform");
-    const spectrogram = document.createElement("div");
-    spectrogram.id = "waveform-" + filename + "-spec";
-    spectrogram.dataset.ix = filename;
-    spectrogram.classList.add("spectrogram");
     let waveforms = document.getElementById("waveforms");
-    // add elements to waveforms
-    waveforms.appendChild(spectrogram);
+    // add waveform element
     waveforms.appendChild(waveform);
     // now resort waveforms to maintain order, prioritizing VPO
     let vpo = [...waveforms.children].filter((n) =>
@@ -597,14 +583,6 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       .forEach((node) => waveforms.appendChild(node));
     // create new wavesurfer instance in the new container
     const _regPlugin = RegionsPlugin.create();
-    // SpectrogramPlugin v7 renders inside wavesurfer.getWrapper() (regular DOM, not shadow DOM).
-    // We register it as a plugin and imperatively show/hide its .wrapper element.
-    const _specPlugin = SpectrogramPlugin.create({
-      fftSamples: 512,
-      height: 128,
-      colorMap: colorMap || "gray",
-    });
-    _spectrogramPlugins[filename] = _specPlugin;
     const _hoverPlugin = HoverPlugin.create({
       lineColor: "#000",
       labelColor: "#fff",
@@ -620,16 +598,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       normalize: document.getElementById("normalize").checked,
       height: 128,
       fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)),
-      plugins: [_regPlugin, _specPlugin, _hoverPlugin],
+      plugins: [_regPlugin, _hoverPlugin],
     });
-    // Hide spectrogram by default; show only when checkbox is checked
-    if (_specPlugin.wrapper) {
-      _specPlugin.wrapper.style.display = document.getElementById(
-        "showSpectrograms",
-      ).checked
-        ? ""
-        : "none";
-    }
     // Add timer region and any annotated regions to the shared RegionsPlugin
     _timerRegions[filename] = _regPlugin.addRegion({
       id: "timer",
@@ -1530,7 +1500,7 @@ document.addEventListener("DOMContentLoaded", () => {
       .catch((err) => console.warn("Couldn't load alignment data: ", err));
   }
 
-  // load a colormap json file to be passed to the spectrogram.create method.
+  // load a colormap json file (kept for potential future use).
   fetch(root + "js/hot-colormap.json")
     .then((r) => r.json())
     .then((cM) => {
@@ -1555,19 +1525,6 @@ document.addEventListener("DOMContentLoaded", () => {
       _addMarker(ws, { time: t, color: "red", alignIx: toMark });
     });
   });
-  // show spectrograms checkbox
-  document.getElementById("showSpectrograms").checked = false;
-  document.getElementById("showSpectrograms").addEventListener("click", (e) => {
-    const show = e.target.checked;
-    // SpectrogramPlugin v7 renders inside the WaveSurfer wrapper (not in the
-    // separate .spectrogram divs), so we toggle each plugin's own wrapper element.
-    Object.values(_spectrogramPlugins).forEach((plugin) => {
-      if (plugin.wrapper) {
-        plugin.wrapper.style.display = show ? "" : "none";
-      }
-    });
-  });
-
   // normalize audio checkbox
   document.getElementById("normalize").checked = false;
   document.getElementById("normalize").addEventListener("click", (e) => {

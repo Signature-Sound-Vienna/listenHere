@@ -49,6 +49,33 @@ If you don't have an alignment JSON file yet, you can create one directly in the
 
 ---
 
+## Using the listening interface
+
+Once your audio files and alignment are loaded, the listening interface allows you to seamlessly switch between different recordings of the same piece during playback.
+
+### Basic Features
+- **Sidebar**: Toggle which audio recordings are visible by checking/unchecking them in the left sidebar.
+- **Playback**: Use the play/pause button or the **Spacebar** to toggle playback. Click anywhere on a waveform to jump to that timestamp across all synced recordings.
+- **Switching Audio**: Click on a recording's name in the sidebar, or use the **Up/Down Arrow** keys to change which audio recording is currently active and audible.
+- **Toolbar Options**: You can toggle waveform normalization, visualize alignment points, or show relative positions using the checkboxes in the sidebar toolbar.
+
+### Keyboard Shortcuts
+- **`Spacebar`** - Play/Pause
+- **`Up`/`Down` Arrow** - Switch between previous/next visible waveforms
+- **`Left`/`Right` Arrow** - Seek backwards/forwards by 10 seconds. Hold `Shift` for 5 seconds, or `Shift + Alt` for 1 second increments.
+- **`1` - `9` and `0`** - Quickly jump to the 1st through 10th loaded waveform.
+- **`Alt` + `1` - `9` and `0`** - Numbered badges will appear over the visible waveforms, allowing you to quickly jump to the first ten waveforms currently on screen (which change depending on your scroll position).
+- **`M`** - Drop a marker at the current playback position.
+
+### Close-Listening Mode
+Close-listening mode allows targeted navigation between specific markers you've dropped.
+- Press **`C`** to toggle close-listening mode on or off.
+- Use the **`Left`/`Right` Arrow** keys to immediately snap playback to the previous or next marker.
+- Hold **`Shift` + `Left`/`Right` Arrow** to precisely nudge the selected marker's position (100ms, or hold **`Alt`** for 20ms).
+- Press **`Backspace` / `Delete`** to delete the currently selected marker.
+
+---
+
 ## Technical & Advanced Usage
 
 ### Serving audio from your local machine

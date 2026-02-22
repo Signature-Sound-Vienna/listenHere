@@ -45,7 +45,9 @@ If you don't have an alignment JSON file yet, you can create one directly in the
 1. Go to the start page at **https://listen-here.mdw.ac.at** and click **Align in browser**.
 2. Alternatively, visit this link directly:
    `https://listen-here.mdw.ac.at/?mode=align`
-3. Follow the on-screen instructions to select your audio files and generate a new alignment, which you can then save and use for listening.
+3. Follow the on-screen instructions to select your audio files.
+4. (Optional) Check "Include pre-calculated waveform envelope (peaks)" before generating. This significantly speeds up load times when opening the listening interface later, at the cost of a slightly larger alignment file.
+5. Generate your new alignment, which you can then save and use for listening.
 
 ---
 

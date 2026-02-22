@@ -1,5 +1,8 @@
 # Listen Here! CHANGELOG.md
 
+### 0.9.1
+* Comprehensively update documentation and landing page for better clarity and accessibility
+
 ### 0.9.0
 * Upgrade to WaveSurfer v7 ESM with vendored local copies of all external dependencies (wavesurfer, regions, hover plugins)
 * Localise all external JS dependencies (Solid, JSON-LD, fast-json-patch) to avoid CDN reliance

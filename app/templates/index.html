@@ -27,49 +27,33 @@
       </div>
       <h1>Listen Here!</h1>
       <p class="tagline">
-        Machine-assisted close listening to aligned performance collections
+        Seamlessly compare and switch between different audio recordings of the same piece of music.
       </p>
+
       <div class="usage-box">
-        <code
-          >https://listen-here.mdw.ac.at?align=&lt;URL_of_your_alignment_JSON&gt;</code
-        >
+        <form id="url-form" onsubmit="event.preventDefault(); window.location.href='/?align=' + encodeURIComponent(document.getElementById('align-url').value);">
+          <label for="align-url" style="display: block; margin-bottom: 0.5rem; font-weight: bold; font-size: 0.9em; text-align: left; color: #475569;">Load an Alignment JSON URL:</label>
+          <div style="display: flex; gap: 0.5rem;">
+            <input type="url" id="align-url" placeholder="https://example.com/alignment.json" required style="flex: 1; padding: 0.6em; border: 1px solid #cbd5e1; border-radius: 6px; font-family: monospace; font-size: 0.9em;">
+            <button type="submit" style="padding: 0.6em 1.2em; border: none; background: #2563eb; color: white; border-radius: 6px; cursor: pointer; font-weight: 600; transition: background 0.15s;">Load</button>
+          </div>
+        </form>
       </div>
+
       <div class="action-grid">
         <a href="/?useFiles" class="action-card">
-          <strong>Local files</strong>
-          <span
-            >Load alignment JSON + audio directly from your computer — no server
-            needed</span
-          >
+          <strong>Load local files</strong>
+          <span>Select an alignment file and audio recordings directly from your computer.</span>
         </a>
         <a href="/?mode=align" class="action-card">
           <strong>Align in browser</strong>
-          <span
-            >Compute a new alignment from audio files entirely in your
-            browser</span
-          >
+          <span>Create a new alignment file from your audio recordings.</span>
         </a>
       </div>
       <p class="help-text">
-        Audio is fetched by your browser, never by the server. See the
-        <a href="https://github.com/Signature-Sound-Vienna/ListenHere#readme"
-          >full documentation</a
-        >
-        for details on
-        <a
-          href="https://github.com/Signature-Sound-Vienna/ListenHere#loading-audio-directly-from-your-computer-no-server-needed"
-          >loading local files</a
-        >,
-        <a
-          href="https://github.com/Signature-Sound-Vienna/ListenHere#serving-audio-from-your-local-machine"
-          >serving audio locally</a
-        >, and
-        <a href="https://github.com/Signature-Sound-Vienna/alignment"
-          >preparing collections</a
-        >
-        with the SSV alignment workflow (using
-        <a href="https://github.com/meinardmueller/SyncToolbox">SyncToolbox</a
-        >).
+        These tools run entirely in your web browser. No installation required, and <em>your audio is never uploaded anywhere.</em>
+        <br/><br/>
+        <strong>Need help?</strong> <a href="https://github.com/Signature-Sound-Vienna/ListenHere#readme">See full documentation in the README</a>.
       </p>
       <footer>
         <a href="https://doi.org/10.1145/3625135.3625144">Publication</a> ·
@@ -81,7 +65,7 @@
           >Signature Sound Vienna</a
         >
         ·
-        <a href="https://iwk.mdw.ac.at/same-procedure">Same Procedure</a>
+        <a href="https://iwk.mdw.ac.at/same-procedure">Same Procedure...?</a>
         <br />
         Funded by <a href="https://fwf.ac.at" target="_blank">FWF</a> (<a
           href="https://doi.org/10.55776/P34664"
@@ -91,7 +75,7 @@
         <a href="https://doi.org/10.55776/SCP1556025" target="_blank"
           >SCP 1556025</a
         >). Hosted by <a href="https://iwk.mdw.ac.at" target="_blank">IWK</a>,
-        <a href="https://mdw.ac.at" target="_blank">mdw Vienna</a>.
+        <a href="https://mdw.ac.at" target="_blank">mdw Vienna</a>. <a href="https://iwk.mdw.ac.at/impressum/">Imprint</a>.
         <br />
         <span class="version">v{{ version }} ({{ version_date }})</span>
       </footer>

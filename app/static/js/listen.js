@@ -759,19 +759,46 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         const ctx = gridCanvas.getContext("2d");
         ctx.clearRect(0, 0, gridCanvas.width, gridCanvas.height);
         ctx.lineWidth = 1;
-        ctx.strokeStyle = "#b0b0b055";
-        ctx.beginPath();
+        ctx.strokeStyle = "#800";
         const dur = wavesurfers[filename].getDuration();
+        const minPixelStep = 4; // Prevent overplotting: lines must be at least 4 pixels apart
+        
+        // Draw solid lines for the top and bottom sections
+        ctx.beginPath();
+        ctx.setLineDash([]);
+        let lastAbsX = -999;
         alignmentGrids[filename].forEach((gridPos, gridIx) => {
           const absoluteX =
             (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
           const relativeX = (gridPos / dur) * gridCanvas.width;
-          ctx.moveTo(absoluteX, 0);
-          ctx.lineTo(relativeX, gridCanvas.height / 6);
-          ctx.lineTo(relativeX, 5 * (gridCanvas.height / 6));
-          ctx.lineTo(absoluteX, gridCanvas.height);
+          
+          if (absoluteX - lastAbsX >= minPixelStep) {
+            ctx.moveTo(absoluteX, 0);
+            ctx.lineTo(relativeX, gridCanvas.height / 6);
+            ctx.moveTo(relativeX, 5 * (gridCanvas.height / 6));
+            ctx.lineTo(absoluteX, gridCanvas.height);
+            lastAbsX = absoluteX;
+          }
         });
         ctx.stroke();
+
+        // Draw sparsely dotted lines over the waveform section
+        ctx.beginPath();
+        ctx.setLineDash([2, 1]);
+        lastAbsX = -999; // Reset for the second rendering pass
+        alignmentGrids[filename].forEach((gridPos, gridIx) => {
+          const absoluteX =
+            (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
+          const relativeX = (gridPos / dur) * gridCanvas.width;
+          
+          if (absoluteX - lastAbsX >= minPixelStep) {
+            ctx.moveTo(relativeX, gridCanvas.height / 6);
+            ctx.lineTo(relativeX, 5 * (gridCanvas.height / 6));
+            lastAbsX = absoluteX;
+          }
+        });
+        ctx.stroke();
+        ctx.setLineDash([]); // Reset line dash
       }
 
       // Register this waveform's position-updater so it can be called

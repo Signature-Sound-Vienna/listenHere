@@ -82,6 +82,9 @@ canvas {
   white-space: nowrap;
   pointer-events: none;
   user-select: none;
+  background-color: rgba(255, 255, 255, 0.7);
+  padding: 1px 4px;
+  border-radius: 4px;
 }
 
 .renditionName { 

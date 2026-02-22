@@ -13,8 +13,8 @@ This tool is developed as part of the [Signature Sound Vienna (SSV)](https://iwk
 Listen Here! is publicly hosted and runs directly in your web browser at **https://listen-here.mdw.ac.at**.
 
 To use the tool, you need two things:
-1. An **alignment JSON file** (a mapping file that tells the app how the different audio recordings match up in time).
-2. The **audio files** themselves.
+1. An **alignment JSON file** (a mapping file that tells the app how the different audio recordings match up in time). You can generate this mapping within the tool using the "Align in browser" feature.
+2. A collection of **audio files** that you want to compare. You can load these files directly from your computer or from a web server.
 
 There are a few ways to load your audio into the application:
 

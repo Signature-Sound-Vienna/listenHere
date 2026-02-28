@@ -38,7 +38,7 @@ export let storage;
 export let meiUri;
 export let currentlyActiveMaoSelection = "";
 export let wavesurfers = {};
-const _regionsPlugins = {}; // filename -> RegionsPlugin instance
+export const _regionsPlugins = {}; // filename -> RegionsPlugin instance
 const _timerRegions = {}; // filename -> timer Region object
 const _waveformPeaks = {}; // filename -> { peaks: number[], duration: number } when pre-computed
 
@@ -762,7 +762,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         ctx.strokeStyle = "#800";
         const dur = wavesurfers[filename].getDuration();
         const minPixelStep = 4; // Prevent overplotting: lines must be at least 4 pixels apart
-        
+
         // Draw solid lines for the top and bottom sections
         ctx.beginPath();
         ctx.setLineDash([]);
@@ -771,7 +771,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           const absoluteX =
             (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
           const relativeX = (gridPos / dur) * gridCanvas.width;
-          
+
           if (absoluteX - lastAbsX >= minPixelStep) {
             ctx.moveTo(absoluteX, 0);
             ctx.lineTo(relativeX, gridCanvas.height / 6);
@@ -790,7 +790,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           const absoluteX =
             (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
           const relativeX = (gridPos / dur) * gridCanvas.width;
-          
+
           if (absoluteX - lastAbsX >= minPixelStep) {
             ctx.moveTo(relativeX, gridCanvas.height / 6);
             ctx.lineTo(relativeX, 5 * (gridCanvas.height / 6));
@@ -850,6 +850,9 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
           _positionUpdaters[currentAudioIx]();
         }
+        // Re-add annotation regions — WaveSurfer's redraw removes and recreates
+        // region SVG elements, so they must be restored after every render cycle.
+        if (currentlyAnnotatedRegions.length) updateRenderAnnoRegions();
         // No _resizeQueue needed: v7 rerenders each waveform independently.
       });
       let listItem = document.getElementById(filename);

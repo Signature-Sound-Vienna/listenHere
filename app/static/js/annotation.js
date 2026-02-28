@@ -7,11 +7,51 @@ import {
   meiUri,
   markScoreRegion,
   wavesurfers,
+  _regionsPlugins,
 } from "./listen.js";
 import { addNewMAOSelectionToExtract } from "./solid.js";
 
 const dummyUriPrefix =
   "https://repo.mdw.ac.at/signature-sound-vienna/media/wav/"; // HACK cheat for DH2023
+
+/**
+ * Returns all URL aliases for a given URI, transparently normalizing
+ * raw.githubusercontent.com URLs between their `refs/heads/<branch>` and
+ * bare `<branch>` forms. For non-GitHub URLs, returns a single-element array.
+ */
+function githubRawAliases(uri) {
+  if (!uri) return [uri];
+  const decoded = decodeURI(uri);
+  const aliases = new Set([uri, decoded]);
+  // Match: https://raw.githubusercontent.com/<owner>/<repo>/refs/heads/<branch>/...
+  const withRefs =
+    /^(https:\/\/raw\.githubusercontent\.com\/[^/]+\/[^/]+\/)refs\/heads\/(.+)$/;
+  // Match: https://raw.githubusercontent.com/<owner>/<repo>/<branch>/...  (no refs/heads)
+  const withoutRefs =
+    /^(https:\/\/raw\.githubusercontent\.com\/[^/]+\/[^/]+\/)(?!refs\/)(.+)$/;
+  for (const u of [uri, decoded]) {
+    let m;
+    if ((m = u.match(withRefs))) {
+      // Add the bare form (without refs/heads/)
+      aliases.add(m[1] + m[2]);
+    } else if ((m = u.match(withoutRefs))) {
+      // Add the refs/heads/ form, but only if the first path component looks like a
+      // branch name (no dots — avoids false-matching commit SHA paths).
+      const firstComponent = m[2].split("/")[0];
+      if (!firstComponent.includes(".")) {
+        aliases.add(m[1] + "refs/heads/" + m[2]);
+      }
+    }
+  }
+  return Array.from(aliases);
+}
+
+/** Returns true if candidateUri is an alias of referenceUri. */
+function meiUriMatches(referenceUri, candidateUri) {
+  const refAliases = githubRawAliases(referenceUri);
+  const candAliases = githubRawAliases(candidateUri);
+  return refAliases.some((r) => candAliases.includes(r));
+}
 
 // Wrapper around traverseAndFetch that reports back errors / progress to 'Load linked data' UI
 export function attemptFetchExternalResource(url, targetTypes, configObj) {
@@ -26,17 +66,13 @@ export function registerExtract(obj, url) {
   if (nsp.SCHEMA + "about") {
     let matching = obj[nsp.SCHEMA + "about"].filter((m) => {
       console.log("Inspecting: ", m["@id"], meiUri, decodeURI(meiUri));
-      return (
-        m["@id"] === meiUri ||
-        m["@id"] === decodeURI(meiUri) ||
-        decodeURI(m["@id"]) == meiUri
-      );
+      return meiUriMatches(meiUri, m["@id"]);
     });
     if (matching.length) {
       console.log(
         "Found matching extract resource: ",
         matching[0]["@id"],
-        meiUri
+        meiUri,
       );
       obj["@id"] = url;
       drawExtractUIElement(obj);
@@ -67,7 +103,7 @@ function drawExtractUIElement(obj) {
   addSelections.innerText = "+";
   addSelections.setAttribute(
     "title",
-    "Add currently loaded audio regions to extract as selections"
+    "Add currently loaded audio regions to extract as selections",
   );
   addSelections.classList.add("addSelectionsToExtractButton");
   let closeExtract = document.createElement("div");
@@ -91,22 +127,27 @@ function drawExtractUIElement(obj) {
       if (nsp.FRBR + "embodiment" in obj) {
         let mySelections = obj[nsp.FRBR + "embodiment"].map((e) => e["@id"]);
         let regionIx = currentlyAnnotatedRegions.findIndex((r) =>
-          mySelections.includes(r.selection)
+          mySelections.includes(r.selection),
         );
         if (regionIx >= 0) {
-          if (currentAudioIx)
-            wavesurfers[currentAudioIx].regions.list[
-              "anno_region_" + regionIx
-            ].play();
-          console.log(
-            "playing region: ",
-            wavesurfers[currentAudioIx].regions.list["anno_region_" + regionIx]
-          );
+          if (currentAudioIx) {
+            const regionId = "anno_region_" + regionIx;
+            const regPlugin = _regionsPlugins[currentAudioIx];
+            const region =
+              regPlugin &&
+              regPlugin.getRegions().find((r) => r.id === regionId);
+            if (region) {
+              region.play();
+              console.log("playing region: ", region);
+            } else {
+              console.warn("Could not find region to play: ", regionId);
+            }
+          }
         } else {
           console.log(
             "Couldn't find regionIx for extract: ",
             extract.dataset.selection,
-            currentlyAnnotatedRegions
+            currentlyAnnotatedRegions,
           );
         }
       } else {
@@ -126,7 +167,7 @@ function drawExtractUIElement(obj) {
           ws,
           audioMediaUri,
           extract.id,
-          obj[nsp.RDFS + "label"][0]["@value"]
+          obj[nsp.RDFS + "label"][0]["@value"],
         );
       });
     });
@@ -140,11 +181,8 @@ function markScoreRegions(selections) {
   let matchingSelectionUrls = selections.filter((s) => {
     let selObj = maoSelections[s["@id"]];
     if (selObj && nsp.SCHEMA + "about" in selObj) {
-      let meiMatches = selObj[nsp.SCHEMA + "about"].filter(
-        (t) =>
-          t["@id"] === meiUri ||
-          decodeURI(t["@id"]) == meiUri ||
-          t["@id"] == decodeURI(meiUri)
+      let meiMatches = selObj[nsp.SCHEMA + "about"].filter((t) =>
+        meiUriMatches(meiUri, t["@id"]),
       );
       return meiMatches.length;
     } else {
@@ -157,7 +195,7 @@ function markScoreRegions(selections) {
       if (url in maoSelections) {
         let obj = maoSelections[url];
         let selectedElementIds = obj[nsp.FRBR + "part"].map((uri) =>
-          uri["@id"].substr(uri["@id"].lastIndexOf("#") + 1)
+          uri["@id"].substr(uri["@id"].lastIndexOf("#") + 1),
         );
         if (selectedElementIds.length) {
           console.log("I was successfully called with selections ", selections);
@@ -166,14 +204,14 @@ function markScoreRegions(selections) {
       } else {
         console.warn(
           "setActiveSelection: Attempting to switch to unknown selection ",
-          url
+          url,
         );
       }
     });
   } else {
     console.warn(
       "setActiveSelection supplied without any selections matching the current meiUrl:",
-      selections
+      selections,
     );
   }
 }
@@ -192,16 +230,13 @@ export function markSelection(obj, url) {
       if (!Array.isArray(about)) {
         about = [about]; // ensure array
       }
-      let selectionResource = about.filter(
-        (f) =>
-          f["@id"] === meiUri ||
-          f["@id"] === decodeURI(meiUri) ||
-          decodeURI(f["@id"]) === meiUri
+      let selectionResource = about.filter((f) =>
+        meiUriMatches(meiUri, f["@id"]),
       );
       if (selectionResource.length) {
         console.log(
           "mao:Selection has selection resources: ",
-          selectionResource
+          selectionResource,
         );
         // selection is about our current score!
         if (nsp.FRBR + "part" in obj) {

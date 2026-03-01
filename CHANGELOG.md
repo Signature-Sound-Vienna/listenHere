@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.10.0
+* Add dynamic file grouping: users can organise recordings into named, reorderable groups via a dual-pane modal with drag-and-drop and regex matching, persisted to localStorage
+* Improve annotation workflow with Solid-backed linked-data annotations: selection mode, loop playback across waveform switches, annotation cards pinned at the bottom of the interface
+* Fix Solid URI doubling and 412 retry storm when patching resources
+* Score waveform now always sorted first in the waveform list and sidebar
+
 ### 0.9.1
 * Comprehensively update documentation and landing page for better clarity and accessibility
 

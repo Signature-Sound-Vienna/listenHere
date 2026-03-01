@@ -76,6 +76,25 @@ Close-listening mode allows targeted navigation between specific markers you've 
 - Hold **`Shift` + `Left`/`Right` Arrow** to precisely nudge the selected marker's position (100ms, or hold **`Alt`** for 20ms).
 - Press **`Backspace` / `Delete`** to delete the currently selected marker.
 
+### File Grouping
+When many recordings are loaded, you can organise them into named groups for easier navigation.
+- Click the **Group files** button in the toolbar to open the grouping modal.
+- The modal has two panes: **Ungrouped Files** on the left and **Groups** on the right.
+- Click **+ New Group** to create a group. Give it a name and optionally a substring or regex pattern to auto-match filenames.
+- **Drag and drop** files from the ungrouped list into a group, or use the remove button (✕) to move them back.
+- Groups can be **reordered** (▲/▼), **renamed**, or **deleted**.
+- Click **Apply** to save. Groups are persisted in your browser's localStorage and restored automatically on future visits.
+- The sidebar displays groups in order: Score (if present), then your groups, then any ungrouped recordings.
+
+### Annotations (Linked Data)
+If you are logged into a [Solid Pod](https://solidproject.org), you can create and manage linked-data annotations using the Music Annotation Ontology.
+- Click the **RDF logo** button in the toolbar to open the Linked Data drawer and log in.
+- Annotation cards appear pinned at the bottom of the interface. Each card has a **Play** button to loop the annotated region.
+- Use **Select Recordings** on a card to enter selection mode: click waveform overlays to stage recordings, then **Post to Solid** to save.
+- Loop playback automatically transfers when you switch between waveforms during annotation.
+
+If you are loading annotations from a publicly accessible Web location, logging in to Solid is not required. You will not be able to post selections, however.
+
 ---
 
 ## Technical & Advanced Usage

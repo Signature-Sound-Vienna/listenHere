@@ -3,7 +3,11 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { populateSolidDrawer, loginAndFetch, solidLogout } from "./solid.js";
-import { toggleStagedSelection, continueAnnotationLoopOnWaveform, prepareAnnotationLoopTransfer } from "./annotation.js";
+import {
+  toggleStagedSelection,
+  continueAnnotationLoopOnWaveform,
+  prepareAnnotationLoopTransfer,
+} from "./annotation.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
@@ -593,13 +597,19 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     let waveforms = document.getElementById("waveforms");
     // add waveform element
     waveforms.appendChild(waveform);
-    // now resort waveforms to maintain order, prioritizing VPO
-    let vpo = [...waveforms.children].filter((n) =>
-      n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-"),
-    );
-    let other = [...waveforms.children].filter(
-      (n) => !n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-"),
-    );
+    // now resort waveforms to maintain order:
+    // 1. Score (synthesised from MEI) first
+    // 2. VPO recordings sorted alphabetically
+    // 3. Other recordings sorted alphabetically
+    const allWfChildren = [...waveforms.children];
+    const isScore = (n) => n.dataset.ix === SYNTH_MEI_KEY;
+    const isVPO = (n) =>
+      !isScore(n) &&
+      n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-");
+    const score = allWfChildren.filter(isScore);
+    const vpo = allWfChildren.filter(isVPO);
+    const other = allWfChildren.filter((n) => !isScore(n) && !isVPO(n));
+    score.forEach((node) => waveforms.appendChild(node));
     vpo
       .sort((a, b) => (a.id > b.id ? 1 : -1))
       .forEach((node) => waveforms.appendChild(node));

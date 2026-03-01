@@ -30,6 +30,17 @@ export const musicalMaterialContainer =
   musicalObjectContainer + "musicalMaterial/";
 export const discoveryFragment = "discovery/";
 
+/**
+ * Resolve a Location header from a fetch response into an absolute URI.
+ * Uses ensureRelativeURL to normalise the Location to a pathname first,
+ * then prepends the origin — the same approach used in postResource().
+ */
+function resolveLocation(response) {
+  const loc = response.headers.get("Location");
+  if (!loc) return response.url;
+  return new URL(response.url).origin + ensureRelativeURL(loc);
+}
+
 // resource templates
 export const resources = {
   ldpContainer: {
@@ -132,7 +143,7 @@ export async function safelyPatchResource(uri, patch) {
             console.info(
               "Precondition failed: resource has changed while we were trying to patch it. Retrying...",
             );
-            setTimeout(safelyPatchResource(uri, patch), politeness);
+            setTimeout(() => safelyPatchResource(uri, patch), politeness);
           } else if (putResp.status >= 400) {
             console.warn("Couldn't PUT patched resource: ", putResp);
           } else {
@@ -342,9 +353,7 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
                         "@id": `${nsp.MAO}MusicalMaterial`,
                       },
                       [`${nsp.SCHEMA}url`]: {
-                        "@id":
-                          new URL(storageResource).origin +
-                          musMatResource.headers.get("Location"),
+                        "@id": resolveLocation(musMatResource),
                       },
                     },
                   },
@@ -362,9 +371,7 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
                         "@id": `${nsp.MAO}Extract`,
                       },
                       [`${nsp.SCHEMA}url`]: {
-                        "@id":
-                          new URL(storageResource).origin +
-                          extractResource.headers.get("Location"),
+                        "@id": resolveLocation(extractResource),
                       },
                     },
                   },
@@ -382,9 +389,7 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
                         "@id": `${nsp.MAO}Selection`,
                       },
                       [`${nsp.SCHEMA}url`]: {
-                        "@id":
-                          new URL(storageResource).origin +
-                          selectionResource.headers.get("Location"),
+                        "@id": resolveLocation(selectionResource),
                       },
                     },
                   },
@@ -453,9 +458,7 @@ export async function addNewMAOSelectionToExtract(
             "@type": `${nsp.SCHEMA}Dataset`,
             [`${nsp.SCHEMA}additionalType`]: { "@id": `${nsp.MAO}Selection` },
             [`${nsp.SCHEMA}url`]: {
-              "@id":
-                new URL(selectionResource.url).origin +
-                selectionResource.headers.get("Location"),
+              "@id": resolveLocation(selectionResource),
             },
           },
         },
@@ -480,9 +483,7 @@ export async function addNewMAOSelectionToExtract(
             "~1",
           )}embodiment/-`,
           value: {
-            "@id":
-              new URL(selectionResource.url).origin +
-              selectionResource.headers.get("Location"),
+            "@id": resolveLocation(selectionResource),
           },
         },
       ]);
@@ -523,9 +524,7 @@ async function createMAOSelection(
 
 async function createMAOExtract(postSelectionResponse, label = "") {
   console.log("createMAOExtract: ", postSelectionResponse);
-  let selectionUri =
-    new URL(postSelectionResponse.url).origin +
-    postSelectionResponse.headers.get("location");
+  let selectionUri = resolveLocation(postSelectionResponse);
   let resource = structuredClone(resources.maoExtract);
   resource[nsp.FRBR + "embodiment"] = { "@id": selectionUri };
   if (label) {
@@ -536,9 +535,7 @@ async function createMAOExtract(postSelectionResponse, label = "") {
 
 async function createMAOMusicalMaterial(postExtractResponse, label = "") {
   console.log("createMAOMusicalMaterial: ", postExtractResponse);
-  let extractUri =
-    new URL(postExtractResponse.url).origin +
-    postExtractResponse.headers.get("location");
+  let extractUri = resolveLocation(postExtractResponse);
   let resource = structuredClone(resources.maoMusicalMaterial);
   resource[nsp.MAO + "setting"] = { "@id": extractUri };
   if (label) {

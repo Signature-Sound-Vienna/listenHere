@@ -3,6 +3,7 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { populateSolidDrawer, loginAndFetch, solidLogout } from "./solid.js";
+import { toggleStagedSelection } from "./annotation.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
@@ -574,16 +575,15 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     waveform.dataset.ix = filename;
     waveform.classList.add("waveform");
 
-    // Per-waveform Solid selection icon (subtle overlay in top-right)
-    const solidBtn = document.createElement("button");
-    solidBtn.className = "solid-select-btn wf-solid-btn";
-    solidBtn.title = "Add MAO Selection for this recording to active Extract";
-    solidBtn.innerHTML = `<img src="${root}svg/RDF-logo.svg" width="14" height="14" alt="RDF" />`;
-    solidBtn.addEventListener("click", (e) => {
+    // Full-coverage selection overlay (hidden by default, shown during selection mode)
+    const selectOverlay = document.createElement("div");
+    selectOverlay.className = "wf-select-overlay";
+    selectOverlay.innerHTML = `<img src="${root}svg/RDF-logo.svg" class="wf-overlay-icon" alt="RDF" />`;
+    selectOverlay.addEventListener("click", (e) => {
       e.stopPropagation();
-      createSelectionForWaveform(filename);
+      toggleStagedSelection(filename);
     });
-    waveform.appendChild(solidBtn);
+    waveform.appendChild(selectOverlay);
 
     let waveforms = document.getElementById("waveforms");
     // add waveform element

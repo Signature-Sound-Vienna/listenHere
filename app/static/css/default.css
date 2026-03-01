@@ -625,36 +625,174 @@ details {
   gap: 0.5em;
 }
 
-/* Per-waveform Solid selection icon — subtle overlay in top-right of each waveform */
-.wf-solid-btn {
+/* Full-coverage waveform selection overlay — hidden until selection mode */
+.wf-select-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: none; /* hidden until selection mode */
+  align-items: center;
+  justify-content: center;
+  background: rgba(148, 163, 184, 0.25);  /* subtle grey tint */
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.wf-select-overlay.visible {
+  display: flex;
+}
+
+.wf-select-overlay:hover {
+  background: rgba(148, 163, 184, 0.35);
+}
+
+/* RDF icon inside the overlay */
+.wf-overlay-icon {
+  width: 48px;
+  height: 48px;
+  opacity: 0.35;
+  filter: grayscale(100%);
+  transition: opacity 0.2s, filter 0.2s, transform 0.15s;
+  pointer-events: none; /* clicks pass through to the overlay div */
+}
+
+.wf-select-overlay:hover .wf-overlay-icon {
+  opacity: 0.55;
+}
+
+/* Staged (selected) state */
+.wf-select-overlay.staged {
+  background: rgba(59, 130, 246, 0.18);
+}
+
+.wf-select-overlay.staged .wf-overlay-icon {
+  opacity: 0.9;
+  filter: grayscale(0%);
+  transform: scale(1.05);
+}
+
+.wf-select-overlay.staged::after {
+  content: '\2713';
   position: absolute;
   top: 4px;
-  right: 4px;
-  z-index: 10;
-  background: rgba(255, 255, 255, 0.7);
-  border: none;
-  border-radius: 4px;
-  padding: 2px;
-  margin: 0;
-  color: #94a3b8;
-  cursor: pointer;
+  right: 6px;
+  font-size: 16px;
+  font-weight: bold;
+  color: white;
+  background: #3b82f6;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: color 0.2s, background 0.2s, opacity 0.2s;
-  opacity: 0.35;
   line-height: 1;
 }
 
-.wf-solid-btn:hover {
-  color: #3b82f6;
-  background: rgba(239, 246, 255, 0.9);
-  opacity: 1;
+/* --- Annotation card styles --- */
+.maoExtract-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
 }
 
-.wf-solid-btn.active {
-  opacity: 1;
-  color: #3b82f6;
+.maoExtract-dismiss {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #94a3b8;
+  font-size: 1.2em;
+  padding: 0;
+  line-height: 1;
+}
+
+.maoExtract-dismiss:hover {
+  color: #ef4444;
+}
+
+.maoExtract.selecting {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.3);
+}
+
+.extract-play-btn,
+.extract-select-btn {
+  background: #e2e8f0;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 0.3em 0.6em;
+  cursor: pointer;
+  font-size: 0.85em;
+  transition: background 0.15s, color 0.15s;
+}
+
+.extract-play-btn:hover,
+.extract-select-btn:hover {
+  background: #cbd5e1;
+}
+
+.extract-play-btn.playing {
+  background: #3b82f6;
+  color: white;
+  border-color: #2563eb;
+}
+
+.maoExtract.selecting .extract-select-btn {
+  background: #3b82f6;
+  color: white;
+  border-color: #2563eb;
+}
+
+.staged-area {
+  display: none;
+  flex-direction: column;
+  gap: 0.4em;
+  font-size: 0.85em;
+}
+
+.maoExtract.selecting .staged-area {
+  display: flex;
+}
+
+.staged-count {
+  color: #475569;
+  font-weight: 500;
+}
+
+.staged-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-size: 0.85em;
+  color: #64748b;
+}
+
+.staged-list li {
+  padding: 0.15em 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.post-to-solid-btn {
+  background: #16a34a;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 0.4em 0.8em;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background 0.15s;
+  margin-top: 0.3em;
+}
+
+.post-to-solid-btn:hover:not(:disabled) {
+  background: #15803d;
+}
+
+.post-to-solid-btn:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
 }
 
 #file-picker-list li.matched {

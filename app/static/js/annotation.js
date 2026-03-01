@@ -15,6 +15,96 @@ import { addNewMAOSelectionToExtract } from "./solid.js";
 const dummyUriPrefix =
   "https://repo.mdw.ac.at/signature-sound-vienna/media/wav/"; // HACK cheat for DH2023
 
+// --- Selection mode state ---
+let _activeSelectionCardId = null; // extract @id of card in selection mode
+let _stagedSelections = {}; // extractId -> Set of filenames staged for posting
+
+/** Returns the extract ID currently in selection mode, or null */
+export function getActiveSelectionCardId() {
+  return _activeSelectionCardId;
+}
+
+/** Toggle a waveform filename as staged for the current active card */
+export function toggleStagedSelection(filename) {
+  if (!_activeSelectionCardId) return;
+  if (!_stagedSelections[_activeSelectionCardId]) {
+    _stagedSelections[_activeSelectionCardId] = new Set();
+  }
+  const set = _stagedSelections[_activeSelectionCardId];
+  if (set.has(filename)) {
+    set.delete(filename);
+  } else {
+    set.add(filename);
+  }
+  _updateStagedListUI(_activeSelectionCardId);
+  _updateWaveformIcons();
+}
+
+/** Check whether a filename is staged for the current active card */
+export function isStagedSelection(filename) {
+  if (!_activeSelectionCardId) return false;
+  const set = _stagedSelections[_activeSelectionCardId];
+  return set ? set.has(filename) : false;
+}
+
+function _enterSelectionMode(extractId) {
+  // Exit any previous selection mode
+  if (_activeSelectionCardId && _activeSelectionCardId !== extractId) {
+    _exitSelectionMode(_activeSelectionCardId);
+  }
+  _activeSelectionCardId = extractId;
+  const card = document.getElementById(extractId);
+  if (card) card.classList.add("selecting");
+  _updateWaveformIcons();
+  _updateStagedListUI(extractId);
+}
+
+function _exitSelectionMode(extractId) {
+  _activeSelectionCardId = null;
+  const card = document.getElementById(extractId);
+  if (card) card.classList.remove("selecting");
+  _updateWaveformIcons();
+}
+
+function _updateWaveformIcons() {
+  const inMode = _activeSelectionCardId !== null;
+  document.querySelectorAll(".wf-select-overlay").forEach((overlay) => {
+    const filename = overlay.closest(".waveform")?.dataset.ix;
+    if (inMode) {
+      overlay.classList.add("visible");
+      overlay.classList.toggle("staged", isStagedSelection(filename));
+    } else {
+      overlay.classList.remove("visible", "staged");
+    }
+  });
+}
+
+function _updateStagedListUI(extractId) {
+  const card = document.getElementById(extractId);
+  if (!card) return;
+  const listEl = card.querySelector(".staged-list");
+  const countEl = card.querySelector(".staged-count");
+  const postBtn = card.querySelector(".post-to-solid-btn");
+  const set = _stagedSelections[extractId] || new Set();
+  if (countEl) {
+    countEl.textContent = set.size
+      ? `${set.size} recording${set.size > 1 ? "s" : ""} selected`
+      : "No recordings selected";
+  }
+  if (listEl) {
+    listEl.innerHTML = "";
+    for (const fn of set) {
+      const li = document.createElement("li");
+      li.textContent = fn.substring(fn.lastIndexOf("/") + 1);
+      li.title = fn;
+      listEl.appendChild(li);
+    }
+  }
+  if (postBtn) {
+    postBtn.disabled = set.size === 0;
+  }
+}
+
 /**
  * Returns all URL aliases for a given URI, transparently normalizing
  * raw.githubusercontent.com URLs between their `refs/heads/<branch>` and
@@ -120,9 +210,7 @@ function drawExtractUIElement(obj) {
 
   // Card header with label and dismiss button
   let header = document.createElement("div");
-  header.style.display = "flex";
-  header.style.justifyContent = "space-between";
-  header.style.alignItems = "flex-start";
+  header.className = "maoExtract-header";
 
   let labelText = obj[nsp.RDFS + "label"]
     ? obj[nsp.RDFS + "label"][0]["@value"]
@@ -133,17 +221,17 @@ function drawExtractUIElement(obj) {
   label.title = labelText;
 
   let dismissBtn = document.createElement("button");
-  dismissBtn.innerHTML = "✕";
-  dismissBtn.style.background = "none";
-  dismissBtn.style.border = "none";
-  dismissBtn.style.cursor = "pointer";
-  dismissBtn.style.color = "#94a3b8";
-  dismissBtn.style.fontSize = "1.2em";
-  dismissBtn.style.padding = "0";
-  dismissBtn.style.lineHeight = "1";
+  dismissBtn.className = "maoExtract-dismiss";
+  dismissBtn.innerHTML = "\u2715";
+  dismissBtn.title = "Unload annotation";
 
   dismissBtn.addEventListener("click", (e) => {
     e.stopPropagation();
+    // Exit selection mode if this card was active
+    if (_activeSelectionCardId === obj["@id"]) {
+      _exitSelectionMode(obj["@id"]);
+    }
+    delete _stagedSelections[obj["@id"]];
     unloadAnnotation(obj["@id"]);
   });
 
@@ -156,15 +244,8 @@ function drawExtractUIElement(obj) {
   controls.className = "extractTools";
 
   let playBtn = document.createElement("button");
-  playBtn.innerHTML = "▶ Play Loop";
-  playBtn.style.background = "#e2e8f0";
-  playBtn.style.border = "1px solid #cbd5e1";
-  playBtn.style.borderRadius = "4px";
-  playBtn.style.padding = "0.3em 0.6em";
-  playBtn.style.cursor = "pointer";
-  playBtn.style.display = "flex";
-  playBtn.style.alignItems = "center";
-  playBtn.style.gap = "0.4em";
+  playBtn.className = "extract-play-btn";
+  playBtn.innerHTML = "\u25B6 Play";
 
   // We attach loop play logic
   let loopInterval = null;
@@ -172,9 +253,7 @@ function drawExtractUIElement(obj) {
     // If we're already playing this loop, stop it
     if (playBtn.classList.contains("playing")) {
       playBtn.classList.remove("playing");
-      playBtn.innerHTML = "▶ Play Loop";
-      playBtn.style.background = "#e2e8f0";
-      playBtn.style.color = "initial";
+      playBtn.innerHTML = "\u25B6 Play";
 
       const audioToStop = currentAudioIx || Object.keys(wavesurfers)[0];
       if (audioToStop && wavesurfers[audioToStop]) {
@@ -191,9 +270,7 @@ function drawExtractUIElement(obj) {
 
     // Mark as playing
     playBtn.classList.add("playing");
-    playBtn.innerHTML = "■ Stop Loop";
-    playBtn.style.background = "#3b82f6";
-    playBtn.style.color = "white";
+    playBtn.innerHTML = "\u25A0 Stop";
 
     // Figure out which waveform to play on
     const targetAudio = currentAudioIx || Object.keys(wavesurfers)[0];
@@ -243,8 +320,102 @@ function drawExtractUIElement(obj) {
     }
   });
 
+  // --- Select Recordings toggle button ---
+  let selectBtn = document.createElement("button");
+  selectBtn.className = "extract-select-btn";
+  selectBtn.innerHTML = "Select Recordings";
+  selectBtn.addEventListener("click", () => {
+    if (_activeSelectionCardId === obj["@id"]) {
+      // Already in selection mode for this card — exit
+      _exitSelectionMode(obj["@id"]);
+      selectBtn.innerHTML = "Select Recordings";
+    } else {
+      // Enter selection mode
+      // Reset any other card's button text
+      document.querySelectorAll(".extract-select-btn").forEach((b) => {
+        b.innerHTML = "Select Recordings";
+      });
+      _enterSelectionMode(obj["@id"]);
+      selectBtn.innerHTML = "Cancel Selection";
+    }
+  });
+
   controls.appendChild(playBtn);
+  controls.appendChild(selectBtn);
   extract.appendChild(controls);
+
+  // --- Staged selections area (visible during selection mode) ---
+  let stagedArea = document.createElement("div");
+  stagedArea.className = "staged-area";
+
+  let stagedCount = document.createElement("div");
+  stagedCount.className = "staged-count";
+  stagedCount.textContent = "No recordings selected";
+  stagedArea.appendChild(stagedCount);
+
+  let stagedDetails = document.createElement("details");
+  let stagedSummary = document.createElement("summary");
+  stagedSummary.textContent = "Show selected";
+  stagedDetails.appendChild(stagedSummary);
+  let stagedList = document.createElement("ul");
+  stagedList.className = "staged-list";
+  stagedDetails.appendChild(stagedList);
+  stagedArea.appendChild(stagedDetails);
+
+  // --- Post to Solid button ---
+  let postBtn = document.createElement("button");
+  postBtn.className = "post-to-solid-btn";
+  postBtn.textContent = "Post to Solid";
+  postBtn.disabled = true;
+  postBtn.addEventListener("click", async () => {
+    const extractId = obj["@id"];
+    const set = _stagedSelections[extractId];
+    if (!set || set.size === 0) return;
+    postBtn.disabled = true;
+    postBtn.textContent = "Posting\u2026";
+    try {
+      for (const filename of set) {
+        // Compute region bounds
+        const selectionUri = extract.dataset.selection;
+        const regionIx = currentlyAnnotatedRegions.findIndex(
+          (r) => r.selection === selectionUri,
+        );
+        let regionStart = 0,
+          regionEnd = 0;
+        if (regionIx >= 0) {
+          const globalRegion = currentlyAnnotatedRegions[regionIx];
+          if (
+            globalRegion.localOverrides &&
+            globalRegion.localOverrides[filename]
+          ) {
+            regionStart = globalRegion.localOverrides[filename].start;
+            regionEnd = globalRegion.localOverrides[filename].end;
+          } else {
+            regionStart = getCorrespondingTime(filename, globalRegion.from);
+            regionEnd = getCorrespondingTime(filename, globalRegion.to);
+          }
+        }
+        const audioMediaUri = `${dummyUriPrefix}${filename}#t=${regionStart},${regionEnd}`;
+        await addNewMAOSelectionToExtract(
+          filename,
+          audioMediaUri,
+          extractId,
+          labelText,
+        );
+      }
+      postBtn.textContent = `Posted ${set.size} selection${set.size > 1 ? "s" : ""}!`;
+      setTimeout(() => {
+        postBtn.textContent = "Post to Solid";
+      }, 3000);
+    } catch (e) {
+      console.error("Error posting selections to Solid:", e);
+      postBtn.textContent = "Error \u2014 retry?";
+    }
+    postBtn.disabled = false;
+  });
+  stagedArea.appendChild(postBtn);
+
+  extract.appendChild(stagedArea);
 
   extractsPanel.insertAdjacentElement("beforeend", extract);
 }

@@ -218,37 +218,112 @@ details {
 }
 
 
-#solidPanel { 
-  display: flex;
-}
-
 #maoExtracts { 
-  display:flex;
-  overflow-x: scroll;
+  display: flex;
+  overflow-x: auto;
+  gap: 1em;
+  padding: 1em;
 }
 
 .maoExtract { 
-  border: 1px solid black;
-  border-radius:5px;
-  margin-left:.5em;
-  max-width: 150px;
-  min-width: 150px;
-  padding:.5em;  
+  border: 1px solid #cbd5e1;
+  background-color: #f8fafc;
+  border-radius: 8px;
+  min-width: 250px;
+  max-width: 300px;
+  padding: 1em;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
 }
 
 .maoExtract-label {
-  max-height:2em;
+  font-weight: 600;
+  color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .extractTools { 
-  display:flex;
-  flex-direction:row;
-  justify-content:space-between;
-  font-family: monospace;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
 }
 
 #fetchExternal { 
-  min-width:120px;
+  min-width: 120px;
+}
+
+/* Solid Drawer */
+#solid-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 340px;
+  height: 100vh;
+  background: #f8fafc;
+  box-shadow: -4px 0 24px rgba(0,0,0,0.1);
+  z-index: 1000;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  padding: 1.5em;
+  box-sizing: border-box;
+}
+
+#solid-drawer.closed {
+  transform: translateX(100%);
+}
+
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2em;
+  padding-bottom: 1em;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.drawer-header h2 {
+  margin: 0;
+  font-size: 1.25em;
+  color: #1e293b;
+}
+
+#close-solid-drawer {
+  background: none;
+  border: none;
+  font-size: 1.5em;
+  cursor: pointer;
+  color: #64748b;
+  padding: 0 0.2em;
+}
+
+#close-solid-drawer:hover {
+  color: #0f172a;
+}
+
+#solidTab {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5em;
+}
+
+#solidTab a {
+  color: #3b82f6;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+#solidTab input[type="text"] {
+  width: 100%;
+  padding: 0.5em;
+  margin-bottom: 0.5em;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
 }
 
 #splash {
@@ -541,6 +616,45 @@ details {
   display: flex;
   align-items: center;
   gap: 0.5em;
+}
+
+/* Subset Selection Solid Button */
+.renditionName {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+}
+
+/* Per-waveform Solid selection icon — subtle overlay in top-right of each waveform */
+.wf-solid-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 10;
+  background: rgba(255, 255, 255, 0.7);
+  border: none;
+  border-radius: 4px;
+  padding: 2px;
+  margin: 0;
+  color: #94a3b8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s, background 0.2s, opacity 0.2s;
+  opacity: 0.35;
+  line-height: 1;
+}
+
+.wf-solid-btn:hover {
+  color: #3b82f6;
+  background: rgba(239, 246, 255, 0.9);
+  opacity: 1;
+}
+
+.wf-solid-btn.active {
+  opacity: 1;
+  color: #3b82f6;
 }
 
 #file-picker-list li.matched {

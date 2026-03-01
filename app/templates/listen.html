@@ -146,6 +146,9 @@
           </span>
           <button id="manage-files-btn" style="display:none;">Manage files</button>
           <button id="download-json-btn" style="display:none;">Download JSON</button>
+          <button id="solid-drawer-btn" title="Linked Data & Annotations">
+            <img src="{{ url_for('static', filename='svg/RDF-logo.svg') }}" width="20" height="20" alt="RDF" />
+          </button>
           <span id="close-listening-badge" style="display:none;">Close Listening</span>
           <div id="audios"></div>
       </nav>
@@ -153,14 +156,19 @@
         <div id="content">
           <div id="waveforms"></div>
         </div>
-        <div id="solidPanel">
-          <div id="solidTab">
-            <div id="solidLogin">
-              Please <a id="solidLogin">Click here to log in!</a>
-            </div>
-          </div>
-          <div id="maoExtracts">
-          </div>
+        <div id="maoExtracts"></div>
+      </div>
+    </div>
+    
+    <!-- Solid / Linked Data Drawer -->
+    <div id="solid-drawer" class="closed">
+      <div class="drawer-header">
+        <h2>Linked Data Annotations</h2>
+        <button id="close-solid-drawer">✕</button>
+      </div>
+      <div id="solidTab">
+        <div id="solidLogin">
+          Please <a id="solidLoginBtn">Click here to log in!</a>
         </div>
       </div>
     </div>

@@ -547,54 +547,73 @@ async function createMAOMusicalMaterial(postExtractResponse, label = "") {
   return postResource(musicalMaterialContainer, resource);
 }
 
-export async function populateSolidTab() {
+export async function populateSolidDrawer() {
   const solidTab = document.getElementById("solidTab");
-  if (solid.getDefaultSession().info.isLoggedIn) {
-    solidTab.innerHTML = await populateLoggedInSolidTab();
+  const isLoggedIn = solid.getDefaultSession().info.isLoggedIn;
+
+  if (isLoggedIn) {
+    const profile = await getProfile();
+    const name =
+      profile && profile[nsp.FOAF + "name"]
+        ? profile[nsp.FOAF + "name"]
+        : "User";
+
+    solidTab.innerHTML = `
+      <div id="authStatus" style="margin-bottom: 1.5em; color: #1e293b;">
+        Logged in as <strong>${name}</strong>
+        <div style="margin-top: 0.5em;">
+          <a id="solidLogout" style="color: #64748b; font-size: 0.9em; cursor: pointer; text-decoration: underline;">Log out</a>
+        </div>
+      </div>
+      <div class="annotation-loader" style="padding-top: 1.5em; border-top: 1px solid #e2e8f0;">
+        <label for="annotationUrlInput" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Load external annotations (URL)</label>
+        <input type="text" id="annotationUrlInput" placeholder="https://" style="width: 100%; padding: 0.6em; margin-bottom: 0.8em; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;" />
+        <button id="fetchExternalBtn" style="width: 100%; padding: 0.6em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Load</button>
+      </div>
+    `;
+
     document
       .getElementById("solidLogout")
       .addEventListener("click", solidLogout);
-    document.getElementById("fetchExternal").addEventListener("click", () => {
-      let urlstr = window.prompt("Please enter URL:");
-      if (urlstr) {
-        if (!(urlstr.startsWith("http://") || urlstr.startsWith("https://")))
-          urlstr = "https://" + urlstr;
-        try {
-          // ensure working URLs provided
-          attemptFetchExternalResource(
-            new URL(urlstr), // traversal start
-            [new URL(nsp.MAO + "Selection"), new URL(nsp.MAO + "Extract")], // target types
-            {
-              typeToHandlerMap: {
-                [nsp.MAO + "Selection"]: {
-                  func: markSelection,
-                },
-                [nsp.MAO + "Extract"]: {
-                  func: registerExtract,
-                },
-              },
-              followList: [
-                new URL(nsp.LDP + "contains"),
-                new URL(nsp.MAO + "setting"),
-                new URL(nsp.FRBR + "embodiment"),
-              ], // predicates to traverse
-              fetchMethod: fetch /* solid.getDefaultSession().info.isLoggedIn
-                ? solid.fetch
-                : fetch,*/,
-            },
-          );
-        } catch (e) {
-          // invalid URL
-          console.warn("Could not load external resource:", e);
-        }
-      }
-    });
   } else {
-    solidTab.innerHTML = populateLoggedOutSolidTab();
+    // Check if we just cancelled a login
+    const wasCancelled = localStorage.getItem("solidLoginPending") !== null;
+    if (wasCancelled) {
+      localStorage.removeItem("solidLoginPending");
+    }
+
+    solidTab.innerHTML = `
+      <div class="annotation-loader" style="margin-bottom: 2em; padding-bottom: 2em; border-bottom: 1px solid #e2e8f0;">
+        <label for="annotationUrlInput" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Load public annotations (URL)</label>
+        <input type="text" id="annotationUrlInput" placeholder="https://" style="width: 100%; padding: 0.6em; margin-bottom: 0.8em; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;" />
+        <button id="fetchExternalBtn" style="width: 100%; padding: 0.6em; background: #e2e8f0; color: #1e293b; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; font-weight: 500;">Load</button>
+      </div>
+      <div id="authStatus">
+        <label for="providerSelect" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Solid Provider</label>
+        <select name="provider" id="providerSelect" style="width: 100%; padding: 0.6em; margin-bottom: 1em; border: 1px solid #cbd5e1; border-radius: 4px;">
+          <option value="https://solidcommunity.net">SolidCommunity.net</option>
+          <option value="https://login.inrupt.net">Inrupt</option>
+          <option value="https://trompa-solid.upf.edu">TROMPA @ UPF</option>
+        </select>
+        ${wasCancelled ? '<div style="color: #ef4444; font-size: 0.85em; margin-bottom: 0.8em;">Login cancelled. Try again?</div>' : ""}
+        <button id="solidLoginBtn" style="width: 100%; padding: 0.6em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Connect to Solid Pod</button>
+      </div>
+    `;
     document
-      .getElementById("solidLogin")
+      .getElementById("solidLoginBtn")
       .addEventListener("click", loginAndFetch);
   }
+
+  // Set up annotation loading regardless of auth state
+  document.getElementById("fetchExternalBtn").addEventListener("click", () => {
+    let urlstr = document.getElementById("annotationUrlInput").value.trim();
+    if (urlstr) {
+      if (!(urlstr.startsWith("http://") || urlstr.startsWith("https://"))) {
+        urlstr = "https://" + urlstr;
+      }
+      loadExternalAnnotations(urlstr);
+    }
+  });
 }
 
 export async function getProfile() {
@@ -631,65 +650,94 @@ export async function getProfile() {
   return profile;
 }
 
-async function populateLoggedInSolidTab() {
-  // traverse and fetch from discovery service
-  let authStatus = document.createElement("div");
-  authStatus.innerHTML = `<a id="solidLogout">Log out</a>`;
-  authStatus.id = "authStatus";
-  let fetchExternal = document.createElement("div");
-  fetchExternal.innerHTML = `Load external data`;
-  fetchExternal.id = "fetchExternal";
-  let populated = document.createElement("div");
-  populated.insertAdjacentElement("afterbegin", authStatus);
-  populated.insertAdjacentElement("afterbegin", fetchExternal);
-  return populated.outerHTML;
-}
+function loadExternalAnnotations(urlstr) {
+  const url = new URL(urlstr);
+  const isLoggedIn = solid.getDefaultSession().info.isLoggedIn;
 
-function populateLoggedOutSolidTab() {
-  let providerContainer = document.createElement("div");
-  let provider = document.createElement("select");
-  provider.setAttribute("name", "provider");
-  provider.setAttribute("id", "providerSelect");
-  provider.innerHTML = `
-    <option value="https://solidcommunity.net">SolidCommunity.net</option>
-    <option value="https://login.inrupt.net">Inrupt</option>
-    <option value="https://trompa-solid.upf.edu">TROMPA @ UPF</option>
-  `;
-  providerContainer.insertAdjacentElement("afterbegin", provider);
-  let msg = document.createElement("div");
-  msg.innerHTML =
-    '<div id="authStatus">Please <a id="solidLogin">Click here to log in!</a></div>';
-  msg.insertAdjacentElement("afterbegin", providerContainer);
-  return msg.outerHTML;
+  // Smart fetch strategy
+  let fetchMethod = fetch; // default to plain public fetch
+  const hostname = url.hostname.toLowerCase();
+
+  // Rule 1: Always plain fetch for known public CDNs/repos to prevent credential leakage
+  if (hostname === "raw.githubusercontent.com" || hostname === "github.com") {
+    fetchMethod = fetch;
+  }
+  // Rule 2: Use solid.fetch for known Solid pods if logged in
+  else if (
+    isLoggedIn &&
+    (hostname.includes("solidcommunity.net") ||
+      hostname.includes("inrupt.net") ||
+      hostname.includes("upf.edu"))
+  ) {
+    fetchMethod = solid.fetch;
+  }
+
+  // Ensure we have a wrapper method that falls back securely
+  const smartFetch = async (reqUrl, options) => {
+    let res = await fetchMethod(reqUrl, options);
+    // Fallback: if we tried plain fetch, got 401/403, and are logged in, retry with solid.fetch
+    if (
+      (res.status === 401 || res.status === 403) &&
+      fetchMethod === fetch &&
+      isLoggedIn
+    ) {
+      console.log("Plain fetch denied; retrying with Solid authentication");
+      res = await solid.fetch(reqUrl, options);
+    }
+    return res;
+  };
+
+  try {
+    attemptFetchExternalResource(
+      url, // traversal start
+      [new URL(nsp.MAO + "Selection"), new URL(nsp.MAO + "Extract")], // target types
+      {
+        typeToHandlerMap: {
+          [nsp.MAO + "Selection"]: { func: markSelection },
+          [nsp.MAO + "Extract"]: { func: registerExtract },
+        },
+        followList: [
+          new URL(nsp.LDP + "contains"),
+          new URL(nsp.MAO + "setting"),
+          new URL(nsp.FRBR + "embodiment"),
+        ],
+        fetchMethod: smartFetch,
+      },
+    );
+  } catch (e) {
+    console.warn("Could not load external resource:", e);
+  }
 }
 
 export async function loginAndFetch() {
-  // 1. Call `handleIncomingRedirect()` to complete the authentication process.
-  //    If called after the user has logged in with the Solid Identity Provider,
-  //      the user's credentials are stored in-memory, and
-  //      the login process is complete.
-  //   Otherwise, no-op.
+  // 1. Check if we're coming from a redirect
   await solid.handleIncomingRedirect({ restorePreviousSession: true });
 
+  const session = solid.getDefaultSession();
+
   // 2. Start the Login Process if not already logged in.
-  if (!solid.getDefaultSession().info.isLoggedIn) {
+  if (!session.info.isLoggedIn) {
+    // Check if we already tried logging in, and just came back
+    // without being logged in (user cancelled).
+    if (localStorage.getItem("solidLoginPending")) {
+      populateSolidDrawer();
+      return;
+    }
+
     storage.restoreSolidSession = true;
     if (alignmentData) {
       storage.setItem("alignmentData", alignmentData);
     } else {
       alignmentData = storage.getItem("alignmentData");
     }
+
     let providerEl = document.getElementById("providerSelect");
     if (providerEl) {
       let provider = providerEl.value;
+      localStorage.setItem("solidLoginPending", Date.now().toString());
       await solid.login({
-        // Specify the URL of the user's Solid Identity Provider;
-        // e.g., "https://login.inrupt.com".
-        oidcIssuer: "https://solidcommunity.net",
-        // Specify the URL the Solid Identity Provider should redirect the user once logged in,
-        // e.g., the current page for a single-page app.
-        redirectUrl: window.location.href, //"http://localhost:5003/test", // URL("/test", window.location.href).toString(),
-        // Provide a name for the application when sending to the Solid Identity Provider
+        oidcIssuer: provider,
+        redirectUrl: window.location.href,
         clientName: "listen-here",
       });
     } else {
@@ -698,17 +746,15 @@ export async function loginAndFetch() {
       );
     }
   } else {
-    populateSolidTab();
-    /*
-    solid.fetch("https://musicog.solidcommunity.net/private/")
-        .then(resp => resp.text())
-        .then(data => console.log("GOT DATA: ", data))
-        */
+    // Successfully logged in
+    localStorage.removeItem("solidLoginPending");
+    populateSolidDrawer();
   }
 }
+
 export async function solidLogout() {
   return solid.logout().then(() => {
     storage.removeItem("restoreSolidSession");
-    populateSolidTab();
+    populateSolidDrawer();
   });
 }

@@ -6,6 +6,7 @@ import {
   maoSelections,
   meiUri,
   markScoreRegion,
+  updateRenderAnnoRegions,
   wavesurfers,
   _regionsPlugins,
 } from "./listen.js";
@@ -80,98 +81,171 @@ export function registerExtract(obj, url) {
   }
 }
 
-function drawExtractUIElement(obj) {
-  if (document.getElementById(obj["@id"])) {
-    return; // skip extracts we have already drawn
-  }
-  let extractsPanel = document.getElementById("maoExtracts");
-  let extract = document.createElement("div");
-  extract.setAttribute("id", obj["@id"]);
-  extract.classList.add("maoExtract");
-  let label = document.createElement("div");
-  label.innerText = "[no label]";
-  try {
-    label.innerText = obj[nsp.RDFS + "label"][0]["@value"];
-    extract.setAttribute("title", obj[nsp.RDFS + "label"][0]["@value"]);
-  } catch {
-    console.warn("Extract without label: ", obj);
-  }
-  label.classList.add("maoExtract-label");
-  let extractTools = document.createElement("div");
-  extractTools.classList.add("extractTools");
-  let addSelections = document.createElement("div");
-  addSelections.innerText = "+";
-  addSelections.setAttribute(
-    "title",
-    "Add currently loaded audio regions to extract as selections",
+export function unloadAnnotation(annotationId) {
+  // The card's DOM id is the extract URI, but currentlyAnnotatedRegions
+  // tracks by the selection (embodiment) URI stored in dataset.selection.
+  const el = document.getElementById(annotationId);
+  const selectionUri = el ? el.dataset.selection : annotationId;
+
+  // Remove from our tracker array
+  const ix = currentlyAnnotatedRegions.findIndex(
+    (r) => r.selection === selectionUri,
   );
-  addSelections.classList.add("addSelectionsToExtractButton");
-  let closeExtract = document.createElement("div");
-  closeExtract.innerText = "x";
-  closeExtract.classList.add("closeExtractButton");
-  closeExtract.setAttribute("title", "Remove this extract from current view");
-  closeExtract.addEventListener("click", () => {
-    extract.remove();
-  });
-  extractTools.insertAdjacentElement("afterbegin", closeExtract);
-  extractTools.insertAdjacentElement("afterbegin", addSelections);
-  extract.insertAdjacentElement("afterbegin", extractTools);
-  extract.insertAdjacentElement("afterbegin", label);
-  if (nsp.FRBR + "embodiment" in obj) {
-    extract.dataset.extractUri = obj["@id"];
-    extract.addEventListener("click", () => {
-      document
-        .querySelectorAll("maoExtract")
-        .forEach((el) => el.classList.remove("active"));
-      extract.classList.add("active");
-      if (nsp.FRBR + "embodiment" in obj) {
-        let mySelections = obj[nsp.FRBR + "embodiment"].map((e) => e["@id"]);
-        let regionIx = currentlyAnnotatedRegions.findIndex((r) =>
-          mySelections.includes(r.selection),
-        );
-        if (regionIx >= 0) {
-          if (currentAudioIx) {
-            const regionId = "anno_region_" + regionIx;
-            const regPlugin = _regionsPlugins[currentAudioIx];
-            const region =
-              regPlugin &&
-              regPlugin.getRegions().find((r) => r.id === regionId);
-            if (region) {
-              region.play();
-              console.log("playing region: ", region);
-            } else {
-              console.warn("Could not find region to play: ", regionId);
-            }
-          }
-        } else {
-          console.log(
-            "Couldn't find regionIx for extract: ",
-            extract.dataset.selection,
-            currentlyAnnotatedRegions,
-          );
-        }
-      } else {
-        console.warn("Extract without embodiment: ", obj);
-      }
-      // look up index of selection URI in currently annotated regions
-      //markScoreRegions(obj[nsp.FRBR+"embodiment"]);
-    });
-    addSelections.addEventListener("click", () => {
-      console.log("Attempting to add selection to extract!");
-      Object.keys(wavesurfers).forEach((ws) => {
-        let region = wavesurfers[ws].regions.list.anno_region_0;
-        region.start = getCorrespondingTime(ws, currentlyAnnotatedRegions.from);
-        region.end = getCorrespondingTime(ws, currentlyAnnotatedRegions.to);
-        let audioMediaUri = `${dummyUriPrefix}${ws}#t=${region.start},${region.end}`;
-        addNewMAOSelectionToExtract(
-          ws,
-          audioMediaUri,
-          extract.id,
-          obj[nsp.RDFS + "label"][0]["@value"],
-        );
-      });
-    });
+  if (ix >= 0) {
+    currentlyAnnotatedRegions.splice(ix, 1);
   }
+
+  // Remove from the maoSelections cache so it can be re-loaded later
+  if (selectionUri in maoSelections) {
+    delete maoSelections[selectionUri];
+  }
+
+  // Re-render waveforms to clear the region overlay
+  updateRenderAnnoRegions();
+
+  // Remove from DOM
+  if (el) el.remove();
+}
+
+function drawExtractUIElement(obj) {
+  let extractsPanel = document.getElementById("maoExtracts");
+
+  // Don't draw duplicates
+  if (document.getElementById(obj["@id"])) return;
+
+  let extract = document.createElement("div");
+  extract.id = obj["@id"];
+  extract.className = "maoExtract";
+  extract.dataset.selection = obj[nsp.FRBR + "embodiment"][0]["@id"];
+
+  // Card header with label and dismiss button
+  let header = document.createElement("div");
+  header.style.display = "flex";
+  header.style.justifyContent = "space-between";
+  header.style.alignItems = "flex-start";
+
+  let labelText = obj[nsp.RDFS + "label"]
+    ? obj[nsp.RDFS + "label"][0]["@value"]
+    : "Untitled Annotation";
+  let label = document.createElement("div");
+  label.className = "maoExtract-label";
+  label.innerText = labelText;
+  label.title = labelText;
+
+  let dismissBtn = document.createElement("button");
+  dismissBtn.innerHTML = "✕";
+  dismissBtn.style.background = "none";
+  dismissBtn.style.border = "none";
+  dismissBtn.style.cursor = "pointer";
+  dismissBtn.style.color = "#94a3b8";
+  dismissBtn.style.fontSize = "1.2em";
+  dismissBtn.style.padding = "0";
+  dismissBtn.style.lineHeight = "1";
+
+  dismissBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    unloadAnnotation(obj["@id"]);
+  });
+
+  header.appendChild(label);
+  header.appendChild(dismissBtn);
+  extract.appendChild(header);
+
+  // Playback controls container
+  let controls = document.createElement("div");
+  controls.className = "extractTools";
+
+  let playBtn = document.createElement("button");
+  playBtn.innerHTML = "▶ Play Loop";
+  playBtn.style.background = "#e2e8f0";
+  playBtn.style.border = "1px solid #cbd5e1";
+  playBtn.style.borderRadius = "4px";
+  playBtn.style.padding = "0.3em 0.6em";
+  playBtn.style.cursor = "pointer";
+  playBtn.style.display = "flex";
+  playBtn.style.alignItems = "center";
+  playBtn.style.gap = "0.4em";
+
+  // We attach loop play logic
+  let loopInterval = null;
+  playBtn.addEventListener("click", () => {
+    // If we're already playing this loop, stop it
+    if (playBtn.classList.contains("playing")) {
+      playBtn.classList.remove("playing");
+      playBtn.innerHTML = "▶ Play Loop";
+      playBtn.style.background = "#e2e8f0";
+      playBtn.style.color = "initial";
+
+      const audioToStop = currentAudioIx || Object.keys(wavesurfers)[0];
+      if (audioToStop && wavesurfers[audioToStop]) {
+        wavesurfers[audioToStop].pause();
+      }
+      if (loopInterval) clearInterval(loopInterval);
+      return;
+    }
+
+    // Reset all other playing buttons
+    document
+      .querySelectorAll(".maoExtract button.playing")
+      .forEach((btn) => btn.click());
+
+    // Mark as playing
+    playBtn.classList.add("playing");
+    playBtn.innerHTML = "■ Stop Loop";
+    playBtn.style.background = "#3b82f6";
+    playBtn.style.color = "white";
+
+    // Figure out which waveform to play on
+    const targetAudio = currentAudioIx || Object.keys(wavesurfers)[0];
+    if (!targetAudio || !wavesurfers[targetAudio]) {
+      console.warn("No waveform available to play annotation");
+      return;
+    }
+
+    // Find the corresponding region in currentlyAnnotatedRegions
+    let mySelections = obj[nsp.FRBR + "embodiment"].map((e) => e["@id"]);
+    let regionIx = currentlyAnnotatedRegions.findIndex((r) =>
+      mySelections.includes(r.selection),
+    );
+
+    if (regionIx >= 0) {
+      const regionId = "anno_region_" + regionIx;
+      const regPlugin = _regionsPlugins[targetAudio];
+      const region =
+        regPlugin && regPlugin.getRegions().find((r) => r.id === regionId);
+
+      if (region) {
+        region.play();
+
+        // Setup loop monitor
+        if (loopInterval) clearInterval(loopInterval);
+        const ws = wavesurfers[targetAudio];
+        loopInterval = setInterval(() => {
+          if (!playBtn.classList.contains("playing")) {
+            clearInterval(loopInterval);
+            return;
+          }
+          if (ws.getCurrentTime() >= region.end) {
+            region.play(); // Seek back to start and continue
+          }
+        }, 50);
+
+        // Cleanup interval if user pauses manually via main play/pause
+        ws.once("pause", () => {
+          if (playBtn.classList.contains("playing")) {
+            playBtn.click(); // trigger our toggle to turn it off cleanly
+          }
+        });
+      } else {
+        console.warn("Region not found on waveform: ", regionId);
+        playBtn.click(); // turn off
+      }
+    }
+  });
+
+  controls.appendChild(playBtn);
+  extract.appendChild(controls);
+
   extractsPanel.insertAdjacentElement("beforeend", extract);
 }
 

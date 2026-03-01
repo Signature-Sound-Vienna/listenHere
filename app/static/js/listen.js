@@ -2,7 +2,7 @@
 export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
-import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
+import { populateSolidDrawer, loginAndFetch, solidLogout } from "./solid.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
@@ -509,6 +509,7 @@ function generateCheckboxList(list) {
     const li = document.createElement("li");
     li.classList.add("renditionName");
     li.id = n;
+
     const checkboxSpan = document.createElement("span");
     const checkbox = document.createElement("input");
     checkbox.id = "checkbox-" + n;
@@ -517,10 +518,12 @@ function generateCheckboxList(list) {
     checkbox.classList.add("renditionCheckbox");
     checkbox.value = n;
     const label = document.createElement("label");
-    label.for = "checkbox-" + n;
+    label.htmlFor = "checkbox-" + n; // use htmlFor for DOM property
     label.innerText = n.substr(n.indexOf("/") + 1); // HACK, use semantic title
+
     checkboxSpan.appendChild(checkbox);
     checkboxSpan.appendChild(label);
+
     li.appendChild(checkboxSpan);
     ul.appendChild(li);
   });
@@ -570,6 +573,18 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     waveform.id = "waveform-" + filename + "-wav";
     waveform.dataset.ix = filename;
     waveform.classList.add("waveform");
+
+    // Per-waveform Solid selection icon (subtle overlay in top-right)
+    const solidBtn = document.createElement("button");
+    solidBtn.className = "solid-select-btn wf-solid-btn";
+    solidBtn.title = "Add MAO Selection for this recording to active Extract";
+    solidBtn.innerHTML = `<img src="${root}svg/RDF-logo.svg" width="14" height="14" alt="RDF" />`;
+    solidBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      createSelectionForWaveform(filename);
+    });
+    waveform.appendChild(solidBtn);
+
     let waveforms = document.getElementById("waveforms");
     // add waveform element
     waveforms.appendChild(waveform);
@@ -601,17 +616,22 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       waveColor: "violet",
       progressColor: "purple",
       normalize: document.getElementById("normalize").checked,
-      height: 128,
       fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)),
       plugins: [_regPlugin, _hoverPlugin],
     });
+
+    // Handle region adjustments (Phase 4 groundwork)
+    _regPlugin.on("region-updated", (region) => {
+      onRegionUpdated(filename, region);
+    });
+
     // Add timer region and any annotated regions to the shared RegionsPlugin
     _timerRegions[filename] = _regPlugin.addRegion({
       id: "timer",
       start: 0,
       end: 0,
       drag: false,
-      resize: false,
+      resize: false, // timer shouldn't be resized
       color: "rgba(255, 0, 100, 0.3)",
     });
     regions.forEach((r) => _regPlugin.addRegion(r));
@@ -1513,6 +1533,118 @@ function onAlignmentComplete(alignmentResult, files) {
   setGrids(alignmentResult);
 }
 
+// ----------------------------------------------------------------------------
+// Solid Extraction / Annotation Handlers
+// ----------------------------------------------------------------------------
+
+export async function createSelectionForWaveform(filename) {
+  // We need to know which MAO Extract is currently active.
+  const activeExtract = document.querySelector(".maoExtract.active");
+  if (!activeExtract) {
+    alert("Please select (click on) an active annotation card first.");
+    return;
+  }
+
+  // We need the ID of the extract and its label
+  const extractId = activeExtract.id;
+  const extractLabel =
+    activeExtract.querySelector(".maoExtract-label").innerText;
+
+  // We need to find the bounds for this specific waveform
+  let regionStart = 0;
+  let regionEnd = 0;
+
+  // Find the corresponding global annotation index
+  let mySelections = activeExtract.dataset.selection;
+  // (In drawExtractUIElement we stashed the first embodiment URI in dataset.selection)
+
+  let regionIx = currentlyAnnotatedRegions.findIndex(
+    (r) => r.selection === mySelections,
+  );
+
+  if (regionIx >= 0) {
+    // If we have a local override (Phase 4), use it.
+    const globalRegion = currentlyAnnotatedRegions[regionIx];
+    if (globalRegion.localOverrides && globalRegion.localOverrides[filename]) {
+      regionStart = globalRegion.localOverrides[filename].start;
+      regionEnd = globalRegion.localOverrides[filename].end;
+    } else {
+      // Fallback to global alignment mapping
+      regionStart = getCorrespondingTime(filename, globalRegion.from);
+      regionEnd = getCorrespondingTime(filename, globalRegion.to);
+    }
+  } else {
+    // Fallback if not found in memory (shouldn't happen if card is active)
+    const ws = wavesurfers[filename];
+    if (ws && ws.regions && ws.regions.list && ws.regions.list.anno_region_0) {
+      regionStart = ws.regions.list.anno_region_0.start;
+      regionEnd = ws.regions.list.anno_region_0.end;
+    } else {
+      console.error("Could not determine region bounds for selection");
+      return;
+    }
+  }
+
+  const audioMediaUri = `${dummyUriPrefix}${filename}#t=${regionStart},${regionEnd}`;
+
+  // Call the function from annotation.js (it is a global in the current architecture or imported)
+  if (typeof window.addNewMAOSelectionToExtract === "function") {
+    window.addNewMAOSelectionToExtract(
+      filename,
+      audioMediaUri,
+      extractId,
+      extractLabel,
+    );
+  } else {
+    console.error("addNewMAOSelectionToExtract is not available");
+  }
+}
+
+// Phase 4: Handle Region Edits
+function onRegionUpdated(filename, region) {
+  // Only handle our annotation regions (ignore the "timer" region)
+  if (!region.id.startsWith("anno_region_")) return;
+
+  const ix = parseInt(region.id.replace("anno_region_", ""));
+  if (isNaN(ix) || !currentlyAnnotatedRegions[ix]) return;
+
+  const isShiftPressed = window.event && window.event.shiftKey;
+
+  if (isShiftPressed) {
+    // Local Mode: store in overrides and do NOT re-render other waveforms
+    if (!currentlyAnnotatedRegions[ix].localOverrides) {
+      currentlyAnnotatedRegions[ix].localOverrides = {};
+    }
+    currentlyAnnotatedRegions[ix].localOverrides[filename] = {
+      start: region.start,
+      end: region.end,
+    };
+    console.log(
+      `Local override saved for ${filename}:`,
+      currentlyAnnotatedRegions[ix].localOverrides[filename],
+    );
+  } else {
+    // Global Mode: convert to alignment ix, update global, re-render all
+    const newFromGlobalIx = getClosestAlignmentIx(region.start, filename);
+    const newToGlobalIx = getClosestAlignmentIx(region.end, filename);
+
+    // Clear any local overrides for this region since we did a global edit
+    currentlyAnnotatedRegions[ix].localOverrides = {};
+
+    currentlyAnnotatedRegions[ix].from = newFromGlobalIx;
+    currentlyAnnotatedRegions[ix].to = newToGlobalIx;
+
+    // Re-render to propagate to all waveforms
+    updateRenderAnnoRegions();
+    console.log(
+      `Global region updated to ${newFromGlobalIx} - ${newToGlobalIx}`,
+    );
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Document Ready Hook
+// ----------------------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("back").addEventListener("click", () => {
     solidLogout().then(
@@ -1524,7 +1656,7 @@ document.addEventListener("DOMContentLoaded", () => {
     loginAndFetch();
   }
   // draw appropriate solid authorization message
-  populateSolidTab();
+  populateSolidDrawer();
 
   // set up Verovio
   const _verovioReady = new Promise((resolve) => {
@@ -1627,6 +1759,20 @@ document.addEventListener("DOMContentLoaded", () => {
       (e) => (e.style.display = display),
     );
   });
+
+  // show the Solid drawer button so users can open the linked-data panel
+  document.getElementById("solid-drawer-btn").style.display = "";
+
+  // Solid Drawer toggle logic
+  const solidDrawer = document.getElementById("solid-drawer");
+  document.getElementById("solid-drawer-btn").addEventListener("click", () => {
+    solidDrawer.classList.toggle("closed");
+  });
+  document
+    .getElementById("close-solid-drawer")
+    .addEventListener("click", () => {
+      solidDrawer.classList.add("closed");
+    });
 
   document.querySelector("body").addEventListener("keydown", (e) => {
     // Don't intercept when typing in an input/textarea
@@ -2094,7 +2240,7 @@ function updateRenderTimer() {
 }
 
 // todo refactor with updateRenderTimer above
-function updateRenderAnnoRegions() {
+export function updateRenderAnnoRegions() {
   // HACK dlfm2023: for now do nothing, ensure annots are loaded before wavesurfers
   Object.keys(wavesurfers).forEach((ws) => {
     console.log("Update render anno regions: ", ws, currentlyAnnotatedRegions);
@@ -2112,12 +2258,23 @@ function updateRenderAnnoRegions() {
 
 function extractCurrentlyAnnotatedRegions(ws) {
   return currentlyAnnotatedRegions.map((r, ix) => {
+    let regionStart, regionEnd;
+
+    // Phase 4: Use local override if it exists, otherwise fall back to global alignment
+    if (r.localOverrides && r.localOverrides[ws]) {
+      regionStart = r.localOverrides[ws].start;
+      regionEnd = r.localOverrides[ws].end;
+    } else {
+      regionStart = getCorrespondingTime(ws, r.from);
+      regionEnd = getCorrespondingTime(ws, r.to);
+    }
+
     return {
       id: "anno_region_" + ix,
-      start: getCorrespondingTime(ws, r.from),
-      end: getCorrespondingTime(ws, r.to),
-      drag: false,
-      resize: false,
+      start: regionStart,
+      end: regionEnd,
+      drag: true,
+      resize: true,
       color: "rgba(200, 130, 80, 0.3)",
     };
   });

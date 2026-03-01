@@ -540,6 +540,489 @@ function generateCheckboxList(list) {
   return ul;
 }
 
+// ---------------------------------------------------------------------------
+// File grouping — state, persistence, sidebar rendering, modal
+// ---------------------------------------------------------------------------
+const _GROUPS_STORAGE_PREFIX = "listenTool_fileGroups_";
+
+/** Returns the localStorage key for the current context. */
+function _groupsStorageKey() {
+  return _GROUPS_STORAGE_PREFIX + (window.location.pathname || "default");
+}
+
+/**
+ * Load saved groups from localStorage.
+ * Format: [ { name: string, pattern: string, files: string[] }, ... ]
+ */
+function _loadGroups() {
+  try {
+    const raw = localStorage.getItem(_groupsStorageKey());
+    if (raw) return JSON.parse(raw);
+  } catch (e) {
+    console.warn("Could not load file groups from localStorage:", e);
+  }
+  return [];
+}
+
+function _saveGroups(groups) {
+  try {
+    localStorage.setItem(_groupsStorageKey(), JSON.stringify(groups));
+  } catch (e) {
+    console.warn("Could not save file groups to localStorage:", e);
+  }
+}
+
+/**
+ * Build the sidebar file list from the current filenames + saved groups.
+ * Score foldout is added separately if present.
+ */
+function _renderSidebarFileList(filenames) {
+  const audiosElement = document.getElementById("audios");
+  // Remove old foldouts / lists (preserve non-list children like buttons)
+  audiosElement
+    .querySelectorAll("details, ul.ungrouped-files")
+    .forEach((el) => el.remove());
+
+  const groups = _loadGroups();
+
+  const listSelectors = `<span class='listSelectors'>
+    <span class='all'>All</span><span class='none'>None</span>
+  </span>`;
+
+  // Determine which files belong to groups
+  const grouped = new Set();
+  groups.forEach((g) => {
+    (g.files || []).forEach((f) => grouped.add(f));
+    // Also apply the regex pattern if present
+    if (g.pattern) {
+      try {
+        const re = new RegExp(g.pattern);
+        filenames.forEach((f) => {
+          const short = f.substring(f.lastIndexOf("/") + 1);
+          if (re.test(short) || re.test(f)) grouped.add(f);
+        });
+      } catch (_) {
+        /* invalid regex — ignore */
+      }
+    }
+  });
+
+  // Build effective group membership (pattern + explicit)
+  const groupMembers = groups.map((g) => {
+    const members = new Set(g.files || []);
+    if (g.pattern) {
+      try {
+        const re = new RegExp(g.pattern);
+        filenames.forEach((f) => {
+          const short = f.substring(f.lastIndexOf("/") + 1);
+          if (re.test(short) || re.test(f)) members.add(f);
+        });
+      } catch (_) {}
+    }
+    // Only keep files that actually exist in the alignment
+    return [...members].filter((f) => filenames.includes(f)).sort();
+  });
+
+  // Ungrouped files
+  const ungrouped = filenames.filter((f) => !grouped.has(f)).sort();
+
+  // --- Render order: Score first, then groups, then ungrouped ---
+
+  // 1. Score foldout (first, if present)
+  if (SYNTH_MEI_KEY in alignmentGrids) {
+    const synthFoldout = document.createElement("details");
+    synthFoldout.open = true;
+    const synthSummary = document.createElement("summary");
+    synthSummary.innerText = "Score";
+    synthFoldout.appendChild(synthSummary);
+    synthFoldout.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
+    audiosElement.appendChild(synthFoldout);
+  }
+
+  // 2. Render each group as a collapsible foldout
+  groups.forEach((g, i) => {
+    const members = groupMembers[i];
+    if (members.length === 0) return; // skip empty groups
+    const foldout = document.createElement("details");
+    foldout.open = true;
+    const summary = document.createElement("summary");
+    summary.innerText = g.name;
+    foldout.appendChild(summary);
+    foldout.innerHTML += listSelectors;
+    foldout.appendChild(generateCheckboxList(members));
+    audiosElement.appendChild(foldout);
+  });
+
+  // 3. Ungrouped recordings (last)
+  if (ungrouped.length > 0) {
+    const label = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
+    const uf = document.createElement("details");
+    uf.open = true;
+    const us = document.createElement("summary");
+    us.innerText = label;
+    uf.appendChild(us);
+    uf.innerHTML += listSelectors;
+    uf.appendChild(generateCheckboxList(ungrouped));
+    audiosElement.appendChild(uf);
+  }
+
+  // Wire up list selectors (All / None)
+  _wireListSelectors();
+
+  // Rendition click / checkbox handlers
+  Array.from(document.getElementsByClassName("renditionName")).forEach((r) => {
+    r.addEventListener("click", onClickRenditionName);
+  });
+  Array.from(document.getElementsByClassName("renditionCheckbox")).forEach(
+    (r) => {
+      r.addEventListener("click", onClickRenditionCheckbox);
+    },
+  );
+}
+
+function _wireListSelectors() {
+  document.querySelectorAll(".listSelectors .all").forEach((selector) =>
+    selector.addEventListener("click", (e) => {
+      e.target
+        .closest("details")
+        .querySelectorAll("input")
+        .forEach((cb) => {
+          if (!cb.checked) cb.click();
+        });
+    }),
+  );
+  document.querySelectorAll(".listSelectors .none").forEach((selector) =>
+    selector.addEventListener("click", (e) => {
+      e.target
+        .closest("details")
+        .querySelectorAll("input")
+        .forEach((cb) => {
+          if (cb.checked) cb.click();
+        });
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Group Files modal
+// ---------------------------------------------------------------------------
+
+/** Open the grouping modal. */
+function _openGroupModal() {
+  // Remove any existing modal
+  document.getElementById("group-modal-backdrop")?.remove();
+
+  const filenames = Object.keys(alignmentGrids)
+    .filter((n) => n !== SYNTH_MEI_KEY)
+    .sort();
+  let groups = _loadGroups();
+
+  // --- Build modal DOM ---
+  const backdrop = document.createElement("div");
+  backdrop.id = "group-modal-backdrop";
+  backdrop.className = "gm-backdrop";
+
+  const modal = document.createElement("div");
+  modal.className = "gm-modal";
+
+  // Header
+  const header = document.createElement("div");
+  header.className = "gm-header";
+  header.innerHTML = `<h3>Group Files</h3>`;
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "gm-close";
+  closeBtn.innerHTML = "\u2715";
+  closeBtn.addEventListener("click", () => backdrop.remove());
+  header.appendChild(closeBtn);
+  modal.appendChild(header);
+
+  // Body: two panes
+  const body = document.createElement("div");
+  body.className = "gm-body";
+
+  // Left pane: ungrouped files
+  const leftPane = document.createElement("div");
+  leftPane.className = "gm-pane gm-left";
+  leftPane.innerHTML = `<h4>Ungrouped Files</h4>`;
+  const ungroupedList = document.createElement("ul");
+  ungroupedList.className = "gm-file-list";
+  ungroupedList.id = "gm-ungrouped";
+  leftPane.appendChild(ungroupedList);
+  body.appendChild(leftPane);
+
+  // Right pane: groups
+  const rightPane = document.createElement("div");
+  rightPane.className = "gm-pane gm-right";
+  const rightHeader = document.createElement("div");
+  rightHeader.className = "gm-right-header";
+  rightHeader.innerHTML = `<h4>Groups</h4>`;
+  const addGroupBtn = document.createElement("button");
+  addGroupBtn.className = "gm-add-group";
+  addGroupBtn.textContent = "+ New Group";
+  addGroupBtn.addEventListener("click", () => {
+    groups.push({ name: "New Group", pattern: "", files: [] });
+    renderGroups();
+  });
+  rightHeader.appendChild(addGroupBtn);
+  rightPane.appendChild(rightHeader);
+
+  const groupsContainer = document.createElement("div");
+  groupsContainer.className = "gm-groups-container";
+  groupsContainer.id = "gm-groups-container";
+  rightPane.appendChild(groupsContainer);
+  body.appendChild(rightPane);
+
+  modal.appendChild(body);
+
+  // Footer
+  const footer = document.createElement("div");
+  footer.className = "gm-footer";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", () => backdrop.remove());
+  const applyBtn = document.createElement("button");
+  applyBtn.className = "gm-apply";
+  applyBtn.textContent = "Apply";
+  applyBtn.addEventListener("click", () => {
+    _saveGroups(groups);
+    backdrop.remove();
+    // Re-render sidebar
+    const fns = Object.keys(alignmentGrids)
+      .filter((n) => n !== SYNTH_MEI_KEY)
+      .sort();
+    _renderSidebarFileList(fns);
+    reloadWaveforms();
+  });
+  footer.appendChild(cancelBtn);
+  footer.appendChild(applyBtn);
+  modal.appendChild(footer);
+
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  // Close on backdrop click
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) backdrop.remove();
+  });
+
+  // --- Internal helpers to render the modal contents ---
+  function shortName(f) {
+    return f.substring(f.lastIndexOf("/") + 1);
+  }
+
+  /** Compute which files are claimed by any group (explicit + pattern). */
+  function getGroupedSet() {
+    const s = new Set();
+    groups.forEach((g) => {
+      (g.files || []).forEach((f) => s.add(f));
+      if (g.pattern) {
+        try {
+          const re = new RegExp(g.pattern);
+          filenames.forEach((f) => {
+            if (re.test(shortName(f)) || re.test(f)) s.add(f);
+          });
+        } catch (_) {}
+      }
+    });
+    return s;
+  }
+
+  function renderUngrouped() {
+    ungroupedList.innerHTML = "";
+    const grouped = getGroupedSet();
+    const ug = filenames.filter((f) => !grouped.has(f));
+    ug.forEach((f) => {
+      const li = document.createElement("li");
+      li.className = "gm-file-item";
+      li.draggable = true;
+      li.dataset.file = f;
+      li.textContent = shortName(f);
+      li.title = f;
+      li.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", f);
+        e.dataTransfer.effectAllowed = "move";
+        li.classList.add("gm-dragging");
+      });
+      li.addEventListener("dragend", () => li.classList.remove("gm-dragging"));
+      ungroupedList.appendChild(li);
+    });
+    if (ug.length === 0) {
+      ungroupedList.innerHTML =
+        '<li class="gm-empty">All files are grouped</li>';
+    }
+  }
+
+  function renderGroups() {
+    groupsContainer.innerHTML = "";
+    groups.forEach((g, i) => {
+      const card = document.createElement("div");
+      card.className = "gm-group-card";
+
+      // Group header: name input + controls
+      const gh = document.createElement("div");
+      gh.className = "gm-group-header";
+
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.className = "gm-group-name";
+      nameInput.value = g.name;
+      nameInput.addEventListener("input", (e) => {
+        g.name = e.target.value;
+      });
+      gh.appendChild(nameInput);
+
+      // Move up
+      if (i > 0) {
+        const upBtn = document.createElement("button");
+        upBtn.className = "gm-icon-btn";
+        upBtn.title = "Move up";
+        upBtn.textContent = "\u25B2";
+        upBtn.addEventListener("click", () => {
+          [groups[i - 1], groups[i]] = [groups[i], groups[i - 1]];
+          renderAll();
+        });
+        gh.appendChild(upBtn);
+      }
+      // Move down
+      if (i < groups.length - 1) {
+        const downBtn = document.createElement("button");
+        downBtn.className = "gm-icon-btn";
+        downBtn.title = "Move down";
+        downBtn.textContent = "\u25BC";
+        downBtn.addEventListener("click", () => {
+          [groups[i], groups[i + 1]] = [groups[i + 1], groups[i]];
+          renderAll();
+        });
+        gh.appendChild(downBtn);
+      }
+      // Delete
+      const delBtn = document.createElement("button");
+      delBtn.className = "gm-icon-btn gm-delete";
+      delBtn.title = "Delete group";
+      delBtn.textContent = "\u2715";
+      delBtn.addEventListener("click", () => {
+        groups.splice(i, 1);
+        renderAll();
+      });
+      gh.appendChild(delBtn);
+      card.appendChild(gh);
+
+      // Regex pattern input
+      const patRow = document.createElement("div");
+      patRow.className = "gm-pattern-row";
+      const patLabel = document.createElement("label");
+      patLabel.textContent = "Regex:";
+      const patInput = document.createElement("input");
+      patInput.type = "text";
+      patInput.className = "gm-pattern-input";
+      patInput.placeholder = "e.g. ^VPO-";
+      patInput.value = g.pattern || "";
+      patInput.addEventListener("input", (e) => {
+        g.pattern = e.target.value;
+        const cursorPos = e.target.selectionStart;
+        renderAll();
+        // Restore focus to the same regex input after re-render
+        const restored =
+          groupsContainer.querySelectorAll(".gm-pattern-input")[i];
+        if (restored) {
+          restored.focus();
+          restored.setSelectionRange(cursorPos, cursorPos);
+        }
+      });
+      patRow.appendChild(patLabel);
+      patRow.appendChild(patInput);
+      card.appendChild(patRow);
+
+      // File list (explicit + regex-matched)
+      const fileUl = document.createElement("ul");
+      fileUl.className = "gm-group-files";
+
+      // Compute effective members
+      const members = new Set(g.files || []);
+      if (g.pattern) {
+        try {
+          const re = new RegExp(g.pattern);
+          filenames.forEach((f) => {
+            if (re.test(shortName(f)) || re.test(f)) members.add(f);
+          });
+        } catch (_) {}
+      }
+      const memberArr = [...members]
+        .filter((f) => filenames.includes(f))
+        .sort();
+      memberArr.forEach((f) => {
+        const li = document.createElement("li");
+        li.className = "gm-file-item gm-grouped";
+        li.textContent = shortName(f);
+        li.title = f;
+        // Remove button (only for explicitly added files, not regex)
+        const isExplicit = (g.files || []).includes(f);
+        if (isExplicit) {
+          const rmBtn = document.createElement("button");
+          rmBtn.className = "gm-remove-file";
+          rmBtn.textContent = "\u2715";
+          rmBtn.title = "Remove from group";
+          rmBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            g.files = (g.files || []).filter((x) => x !== f);
+            renderAll();
+          });
+          li.appendChild(rmBtn);
+        } else {
+          // Matched by regex — show indicator
+          const tag = document.createElement("span");
+          tag.className = "gm-regex-tag";
+          tag.textContent = "(regex)";
+          li.appendChild(tag);
+        }
+        fileUl.appendChild(li);
+      });
+      if (memberArr.length === 0) {
+        fileUl.innerHTML =
+          '<li class="gm-empty">Drag files here or set a regex</li>';
+      }
+
+      // Drop zone
+      card.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        card.classList.add("gm-drop-target");
+      });
+      card.addEventListener("dragleave", () =>
+        card.classList.remove("gm-drop-target"),
+      );
+      card.addEventListener("drop", (e) => {
+        e.preventDefault();
+        card.classList.remove("gm-drop-target");
+        const file = e.dataTransfer.getData("text/plain");
+        if (file && filenames.includes(file)) {
+          // Remove from any other group's explicit list
+          groups.forEach((og) => {
+            og.files = (og.files || []).filter((x) => x !== file);
+          });
+          if (!g.files) g.files = [];
+          if (!g.files.includes(file)) g.files.push(file);
+          renderAll();
+        }
+      });
+
+      card.appendChild(fileUl);
+      groupsContainer.appendChild(card);
+    });
+
+    if (groups.length === 0) {
+      groupsContainer.innerHTML = `<p class="gm-empty">No groups yet. Click <strong>+ New Group</strong> to create one.</p>`;
+    }
+  }
+
+  function renderAll() {
+    renderUngrouped();
+    renderGroups();
+  }
+
+  renderAll();
+}
+
 function reloadWaveforms() {
   let playPosition = 0;
   let isPlaying = false;
@@ -604,8 +1087,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     const allWfChildren = [...waveforms.children];
     const isScore = (n) => n.dataset.ix === SYNTH_MEI_KEY;
     const isVPO = (n) =>
-      !isScore(n) &&
-      n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-");
+      !isScore(n) && n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-");
     const score = allWfChildren.filter(isScore);
     const vpo = allWfChildren.filter(isVPO);
     const other = allWfChildren.filter((n) => !isScore(n) && !isVPO(n));
@@ -1385,115 +1867,17 @@ async function setGrids(grids) {
     alignmentGrids = grids;
   }
   console.log("setting grids: ", grids);
-  /* separate VPO, external, and other */
-  /* for now, hackily use filenames */
-  /* in glorious future, use knowledge graph */
-  let filenames = Object.keys(alignmentGrids);
-  let vpoFiles = filenames.filter((n) =>
-    n.substr(n.lastIndexOf("/") + 1).startsWith("VPO-"),
+  /* ---- Dynamic file grouping ---- */
+  let filenames = Object.keys(alignmentGrids).filter(
+    (n) => n !== SYNTH_MEI_KEY,
   );
-  let extFiles = filenames.filter((n) =>
-    n.substr(n.lastIndexOf("/") + 1).startsWith("ext-"),
-  );
-  vpoFiles = vpoFiles.sort();
-  extFiles = extFiles.sort();
-  let otherFiles = filenames
-    .filter(
-      (n) =>
-        !vpoFiles.includes(n) && !extFiles.includes(n) && n !== SYNTH_MEI_KEY,
-    )
-    .sort();
-  otherFiles = otherFiles.sort();
+  filenames.sort();
 
-  const vpoList = generateCheckboxList(vpoFiles);
-  const otherList = generateCheckboxList(otherFiles);
-  const extList = generateCheckboxList(extFiles);
+  _renderSidebarFileList(filenames);
 
-  const listSelectors = `<span class='listSelectors'>
-    <span class='all'>All</span><span class='none'>None</span>
-  </span>`;
-
-  const vpoFoldout = document.createElement("details");
-  const vpoSummary = document.createElement("summary");
-
-  vpoSummary.innerText = "VPO";
-  vpoFoldout.appendChild(vpoSummary);
-  vpoFoldout.innerHTML += listSelectors;
-  vpoFoldout.appendChild(vpoList);
-
-  const otherFoldout = document.createElement("details");
-  const otherSummary = document.createElement("summary");
-  otherSummary.innerText = "Other";
-  otherFoldout.appendChild(otherSummary);
-  otherFoldout.innerHTML += listSelectors;
-  otherFoldout.appendChild(otherList);
-
-  const extFoldout = document.createElement("details");
-  const extSummary = document.createElement("summary");
-
-  extSummary.innerText = "External";
-  extFoldout.appendChild(extSummary);
-  extFoldout.innerHTML += listSelectors;
-  extFoldout.appendChild(extList);
-
-  const audiosElement = document.getElementById("audios");
-
-  vpoFoldout.open = true;
-  otherFoldout.open = true;
-  extFoldout.open = true;
-
-  audiosElement.appendChild(vpoFoldout);
-  audiosElement.appendChild(otherFoldout);
-  audiosElement.appendChild(extFoldout);
-
-  // Score foldout: synthesised MEI waveform (only when score alignment data is present)
-  if (SYNTH_MEI_KEY in alignmentGrids) {
-    const synthFoldout = document.createElement("details");
-    synthFoldout.open = true;
-    const synthSummary = document.createElement("summary");
-    synthSummary.innerText = "Score";
-    synthFoldout.appendChild(synthSummary);
-    synthFoldout.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
-    audiosElement.appendChild(synthFoldout);
-  }
-
-  // list selectors
-  Array.from(document.querySelectorAll(".listSelectors .all")).forEach(
-    (selector) =>
-      selector.addEventListener("click", (e) => {
-        let checkboxes = Array.from(
-          e.target.closest("details").querySelectorAll("input"),
-        );
-        checkboxes.forEach((cb) => {
-          // we're doing work in clickhandlers, so can't just set checked value
-          if (!cb.checked) cb.click();
-        });
-      }),
-  );
-  Array.from(document.querySelectorAll(".listSelectors .none")).forEach(
-    (selector) =>
-      selector.addEventListener("click", (e) => {
-        let checkboxes = Array.from(
-          e.target.closest("details").querySelectorAll("input"),
-        );
-        checkboxes.forEach((cb) => {
-          // we're doing work in clickhandlers, so can't just unset checked value
-          if (cb.checked) cb.click();
-        });
-      }),
-  );
-
-  // rendition selectors
-  Array.from(document.getElementsByClassName("renditionName")).forEach(
-    (r, ix) => {
-      r.addEventListener("click", onClickRenditionName);
-    },
-  );
-  Array.from(document.getElementsByClassName("renditionCheckbox")).forEach(
-    (r, ix) => {
-      r.addEventListener("click", onClickRenditionCheckbox);
-    },
-  );
+  // Show the "Group files" button
+  const groupBtn = document.getElementById("group-files-btn");
+  if (groupBtn) groupBtn.style.display = "";
 
   // If ?useFiles mode is active, show file picker overlay
   showFilePickerIfNeeded();
@@ -1717,6 +2101,12 @@ document.addEventListener("DOMContentLoaded", () => {
       URL.revokeObjectURL(url);
     });
     if (alignmentData === "session") dlBtn.style.display = ""; // legacy fallback
+  }
+
+  // Group files button
+  const groupFilesBtn = document.getElementById("group-files-btn");
+  if (groupFilesBtn) {
+    groupFilesBtn.addEventListener("click", () => _openGroupModal());
   }
 
   // load alignment json

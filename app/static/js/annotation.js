@@ -6,6 +6,7 @@ import {
   maoSelections,
   meiUri,
   markScoreRegion,
+  swapCurrentAudio,
   updateRenderAnnoRegions,
   wavesurfers,
   _regionsPlugins,
@@ -14,6 +15,100 @@ import { addNewMAOSelectionToExtract } from "./solid.js";
 
 const dummyUriPrefix =
   "https://repo.mdw.ac.at/signature-sound-vienna/media/wav/"; // HACK cheat for DH2023
+
+// --- Annotation loop playback state ---
+let _activeLoop = null; // { regionIx, playBtn, intervalId, pauseCleanup }
+
+/** Returns true if an annotation loop is currently active. */
+export function hasActiveAnnotationLoop() {
+  return _activeLoop !== null;
+}
+
+/**
+ * Continue the active annotation loop on a newly-switched waveform.
+ * Called from listen.js swapCurrentAudio() after the new waveform is active.
+ */
+export function continueAnnotationLoopOnWaveform(newFilename) {
+  if (!_activeLoop) return;
+  // Start the loop on the new waveform (old monitor already cleaned up)
+  _startLoopOnWaveform(newFilename, _activeLoop.regionIx, _activeLoop.playBtn);
+}
+
+/**
+ * Detach the loop's pause listener from the old waveform so that the
+ * upcoming waveform pause during swap doesn't kill the loop.
+ * Must be called BEFORE pausing the old waveform in swapCurrentAudio.
+ */
+export function prepareAnnotationLoopTransfer() {
+  if (!_activeLoop) return;
+  // Remove the interval + pause listener on the old waveform
+  if (_activeLoop.intervalId) clearInterval(_activeLoop.intervalId);
+  _activeLoop.intervalId = null;
+  if (_activeLoop.pauseCleanup) {
+    _activeLoop.pauseCleanup();
+    _activeLoop.pauseCleanup = null;
+  }
+}
+
+/** Stop the active annotation loop entirely (e.g. when card is dismissed). */
+export function stopAnnotationLoop() {
+  if (!_activeLoop) return;
+  _cleanupLoopMonitor();
+  const btn = _activeLoop.playBtn;
+  _activeLoop = null;
+  if (btn && btn.classList.contains("playing")) {
+    btn.classList.remove("playing");
+    btn.innerHTML = "\u25B6 Play";
+  }
+  // Pause whichever waveform is active
+  const audioToStop = currentAudioIx || Object.keys(wavesurfers)[0];
+  if (audioToStop && wavesurfers[audioToStop]) {
+    wavesurfers[audioToStop].pause();
+  }
+}
+
+function _cleanupLoopMonitor() {
+  if (!_activeLoop) return;
+  if (_activeLoop.intervalId) clearInterval(_activeLoop.intervalId);
+  _activeLoop.intervalId = null;
+  // Remove the one-time pause listener if still attached
+  if (_activeLoop.pauseCleanup) {
+    _activeLoop.pauseCleanup();
+    _activeLoop.pauseCleanup = null;
+  }
+}
+
+function _startLoopOnWaveform(filename, regionIx, playBtn) {
+  const regionId = "anno_region_" + regionIx;
+  const regPlugin = _regionsPlugins[filename];
+  const region =
+    regPlugin && regPlugin.getRegions().find((r) => r.id === regionId);
+  if (!region) {
+    console.warn("Region not found on waveform for loop:", regionId, filename);
+    return;
+  }
+  region.play();
+  const ws = wavesurfers[filename];
+  const intervalId = setInterval(() => {
+    if (!_activeLoop || !playBtn.classList.contains("playing")) {
+      clearInterval(intervalId);
+      return;
+    }
+    if (ws.getCurrentTime() >= region.end) {
+      region.play();
+    }
+  }, 50);
+  // Pause handler: if user stops via main controls, cleanly turn off the loop
+  const onPause = () => {
+    if (_activeLoop && playBtn.classList.contains("playing")) {
+      stopAnnotationLoop();
+    }
+  };
+  // .once() wraps the callback — use the returned unsub function for cleanup
+  const unsubPause = ws.once("pause", onPause);
+  // Update active loop state
+  _activeLoop = { regionIx, playBtn, intervalId, pauseCleanup: unsubPause };
+}
 
 // --- Selection mode state ---
 let _activeSelectionCardId = null; // extract @id of card in selection mode
@@ -247,77 +342,44 @@ function drawExtractUIElement(obj) {
   playBtn.className = "extract-play-btn";
   playBtn.innerHTML = "\u25B6 Play";
 
-  // We attach loop play logic
-  let loopInterval = null;
   playBtn.addEventListener("click", () => {
     // If we're already playing this loop, stop it
     if (playBtn.classList.contains("playing")) {
-      playBtn.classList.remove("playing");
-      playBtn.innerHTML = "\u25B6 Play";
-
-      const audioToStop = currentAudioIx || Object.keys(wavesurfers)[0];
-      if (audioToStop && wavesurfers[audioToStop]) {
-        wavesurfers[audioToStop].pause();
-      }
-      if (loopInterval) clearInterval(loopInterval);
+      stopAnnotationLoop();
       return;
     }
 
-    // Reset all other playing buttons
-    document
-      .querySelectorAll(".maoExtract button.playing")
-      .forEach((btn) => btn.click());
+    // Stop any other active annotation loop first
+    stopAnnotationLoop();
+
+    // Determine the target waveform — activate first if none active
+    let targetAudio = currentAudioIx;
+    if (!targetAudio || !wavesurfers[targetAudio]) {
+      const firstKey = Object.keys(wavesurfers)[0];
+      if (!firstKey) {
+        console.warn("No waveform available to play annotation");
+        return;
+      }
+      swapCurrentAudio(firstKey);
+      targetAudio = firstKey;
+    }
+
+    // Find the corresponding region
+    let mySelections = obj[nsp.FRBR + "embodiment"].map((e) => e["@id"]);
+    let regionIx = currentlyAnnotatedRegions.findIndex((r) =>
+      mySelections.includes(r.selection),
+    );
+    if (regionIx < 0) {
+      console.warn("No matching region found for annotation");
+      return;
+    }
 
     // Mark as playing
     playBtn.classList.add("playing");
     playBtn.innerHTML = "\u25A0 Stop";
 
-    // Figure out which waveform to play on
-    const targetAudio = currentAudioIx || Object.keys(wavesurfers)[0];
-    if (!targetAudio || !wavesurfers[targetAudio]) {
-      console.warn("No waveform available to play annotation");
-      return;
-    }
-
-    // Find the corresponding region in currentlyAnnotatedRegions
-    let mySelections = obj[nsp.FRBR + "embodiment"].map((e) => e["@id"]);
-    let regionIx = currentlyAnnotatedRegions.findIndex((r) =>
-      mySelections.includes(r.selection),
-    );
-
-    if (regionIx >= 0) {
-      const regionId = "anno_region_" + regionIx;
-      const regPlugin = _regionsPlugins[targetAudio];
-      const region =
-        regPlugin && regPlugin.getRegions().find((r) => r.id === regionId);
-
-      if (region) {
-        region.play();
-
-        // Setup loop monitor
-        if (loopInterval) clearInterval(loopInterval);
-        const ws = wavesurfers[targetAudio];
-        loopInterval = setInterval(() => {
-          if (!playBtn.classList.contains("playing")) {
-            clearInterval(loopInterval);
-            return;
-          }
-          if (ws.getCurrentTime() >= region.end) {
-            region.play(); // Seek back to start and continue
-          }
-        }, 50);
-
-        // Cleanup interval if user pauses manually via main play/pause
-        ws.once("pause", () => {
-          if (playBtn.classList.contains("playing")) {
-            playBtn.click(); // trigger our toggle to turn it off cleanly
-          }
-        });
-      } else {
-        console.warn("Region not found on waveform: ", regionId);
-        playBtn.click(); // turn off
-      }
-    }
+    // Start loop on the active waveform
+    _startLoopOnWaveform(targetAudio, regionIx, playBtn);
   });
 
   // --- Select Recordings toggle button ---

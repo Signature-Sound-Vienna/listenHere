@@ -3,7 +3,7 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { populateSolidDrawer, loginAndFetch, solidLogout } from "./solid.js";
-import { toggleStagedSelection } from "./annotation.js";
+import { toggleStagedSelection, continueAnnotationLoopOnWaveform, prepareAnnotationLoopTransfer } from "./annotation.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
@@ -438,7 +438,7 @@ function onClickRenditionCheckbox(e) {
   }
 }
 
-function swapCurrentAudio(newAudio) {
+export function swapCurrentAudio(newAudio) {
   if (currentAudioIx === newAudio) {
     // no need to swap
     return;
@@ -449,6 +449,9 @@ function swapCurrentAudio(newAudio) {
       "Current duration: ",
       wavesurfers[currentAudioIx].getDuration(),
     );
+    // Detach annotation loop's pause listener before pausing,
+    // so the swap-pause doesn't kill the active annotation loop.
+    prepareAnnotationLoopTransfer();
     const wasPlaying = wavesurfers[currentAudioIx].isPlaying();
     wavesurfers[currentAudioIx].pause();
     // In close-listening mode, seek to the active marker; otherwise follow
@@ -499,6 +502,8 @@ function swapCurrentAudio(newAudio) {
       newActiveWaveform.classList.add("active");
     }
   }
+  // If an annotation loop is active, continue it on the newly-active waveform
+  continueAnnotationLoopOnWaveform(currentAudioIx);
 }
 
 function generateCheckboxList(list) {

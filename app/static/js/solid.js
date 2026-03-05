@@ -116,45 +116,39 @@ export async function postResource(containerUri, resource) {
  * we do this instead.
  */
 
-export async function safelyPatchResource(uri, patch) {
-  let etag;
-  solid
-    .fetch(uri, {
-      headers: {
-        Accept: "application/ld+json",
-      },
-    })
-    .then((resp) => {
-      etag = resp.headers.get("ETag");
-      return resp.json();
-    })
-    .then((freshlyFetched) => {
-      const patched = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
-      solid
-        .fetch(uri, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/ld+json",
-            "If-Match": etag,
-          },
-          body: JSON.stringify(patched),
-        })
-        .then((putResp) => {
-          if (putResp.status === 412) {
-            console.info(
-              "Precondition failed: resource has changed while we were trying to patch it. Retrying...",
-            );
-            setTimeout(() => safelyPatchResource(uri, patch), politeness);
-          } else if (putResp.status >= 400) {
-            console.warn("Couldn't PUT patched resource: ", putResp);
-          } else {
-            console.log("Patched successfully: ", uri);
-          }
-        })
-        .catch((e) => {
-          console.warn("Failed to apply patch to resource: ", uri, patch, e);
-        });
-    });
+export async function safelyPatchResource(uri, patch, _retries = 5) {
+  const resp = await solid.fetch(uri, {
+    headers: {
+      Accept: "application/ld+json",
+    },
+  });
+  const etag = resp.headers.get("ETag");
+  const freshlyFetched = await resp.json();
+  const patched = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
+  const putResp = await solid.fetch(uri, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/ld+json",
+      ...(etag ? { "If-Match": etag } : {}),
+    },
+    body: JSON.stringify(patched),
+  });
+  if (putResp.status === 412) {
+    if (_retries <= 0) {
+      console.error("safelyPatchResource: max retries exceeded for", uri);
+      return putResp;
+    }
+    console.info(
+      "Precondition failed: resource changed while patching. Retrying...",
+    );
+    await new Promise((r) => setTimeout(r, politeness));
+    return safelyPatchResource(uri, patch, _retries - 1);
+  } else if (putResp.status >= 400) {
+    console.warn("Couldn't PUT patched resource: ", putResp);
+  } else {
+    console.log("Patched successfully: ", uri);
+  }
+  return putResp;
 }
 
 export async function establishResource(uri, resource) {
@@ -429,68 +423,79 @@ export async function addNewMAOSelectionToExtract(
   label = "",
   peaksData = null,
 ) {
-  let storageResource;
-  let dataCatalogResource;
-  return establishContainers()
-    .then(async (stoRes) => {
-      storageResource = stoRes;
-      return establishDiscoveryResource(currentFileUri);
-    })
-    .then(async (dataCatRes) => {
-      dataCatalogResource = dataCatRes;
-      return createMAOSelection(
-        selectedElements,
-        currentFileUri,
-        dataCatalogResource.url,
+  return addMultipleMAOSelectionsToExtract(
+    [{ currentFileUri, selectedElements, peaksData }],
+    extractResource,
+    label,
+  );
+}
+
+/**
+ * Post multiple MAO Selections in parallel, then batch-patch the discovery
+ * resource and the Extract with all new entries in one round-trip each.
+ * @param {Array<{currentFileUri: string, selectedElements: string, peaksData: object|null}>} items
+ * @param {string} extractResource — the Extract URI to patch
+ * @param {string} label
+ * @returns {Promise<void>}
+ */
+export async function addMultipleMAOSelectionsToExtract(
+  items,
+  extractResource,
+  label = "",
+) {
+  // 1. Establish containers and discovery resources (deduplicated)
+  const storageResource = await establishContainers();
+  const uniqueFileUris = [...new Set(items.map((i) => i.currentFileUri))];
+  const discoveryMap = {}; // fileUri → { url }
+  for (const fileUri of uniqueFileUris) {
+    discoveryMap[fileUri] = await establishDiscoveryResource(fileUri);
+  }
+
+  // 2. POST all selections in parallel
+  const selectionResponses = await Promise.all(
+    items.map((item) =>
+      createMAOSelection(
+        item.selectedElements,
+        item.currentFileUri,
+        discoveryMap[item.currentFileUri].url,
         label,
-        peaksData,
-      );
-    })
-    .then(async (selectionResource) => {
-      // patch the now-established discovery resource
-      safelyPatchResource(dataCatalogResource.url, [
-        {
-          op: "add",
-          // escape ~ and / characters according to JSON POINTER spec
-          // use '-' at end of path specification to indicate new array item to be created
-          path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll(
-            "/",
-            "~1",
-          )}dataset/-`,
-          value: {
-            "@type": `${nsp.SCHEMA}Dataset`,
-            [`${nsp.SCHEMA}additionalType`]: { "@id": `${nsp.MAO}Selection` },
-            [`${nsp.SCHEMA}url`]: {
-              "@id": resolveLocation(selectionResource),
-            },
-          },
-        },
-      ]).catch(() => {
-        console.warn(
-          "Couldn't pach discovery resource: ",
-          dataCatalogResource.url,
-        );
-      });
-      return selectionResource;
-    })
-    .then(async (selectionResource) => {
-      // patch the extract to point to our new selection resource
-      console.log("in finally, selection resource:", selectionResource);
-      return safelyPatchResource(extractResource, [
-        {
-          op: "add",
-          // escape ~ and / characters according to JSON POINTER spec
-          // use '-' at end of path specification to indicate new array item to be created
-          path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll(
-            "/",
-            "~1",
-          )}embodiment/-`,
-          value: {
-            "@id": resolveLocation(selectionResource),
-          },
-        },
-      ]);
+        item.peaksData,
+      ),
+    ),
+  );
+
+  // 3. Build batch patches per discovery resource
+  const discoveryPatches = {}; // discoveryUrl → patch ops[]
+  selectionResponses.forEach((selRes, i) => {
+    const discUrl = discoveryMap[items[i].currentFileUri].url;
+    if (!discoveryPatches[discUrl]) discoveryPatches[discUrl] = [];
+    discoveryPatches[discUrl].push({
+      op: "add",
+      path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll("/", "~1")}dataset/-`,
+      value: {
+        "@type": `${nsp.SCHEMA}Dataset`,
+        [`${nsp.SCHEMA}additionalType`]: { "@id": `${nsp.MAO}Selection` },
+        [`${nsp.SCHEMA}url`]: { "@id": resolveLocation(selRes) },
+      },
     });
+  });
+
+  // 4. Patch each discovery resource (usually just one)
+  await Promise.all(
+    Object.entries(discoveryPatches).map(([url, ops]) =>
+      safelyPatchResource(url, ops).catch(() =>
+        console.warn("Couldn't patch discovery resource:", url),
+      ),
+    ),
+  );
+
+  // 5. Batch-patch the Extract with all new embodiment entries at once
+  const extractOps = selectionResponses.map((selRes) => ({
+    op: "add",
+    path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}embodiment/-`,
+    value: { "@id": resolveLocation(selRes) },
+  }));
+  await safelyPatchResource(extractResource, extractOps);
 }
 
 async function createMAOSelection(

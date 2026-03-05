@@ -13,6 +13,7 @@ import {
   _regionsPlugins,
 } from "./listen.js";
 import {
+  addMultipleMAOSelectionsToExtract,
   addNewMAOSelectionToExtract,
   postWebAnnotation,
   resolveLocation,
@@ -489,8 +490,9 @@ function drawExtractUIElement(obj) {
     postBtn.disabled = true;
     postBtn.textContent = "Posting\u2026";
     try {
+      // Build all selection items, then post them in one batched call
+      const items = [];
       for (const filename of set) {
-        // Compute region bounds
         const selectionUri = extract.dataset.selection;
         const regionIx = currentlyAnnotatedRegions.findIndex(
           (r) => r.selection === selectionUri,
@@ -511,16 +513,14 @@ function drawExtractUIElement(obj) {
           }
         }
         const audioMediaUri = `${dummyUriPrefix}${filename}#t=${regionStart},${regionEnd}`;
-        // Optionally include pre-computed peaks
         const peaksData = peaksCb.checked ? getWaveformPeaks(filename) : null;
-        await addNewMAOSelectionToExtract(
-          filename,
-          audioMediaUri,
-          extractId,
-          labelText,
+        items.push({
+          currentFileUri: filename,
+          selectedElements: audioMediaUri,
           peaksData,
-        );
+        });
       }
+      await addMultipleMAOSelectionsToExtract(items, extractId, labelText);
       postBtn.textContent = `Posted ${set.size} selection${set.size > 1 ? "s" : ""}!`;
       setTimeout(() => {
         postBtn.textContent = "Post to Solid";

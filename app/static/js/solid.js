@@ -12,6 +12,7 @@ import {
   attemptFetchExternalResource,
   markSelection,
   registerExtract,
+  registerMusicalMaterial,
 } from "./annotation.js";
 import { nsp, politeness } from "./linked-data.js";
 
@@ -35,7 +36,7 @@ export const discoveryFragment = "discovery/";
  * Uses ensureRelativeURL to normalise the Location to a pathname first,
  * then prepends the origin — the same approach used in postResource().
  */
-function resolveLocation(response) {
+export function resolveLocation(response) {
   const loc = response.headers.get("Location");
   if (!loc) return response.url;
   return new URL(response.url).origin + ensureRelativeURL(loc);
@@ -426,6 +427,7 @@ export async function addNewMAOSelectionToExtract(
   selectedElements,
   extractResource,
   label = "",
+  peaksData = null,
 ) {
   let storageResource;
   let dataCatalogResource;
@@ -441,6 +443,7 @@ export async function addNewMAOSelectionToExtract(
         currentFileUri,
         dataCatalogResource.url,
         label,
+        peaksData,
       );
     })
     .then(async (selectionResource) => {
@@ -495,6 +498,7 @@ async function createMAOSelection(
   aboutUri,
   discoveryUri,
   label = "",
+  peaksData = null,
 ) {
   // private function -- called *after* friendContainer and musicalObjectContainer already established
   let resource = structuredClone(resources.maoSelection);
@@ -505,6 +509,13 @@ async function createMAOSelection(
   ];
   if (label) {
     resource[nsp.RDFS + "label"] = label;
+  }
+  // Optionally include pre-computed waveform peak data
+  if (peaksData && peaksData.peaks) {
+    resource[nsp.SSV + "peaks"] = JSON.stringify({
+      peaks: peaksData.peaks,
+      duration: peaksData.duration,
+    });
   }
   // resource(s) this MAO object is about
   aboutUri = Array.isArray(aboutUri) ? aboutUri : [aboutUri];
@@ -542,6 +553,28 @@ async function createMAOMusicalMaterial(postExtractResponse, label = "") {
     resource[nsp.RDFS + "label"] = label;
   }
   return postResource(musicalMaterialContainer, resource);
+}
+
+/**
+ * Post an OA Web Annotation with a textual body targeting a MusicalMaterial.
+ * The annotation is placed in the annotationContainer (friendContainer + "oa/").
+ * @param {string} targetUri — the MusicalMaterial URI to annotate
+ * @param {string} bodyText  — the textual description
+ * @returns {Promise<Response>} — the Solid POST response
+ */
+export async function postWebAnnotation(targetUri, bodyText) {
+  const resource = {
+    "@type": [nsp.OA + "Annotation", nsp.SCHEMA + "Dataset"],
+    [nsp.OA + "motivatedBy"]: [{ "@id": nsp.OA + "describing" }],
+    [nsp.OA + "hasBody"]: [
+      {
+        "@type": [nsp.OA + "TextualBody"],
+        [nsp.RDF + "value"]: bodyText,
+      },
+    ],
+    [nsp.OA + "hasTarget"]: [{ "@id": targetUri }],
+  };
+  return postResource(annotationContainer, resource);
 }
 
 export async function populateSolidDrawer() {
@@ -687,11 +720,16 @@ function loadExternalAnnotations(urlstr) {
   try {
     attemptFetchExternalResource(
       url, // traversal start
-      [new URL(nsp.MAO + "Selection"), new URL(nsp.MAO + "Extract")], // target types
+      [
+        new URL(nsp.MAO + "Selection"),
+        new URL(nsp.MAO + "Extract"),
+        new URL(nsp.MAO + "MusicalMaterial"),
+      ], // target types
       {
         typeToHandlerMap: {
           [nsp.MAO + "Selection"]: { func: markSelection },
           [nsp.MAO + "Extract"]: { func: registerExtract },
+          [nsp.MAO + "MusicalMaterial"]: { func: registerMusicalMaterial },
         },
         followList: [
           new URL(nsp.LDP + "contains"),

@@ -3,6 +3,7 @@ import {
   currentAudioIx,
   currentlyAnnotatedRegions,
   getCorrespondingTime,
+  getWaveformPeaks,
   maoSelections,
   meiUri,
   markScoreRegion,
@@ -11,10 +12,51 @@ import {
   wavesurfers,
   _regionsPlugins,
 } from "./listen.js";
-import { addNewMAOSelectionToExtract } from "./solid.js";
+import {
+  addNewMAOSelectionToExtract,
+  postWebAnnotation,
+  resolveLocation,
+} from "./solid.js";
 
 const dummyUriPrefix =
   "https://repo.mdw.ac.at/signature-sound-vienna/media/wav/"; // HACK cheat for DH2023
+
+const PRIMAL_BASE = "https://primal.mdw.ac.at/?obj=";
+
+// --- MusicalMaterial ↔ Extract mapping ---
+// Populated during traversal: extractUri → musicalMaterialUri
+const _extractToMusMat = new Map();
+
+/**
+ * Handler called by traverseAndFetch when a MusicalMaterial resource is found.
+ * Stores the mapping so that annotation cards can look up their MusicalMaterial.
+ * Also retroactively updates any already-drawn card whose Extract matches.
+ */
+export function registerMusicalMaterial(obj, url) {
+  const musMatUri =
+    typeof url === "object" && url.href ? url.href : String(url);
+  const settings = obj[nsp.MAO + "setting"];
+  if (settings) {
+    const arr = Array.isArray(settings) ? settings : [settings];
+    arr.forEach((s) => {
+      if (s["@id"]) {
+        const extractKey = String(s["@id"]);
+        _extractToMusMat.set(extractKey, musMatUri);
+        // Retroactively update any already-drawn card for this Extract
+        const card = document.getElementById(extractKey);
+        if (card) {
+          card.dataset.musicalMaterial = musMatUri;
+          // Show the Primal button if it was hidden
+          const primalLink = card.querySelector(".primal-btn");
+          if (primalLink) {
+            primalLink.href = PRIMAL_BASE + encodeURIComponent(musMatUri);
+            primalLink.style.display = "";
+          }
+        }
+      }
+    });
+  }
+}
 
 // --- Annotation loop playback state ---
 let _activeLoop = null; // { regionIx, playBtn, intervalId, pauseCleanup }
@@ -424,6 +466,17 @@ function drawExtractUIElement(obj) {
   stagedDetails.appendChild(stagedList);
   stagedArea.appendChild(stagedDetails);
 
+  // --- Include peaks checkbox ---
+  let peaksLabel = document.createElement("label");
+  peaksLabel.className = "include-peaks-label";
+  let peaksCb = document.createElement("input");
+  peaksCb.type = "checkbox";
+  peaksCb.className = "include-peaks-cb";
+  peaksCb.checked = false;
+  peaksLabel.appendChild(peaksCb);
+  peaksLabel.append(" Include peaks");
+  stagedArea.appendChild(peaksLabel);
+
   // --- Post to Solid button ---
   let postBtn = document.createElement("button");
   postBtn.className = "post-to-solid-btn";
@@ -458,11 +511,14 @@ function drawExtractUIElement(obj) {
           }
         }
         const audioMediaUri = `${dummyUriPrefix}${filename}#t=${regionStart},${regionEnd}`;
+        // Optionally include pre-computed peaks
+        const peaksData = peaksCb.checked ? getWaveformPeaks(filename) : null;
         await addNewMAOSelectionToExtract(
           filename,
           audioMediaUri,
           extractId,
           labelText,
+          peaksData,
         );
       }
       postBtn.textContent = `Posted ${set.size} selection${set.size > 1 ? "s" : ""}!`;
@@ -478,6 +534,77 @@ function drawExtractUIElement(obj) {
   stagedArea.appendChild(postBtn);
 
   extract.appendChild(stagedArea);
+
+  // --- Describe area ---
+  let describeArea = document.createElement("div");
+  describeArea.className = "describe-area";
+
+  let descTextarea = document.createElement("textarea");
+  descTextarea.className = "describe-textarea";
+  descTextarea.placeholder = "Add a textual description\u2026";
+  descTextarea.rows = 2;
+  describeArea.appendChild(descTextarea);
+
+  let descBtnRow = document.createElement("div");
+  descBtnRow.className = "describe-btn-row";
+
+  let describeBtn = document.createElement("button");
+  describeBtn.className = "describe-btn";
+  describeBtn.textContent = "Describe";
+  describeBtn.addEventListener("click", async () => {
+    const text = descTextarea.value.trim();
+    if (!text) return;
+    const musMatUri = extract.dataset.musicalMaterial;
+    if (!musMatUri) {
+      console.warn("No MusicalMaterial URI available for this annotation card");
+      describeBtn.textContent = "No target \u2014 load from Solid first";
+      setTimeout(() => {
+        describeBtn.textContent = "Describe";
+      }, 3000);
+      return;
+    }
+    describeBtn.disabled = true;
+    describeBtn.textContent = "Posting\u2026";
+    try {
+      const resp = await postWebAnnotation(musMatUri, text);
+      const annotationUri = resolveLocation(resp);
+      describeBtn.textContent = "Posted!";
+      // Show the Open in Primal button — point to the newly created annotation
+      primalBtn.style.display = "";
+      primalBtn.href = PRIMAL_BASE + encodeURIComponent(annotationUri);
+      setTimeout(() => {
+        describeBtn.textContent = "Describe";
+        describeBtn.disabled = false;
+      }, 3000);
+    } catch (e) {
+      console.error("Error posting Web Annotation:", e);
+      describeBtn.textContent = "Error \u2014 retry?";
+      describeBtn.disabled = false;
+    }
+  });
+  descBtnRow.appendChild(describeBtn);
+
+  let primalBtn = document.createElement("a");
+  primalBtn.className = "primal-btn";
+  primalBtn.textContent = "Open in Primal";
+  primalBtn.target = "_blank";
+  primalBtn.rel = "noopener noreferrer";
+  primalBtn.style.display = "none"; // shown once MusicalMaterial URI is known
+  // Look up MusicalMaterial URI — use string key to match _extractToMusMat entries
+  const extractIdStr = String(obj["@id"]);
+  const knownMusMat = _extractToMusMat.get(extractIdStr);
+  if (knownMusMat) {
+    primalBtn.href = PRIMAL_BASE + encodeURIComponent(knownMusMat);
+    primalBtn.style.display = "";
+  }
+  descBtnRow.appendChild(primalBtn);
+
+  describeArea.appendChild(descBtnRow);
+  extract.appendChild(describeArea);
+
+  // Store MusicalMaterial URI on card if known (registerMusicalMaterial
+  // will fill this retroactively if MusMat arrives after card is drawn)
+  extract.dataset.musicalMaterial = knownMusMat || "";
 
   extractsPanel.insertAdjacentElement("beforeend", extract);
 }

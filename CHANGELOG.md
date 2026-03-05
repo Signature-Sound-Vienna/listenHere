@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.11.0
+* Add "Describe" button on annotation cards to post textual Web Annotations (OA) targeting MusicalMaterial resources on Solid
+* Add "Open in Primal" button linking to the posted Web Annotation in the Primal viewer
+* Optionally allow 'peaks' to be included within MAO:Selections to enable viewing in Primal (if not otherwise available)
+
 ### 0.10.0
 * Add dynamic file grouping: users can organise recordings into named, reorderable groups via a dual-pane modal with drag-and-drop and regex matching, persisted to localStorage
 * Improve annotation workflow with Solid-backed linked-data annotations: selection mode, loop playback across waveform switches, annotation cards pinned at the bottom of the interface

@@ -2,8 +2,8 @@ from flask import Flask
 
 app = Flask(__name__)
 
-app.config['VERSION'] = '0.10.0'
-app.config['VERSION_DATE'] = '1 March 2026'
+app.config['VERSION'] = '0.11.0'
+app.config['VERSION_DATE'] = '5 March 2026'
 
 @app.context_processor
 def inject_version():

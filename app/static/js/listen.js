@@ -47,6 +47,12 @@ export const _regionsPlugins = {}; // filename -> RegionsPlugin instance
 const _timerRegions = {}; // filename -> timer Region object
 const _waveformPeaks = {}; // filename -> { peaks: number[], duration: number } when pre-computed
 
+/** Return the pre-computed peak data for a filename, or null if unavailable. */
+export function getWaveformPeaks(filename) {
+  const p = _waveformPeaks[filename];
+  return p && p.peaks ? p : null;
+}
+
 // File picker: maps alignment audio keys to blob URLs from user-selected files
 let fileBlobUrls = new Map();
 let useFilesMode = false;

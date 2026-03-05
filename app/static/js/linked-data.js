@@ -10,6 +10,7 @@ export const nsp = {
   RDF: "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
   RDFS: "http://www.w3.org/2000/01/rdf-schema#",
   SCHEMA: "https://schema.org/",
+  SSV: "https://w3id.org/ssv/vocab#",
 };
 
 export const politeness = 200; // milliseconds between network requests
@@ -41,7 +42,7 @@ export async function traverseAndFetch(
     userProvided = true,
     jumps = 10,
     fetchMethod = fetch,
-  } = {}
+  } = {},
 ) {
   fetchMethod(url, {
     headers: {
@@ -63,12 +64,12 @@ export async function traverseAndFetch(
         // got an array back - find the node matching the current document (either absolute or relative URI)
         // (n.b. if there are multiple matches this will just return the first encountered - TODO consider alternatives)
         resourceDescription = expanded.find(
-          (o) => o["@id"] === url.href || o["@id"] === "" || o["@id"] === "./"
+          (o) => o["@id"] === url.href || o["@id"] === "" || o["@id"] === "./",
         );
         if (!resourceDescription && !url.href.endsWith("/")) {
           // try again with trailing slash
           resourceDescription = expanded.find(
-            (o) => o["@id"] === url.href + "/"
+            (o) => o["@id"] === url.href + "/",
           );
         }
       } else {
@@ -85,11 +86,11 @@ export async function traverseAndFetch(
         console.log("TARGET URL STRINGS: ", targetUrlStrings);
         console.log(
           "resourceDescription['@type']: ",
-          resourceDescription["@type"]
+          resourceDescription["@type"],
         );
         if (
           resourceDescription["@type"].filter((t) =>
-            targetUrlStrings.includes(t)
+            targetUrlStrings.includes(t),
           ).length
         ) {
           // found a target resource["@id"]!
@@ -99,7 +100,7 @@ export async function traverseAndFetch(
           // attempt to continue traversal
           const followUrlStrings = followList.map((l) => l.href);
           let connectionsToFollow = Object.keys(resourceDescription).filter(
-            (predicate) => followUrlStrings.includes(predicate)
+            (predicate) => followUrlStrings.includes(predicate),
           );
           connectionsToFollow.forEach(async (pred) => {
             // ensure array
@@ -111,9 +112,9 @@ export async function traverseAndFetch(
             predObjects.forEach((obj) => {
               try {
                 // recur if object is a URL and not in block list
-                if (!"@id" in obj || blockUrlStrings.includes(obj["@id"])) {
+                if ((!"@id") in obj || blockUrlStrings.includes(obj["@id"])) {
                   console.warn(
-                    "Couldn't traverse and fetch: target is a literal or target URI on blockList"
+                    "Couldn't traverse and fetch: target is a literal or target URI on blockList",
                   );
                 }
                 let objUrl = new URL(obj["@id"]);
@@ -128,7 +129,7 @@ export async function traverseAndFetch(
                       jumps: jumps - 1,
                       fetchMethod,
                     }),
-                  politeness
+                  politeness,
                 );
               } catch {
                 // noop (non-URL or blocked object)
@@ -140,7 +141,7 @@ export async function traverseAndFetch(
         console.warn(
           "Found no matching resource description in ",
           url.href,
-          resourceDescription
+          resourceDescription,
         );
       }
     });
@@ -159,14 +160,14 @@ export function ingestExternalResource(url, typeToHandlerMap, resource) {
       ? resource["@type"]
       : [resource["@type"]];
     const mappedTypes = Object.keys(typeToHandlerMap).filter((t) =>
-      resource["@type"].includes(t)
+      resource["@type"].includes(t),
     );
     // call each relevant (type-matching) callback on the resource
     console.log(
       "ingest external resource: ",
       mappedTypes,
       typeToHandlerMap,
-      resource
+      resource,
     );
     mappedTypes.forEach((t) => {
       "args" in typeToHandlerMap[t]

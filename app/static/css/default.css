@@ -786,6 +786,16 @@ details {
   white-space: nowrap;
 }
 
+.include-peaks-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.8em;
+  color: #475569;
+  margin-top: 0.3em;
+  cursor: pointer;
+}
+
 .post-to-solid-btn {
   background: #16a34a;
   color: white;
@@ -805,6 +815,78 @@ details {
 .post-to-solid-btn:disabled {
   background: #94a3b8;
   cursor: not-allowed;
+}
+
+/* --- Describe / Open in Primal --- */
+
+.describe-area {
+  margin-top: 0.5em;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 0.5em;
+}
+
+.describe-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  font-family: inherit;
+  font-size: 0.85em;
+  padding: 0.35em 0.5em;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  min-height: 2.4em;
+}
+
+.describe-textarea:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.25);
+}
+
+.describe-btn-row {
+  display: flex;
+  gap: 0.5em;
+  margin-top: 0.3em;
+  align-items: center;
+}
+
+.describe-btn {
+  background: #6366f1;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 0.35em 0.75em;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 0.85em;
+  transition: background 0.15s;
+}
+
+.describe-btn:hover:not(:disabled) {
+  background: #4f46e5;
+}
+
+.describe-btn:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.primal-btn {
+  display: inline-block;
+  background: #0ea5e9;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 0.35em 0.75em;
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 0.85em;
+  text-decoration: none;
+  transition: background 0.15s;
+}
+
+.primal-btn:hover {
+  background: #0284c7;
 }
 
 #file-picker-list li.matched {

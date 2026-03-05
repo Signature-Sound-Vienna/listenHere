@@ -2573,15 +2573,17 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
       );
       let refRegions = onsets.map((t, expansionIx) => {
         console.log("In loop: ", t, expansionIx);
+        // Verovio's getTimesForElement returns MIDI real-time milliseconds,
+        // which corresponds to the synth_onset timescale (seconds), NOT score_onset
+        // (which is in symbolic score time / quarter-note positions).
+        const onsetTimes =
+          scoreAlignment.synth_onset || scoreAlignment.score_onset;
+        const offsetTimes =
+          scoreAlignment.synth_offset || scoreAlignment.score_offset;
         return {
-          from: scoreAlignment.ref_onset[
-            getClosestScoreTimeIx(t, scoreAlignment.score_onset)
-          ],
+          from: scoreAlignment.ref_onset[getClosestScoreTimeIx(t, onsetTimes)],
           to: scoreAlignment.ref_offset[
-            getClosestScoreTimeIx(
-              offsets[expansionIx],
-              scoreAlignment.score_offset,
-            )
+            getClosestScoreTimeIx(offsets[expansionIx], offsetTimes)
           ],
         };
       });

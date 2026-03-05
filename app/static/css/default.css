@@ -1,3 +1,10 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  height: 100%;
+}
+
 #logo { 
   position:fixed;
   bottom:0px;
@@ -24,7 +31,7 @@ canvas {
   flex-direction:column;
   width:200px;
   min-width:200px;
-  overflow-y:scroll;
+  overflow-y:auto;
   font-size: smaller;
 }
 
@@ -38,7 +45,7 @@ canvas {
 
 #content { 
   width:100%;
-  overflow-y:scroll;
+  overflow: hidden;
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -46,7 +53,7 @@ canvas {
 #audios { 
   flex-shrink:2;
   flex-direction:column;
-  overflow-y:scroll;
+  overflow-y:auto;
   overflow-x:clip;
   font-size:small;
   padding-top:1em;
@@ -55,8 +62,8 @@ canvas {
 #waveforms { 
   display:flex;
   flex-direction: column;
-  overflow-y:scroll;
-  height: 100vh;
+  overflow-y:auto;
+  height: 100%;
 }
 
 /* WaveSurfer v7: wave height is set via the `height` option (128 px).

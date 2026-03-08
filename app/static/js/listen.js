@@ -2050,16 +2050,63 @@ function onRegionUpdated(filename, region) {
 // ----------------------------------------------------------------------------
 // Document Ready Hook
 // ----------------------------------------------------------------------------
+// --- Solid session restore with escape hatch ---
+const SOLID_RESTORE_DELAY = 1500; // ms before redirect
+let _solidRestoreTimeout = null;
+
+function _showSolidOverlay() {
+  const overlay = document.getElementById("solidOverlay");
+  if (!overlay) return;
+  overlay.classList.add("active");
+  overlay.tabIndex = -1;
+  overlay.focus();
+}
+
+function _cancelSolidRestore() {
+  const overlay = document.getElementById("solidOverlay");
+  if (overlay) overlay.classList.remove("active");
+  storage.removeItem("restoreSolidSession");
+  if (_solidRestoreTimeout) {
+    clearTimeout(_solidRestoreTimeout);
+    _solidRestoreTimeout = null;
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("back").addEventListener("click", () => {
     solidLogout().then(
       () => (window.location.href = window.location.origin + "/"),
     );
   });
-  if (storage.restoreSolidSession) {
-    // attempt to restore Solid session with fresh data
-    loginAndFetch();
+
+  // Only attempt Solid session restore in listen mode (not align)
+  if (storage.restoreSolidSession && window.alignMode !== "align") {
+    _showSolidOverlay();
+    _solidRestoreTimeout = setTimeout(() => {
+      const overlay = document.getElementById("solidOverlay");
+      if (overlay) overlay.classList.remove("active");
+      loginAndFetch();
+    }, SOLID_RESTORE_DELAY);
+  } else if (window.alignMode === "align") {
+    // Clear the flag so it doesn't fire when we switch to listen later
+    storage.removeItem("restoreSolidSession");
   }
+
+  // Escape key cancels Solid restore
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && _solidRestoreTimeout) {
+      _cancelSolidRestore();
+    }
+  });
+
+  // Click on overlay cancels Solid restore
+  const solidOverlay = document.getElementById("solidOverlay");
+  if (solidOverlay) {
+    solidOverlay.addEventListener("click", () => {
+      if (_solidRestoreTimeout) _cancelSolidRestore();
+    });
+  }
+
   // draw appropriate solid authorization message
   populateSolidDrawer();
 

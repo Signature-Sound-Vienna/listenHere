@@ -2192,9 +2192,34 @@ document.addEventListener("DOMContentLoaded", () => {
       solidDrawer.classList.add("closed");
     });
 
+  // Keep focus available for keyboard shortcuts after clicks on nav/sidebar controls.
+  // Blur the focused element after mouseup unless the user clicked into a text input,
+  // textarea, select, or an element inside a modal / the Solid drawer.
+  document.addEventListener("mouseup", () => {
+    const active = document.activeElement;
+    if (!active || active === document.body) return;
+    const tag = active.tagName;
+    if (tag === "TEXTAREA" || tag === "SELECT") return;
+    if (
+      tag === "INPUT" &&
+      active.type !== "checkbox" &&
+      active.type !== "radio"
+    )
+      return;
+    if (active.closest(".gm-modal, #solid-drawer, #file-picker-overlay"))
+      return;
+    active.blur();
+  });
+
   document.querySelector("body").addEventListener("keydown", (e) => {
     // Don't intercept when typing in an input/textarea
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    // Don't intercept when a modal or the Solid drawer has focus
+    if (
+      e.target.closest &&
+      e.target.closest(".gm-modal, #solid-drawer, #file-picker-overlay")
+    )
+      return;
     console.log("KEYDOWN: ", e);
     if (!currentAudioIx) return;
 

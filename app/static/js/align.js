@@ -69,15 +69,43 @@ async function decodeAudio(file) {
 // File handling
 // ---------------------------------------------------------------------------
 
-function addFiles(files) {
+/** Get playback duration (seconds) from file metadata without full decode. */
+function probeDuration(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    audio.preload = "metadata";
+    audio.addEventListener("loadedmetadata", () => {
+      const dur = audio.duration;
+      audio.src = "";
+      URL.revokeObjectURL(url);
+      resolve(Number.isFinite(dur) ? dur : 0);
+    });
+    audio.addEventListener("error", () => {
+      URL.revokeObjectURL(url);
+      resolve(0);
+    });
+    audio.src = url;
+  });
+}
+
+async function addFiles(files) {
   const audioExts = /\.(mp3|wav|ogg|flac|m4a|aac|wma|opus)$/i;
+  const newFiles = [];
   for (const f of files) {
     if (audioExts.test(f.name) || f.type.startsWith("audio/")) {
       if (!selectedFiles.some((s) => s.name === f.name)) {
         selectedFiles.push(f);
+        newFiles.push(f);
       }
     }
   }
+  // Probe durations for newly added files (parallel, metadata only)
+  await Promise.all(
+    newFiles.map(async (f) => {
+      if (f._duration == null) f._duration = await probeDuration(f);
+    }),
+  );
   renderFileTable();
 }
 
@@ -90,19 +118,38 @@ function renderFileTable() {
     return;
   }
   container.style.display = "";
+  // Default reference = longest file by duration
+  let longestIdx = 0;
+  let longestDur = 0;
+  selectedFiles.forEach((f, i) => {
+    if ((f._duration || 0) > longestDur) {
+      longestDur = f._duration;
+      longestIdx = i;
+    }
+  });
   selectedFiles.forEach((f, i) => {
     const tr = document.createElement("tr");
     const tdName = document.createElement("td");
     tdName.textContent = f.name;
+    const tdDur = document.createElement("td");
+    tdDur.style.textAlign = "right";
+    tdDur.style.color = "#94a3b8";
+    tdDur.style.fontVariantNumeric = "tabular-nums";
+    if (f._duration) {
+      const m = Math.floor(f._duration / 60);
+      const s = Math.round(f._duration % 60);
+      tdDur.textContent = `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+    }
     const tdRef = document.createElement("td");
     tdRef.style.textAlign = "center";
     const radio = document.createElement("input");
     radio.type = "radio";
     radio.name = "ref";
     radio.value = f.name;
-    if (i === 0) radio.checked = true;
+    if (i === longestIdx) radio.checked = true;
     tdRef.appendChild(radio);
     tr.appendChild(tdName);
+    tr.appendChild(tdDur);
     tr.appendChild(tdRef);
     tbody.appendChild(tr);
   });

@@ -2245,22 +2245,29 @@ document.addEventListener("DOMContentLoaded", () => {
               }
             }
           } else {
-            // If past active marker, seek back to it; else go to previous
+            // Jump to the closest marker more than 100ms before current position.
+            // This avoids getting "stuck" on the current marker after a recent jump.
             const currentTime = wavesurfers[currentAudioIx].getCurrentTime();
-            const activeTime = getCorrespondingTime(
-              currentAudioIx,
-              markers[activeMarkerIx],
-            );
-            if (currentTime > activeTime + 0.05) {
+            const sorted = getSortedMarkerIndices();
+            let target = null;
+            for (let j = sorted.length - 1; j >= 0; j--) {
+              const mTime = getCorrespondingTime(
+                currentAudioIx,
+                markers[sorted[j]],
+              );
+              if (mTime < currentTime - 0.1) {
+                target = sorted[j];
+                break;
+              }
+            }
+            if (target != null) {
+              activeMarkerIx = target;
+              redrawAllMarkers();
               seekToActiveMarker();
             } else {
-              const sorted = getSortedMarkerIndices();
-              const pos = sorted.indexOf(activeMarkerIx);
-              if (pos > 0) {
-                activeMarkerIx = sorted[pos - 1];
-                redrawAllMarkers();
-                seekToActiveMarker();
-              }
+              // No marker far enough in the past — jump to start of file
+              const ws = wavesurfers[currentAudioIx];
+              ws.seekTo(0);
             }
           }
         } else {
@@ -2297,11 +2304,23 @@ document.addEventListener("DOMContentLoaded", () => {
               seekToActiveMarker();
             }
           } else {
-            // Navigate to next marker
+            // Jump to the closest marker more than 100ms ahead of current position,
+            // or if we're more than 100ms before the current active marker, re-seek it.
+            const currentTime = wavesurfers[currentAudioIx].getCurrentTime();
             const sorted = getSortedMarkerIndices();
-            const pos = sorted.indexOf(activeMarkerIx);
-            if (pos < sorted.length - 1) {
-              activeMarkerIx = sorted[pos + 1];
+            let target = null;
+            for (let j = 0; j < sorted.length; j++) {
+              const mTime = getCorrespondingTime(
+                currentAudioIx,
+                markers[sorted[j]],
+              );
+              if (mTime > currentTime + 0.1) {
+                target = sorted[j];
+                break;
+              }
+            }
+            if (target != null) {
+              activeMarkerIx = target;
               redrawAllMarkers();
               seekToActiveMarker();
             }

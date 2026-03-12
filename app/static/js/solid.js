@@ -588,10 +588,17 @@ export async function populateSolidDrawer() {
 
   if (isLoggedIn) {
     const profile = await getProfile();
-    const name =
-      profile && profile[nsp.FOAF + "name"]
-        ? profile[nsp.FOAF + "name"]
-        : "User";
+    const webId = solid.getDefaultSession().info.webId;
+    // JSON-LD expanded: foaf:name → [{"@value": "Name"}]
+    const foafName = profile && profile[nsp.FOAF + "name"];
+    const extractedName =
+      Array.isArray(foafName) && foafName.length > 0
+        ? foafName[0]["@value"]
+        : typeof foafName === "string"
+          ? foafName
+          : null;
+    // Fall back to the WebID hostname (e.g. "username.solidcommunity.net")
+    const name = extractedName || (webId ? new URL(webId).hostname : "Unknown");
 
     solidTab.innerHTML = `
       <div id="authStatus" style="margin-bottom: 1.5em; color: #1e293b;">
@@ -611,32 +618,66 @@ export async function populateSolidDrawer() {
       .getElementById("solidLogout")
       .addEventListener("click", solidLogout);
   } else {
-    // Check if we just cancelled a login
     const wasCancelled = localStorage.getItem("solidLoginPending") !== null;
     if (wasCancelled) {
       localStorage.removeItem("solidLoginPending");
     }
 
-    solidTab.innerHTML = `
+    const storedProvider = localStorage.getItem("solidProvider");
+    const hasStoredSession =
+      localStorage.getItem("solidClientAuthn:currentSession") !== null;
+
+    const annotationLoaderHTML = `
       <div class="annotation-loader" style="margin-bottom: 2em; padding-bottom: 2em; border-bottom: 1px solid #e2e8f0;">
         <label for="annotationUrlInput" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Load public annotations (URL)</label>
         <input type="text" id="annotationUrlInput" placeholder="https://" style="width: 100%; padding: 0.6em; margin-bottom: 0.8em; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;" />
         <button id="fetchExternalBtn" style="width: 100%; padding: 0.6em; background: #e2e8f0; color: #1e293b; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; font-weight: 500;">Load</button>
-      </div>
-      <div id="authStatus">
-        <label for="providerSelect" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Solid Provider</label>
-        <select name="provider" id="providerSelect" style="width: 100%; padding: 0.6em; margin-bottom: 1em; border: 1px solid #cbd5e1; border-radius: 4px;">
-          <option value="https://solidcommunity.net">SolidCommunity.net</option>
-          <option value="https://login.inrupt.net">Inrupt</option>
-          <option value="https://trompa-solid.upf.edu">TROMPA @ UPF</option>
-        </select>
-        ${wasCancelled ? '<div style="color: #ef4444; font-size: 0.85em; margin-bottom: 0.8em;">Login cancelled. Try again?</div>' : ""}
-        <button id="solidLoginBtn" style="width: 100%; padding: 0.6em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Connect to Solid Pod</button>
-      </div>
-    `;
-    document
-      .getElementById("solidLoginBtn")
-      .addEventListener("click", loginAndFetch);
+      </div>`;
+
+    if (storedProvider && hasStoredSession && !wasCancelled) {
+      // Reconnect UI — user has a previous Solid session
+      const providerLabel = storedProvider
+        .replace(/^https?:\/\//, "")
+        .replace(/\/$/, "");
+      solidTab.innerHTML =
+        annotationLoaderHTML +
+        `<div id="authStatus">
+          <p style="font-size: 0.9em; color: #475569; margin-bottom: 1em;">
+            Previously connected via <strong>${providerLabel}</strong>
+          </p>
+          <button id="solidReconnectBtn" style="width: 100%; padding: 0.6em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Reconnect to Solid</button>
+          <div style="text-align: center; margin-top: 0.6em;">
+            <a id="solidDifferentBtn" style="color: #64748b; font-size: 0.85em; cursor: pointer; text-decoration: underline;">Use a different account</a>
+          </div>
+        </div>`;
+      document
+        .getElementById("solidReconnectBtn")
+        .addEventListener("click", () => loginAndFetch(storedProvider));
+      document
+        .getElementById("solidDifferentBtn")
+        .addEventListener("click", () => {
+          localStorage.removeItem("solidProvider");
+          localStorage.removeItem("solidClientAuthn:currentSession");
+          populateSolidDrawer();
+        });
+    } else {
+      // Full login UI
+      solidTab.innerHTML =
+        annotationLoaderHTML +
+        `<div id="authStatus">
+          <label for="providerSelect" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Solid Provider</label>
+          <select name="provider" id="providerSelect" style="width: 100%; padding: 0.6em; margin-bottom: 1em; border: 1px solid #cbd5e1; border-radius: 4px;">
+            <option value="https://solidcommunity.net">SolidCommunity.net</option>
+            <option value="https://login.inrupt.net">Inrupt</option>
+            <option value="https://trompa-solid.upf.edu">TROMPA @ UPF</option>
+          </select>
+          ${wasCancelled ? '<div style="color: #ef4444; font-size: 0.85em; margin-bottom: 0.8em;">Login cancelled. Try again?</div>' : ""}
+          <button id="solidLoginBtn" style="width: 100%; padding: 0.6em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Connect to Solid Pod</button>
+        </div>`;
+      document
+        .getElementById("solidLoginBtn")
+        .addEventListener("click", () => loginAndFetch());
+    }
   }
 
   // Set up annotation loading regardless of auth state
@@ -749,52 +790,67 @@ function loadExternalAnnotations(urlstr) {
   }
 }
 
-export async function loginAndFetch() {
-  // 1. Check if we're coming from a redirect
-  await solid.handleIncomingRedirect({ restorePreviousSession: true });
+/**
+ * Return a redirect URL suitable for Solid login:
+ * - strips OIDC callback params
+ * - replaces ?mode=align with ?useFiles (post-alignment listen mode)
+ */
+function getCleanRedirectUrl() {
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("mode") === "align") {
+    url.searchParams.delete("mode");
+    url.searchParams.set("useFiles", "");
+  }
+  for (const p of ["code", "state", "iss", "error", "error_description"]) {
+    url.searchParams.delete(p);
+  }
+  return url.toString();
+}
 
+/**
+ * Initialise Solid authentication on page load.
+ * Processes any incoming OIDC redirect (code in URL), then populates
+ * the Solid drawer.  Never triggers a silent re-auth redirect.
+ */
+export async function initSolidAuth() {
+  // restorePreviousSession is intentionally omitted (defaults to false)
+  // so the library will NOT silently redirect to the IdP.
+  await solid.handleIncomingRedirect();
   const session = solid.getDefaultSession();
+  if (session.info.isLoggedIn) {
+    localStorage.removeItem("solidLoginPending");
+  }
+  populateSolidDrawer();
+}
 
-  // 2. Start the Login Process if not already logged in.
-  if (!session.info.isLoggedIn) {
-    // Check if we already tried logging in, and just came back
-    // without being logged in (user cancelled).
-    if (localStorage.getItem("solidLoginPending")) {
-      populateSolidDrawer();
+/**
+ * Initiate Solid login.
+ * @param {string} [provider] – OIDC issuer URL; if omitted, reads from #providerSelect
+ */
+export async function loginAndFetch(provider) {
+  if (!provider) {
+    const providerEl = document.getElementById("providerSelect");
+    if (!providerEl) {
+      console.warn("Solid login: no provider available");
       return;
     }
-
-    storage.restoreSolidSession = true;
-    if (alignmentData) {
-      storage.setItem("alignmentData", alignmentData);
-    } else {
-      alignmentData = storage.getItem("alignmentData");
-    }
-
-    let providerEl = document.getElementById("providerSelect");
-    if (providerEl) {
-      let provider = providerEl.value;
-      localStorage.setItem("solidLoginPending", Date.now().toString());
-      await solid.login({
-        oidcIssuer: provider,
-        redirectUrl: window.location.href,
-        clientName: "listen-here",
-      });
-    } else {
-      console.warn(
-        "Couldn't handle incoming redirect from Solid: no provider element",
-      );
-    }
-  } else {
-    // Successfully logged in
-    localStorage.removeItem("solidLoginPending");
-    populateSolidDrawer();
+    provider = providerEl.value;
   }
+
+  localStorage.setItem("solidLoginPending", Date.now().toString());
+  localStorage.setItem("solidProvider", provider);
+
+  await solid.login({
+    oidcIssuer: provider,
+    redirectUrl: getCleanRedirectUrl(),
+    clientName: "listen-here",
+  });
 }
 
 export async function solidLogout() {
   return solid.logout().then(() => {
-    storage.removeItem("restoreSolidSession");
+    localStorage.removeItem("solidProvider");
+    storage.removeItem("restoreSolidSession"); // legacy cleanup
     populateSolidDrawer();
   });
 }

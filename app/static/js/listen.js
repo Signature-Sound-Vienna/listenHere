@@ -2,7 +2,7 @@
 export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
-import { populateSolidDrawer, loginAndFetch, solidLogout } from "./solid.js";
+import { initSolidAuth, solidLogout } from "./solid.js";
 import {
   toggleStagedSelection,
   continueAnnotationLoopOnWaveform,
@@ -1917,6 +1917,9 @@ function onAlignmentComplete(alignmentResult, files) {
   loadedAlignmentJSON = alignmentResult;
   workId = "in-browser-alignment";
 
+  // Update URL to reflect listen mode (so Solid redirects return here, not to align)
+  history.replaceState(null, "", "/?useFiles");
+
   // Collapse the align panel and show listen UI
   const alignPanel = document.getElementById("align-panel");
   if (alignPanel) alignPanel.style.display = "none";
@@ -1936,6 +1939,9 @@ function onAlignmentComplete(alignmentResult, files) {
 
   // Load alignment data → build waveforms
   setGrids(alignmentResult);
+
+  // Now in listen mode — initialise the Solid panel
+  initSolidAuth();
 }
 
 // ----------------------------------------------------------------------------
@@ -2050,27 +2056,6 @@ function onRegionUpdated(filename, region) {
 // ----------------------------------------------------------------------------
 // Document Ready Hook
 // ----------------------------------------------------------------------------
-// --- Solid session restore with escape hatch ---
-const SOLID_RESTORE_DELAY = 1500; // ms before redirect
-let _solidRestoreTimeout = null;
-
-function _showSolidOverlay() {
-  const overlay = document.getElementById("solidOverlay");
-  if (!overlay) return;
-  overlay.classList.add("active");
-  overlay.tabIndex = -1;
-  overlay.focus();
-}
-
-function _cancelSolidRestore() {
-  const overlay = document.getElementById("solidOverlay");
-  if (overlay) overlay.classList.remove("active");
-  storage.removeItem("restoreSolidSession");
-  if (_solidRestoreTimeout) {
-    clearTimeout(_solidRestoreTimeout);
-    _solidRestoreTimeout = null;
-  }
-}
 
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("back").addEventListener("click", () => {
@@ -2079,36 +2064,11 @@ document.addEventListener("DOMContentLoaded", () => {
     );
   });
 
-  // Only attempt Solid session restore in listen mode (not align)
-  if (storage.restoreSolidSession && window.alignMode !== "align") {
-    _showSolidOverlay();
-    _solidRestoreTimeout = setTimeout(() => {
-      const overlay = document.getElementById("solidOverlay");
-      if (overlay) overlay.classList.remove("active");
-      loginAndFetch();
-    }, SOLID_RESTORE_DELAY);
-  } else if (window.alignMode === "align") {
-    // Clear the flag so it doesn't fire when we switch to listen later
-    storage.removeItem("restoreSolidSession");
+  // Initialise Solid auth (process any incoming redirect code, then populate drawer).
+  // Skip in align mode — Solid is irrelevant until user transitions to listen mode.
+  if (window.alignMode !== "align") {
+    initSolidAuth();
   }
-
-  // Escape key cancels Solid restore
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && _solidRestoreTimeout) {
-      _cancelSolidRestore();
-    }
-  });
-
-  // Click on overlay cancels Solid restore
-  const solidOverlay = document.getElementById("solidOverlay");
-  if (solidOverlay) {
-    solidOverlay.addEventListener("click", () => {
-      if (_solidRestoreTimeout) _cancelSolidRestore();
-    });
-  }
-
-  // draw appropriate solid authorization message
-  populateSolidDrawer();
 
   // set up Verovio
   const _verovioReady = new Promise((resolve) => {

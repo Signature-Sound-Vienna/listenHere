@@ -27,15 +27,62 @@
       </div>
       <h1>Listen Here!</h1>
       <p class="tagline">
-        Seamlessly compare and switch between different audio recordings of the same piece of music.
+        Seamlessly compare and switch between different audio recordings of the
+        same piece of music.
       </p>
 
       <div class="usage-box">
-        <form id="url-form" onsubmit="event.preventDefault(); window.location.href='/?align=' + encodeURIComponent(document.getElementById('align-url').value);">
-          <label for="align-url" style="display: block; margin-bottom: 0.5rem; font-weight: bold; font-size: 0.9em; text-align: left; color: #475569;">Load an Alignment JSON URL:</label>
-          <div style="display: flex; gap: 0.5rem;">
-            <input type="url" id="align-url" placeholder="https://example.com/alignment.json" required style="flex: 1; padding: 0.6em; border: 1px solid #cbd5e1; border-radius: 6px; font-family: monospace; font-size: 0.9em;">
-            <button type="submit" style="padding: 0.6em 1.2em; border: none; background: #2563eb; color: white; border-radius: 6px; cursor: pointer; font-weight: 600; transition: background 0.15s;">Load</button>
+        <form
+          id="url-form"
+          onsubmit="
+            event.preventDefault();
+            window.location.href =
+              '/?align=' +
+              encodeURIComponent(document.getElementById('align-url').value);
+          "
+        >
+          <label
+            for="align-url"
+            style="
+              display: block;
+              margin-bottom: 0.5rem;
+              font-weight: bold;
+              font-size: 0.9em;
+              text-align: left;
+              color: #475569;
+            "
+            >Load an Alignment JSON URL:</label
+          >
+          <div style="display: flex; gap: 0.5rem">
+            <input
+              type="url"
+              id="align-url"
+              placeholder="https://example.com/alignment.json"
+              required
+              style="
+                flex: 1;
+                padding: 0.6em;
+                border: 1px solid #cbd5e1;
+                border-radius: 6px;
+                font-family: monospace;
+                font-size: 0.9em;
+              "
+            />
+            <button
+              type="submit"
+              style="
+                padding: 0.6em 1.2em;
+                border: none;
+                background: #2563eb;
+                color: white;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: 600;
+                transition: background 0.15s;
+              "
+            >
+              Load
+            </button>
           </div>
         </form>
       </div>
@@ -43,17 +90,28 @@
       <div class="action-grid">
         <a href="/?useFiles" class="action-card">
           <strong>Load local files</strong>
-          <span>Select an alignment file and audio recordings directly from your computer.</span>
+          <span
+            >Select an alignment file and audio recordings directly from your
+            computer.</span
+          >
         </a>
         <a href="/?mode=align" class="action-card">
           <strong>Align in browser</strong>
           <span>Create a new alignment file from your audio recordings.</span>
         </a>
       </div>
+      <p class="privacy-notice">
+        🔒 Your audio is <strong>never uploaded anywhere</strong> &mdash; it is
+        opened directly in your browser and never sent onward. Safe to use with
+        copyrighted recordings.
+      </p>
       <p class="help-text">
-        These tools run entirely in your web browser. No installation required, and <em>your audio is never uploaded anywhere.</em>
-        <br/><br/>
-        <strong>Need help?</strong> <a href="https://github.com/Signature-Sound-Vienna/ListenHere#readme">See full documentation in the README</a>.
+        No installation required.
+        <br /><br />
+        <strong>Need help?</strong>
+        <a href="https://github.com/Signature-Sound-Vienna/ListenHere#readme"
+          >See full documentation in the README</a
+        >.
       </p>
       <footer>
         <a href="https://doi.org/10.1145/3625135.3625144">Publication</a> ·
@@ -75,7 +133,8 @@
         <a href="https://doi.org/10.55776/SCP1556025" target="_blank"
           >SCP 1556025</a
         >). Hosted by <a href="https://iwk.mdw.ac.at" target="_blank">IWK</a>,
-        <a href="https://mdw.ac.at" target="_blank">mdw Vienna</a>. <a href="https://iwk.mdw.ac.at/impressum/">Imprint</a>.
+        <a href="https://mdw.ac.at" target="_blank">mdw Vienna</a>.
+        <a href="https://iwk.mdw.ac.at/impressum/">Imprint</a>.
         <br />
         <span class="version">v{{ version }} ({{ version_date }})</span>
       </footer>

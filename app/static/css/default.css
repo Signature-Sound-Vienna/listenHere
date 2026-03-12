@@ -808,6 +808,13 @@ details {
   margin-top: 0.3em;
 }
 
+.post-hint {
+  font-size: 0.78em;
+  color: #94a3b8;
+  margin: 0.3em 0 0;
+  line-height: 1.35;
+}
+
 .post-to-solid-btn:hover:not(:disabled) {
   background: #15803d;
 }
@@ -1031,6 +1038,13 @@ details {
 .align-hint a:hover {
   color: #1e40af;
   border-bottom-style: solid;
+}
+
+.privacy-notice {
+  font-size: 0.82em;
+  color: #64748b;
+  margin: 0.6em 0 1.2em;
+  line-height: 1.4;
 }
 
 #align-file-actions {

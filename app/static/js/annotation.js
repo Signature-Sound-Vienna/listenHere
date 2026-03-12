@@ -478,6 +478,13 @@ function drawExtractUIElement(obj) {
   peaksLabel.append(" Include peaks");
   stagedArea.appendChild(peaksLabel);
 
+  // --- Solid posting clarification ---
+  let postHint = document.createElement("p");
+  postHint.className = "post-hint";
+  postHint.textContent =
+    "Posts timeline annotations and (optionally) waveform envelope data. No audio information is ever posted.";
+  stagedArea.appendChild(postHint);
+
   // --- Post to Solid button ---
   let postBtn = document.createElement("button");
   postBtn.className = "post-to-solid-btn";

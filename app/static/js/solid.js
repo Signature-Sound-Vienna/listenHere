@@ -666,17 +666,38 @@ export async function populateSolidDrawer() {
         annotationLoaderHTML +
         `<div id="authStatus">
           <label for="providerSelect" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Solid Provider</label>
-          <select name="provider" id="providerSelect" style="width: 100%; padding: 0.6em; margin-bottom: 1em; border: 1px solid #cbd5e1; border-radius: 4px;">
+          <select name="provider" id="providerSelect" style="width: 100%; padding: 0.6em; margin-bottom: 0.5em; border: 1px solid #cbd5e1; border-radius: 4px;">
             <option value="https://solidcommunity.net">SolidCommunity.net</option>
-            <option value="https://login.inrupt.net">Inrupt</option>
-            <option value="https://trompa-solid.upf.edu">TROMPA @ UPF</option>
+            <option value="https://login.inrupt.com">Inrupt PodSpaces</option>
+            <option value="_other">Other…</option>
           </select>
+          <div id="customProviderWrap" style="display:none; margin-bottom: 0.5em;">
+            <input type="url" id="customProviderInput" placeholder="https://your-provider.example" style="width: 100%; padding: 0.6em; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;" />
+          </div>
           ${wasCancelled ? '<div style="color: #ef4444; font-size: 0.85em; margin-bottom: 0.8em;">Login cancelled. Try again?</div>' : ""}
-          <button id="solidLoginBtn" style="width: 100%; padding: 0.6em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Connect to Solid Pod</button>
+          <button id="solidLoginBtn" style="width: 100%; padding: 0.6em; margin-top: 0.5em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Connect to Solid Pod</button>
         </div>`;
+      const providerSelect = document.getElementById("providerSelect");
+      const customWrap = document.getElementById("customProviderWrap");
+      providerSelect.addEventListener("change", () => {
+        customWrap.style.display =
+          providerSelect.value === "_other" ? "" : "none";
+      });
       document
         .getElementById("solidLoginBtn")
-        .addEventListener("click", () => loginAndFetch());
+        .addEventListener("click", () => {
+          if (providerSelect.value === "_other") {
+            const custom = document
+              .getElementById("customProviderInput")
+              .value.trim();
+            if (!custom) return;
+            loginAndFetch(
+              custom.startsWith("http") ? custom : "https://" + custom,
+            );
+          } else {
+            loginAndFetch();
+          }
+        });
     }
   }
 

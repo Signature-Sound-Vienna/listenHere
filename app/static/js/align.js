@@ -319,6 +319,12 @@ async function startAlignment() {
       );
       elapsedEl.textContent = `Total time: ${totalSecs}s`;
       alignmentResult = e.data.alignment;
+      // Inject LD URI prefix from the alignment form (if provided)
+      const ldPrefixEl = document.getElementById("align-ld-uri-prefix");
+      const ldPrefix = ldPrefixEl ? ldPrefixEl.value.trim() : "";
+      if (ldPrefix && alignmentResult.header) {
+        alignmentResult.header.linkedDataUriPrefix = ldPrefix;
+      }
       progressBar.style.width = "100%";
       progressText.textContent = "";
       document.getElementById("align-results").style.display = "";

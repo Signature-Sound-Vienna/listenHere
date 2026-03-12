@@ -5,8 +5,14 @@ export let versionDate = window.versionDate;
 import { initSolidAuth, solidLogout } from "./solid.js";
 import {
   toggleStagedSelection,
+  toggleDraftStagedSelection,
+  getDraftRegionsForWaveform,
+  onDraftRegionCreated,
+  onDraftRegionUpdated,
   continueAnnotationLoopOnWaveform,
   prepareAnnotationLoopTransfer,
+  initNewAnnotationButton,
+  onSolidAuthChanged,
 } from "./annotation.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
@@ -51,6 +57,33 @@ const _waveformPeaks = {}; // filename -> { peaks: number[], duration: number } 
 export function getWaveformPeaks(filename) {
   const p = _waveformPeaks[filename];
   return p && p.peaks ? p : null;
+}
+
+/** Return the current reference audio key (alignment header.ref). */
+export function getReferenceAudioIx() {
+  return referenceAudioIx;
+}
+
+/** Return all alignment-grid keys (i.e. audio filenames loaded). */
+export function getAlignmentKeys() {
+  return Object.keys(alignmentGrids);
+}
+
+/** Return the alignment-grid index closest to a given time on a given waveform. */
+export { getClosestAlignmentIx };
+
+/**
+ * Resolve the linked-data URI for an audio file (alignment key).
+ * Priority: per-file full URI > prefix + ldFilename > prefix + filename > bare filename.
+ */
+export function getAudioLinkedDataUri(filename) {
+  const header = loadedAlignmentJSON?.header;
+  const perFile = header?.linkedDataUris?.[filename];
+  if (perFile?.uri) return perFile.uri;
+  const prefix = header?.linkedDataUriPrefix || "";
+  const name = perFile?.ldFilename || filename;
+  if (prefix) return prefix.replace(/\/$/, "") + "/" + name;
+  return name;
 }
 
 // File picker: maps alignment audio keys to blob URLs from user-selected files
@@ -1079,7 +1112,9 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     selectOverlay.innerHTML = `<img src="${root}svg/RDF-logo.svg" class="wf-overlay-icon" alt="RDF" />`;
     selectOverlay.addEventListener("click", (e) => {
       e.stopPropagation();
+      // Route to whichever selection mode is active (both no-op if inactive)
       toggleStagedSelection(filename);
+      toggleDraftStagedSelection(filename);
     });
     waveform.appendChild(selectOverlay);
 
@@ -1126,6 +1161,19 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     // Handle region adjustments (Phase 4 groundwork)
     _regPlugin.on("region-updated", (region) => {
       onRegionUpdated(filename, region);
+    });
+
+    // Handle new regions drawn by user (draft annotation mode)
+    _regPlugin.on("region-created", (region) => {
+      // Only handle user-drawn regions (drag selection creates these)
+      // Programmatic regions (timer, anno_, draft_) are added via addRegion
+      if (
+        region.id !== "timer" &&
+        !region.id.startsWith("anno_region_") &&
+        !region.id.startsWith("draft_")
+      ) {
+        onDraftRegionCreated(filename, region);
+      }
     });
 
     // Add timer region and any annotated regions to the shared RegionsPlugin
@@ -1885,6 +1933,16 @@ async function setGrids(grids) {
   const groupBtn = document.getElementById("group-files-btn");
   if (groupBtn) groupBtn.style.display = "";
 
+  // Always show manage-files button once alignment is loaded (for URI config)
+  const _manageBtn = document.getElementById("manage-files-btn");
+  if (_manageBtn && _manageBtn.style.display === "none") {
+    _manageBtn.style.display = "";
+    _manageBtn.addEventListener("click", () => {
+      document.getElementById("file-picker-overlay").style.display = "flex";
+      populateLdUriSection();
+    });
+  }
+
   // If ?useFiles mode is active, show file picker overlay
   showFilePickerIfNeeded();
 
@@ -1904,6 +1962,9 @@ async function setGrids(grids) {
       _midiB64,
     );
   }
+
+  // Initialize the "New Annotation" button (idempotent — checks for duplicates)
+  initNewAnnotationButton();
 }
 
 // ---------------------------------------------------------------------------
@@ -1934,6 +1995,7 @@ function onAlignmentComplete(alignmentResult, files) {
     manageBtn.style.display = "";
     manageBtn.addEventListener("click", () => {
       document.getElementById("file-picker-overlay").style.display = "flex";
+      populateLdUriSection();
     });
   }
 
@@ -1941,7 +2003,7 @@ function onAlignmentComplete(alignmentResult, files) {
   setGrids(alignmentResult);
 
   // Now in listen mode — initialise the Solid panel
-  initSolidAuth();
+  initSolidAuth().then(onSolidAuthChanged);
 }
 
 // ----------------------------------------------------------------------------
@@ -2013,6 +2075,12 @@ export async function createSelectionForWaveform(filename) {
 
 // Phase 4: Handle Region Edits
 function onRegionUpdated(filename, region) {
+  // Handle draft regions
+  if (region.id.startsWith("draft_")) {
+    onDraftRegionUpdated(filename, region);
+    return;
+  }
+
   // Only handle our annotation regions (ignore the "timer" region)
   if (!region.id.startsWith("anno_region_")) return;
 
@@ -2067,8 +2135,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initialise Solid auth (process any incoming redirect code, then populate drawer).
   // Skip in align mode — Solid is irrelevant until user transitions to listen mode.
   if (window.alignMode !== "align") {
-    initSolidAuth();
+    initSolidAuth().then(onSolidAuthChanged);
   }
+
+  // Listen for auth state changes (e.g. logout from within the Solid drawer)
+  document.addEventListener("solid-auth-changed", () => onSolidAuthChanged());
 
   // set up Verovio
   const _verovioReady = new Promise((resolve) => {
@@ -2711,12 +2782,15 @@ export function updateRenderAnnoRegions() {
     const regPlugin = _regionsPlugins[ws];
     if (!regPlugin) return;
     let regions = extractCurrentlyAnnotatedRegions(ws);
-    // Remove only annotation regions, preserving the timer region
+    // Also include draft regions
+    const draftRegions = getDraftRegionsForWaveform(ws);
+    // Remove only annotation + draft regions, preserving the timer region
     regPlugin
       .getRegions()
       .filter((r) => r.id !== "timer")
       .forEach((r) => r.remove());
     regions.forEach((r) => regPlugin.addRegion(r));
+    draftRegions.forEach((r) => regPlugin.addRegion(r));
   });
 }
 
@@ -2785,6 +2859,21 @@ function initFilePicker() {
   const fileInput = document.getElementById("file-picker-input");
   const dropZone = document.getElementById("file-picker-card");
   const jsonStatusEl = document.getElementById("file-picker-json-status");
+
+  // --- Tab switching ---
+  document.querySelectorAll("#fp-tabs .fp-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document
+        .querySelectorAll("#fp-tabs .fp-tab")
+        .forEach((t) => t.classList.remove("active"));
+      document
+        .querySelectorAll(".fp-tab-pane")
+        .forEach((p) => p.classList.remove("active"));
+      tab.classList.add("active");
+      const pane = document.getElementById(tab.dataset.tab);
+      if (pane) pane.classList.add("active");
+    });
+  });
 
   // Show directory picker button on browsers that support it (Chromium)
   if (typeof window.showDirectoryPicker === "function") {
@@ -2863,7 +2952,10 @@ function initFilePicker() {
           window._pendingLocalAlignment = data;
           // Set workId from the JSON filename
           workId = jsonFiles[0].name;
+          // Temporarily set loadedAlignmentJSON so LD URI section can read header
+          loadedAlignmentJSON = data;
           renderFileList();
+          populateLdUriSection();
         } else {
           alert(
             "The JSON file does not appear to be a valid alignment file.\nExpected: {header: {ref: ...}, body: {audio: {...}}}",
@@ -2942,8 +3034,9 @@ function initFilePicker() {
     }
   });
 
-  // Continue button
-  continueBtn.addEventListener("click", () => {
+  // Continue button — persist LD config and close
+  function closeOverlay() {
+    if (populateLdUriSection._persist) populateLdUriSection._persist();
     overlay.style.display = "none";
     // If alignment was loaded from a local JSON file, apply it now
     if (window._pendingLocalAlignment) {
@@ -2951,10 +3044,183 @@ function initFilePicker() {
       window._pendingLocalAlignment = null;
       setGrids(data);
     }
+  }
+
+  continueBtn.addEventListener("click", closeOverlay);
+
+  // Close on backdrop click (clicking the overlay outside the card)
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeOverlay();
+  });
+
+  // Close on Escape key
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && overlay.style.display !== "none") {
+      closeOverlay();
+    }
   });
 
   renderFileList();
   overlay.style.display = "flex";
+}
+
+// --- Linked Data URI management in file picker ---
+function populateLdUriSection() {
+  const section = document.getElementById("ld-uri-section");
+  const emptyHint = document.getElementById("ld-uri-empty-hint");
+  const tbody = document.getElementById("ld-uri-tbody");
+  const prefixInput = document.getElementById("ld-uri-prefix");
+  if (!section || !tbody || !prefixInput) return;
+
+  // Enable / disable the LD URI tab based on whether audio keys exist
+  const uriTab = document.querySelector('.fp-tab[data-tab="fp-tab-uris"]');
+  const hasKeys =
+    expectedAudioKeys.length > 0 || Object.keys(alignmentGrids).length > 0;
+  if (uriTab) {
+    uriTab.classList.toggle("disabled", !hasKeys);
+  }
+  if (!hasKeys) {
+    section.style.display = "none";
+    if (emptyHint) emptyHint.style.display = "";
+    return;
+  }
+  section.style.display = "";
+  if (emptyHint) emptyHint.style.display = "none";
+
+  const keys =
+    expectedAudioKeys.length > 0
+      ? expectedAudioKeys
+      : Object.keys(alignmentGrids).filter((n) => n !== SYNTH_MEI_KEY);
+
+  // Ensure header and linkedDataUris exist as live references
+  if (loadedAlignmentJSON && !loadedAlignmentJSON.header)
+    loadedAlignmentJSON.header = {};
+  const header = loadedAlignmentJSON?.header || {};
+  prefixInput.value = header.linkedDataUriPrefix || "";
+  // Work on a local copy; persisted only when the modal is closed
+  const perFileConfig = JSON.parse(JSON.stringify(header.linkedDataUris || {}));
+
+  function resolveUri(key) {
+    const perFile = perFileConfig[key];
+    if (perFile?.uri) return perFile.uri;
+    const filePrefix = perFile?.prefix?.trim();
+    const prefix = filePrefix || prefixInput.value.trim();
+    const name = perFile?.ldFilename || encodeURIComponent(key);
+    if (prefix) return prefix.replace(/\/$/, "") + "/" + name;
+    return name;
+  }
+
+  function renderTable() {
+    tbody.innerHTML = "";
+    for (const key of keys) {
+      const tr = document.createElement("tr");
+
+      // Column 1: original filename
+      const tdFile = document.createElement("td");
+      const shortName = key.substring(key.lastIndexOf("/") + 1);
+      tdFile.textContent = shortName;
+      tdFile.title = key;
+      tr.appendChild(tdFile);
+
+      // Column 2: LD filename (prepopulated with actual filename)
+      const tdLdName = document.createElement("td");
+      const ldNameInput = document.createElement("input");
+      ldNameInput.type = "text";
+      ldNameInput.spellcheck = false;
+      ldNameInput.dataset.key = key;
+      ldNameInput.className = "ld-filename-input";
+      ldNameInput.value =
+        perFileConfig[key]?.ldFilename || encodeURIComponent(key);
+      ldNameInput.addEventListener("input", () => {
+        const val = ldNameInput.value.trim();
+        if (!perFileConfig[key]) perFileConfig[key] = {};
+        if (val && val !== encodeURIComponent(key)) {
+          perFileConfig[key].ldFilename = val;
+        } else {
+          delete perFileConfig[key].ldFilename;
+          if (Object.keys(perFileConfig[key]).length === 0)
+            delete perFileConfig[key];
+        }
+        updateResolvedCell(tr, key);
+      });
+      tdLdName.appendChild(ldNameInput);
+      tr.appendChild(tdLdName);
+
+      // Column 3: per-file prefix override (optional)
+      const tdPrefix = document.createElement("td");
+      const prefOverride = document.createElement("input");
+      prefOverride.type = "text";
+      prefOverride.spellcheck = false;
+      prefOverride.className = "ld-prefix-input";
+      prefOverride.placeholder = "(global)";
+      prefOverride.value = perFileConfig[key]?.prefix || "";
+      prefOverride.addEventListener("input", () => {
+        const val = prefOverride.value.trim();
+        if (!perFileConfig[key]) perFileConfig[key] = {};
+        if (val) {
+          perFileConfig[key].prefix = val;
+        } else {
+          delete perFileConfig[key].prefix;
+          if (Object.keys(perFileConfig[key]).length === 0)
+            delete perFileConfig[key];
+        }
+        updateResolvedCell(tr, key);
+      });
+      tdPrefix.appendChild(prefOverride);
+      tr.appendChild(tdPrefix);
+
+      // Column 4: resolved URI (read-only preview)
+      const tdResolved = document.createElement("td");
+      tdResolved.className = "ld-resolved-uri";
+      tr.appendChild(tdResolved);
+
+      tbody.appendChild(tr);
+      updateResolvedCell(tr, key);
+    }
+  }
+
+  function updateResolvedCell(tr, key) {
+    const td = tr.querySelector(".ld-resolved-uri");
+    if (td) td.textContent = resolveUri(key);
+  }
+
+  function updateAllResolved() {
+    for (const tr of tbody.querySelectorAll("tr")) {
+      const key = tr.querySelector(".ld-filename-input")?.dataset.key;
+      if (key) updateResolvedCell(tr, key);
+    }
+  }
+
+  prefixInput.addEventListener("input", updateAllResolved);
+
+  // Persist local config to loadedAlignmentJSON.header (called on modal close)
+  function persistLdConfig() {
+    if (!loadedAlignmentJSON) return;
+    if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+    const prefix = prefixInput.value.trim();
+    if (prefix) {
+      loadedAlignmentJSON.header.linkedDataUriPrefix = prefix;
+    } else {
+      delete loadedAlignmentJSON.header.linkedDataUriPrefix;
+    }
+    // Clean empty entries and persist
+    const clean = {};
+    for (const key of Object.keys(perFileConfig)) {
+      if (perFileConfig[key] && Object.keys(perFileConfig[key]).length > 0) {
+        clean[key] = { ...perFileConfig[key] };
+      }
+    }
+    if (Object.keys(clean).length > 0) {
+      loadedAlignmentJSON.header.linkedDataUris = clean;
+    } else {
+      delete loadedAlignmentJSON.header.linkedDataUris;
+    }
+  }
+
+  // Expose so the modal-close handler can call it
+  populateLdUriSection._persist = persistLdConfig;
+
+  renderTable();
 }
 
 function showFilePickerIfNeeded() {
@@ -2973,6 +3239,7 @@ function showFilePickerIfNeeded() {
       manageBtn.style.display = "";
       manageBtn.addEventListener("click", () => {
         document.getElementById("file-picker-overlay").style.display = "flex";
+        populateLdUriSection();
       });
     }
     // Show download button (useful once alignment is loaded from file)
@@ -2981,6 +3248,7 @@ function showFilePickerIfNeeded() {
     if (!showFilePickerIfNeeded._initialized) {
       showFilePickerIfNeeded._initialized = true;
       initFilePicker();
+      populateLdUriSection();
     }
   }
 }

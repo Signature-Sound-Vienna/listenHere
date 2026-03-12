@@ -2,7 +2,11 @@ import { nsp, traverseAndFetch } from "./linked-data.js";
 import {
   currentAudioIx,
   currentlyAnnotatedRegions,
+  getAlignmentKeys,
+  getAudioLinkedDataUri,
+  getClosestAlignmentIx,
   getCorrespondingTime,
+  getReferenceAudioIx,
   getWaveformPeaks,
   maoSelections,
   meiUri,
@@ -15,14 +19,171 @@ import {
 import {
   addMultipleMAOSelectionsToExtract,
   addNewMAOSelectionToExtract,
+  createMAOExtract,
+  createMAOMusicalMaterial,
+  createMAOMusicalObject,
+  createMAOSelection,
+  establishContainers,
+  establishDiscoveryResource,
   postWebAnnotation,
   resolveLocation,
+  safelyPatchResource,
+  solid,
 } from "./solid.js";
 
-const dummyUriPrefix =
-  "https://repo.mdw.ac.at/signature-sound-vienna/media/wav/"; // HACK cheat for DH2023
-
 const PRIMAL_BASE = "https://primal.mdw.ac.at/?obj=";
+
+// ============================================================================
+// Draft Annotation System
+// ============================================================================
+
+// Color palette for draft annotations (rotating)
+const DRAFT_COLORS = [
+  { bg: "rgba(59,130,246,0.25)", border: "#3b82f6" }, // blue
+  { bg: "rgba(16,185,129,0.25)", border: "#10b981" }, // emerald
+  { bg: "rgba(245,158,11,0.25)", border: "#f59e0b" }, // amber
+  { bg: "rgba(168,85,247,0.25)", border: "#a855f7" }, // purple
+  { bg: "rgba(236,72,153,0.25)", border: "#ec4899" }, // pink
+  { bg: "rgba(20,184,166,0.25)", border: "#14b8a6" }, // teal
+  { bg: "rgba(249,115,22,0.25)", border: "#f97316" }, // orange
+  { bg: "rgba(99,102,241,0.25)", border: "#6366f1" }, // indigo
+];
+
+const _drafts = new Map(); // draftId → Draft object
+let _nextDraftId = 1;
+let _activeDraftId = null; // draft currently in draw-region mode
+let _draftColorIx = 0;
+
+/**
+ * A draft annotation tracks user-drawn regions before posting to Solid.
+ * @typedef {Object} Draft
+ * @property {number} id
+ * @property {string} label
+ * @property {Object} color - { bg, border }
+ * @property {Array<{from: number, to: number, localOverrides: Object}>} regions
+ * @property {Set<string>} stagedRecordings
+ * @property {boolean} includePeaks
+ * @property {boolean} posted
+ */
+
+function createDraft() {
+  const id = _nextDraftId++;
+  const color = DRAFT_COLORS[_draftColorIx % DRAFT_COLORS.length];
+  _draftColorIx++;
+  const draft = {
+    id,
+    label: "",
+    color,
+    regions: [],
+    stagedRecordings: new Set(),
+    includePeaks: false,
+    posted: false,
+  };
+  _drafts.set(id, draft);
+  return draft;
+}
+
+/** Return all draft region descriptors for rendering on a given waveform. */
+export function getDraftRegionsForWaveform(filename) {
+  const result = [];
+  for (const [draftId, draft] of _drafts) {
+    if (draft.posted) continue;
+    draft.regions.forEach((r, regionIx) => {
+      let start, end;
+      if (r.localOverrides && r.localOverrides[filename]) {
+        start = r.localOverrides[filename].start;
+        end = r.localOverrides[filename].end;
+      } else {
+        start = getCorrespondingTime(filename, r.from);
+        end = getCorrespondingTime(filename, r.to);
+      }
+      result.push({
+        id: `draft_${draftId}_region_${regionIx}`,
+        start,
+        end,
+        drag: true,
+        resize: true,
+        color: draft.color.bg,
+      });
+    });
+  }
+  return result;
+}
+
+/** Return the ID of the draft currently in draw-region mode, or null. */
+export function getActiveDraftId() {
+  return _activeDraftId;
+}
+
+/** Handle a draft region being dragged/resized on a waveform. */
+export function onDraftRegionUpdated(filename, region) {
+  // Parse draft_N_region_M
+  const match = region.id.match(/^draft_(\d+)_region_(\d+)$/);
+  if (!match) return;
+  const draftId = parseInt(match[1]);
+  const regionIx = parseInt(match[2]);
+  const draft = _drafts.get(draftId);
+  if (!draft || !draft.regions[regionIx]) return;
+
+  const isShiftPressed = window.event && window.event.shiftKey;
+  if (isShiftPressed) {
+    if (!draft.regions[regionIx].localOverrides) {
+      draft.regions[regionIx].localOverrides = {};
+    }
+    draft.regions[regionIx].localOverrides[filename] = {
+      start: region.start,
+      end: region.end,
+    };
+  } else {
+    const newFrom = getClosestAlignmentIx(region.start, filename);
+    const newTo = getClosestAlignmentIx(region.end, filename);
+    draft.regions[regionIx].localOverrides = {};
+    draft.regions[regionIx].from = newFrom;
+    draft.regions[regionIx].to = newTo;
+    updateRenderAnnoRegions();
+    _updateDraftRegionList(draftId);
+  }
+}
+
+/**
+ * Called when the user draws a new region on a waveform via RegionsPlugin.
+ * Converts to alignment indices and adds to the active draft.
+ */
+export function onDraftRegionCreated(filename, region) {
+  if (!_activeDraftId) {
+    region.remove();
+    return;
+  }
+  const draft = _drafts.get(_activeDraftId);
+  if (!draft) {
+    region.remove();
+    return;
+  }
+  // Convert to alignment indices
+  const from = getClosestAlignmentIx(region.start, filename);
+  const to = getClosestAlignmentIx(region.end, filename);
+  // Remove the raw WaveSurfer region — we'll re-render via updateRenderAnnoRegions
+  region.remove();
+  // Add to draft
+  draft.regions.push({ from, to, localOverrides: {} });
+  // Re-render all waveforms to show the new region
+  updateRenderAnnoRegions();
+  // Update the region count and list on the card
+  _updateDraftRegionList(draft.id);
+}
+
+function _updateDraftRegionCount(draftId) {
+  const draft = _drafts.get(draftId);
+  if (!draft) return;
+  const card = document.getElementById(`draft-card-${draftId}`);
+  if (!card) return;
+  const countEl = card.querySelector(".draft-region-count");
+  if (countEl) {
+    const n = draft.regions.length;
+    countEl.textContent =
+      n === 0 ? "No regions drawn" : `${n} region${n > 1 ? "s" : ""}`;
+  }
+}
 
 // --- MusicalMaterial ↔ Extract mapping ---
 // Populated during traversal: extractUri → musicalMaterialUri
@@ -282,6 +443,44 @@ function meiUriMatches(referenceUri, candidateUri) {
   return refAliases.some((r) => candAliases.includes(r));
 }
 
+/**
+ * Returns true if candidateUri matches any currently loaded context:
+ * - the alignment score (meiUri), OR
+ * - any loaded audio file's linked-data URI.
+ */
+function _uriMatchesLoadedContext(candidateUri) {
+  // Check alignment score URI
+  if (meiUri && meiUriMatches(meiUri, candidateUri)) return true;
+  // Check all loaded audio URIs
+  const keys = getAlignmentKeys();
+  for (const key of keys) {
+    const audioUri = getAudioLinkedDataUri(key);
+    if (audioUri && meiUriMatches(audioUri, candidateUri)) return true;
+  }
+  return false;
+}
+
+/** Briefly display a dismissible notification in the Solid drawer. */
+function _showAnnotationNotice(message) {
+  const drawer = document.getElementById("solidTab");
+  if (!drawer) {
+    console.warn(message);
+    return;
+  }
+  const notice = document.createElement("div");
+  notice.className = "annotation-notice";
+  const span = document.createElement("span");
+  span.textContent = message;
+  notice.appendChild(span);
+  const btn = document.createElement("button");
+  btn.className = "annotation-notice-dismiss";
+  btn.title = "Dismiss";
+  btn.textContent = "\u2715";
+  btn.addEventListener("click", () => notice.remove());
+  notice.appendChild(btn);
+  drawer.appendChild(notice);
+}
+
 // Wrapper around traverseAndFetch that reports back errors / progress to 'Load linked data' UI
 export function attemptFetchExternalResource(url, targetTypes, configObj) {
   console.log("fetch external resource: ", url, targetTypes, configObj);
@@ -292,19 +491,20 @@ export function attemptFetchExternalResource(url, targetTypes, configObj) {
 }
 
 export function registerExtract(obj, url) {
-  if (nsp.SCHEMA + "about") {
-    let matching = obj[nsp.SCHEMA + "about"].filter((m) => {
-      console.log("Inspecting: ", m["@id"], meiUri, decodeURI(meiUri));
-      return meiUriMatches(meiUri, m["@id"]);
-    });
+  const aboutProp = nsp.SCHEMA + "about";
+  if (aboutProp in obj && Array.isArray(obj[aboutProp])) {
+    let matching = obj[aboutProp].filter((m) =>
+      _uriMatchesLoadedContext(m["@id"]),
+    );
     if (matching.length) {
-      console.log(
-        "Found matching extract resource: ",
-        matching[0]["@id"],
-        meiUri,
-      );
       obj["@id"] = url;
       drawExtractUIElement(obj);
+    } else {
+      const aboutUris = obj[aboutProp].map((m) => m["@id"]).join(", ");
+      _showAnnotationNotice(
+        `Skipped annotation: it is about "${aboutUris}", ` +
+          `which does not match any loaded audio or score URI.`,
+      );
     }
   }
 }
@@ -436,6 +636,10 @@ function drawExtractUIElement(obj) {
       selectBtn.innerHTML = "Select Recordings";
     } else {
       // Enter selection mode
+      // Exit draft selection if active
+      if (_activeDraftSelectionId !== null) {
+        _exitDraftSelectionMode();
+      }
       // Reset any other card's button text
       document.querySelectorAll(".extract-select-btn").forEach((b) => {
         b.innerHTML = "Select Recordings";
@@ -519,10 +723,11 @@ function drawExtractUIElement(obj) {
             regionEnd = getCorrespondingTime(filename, globalRegion.to);
           }
         }
-        const audioMediaUri = `${dummyUriPrefix}${filename}#t=${regionStart},${regionEnd}`;
+        const audioBaseUri = getAudioLinkedDataUri(filename);
+        const audioMediaUri = `${audioBaseUri}#t=${regionStart},${regionEnd}`;
         const peaksData = peaksCb.checked ? getWaveformPeaks(filename) : null;
         items.push({
-          currentFileUri: filename,
+          currentFileUri: audioBaseUri,
           selectedElements: audioMediaUri,
           peaksData,
         });
@@ -618,17 +823,15 @@ function drawExtractUIElement(obj) {
 
 function markScoreRegions(selections) {
   console.log("I was initially called with selections ", selections);
-  // use only selections corresponding to current MEI
+  // use only selections about the current score URI
   let matchingSelectionUrls = selections.filter((s) => {
     let selObj = maoSelections[s["@id"]];
     if (selObj && nsp.SCHEMA + "about" in selObj) {
-      let meiMatches = selObj[nsp.SCHEMA + "about"].filter((t) =>
+      return selObj[nsp.SCHEMA + "about"].some((t) =>
         meiUriMatches(meiUri, t["@id"]),
       );
-      return meiMatches.length;
-    } else {
-      return false;
     }
+    return false;
   });
   if (matchingSelectionUrls.length) {
     matchingSelectionUrls.forEach((s) => {
@@ -659,41 +862,24 @@ function markScoreRegions(selections) {
 
 export function markSelection(obj, url) {
   if (url in maoSelections) {
-    return; // skip processing of selections we arleady know about
+    return; // skip processing of selections we already know about
   }
-  console.log("markSelection called: ", obj);
   if (obj && "@type" in obj && obj["@type"].includes(nsp.MAO + "Selection")) {
-    console.log("markSelection found mao:Selection type");
     if (nsp.SCHEMA + "about" in obj) {
-      console.log("mao:Selection is about: ", obj[nsp.SCHEMA + "about"]);
-      console.log("current meiUri: ", meiUri);
       let about = obj[nsp.SCHEMA + "about"];
       if (!Array.isArray(about)) {
-        about = [about]; // ensure array
+        about = [about];
       }
       let selectionResource = about.filter((f) =>
-        meiUriMatches(meiUri, f["@id"]),
+        _uriMatchesLoadedContext(f["@id"]),
       );
       if (selectionResource.length) {
-        console.log(
-          "mao:Selection has selection resources: ",
-          selectionResource,
-        );
-        // selection is about our current score!
         if (nsp.FRBR + "part" in obj) {
-          console.log("mao:Selection has parts: ", obj[nsp.FRBR + "part"]);
           maoSelections[url] = obj;
-          markScoreRegions([{ "@id": url }]);
-          //setActiveSelection(url);
-          /*
-                    let selectedElementIds = obj[nsp.FRBR + "part"].map(uri => uri["@id"].substr(uri["@id"].lastIndexOf("#")+1));
-                    if(selectedElementIds.length) { 
-                        // mark from first to last element
-                        markScoreRegion(selectedElementIds[0], selectedElementIds[selectedElementIds.length-1]);
-                    } else {
-                        console.warn("Selection with unexpected parts: ", obj);
-                    }
-                    */
+          // Only attempt score-region marking if there is a score alignment
+          if (meiUri) {
+            markScoreRegions([{ "@id": url }]);
+          }
         } else {
           console.warn("Selection without parts: ", obj);
         }
@@ -701,5 +887,570 @@ export function markSelection(obj, url) {
     }
   } else {
     console.warn("markSelection called on non-selection object:", obj);
+  }
+}
+
+// ============================================================================
+// "New Annotation" button + draft card UI
+// ============================================================================
+
+/**
+ * Initialise the "New Annotation" button inside #maoExtracts.
+ * Called once from listen.js after DOM is ready and alignment is loaded.
+ */
+export function initNewAnnotationButton() {
+  const panel = document.getElementById("maoExtracts");
+  if (!panel || document.getElementById("new-annotation-btn")) return;
+  const btn = document.createElement("button");
+  btn.id = "new-annotation-btn";
+  btn.textContent = "+ New Annotation";
+  btn.title = "Create a new annotation draft";
+  btn.style.display = "none"; // shown when Solid is logged in
+  btn.addEventListener("click", () => {
+    const draft = createDraft();
+    _drawDraftCard(draft);
+  });
+  panel.prepend(btn);
+  // Show/hide based on Solid login state (check immediately + observe changes)
+  _refreshNewAnnotationBtnVisibility();
+}
+
+/** Show the button only when Solid session is active. */
+function _refreshNewAnnotationBtnVisibility() {
+  const btn = document.getElementById("new-annotation-btn");
+  if (!btn) return;
+  const isLoggedIn = solid.getDefaultSession().info.isLoggedIn;
+  btn.style.display = isLoggedIn ? "" : "none";
+}
+
+/** Call after Solid login/logout to update button visibility. */
+export function onSolidAuthChanged() {
+  _refreshNewAnnotationBtnVisibility();
+}
+
+function _drawDraftCard(draft) {
+  const panel = document.getElementById("maoExtracts");
+  if (!panel) return;
+
+  const card = document.createElement("div");
+  card.id = `draft-card-${draft.id}`;
+  card.className = "maoExtract draft-card";
+  card.style.borderColor = draft.color.border;
+
+  // --- Header ---
+  const header = document.createElement("div");
+  header.className = "maoExtract-header";
+
+  const colorBadge = document.createElement("span");
+  colorBadge.className = "draft-color-badge";
+  colorBadge.style.background = draft.color.border;
+
+  const labelInput = document.createElement("input");
+  labelInput.type = "text";
+  labelInput.className = "draft-label-input";
+  labelInput.placeholder = "Annotation label\u2026";
+  labelInput.value = draft.label;
+  labelInput.addEventListener("input", () => {
+    draft.label = labelInput.value;
+  });
+
+  const dismissBtn = document.createElement("button");
+  dismissBtn.className = "maoExtract-dismiss";
+  dismissBtn.innerHTML = "\u2715";
+  dismissBtn.title = "Discard draft";
+  dismissBtn.addEventListener("click", () => {
+    _discardDraft(draft.id);
+  });
+
+  header.appendChild(colorBadge);
+  header.appendChild(labelInput);
+  header.appendChild(dismissBtn);
+  card.appendChild(header);
+
+  // --- Region drawing controls ---
+  const regionControls = document.createElement("div");
+  regionControls.className = "extractTools";
+
+  const drawBtn = document.createElement("button");
+  drawBtn.className = "extract-draw-btn";
+  drawBtn.textContent = "Draw Regions";
+  drawBtn.addEventListener("click", () => {
+    if (_activeDraftId === draft.id) {
+      _exitDrawMode();
+      drawBtn.textContent = "Draw Regions";
+      card.classList.remove("drawing");
+    } else {
+      _enterDrawMode(draft.id);
+      // Update all other cards' buttons
+      document.querySelectorAll(".extract-draw-btn").forEach((b) => {
+        if (b !== drawBtn) {
+          b.textContent = "Draw Regions";
+          b.closest(".draft-card")?.classList.remove("drawing");
+        }
+      });
+      drawBtn.textContent = "Stop Drawing";
+      card.classList.add("drawing");
+    }
+  });
+
+  const regionCount = document.createElement("span");
+  regionCount.className = "draft-region-count";
+  regionCount.textContent = "No regions drawn";
+
+  regionControls.appendChild(drawBtn);
+  regionControls.appendChild(regionCount);
+  card.appendChild(regionControls);
+
+  // --- Region list with delete buttons ---
+  const regionList = document.createElement("ul");
+  regionList.className = "draft-region-list";
+  card.appendChild(regionList);
+
+  // --- Select Recordings toggle ---
+  const selectBtn = document.createElement("button");
+  selectBtn.className = "extract-select-btn";
+  selectBtn.textContent = "Select Recordings";
+  selectBtn.addEventListener("click", () => {
+    if (_activeDraftSelectionId === draft.id) {
+      _exitDraftSelectionMode();
+      selectBtn.textContent = "Select Recordings";
+      card.classList.remove("selecting");
+    } else {
+      // Exit any other selection mode
+      if (_activeSelectionCardId) {
+        _exitSelectionMode(_activeSelectionCardId);
+        document.querySelectorAll(".extract-select-btn").forEach((b) => {
+          b.textContent = "Select Recordings";
+        });
+      }
+      if (_activeDraftSelectionId !== null) {
+        _exitDraftSelectionMode();
+      }
+      _enterDraftSelectionMode(draft.id);
+      selectBtn.textContent = "Cancel Selection";
+      card.classList.add("selecting");
+    }
+  });
+  card.appendChild(selectBtn);
+
+  // --- Staged recordings area ---
+  const stagedArea = document.createElement("div");
+  stagedArea.className = "staged-area";
+
+  const stagedCount = document.createElement("div");
+  stagedCount.className = "staged-count";
+  stagedCount.textContent = "No recordings selected";
+  stagedArea.appendChild(stagedCount);
+
+  const stagedDetails = document.createElement("details");
+  const stagedSummary = document.createElement("summary");
+  stagedSummary.textContent = "Show selected";
+  stagedDetails.appendChild(stagedSummary);
+  const stagedList = document.createElement("ul");
+  stagedList.className = "staged-list";
+  stagedDetails.appendChild(stagedList);
+  stagedArea.appendChild(stagedDetails);
+
+  // Include peaks checkbox
+  const peaksLabel = document.createElement("label");
+  peaksLabel.className = "include-peaks-label";
+  const peaksCb = document.createElement("input");
+  peaksCb.type = "checkbox";
+  peaksCb.className = "include-peaks-cb";
+  peaksCb.checked = draft.includePeaks;
+  peaksCb.addEventListener("change", () => {
+    draft.includePeaks = peaksCb.checked;
+  });
+  peaksLabel.appendChild(peaksCb);
+  peaksLabel.append(" Include peaks");
+  stagedArea.appendChild(peaksLabel);
+
+  const postHint = document.createElement("p");
+  postHint.className = "post-hint";
+  postHint.textContent =
+    "Posts timeline annotations and (optionally) waveform envelope data. No audio information is ever posted.";
+  stagedArea.appendChild(postHint);
+
+  // Post to Solid button
+  const postBtn = document.createElement("button");
+  postBtn.className = "post-to-solid-btn";
+  postBtn.textContent = "Post to Solid";
+  postBtn.disabled = true;
+  postBtn.addEventListener("click", () => _postDraftToSolid(draft.id));
+  stagedArea.appendChild(postBtn);
+
+  card.appendChild(stagedArea);
+
+  // Insert after the "New Annotation" button
+  const newAnnoBtn = document.getElementById("new-annotation-btn");
+  if (newAnnoBtn && newAnnoBtn.nextSibling) {
+    panel.insertBefore(card, newAnnoBtn.nextSibling);
+  } else {
+    panel.appendChild(card);
+  }
+}
+
+// --- Draft selection mode (reuses waveform overlay icons) ---
+let _activeDraftSelectionId = null;
+
+function _enterDraftSelectionMode(draftId) {
+  _activeDraftSelectionId = draftId;
+  _updateDraftWaveformIcons();
+}
+
+function _exitDraftSelectionMode() {
+  _activeDraftSelectionId = null;
+  _updateDraftWaveformIcons();
+  document.querySelectorAll(".draft-card.selecting").forEach((c) => {
+    c.classList.remove("selecting");
+    const btn = c.querySelector(".extract-select-btn");
+    if (btn) btn.textContent = "Select Recordings";
+  });
+}
+
+/** Check if a filename is staged in a draft */
+export function isDraftStagedSelection(filename) {
+  if (_activeDraftSelectionId === null) return false;
+  const draft = _drafts.get(_activeDraftSelectionId);
+  return draft ? draft.stagedRecordings.has(filename) : false;
+}
+
+/** Toggle a filename's draft staged state (called from waveform overlay click). */
+export function toggleDraftStagedSelection(filename) {
+  if (_activeDraftSelectionId === null) return;
+  const draft = _drafts.get(_activeDraftSelectionId);
+  if (!draft) return;
+  if (draft.stagedRecordings.has(filename)) {
+    draft.stagedRecordings.delete(filename);
+  } else {
+    draft.stagedRecordings.add(filename);
+  }
+  _updateDraftWaveformIcons();
+  _updateDraftStagedUI(draft.id);
+}
+
+function _updateDraftWaveformIcons() {
+  const inMode = _activeDraftSelectionId !== null;
+  document.querySelectorAll(".wf-select-overlay").forEach((overlay) => {
+    const filename = overlay.closest(".waveform")?.dataset.ix;
+    if (inMode) {
+      overlay.classList.add("visible");
+      overlay.classList.toggle("staged", isDraftStagedSelection(filename));
+    } else {
+      overlay.classList.remove("visible", "staged");
+    }
+  });
+}
+
+function _updateDraftStagedUI(draftId) {
+  const draft = _drafts.get(draftId);
+  if (!draft) return;
+  const card = document.getElementById(`draft-card-${draftId}`);
+  if (!card) return;
+  const listEl = card.querySelector(".staged-list");
+  const countEl = card.querySelector(".staged-count");
+  const postBtn = card.querySelector(".post-to-solid-btn");
+  const set = draft.stagedRecordings;
+  if (countEl) {
+    countEl.textContent = set.size
+      ? `${set.size} recording${set.size > 1 ? "s" : ""} selected`
+      : "No recordings selected";
+  }
+  if (listEl) {
+    listEl.innerHTML = "";
+    for (const fn of set) {
+      const li = document.createElement("li");
+      li.textContent = fn.substring(fn.lastIndexOf("/") + 1);
+      li.title = fn;
+      listEl.appendChild(li);
+    }
+  }
+  if (postBtn) {
+    postBtn.disabled = set.size === 0 || draft.regions.length === 0;
+  }
+}
+
+function _updateDraftRegionList(draftId) {
+  const draft = _drafts.get(draftId);
+  if (!draft) return;
+  const card = document.getElementById(`draft-card-${draftId}`);
+  if (!card) return;
+  const listEl = card.querySelector(".draft-region-list");
+  if (!listEl) return;
+  listEl.innerHTML = "";
+  // Use the reference waveform for display times
+  const refKey = getReferenceAudioIx() || getAlignmentKeys()[0];
+  draft.regions.forEach((r, ix) => {
+    const startT = getCorrespondingTime(refKey, r.from);
+    const endT = getCorrespondingTime(refKey, r.to);
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="draft-region-times">${_fmtTime(startT)} \u2013 ${_fmtTime(endT)}</span>`;
+    const delBtn = document.createElement("button");
+    delBtn.className = "draft-region-delete";
+    delBtn.innerHTML = "\u2715";
+    delBtn.title = "Remove region";
+    delBtn.addEventListener("click", () => {
+      draft.regions.splice(ix, 1);
+      _updateDraftRegionCount(draftId);
+      _updateDraftRegionList(draftId);
+      updateRenderAnnoRegions();
+      // Update post button state
+      const postBtn = card.querySelector(".post-to-solid-btn");
+      if (postBtn)
+        postBtn.disabled =
+          draft.stagedRecordings.size === 0 || draft.regions.length === 0;
+    });
+    li.appendChild(delBtn);
+    listEl.appendChild(li);
+  });
+  _updateDraftRegionCount(draftId);
+}
+
+function _fmtTime(secs) {
+  if (secs == null || isNaN(secs)) return "?";
+  const m = Math.floor(secs / 60);
+  const s = (secs % 60).toFixed(1);
+  return `${m}:${s.padStart(4, "0")}`;
+}
+
+// --- Draw mode ---
+
+// Cleanup functions returned by enableDragSelection (one per RegionsPlugin)
+let _dragSelectionCleanups = [];
+
+function _enterDrawMode(draftId) {
+  // Exit any other draw mode
+  if (_activeDraftId !== null && _activeDraftId !== draftId) {
+    _exitDrawMode();
+  }
+  _activeDraftId = draftId;
+  // Enable region creation on all loaded waveforms
+  _dragSelectionCleanups = [];
+  Object.values(_regionsPlugins).forEach((rp) => {
+    const cleanup = rp.enableDragSelection({
+      color: _drafts.get(draftId).color.bg,
+    });
+    if (typeof cleanup === "function") {
+      _dragSelectionCleanups.push(cleanup);
+    }
+  });
+}
+
+function _exitDrawMode() {
+  _activeDraftId = null;
+  // Call all cleanup functions to disable drag selection
+  _dragSelectionCleanups.forEach((fn) => {
+    try {
+      fn();
+    } catch (e) {
+      /* ignore */
+    }
+  });
+  _dragSelectionCleanups = [];
+}
+
+function _discardDraft(draftId) {
+  const draft = _drafts.get(draftId);
+  if (!draft) return;
+  if (_activeDraftId === draftId) _exitDrawMode();
+  if (_activeDraftSelectionId === draftId) _exitDraftSelectionMode();
+  _drafts.delete(draftId);
+  const card = document.getElementById(`draft-card-${draftId}`);
+  if (card) card.remove();
+  updateRenderAnnoRegions();
+}
+
+// --- Post to Solid ---
+
+async function _postDraftToSolid(draftId) {
+  const draft = _drafts.get(draftId);
+  if (!draft || draft.posted) return;
+  if (draft.regions.length === 0 || draft.stagedRecordings.size === 0) return;
+
+  const card = document.getElementById(`draft-card-${draftId}`);
+  const postBtn = card?.querySelector(".post-to-solid-btn");
+  if (postBtn) {
+    postBtn.disabled = true;
+    postBtn.textContent = "Posting\u2026";
+  }
+
+  try {
+    const label = draft.label || "Untitled Annotation";
+
+    // 1. Establish containers
+    await establishContainers();
+
+    // 2. Build items: one per selected recording, each with all regions as fragments
+    const items = [];
+    for (const filename of draft.stagedRecordings) {
+      const audioBaseUri = getAudioLinkedDataUri(filename);
+      const fragments = draft.regions.map((r) => {
+        let start, end;
+        if (r.localOverrides && r.localOverrides[filename]) {
+          start = r.localOverrides[filename].start;
+          end = r.localOverrides[filename].end;
+        } else {
+          start = getCorrespondingTime(filename, r.from);
+          end = getCorrespondingTime(filename, r.to);
+        }
+        return `${audioBaseUri}#t=${start},${end}`;
+      });
+      const peaksData = draft.includePeaks ? getWaveformPeaks(filename) : null;
+      items.push({
+        currentFileUri: audioBaseUri,
+        selectedElements: fragments,
+        peaksData,
+      });
+    }
+
+    // 3. Establish discovery resources for each unique aboutUri
+    const uniqueFileUris = [...new Set(items.map((i) => i.currentFileUri))];
+    const discoveryMap = {};
+    for (const fileUri of uniqueFileUris) {
+      discoveryMap[fileUri] = await establishDiscoveryResource(fileUri);
+    }
+
+    // Collect all aboutUris and discoveryUris for the Extract/MusMat
+    const allAboutUris = uniqueFileUris;
+    const allDiscoveryUris = uniqueFileUris.map((u) => discoveryMap[u].url);
+
+    // 4. POST all Selections in parallel (one per recording)
+    const selectionResponses = await Promise.all(
+      items.map((item) =>
+        createMAOSelection(
+          item.selectedElements,
+          item.currentFileUri,
+          discoveryMap[item.currentFileUri].url,
+          label,
+          item.peaksData,
+        ),
+      ),
+    );
+
+    // 5. Create Extract with all Selections as embodiments
+    const firstSelResponse = selectionResponses[0];
+    const extractResponse = await createMAOExtract(
+      firstSelResponse,
+      allAboutUris,
+      allDiscoveryUris,
+      label,
+    );
+    // Patch Extract to add remaining embodiments if > 1 selection
+    if (selectionResponses.length > 1) {
+      const extraOps = selectionResponses.slice(1).map((selRes) => ({
+        op: "add",
+        path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}embodiment/-`,
+        value: { "@id": resolveLocation(selRes) },
+      }));
+      await safelyPatchResource(resolveLocation(extractResponse), extraOps);
+    }
+
+    // 6. Create MusicalMaterial
+    const musMatResponse = await createMAOMusicalMaterial(
+      extractResponse,
+      allAboutUris,
+      allDiscoveryUris,
+      label,
+    );
+
+    // 7. Patch all discovery resources with the new MAO objects
+    const musMatUri = resolveLocation(musMatResponse);
+    const extractUri = resolveLocation(extractResponse);
+    for (const [fileUri, discRes] of Object.entries(discoveryMap)) {
+      const selUris = selectionResponses
+        .filter((_, i) => items[i].currentFileUri === fileUri)
+        .map((r) => resolveLocation(r));
+      const ops = [
+        {
+          op: "add",
+          path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll("/", "~1")}dataset/-`,
+          value: {
+            "@type": `${nsp.SCHEMA}Dataset`,
+            [`${nsp.SCHEMA}additionalType`]: {
+              "@id": `${nsp.MAO}MusicalMaterial`,
+            },
+            [`${nsp.SCHEMA}url`]: { "@id": musMatUri },
+          },
+        },
+        {
+          op: "add",
+          path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll("/", "~1")}dataset/-`,
+          value: {
+            "@type": `${nsp.SCHEMA}Dataset`,
+            [`${nsp.SCHEMA}additionalType`]: { "@id": `${nsp.MAO}Extract` },
+            [`${nsp.SCHEMA}url`]: { "@id": extractUri },
+          },
+        },
+        ...selUris.map((sUri) => ({
+          op: "add",
+          path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll("/", "~1")}dataset/-`,
+          value: {
+            "@type": `${nsp.SCHEMA}Dataset`,
+            [`${nsp.SCHEMA}additionalType`]: { "@id": `${nsp.MAO}Selection` },
+            [`${nsp.SCHEMA}url`]: { "@id": sUri },
+          },
+        })),
+      ];
+      await safelyPatchResource(discRes.url, ops).catch(() =>
+        console.warn("Couldn't patch discovery resource:", discRes.url),
+      );
+    }
+
+    // --- Convert draft card into a live annotation card ---
+    draft.posted = true;
+    if (_activeDraftId === draftId) _exitDrawMode();
+    if (_activeDraftSelectionId === draftId) _exitDraftSelectionMode();
+
+    // 1. Register each Selection in maoSelections and push regions into
+    //    currentlyAnnotatedRegions so that waveform rendering picks them up.
+    selectionResponses.forEach((selRes, idx) => {
+      const selUri = resolveLocation(selRes);
+      const item = items[idx];
+      // Build a maoSelections entry matching the shape markSelection expects
+      const selObj = {
+        "@type": [nsp.MAO + "Selection", nsp.SCHEMA + "Dataset"],
+        [nsp.FRBR + "part"]: item.selectedElements.map((f) => ({ "@id": f })),
+        [nsp.SCHEMA + "about"]: [{ "@id": item.currentFileUri }],
+      };
+      maoSelections[selUri] = selObj;
+
+      // One currentlyAnnotatedRegions entry per draft region, each pointing
+      // to this selection URI so play / rendering logic works.
+      draft.regions.forEach((r) => {
+        const entry = {
+          selection: selUri,
+          from: r.from,
+          to: r.to,
+        };
+        if (r.localOverrides) entry.localOverrides = r.localOverrides;
+        currentlyAnnotatedRegions.push(entry);
+      });
+    });
+
+    // 2. Build the extract object that drawExtractUIElement expects
+    const extractObj = {
+      "@id": extractUri,
+      [nsp.FRBR + "embodiment"]: selectionResponses.map((r) => ({
+        "@id": resolveLocation(r),
+      })),
+      [nsp.RDFS + "label"]: [{ "@value": label }],
+      [nsp.SCHEMA + "about"]: allAboutUris.map((u) => ({ "@id": u })),
+    };
+
+    // 3. Register the MusicalMaterial → Extract mapping
+    _extractToMusMat.set(extractUri, musMatUri);
+
+    // 4. Remove the draft card and draw the live one
+    _discardDraft(draftId);
+    drawExtractUIElement(extractObj);
+
+    // 5. Re-render waveform regions
+    updateRenderAnnoRegions();
+  } catch (e) {
+    console.error("Error posting draft to Solid:", e);
+    if (postBtn) {
+      postBtn.textContent = "Error \u2014 retry?";
+      postBtn.disabled = false;
+    }
   }
 }

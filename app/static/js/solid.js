@@ -48,13 +48,13 @@ export const resources = {
     "@type": [nsp.LDP + "Container", nsp.LDP + "BasicContainer"],
   },
   maoExtract: {
-    "@type": [nsp.MAO + "Extract"],
+    "@type": [nsp.MAO + "Extract", nsp.SCHEMA + "Dataset"],
   },
   maoSelection: {
-    "@type": [nsp.MAO + "Selection"],
+    "@type": [nsp.MAO + "Selection", nsp.SCHEMA + "Dataset"],
   },
   maoMusicalMaterial: {
-    "@type": [nsp.MAO + "MusicalMaterial"],
+    "@type": [nsp.MAO + "MusicalMaterial", nsp.SCHEMA + "Dataset"],
   },
 };
 
@@ -298,13 +298,14 @@ export async function establishDiscoveryResource(currentFileUri) {
   .catch(e => { console.error("Failed to create nsp.MAO Musical Object:", e) })
 }*/
 
-export async function createMAOMusicalObject(selectedElements, label = "") {
+export async function createMAOMusicalObject(
+  selectedElements,
+  currentFileUri,
+  label = "",
+) {
   // Function to build a Musical Object according to the Music Annotation Ontology:
   // https://dl.acm.org/doi/10.1145/3543882.3543891
-  // For the purposes of mei-friend, we want to build a composite structure encompassing MusicalMaterial,
-  // Extract, and Selection (see paper)
-  let currentFileUri = getCurrentFileUri();
-  let currentFileUriHash = encodeURIComponent(currentFileUri);
+  // Build a composite structure encompassing MusicalMaterial, Extract, and Selection.
   let storageResource;
   return establishContainerResource(friendContainer)
     .then(async (stoRes) => {
@@ -498,7 +499,7 @@ export async function addMultipleMAOSelectionsToExtract(
   await safelyPatchResource(extractResource, extractOps);
 }
 
-async function createMAOSelection(
+export async function createMAOSelection(
   selection,
   aboutUri,
   discoveryUri,
@@ -507,11 +508,9 @@ async function createMAOSelection(
 ) {
   // private function -- called *after* friendContainer and musicalObjectContainer already established
   let resource = structuredClone(resources.maoSelection);
-  resource[nsp.FRBR + "part"] = [
-    {
-      "@id": selection,
-    },
-  ];
+  // selection can be a single URI string or an array of URIs (non-contiguous regions)
+  const selArr = Array.isArray(selection) ? selection : [selection];
+  resource[nsp.FRBR + "part"] = selArr.map((s) => ({ "@id": s }));
   if (label) {
     resource[nsp.RDFS + "label"] = label;
   }
@@ -538,7 +537,12 @@ async function createMAOSelection(
   return response;
 }
 
-async function createMAOExtract(postSelectionResponse, label = "") {
+export async function createMAOExtract(
+  postSelectionResponse,
+  aboutUri,
+  discoveryUri,
+  label = "",
+) {
   console.log("createMAOExtract: ", postSelectionResponse);
   let selectionUri = resolveLocation(postSelectionResponse);
   let resource = structuredClone(resources.maoExtract);
@@ -546,10 +550,21 @@ async function createMAOExtract(postSelectionResponse, label = "") {
   if (label) {
     resource[nsp.RDFS + "label"] = label;
   }
+  aboutUri = Array.isArray(aboutUri) ? aboutUri : [aboutUri];
+  resource[nsp.SCHEMA + "about"] = aboutUri.map((uri) => ({ "@id": uri }));
+  discoveryUri = Array.isArray(discoveryUri) ? discoveryUri : [discoveryUri];
+  resource[nsp.SCHEMA + "includedInDataCatalog"] = discoveryUri.map((uri) => ({
+    "@id": uri,
+  }));
   return postResource(extractContainer, resource);
 }
 
-async function createMAOMusicalMaterial(postExtractResponse, label = "") {
+export async function createMAOMusicalMaterial(
+  postExtractResponse,
+  aboutUri,
+  discoveryUri,
+  label = "",
+) {
   console.log("createMAOMusicalMaterial: ", postExtractResponse);
   let extractUri = resolveLocation(postExtractResponse);
   let resource = structuredClone(resources.maoMusicalMaterial);
@@ -557,6 +572,12 @@ async function createMAOMusicalMaterial(postExtractResponse, label = "") {
   if (label) {
     resource[nsp.RDFS + "label"] = label;
   }
+  aboutUri = Array.isArray(aboutUri) ? aboutUri : [aboutUri];
+  resource[nsp.SCHEMA + "about"] = aboutUri.map((uri) => ({ "@id": uri }));
+  discoveryUri = Array.isArray(discoveryUri) ? discoveryUri : [discoveryUri];
+  resource[nsp.SCHEMA + "includedInDataCatalog"] = discoveryUri.map((uri) => ({
+    "@id": uri,
+  }));
   return postResource(musicalMaterialContainer, resource);
 }
 
@@ -585,6 +606,11 @@ export async function postWebAnnotation(targetUri, bodyText) {
 export async function populateSolidDrawer() {
   const solidTab = document.getElementById("solidTab");
   const isLoggedIn = solid.getDefaultSession().info.isLoggedIn;
+
+  // Notify other modules of auth state change
+  document.dispatchEvent(
+    new CustomEvent("solid-auth-changed", { detail: { isLoggedIn } }),
+  );
 
   if (isLoggedIn) {
     const profile = await getProfile();
@@ -683,21 +709,19 @@ export async function populateSolidDrawer() {
         customWrap.style.display =
           providerSelect.value === "_other" ? "" : "none";
       });
-      document
-        .getElementById("solidLoginBtn")
-        .addEventListener("click", () => {
-          if (providerSelect.value === "_other") {
-            const custom = document
-              .getElementById("customProviderInput")
-              .value.trim();
-            if (!custom) return;
-            loginAndFetch(
-              custom.startsWith("http") ? custom : "https://" + custom,
-            );
-          } else {
-            loginAndFetch();
-          }
-        });
+      document.getElementById("solidLoginBtn").addEventListener("click", () => {
+        if (providerSelect.value === "_other") {
+          const custom = document
+            .getElementById("customProviderInput")
+            .value.trim();
+          if (!custom) return;
+          loginAndFetch(
+            custom.startsWith("http") ? custom : "https://" + custom,
+          );
+        } else {
+          loginAndFetch();
+        }
+      });
     }
   }
 

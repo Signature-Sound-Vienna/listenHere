@@ -49,10 +49,41 @@ const DRAFT_COLORS = [
   { bg: "rgba(99,102,241,0.25)", border: "#6366f1" }, // indigo
 ];
 
+// Color palette for live (posted) annotations — same hues, more saturated
+const LIVE_COLORS = [
+  { bg: "rgba(59,130,246,0.45)", border: "#2563eb" }, // blue
+  { bg: "rgba(16,185,129,0.45)", border: "#059669" }, // emerald
+  { bg: "rgba(245,158,11,0.45)", border: "#d97706" }, // amber
+  { bg: "rgba(168,85,247,0.45)", border: "#7c3aed" }, // purple
+  { bg: "rgba(236,72,153,0.45)", border: "#db2777" }, // pink
+  { bg: "rgba(20,184,166,0.45)", border: "#0d9488" }, // teal
+  { bg: "rgba(249,115,22,0.45)", border: "#ea580c" }, // orange
+  { bg: "rgba(99,102,241,0.45)", border: "#4f46e5" }, // indigo
+];
+let _liveColorIx = 0;
+const _liveColorMap = new Map(); // extractUri / selectionUri → color object
+
+/** Get the live color for an extract or selection URI. */
+export function getLiveColor(uri) {
+  return _liveColorMap.get(uri) || null;
+}
+
 const _drafts = new Map(); // draftId → Draft object
 let _nextDraftId = 1;
 let _activeDraftId = null; // draft currently in draw-region mode
 let _draftColorIx = 0;
+
+const _URI_MISSING_TOOLTIP =
+  "Set a URI prefix in Manage Files → Linked Data URIs before posting";
+
+/** Check whether every filename in the Set has an absolute audio LD URI. */
+function _allHaveAbsoluteUri(filenames) {
+  for (const fn of filenames) {
+    const uri = getAudioLinkedDataUri(fn);
+    if (!uri || !/^https?:\/\//i.test(uri)) return false;
+  }
+  return true;
+}
 
 /**
  * A draft annotation tracks user-drawn regions before posting to Solid.
@@ -76,7 +107,7 @@ function createDraft() {
     color,
     regions: [],
     stagedRecordings: new Set(),
-    includePeaks: false,
+    includePeaks: true,
     posted: false,
   };
   _drafts.set(id, draft);
@@ -400,7 +431,9 @@ function _updateStagedListUI(extractId) {
     }
   }
   if (postBtn) {
-    postBtn.disabled = set.size === 0;
+    const hasAbsUri = set.size > 0 && _allHaveAbsoluteUri(set);
+    postBtn.disabled = set.size === 0 || !hasAbsUri;
+    postBtn.title = set.size > 0 && !hasAbsUri ? _URI_MISSING_TOOLTIP : "";
   }
 }
 
@@ -541,9 +574,28 @@ function drawExtractUIElement(obj) {
   // Don't draw duplicates
   if (document.getElementById(obj["@id"])) return;
 
+  // Assign a rotating live color to this extract
+  const extractUri = obj["@id"];
+  if (!_liveColorMap.has(extractUri)) {
+    _liveColorMap.set(
+      extractUri,
+      LIVE_COLORS[_liveColorIx % LIVE_COLORS.length],
+    );
+    _liveColorIx++;
+  }
+  const liveColor = _liveColorMap.get(extractUri);
+
+  // Also map each selection (embodiment) URI to the same color
+  if (obj[nsp.FRBR + "embodiment"]) {
+    obj[nsp.FRBR + "embodiment"].forEach((e) => {
+      _liveColorMap.set(e["@id"], liveColor);
+    });
+  }
+
   let extract = document.createElement("div");
   extract.id = obj["@id"];
   extract.className = "maoExtract";
+  extract.style.borderColor = liveColor.border;
   extract.dataset.selection = obj[nsp.FRBR + "embodiment"][0]["@id"];
 
   // Card header with label and dismiss button
@@ -557,6 +609,10 @@ function drawExtractUIElement(obj) {
   label.className = "maoExtract-label";
   label.innerText = labelText;
   label.title = labelText;
+
+  let colorBadge = document.createElement("span");
+  colorBadge.className = "extract-color-badge";
+  colorBadge.style.background = liveColor.border;
 
   let dismissBtn = document.createElement("button");
   dismissBtn.className = "maoExtract-dismiss";
@@ -573,6 +629,7 @@ function drawExtractUIElement(obj) {
     unloadAnnotation(obj["@id"]);
   });
 
+  header.appendChild(colorBadge);
   header.appendChild(label);
   header.appendChild(dismissBtn);
   extract.appendChild(header);
@@ -677,7 +734,7 @@ function drawExtractUIElement(obj) {
   let peaksCb = document.createElement("input");
   peaksCb.type = "checkbox";
   peaksCb.className = "include-peaks-cb";
-  peaksCb.checked = false;
+  peaksCb.checked = true;
   peaksLabel.appendChild(peaksCb);
   peaksLabel.append(" Include peaks");
   stagedArea.appendChild(peaksLabel);
@@ -1166,7 +1223,10 @@ function _updateDraftStagedUI(draftId) {
     }
   }
   if (postBtn) {
-    postBtn.disabled = set.size === 0 || draft.regions.length === 0;
+    const hasAbsUri = set.size > 0 && _allHaveAbsoluteUri(set);
+    postBtn.disabled =
+      set.size === 0 || draft.regions.length === 0 || !hasAbsUri;
+    postBtn.title = set.size > 0 && !hasAbsUri ? _URI_MISSING_TOOLTIP : "";
   }
 }
 
@@ -1196,9 +1256,19 @@ function _updateDraftRegionList(draftId) {
       updateRenderAnnoRegions();
       // Update post button state
       const postBtn = card.querySelector(".post-to-solid-btn");
-      if (postBtn)
+      if (postBtn) {
+        const hasAbsUri =
+          draft.stagedRecordings.size > 0 &&
+          _allHaveAbsoluteUri(draft.stagedRecordings);
         postBtn.disabled =
-          draft.stagedRecordings.size === 0 || draft.regions.length === 0;
+          draft.stagedRecordings.size === 0 ||
+          draft.regions.length === 0 ||
+          !hasAbsUri;
+        postBtn.title =
+          draft.stagedRecordings.size > 0 && !hasAbsUri
+            ? _URI_MISSING_TOOLTIP
+            : "";
+      }
     });
     li.appendChild(delBtn);
     listEl.appendChild(li);
@@ -1328,22 +1398,12 @@ async function _postDraftToSolid(draftId) {
     );
 
     // 5. Create Extract with all Selections as embodiments
-    const firstSelResponse = selectionResponses[0];
     const extractResponse = await createMAOExtract(
-      firstSelResponse,
+      selectionResponses,
       allAboutUris,
       allDiscoveryUris,
       label,
     );
-    // Patch Extract to add remaining embodiments if > 1 selection
-    if (selectionResponses.length > 1) {
-      const extraOps = selectionResponses.slice(1).map((selRes) => ({
-        op: "add",
-        path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}embodiment/-`,
-        value: { "@id": resolveLocation(selRes) },
-      }));
-      await safelyPatchResource(resolveLocation(extractResponse), extraOps);
-    }
 
     // 6. Create MusicalMaterial
     const musMatResponse = await createMAOMusicalMaterial(

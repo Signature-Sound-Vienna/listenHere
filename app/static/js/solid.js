@@ -544,9 +544,14 @@ export async function createMAOExtract(
   label = "",
 ) {
   console.log("createMAOExtract: ", postSelectionResponse);
-  let selectionUri = resolveLocation(postSelectionResponse);
+  // Accept a single response or an array of responses
+  const responses = Array.isArray(postSelectionResponse)
+    ? postSelectionResponse
+    : [postSelectionResponse];
   let resource = structuredClone(resources.maoExtract);
-  resource[nsp.FRBR + "embodiment"] = { "@id": selectionUri };
+  resource[nsp.FRBR + "embodiment"] = responses.map((r) => ({
+    "@id": resolveLocation(r),
+  }));
   if (label) {
     resource[nsp.RDFS + "label"] = label;
   }

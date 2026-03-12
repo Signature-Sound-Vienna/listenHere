@@ -13,6 +13,7 @@ import {
   prepareAnnotationLoopTransfer,
   initNewAnnotationButton,
   onSolidAuthChanged,
+  getLiveColor,
 } from "./annotation.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
@@ -2813,7 +2814,10 @@ function extractCurrentlyAnnotatedRegions(ws) {
       end: regionEnd,
       drag: true,
       resize: true,
-      color: "rgba(200, 130, 80, 0.3)",
+      color:
+        (r.color && r.color.bg) ||
+        getLiveColor(r.selection)?.bg ||
+        "rgba(200, 130, 80, 0.3)",
     };
   });
 }

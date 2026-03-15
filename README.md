@@ -30,6 +30,8 @@ You can load audio files directly from your computer using your browser's built-
    - **Choose a folder** to automatically match all audio files inside it.
    - **Choose individual files** to select specific audio recordings.
    - **Drag and drop** audio files directly onto the overlay.
+   - Optionally, switch to the **Linked Data URIs** tab to configure how linked-data annotations will be targeted - see [Annotations (Linked Data)](#annotations-linked-data) below.
+4. You can reopen this overlay at any time by clicking the **Manage files** button in the toolbar.
 
 ### 2. Using hosted audio files (Basic Usage)
 If your audio files are already hosted on a web server, you can point the app to load them automatically.
@@ -50,6 +52,7 @@ If you don't have an alignment JSON file yet, you can create one directly in the
 3. Follow the on-screen instructions to select your audio files.
 4. (Optional) Check "Include pre-calculated waveform envelope (peaks)" before generating. This significantly speeds up load times when opening the listening interface later, at the cost of a slightly larger alignment file.
 5. Generate your new alignment, which you can then save and use for listening.
+6. After alignment completes, the tool transitions seamlessly into the listening interface — no page reload required. Your audio stays loaded and ready to play.
 
 ---
 
@@ -90,14 +93,15 @@ When many recordings are loaded, you can organise them into named groups for eas
 
 ### Annotations (Linked Data)
 If you are logged into a [Solid Pod](https://solidproject.org), you can create and manage linked-data annotations using the Music Annotation Ontology.
-- Click the **RDF logo** button in the toolbar to open the Linked Data drawer and log in.
+- Click the **RDF logo** button in the toolbar to open the Linked Data drawer and log in. Login opens in a popup window, so your loaded audio and waveforms are preserved — no page reload.
 - Annotation cards appear pinned at the bottom of the interface. Each card has a **Play** button to loop the annotated region.
 - Use **Select Recordings** on a card to enter selection mode: click waveform overlays to stage recordings, then **Post to Solid** to save.
+- Use **Describe** on a card to add a textual description, and **Primal** to identify the original recording used when creating the annotation.
 - Loop playback automatically transfers when you switch between waveforms during annotation.
 
 **What does "Post to Solid" publish?** Only structured linked-data annotations are posted: timeline interval descriptions (start/end times) identifying selections within recordings, and (if the "Include peaks" option is checked) a compact waveform envelope that allows the waveform shape to be displayed publicly. **No playable audio data is ever uploaded.** Audio content never leaves your browser.
 
-If you are loading annotations from a publicly accessible Web location, logging in to Solid is not required. You will not be able to post selections, however.
+You can also load annotations from any publicly accessible URL by pasting it into the **Load annotations** input at the bottom of the Linked Data drawer — no Solid login required. You won't be able to post selections without logging in, however.
 
 ---
 

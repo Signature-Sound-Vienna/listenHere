@@ -110,6 +110,11 @@ def index():
     return render_template('listen.html', data=align_url, mode="listen")
 
 
+@app.route("/solid-popup-callback")
+def solid_popup_callback():
+    return render_template('solid-popup-callback.html')
+
+
 SSV_AUDIO = "https://w3id.org/ssv/audio/"
 
 @app.route("/listen")

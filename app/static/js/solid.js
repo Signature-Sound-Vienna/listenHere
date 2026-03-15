@@ -857,14 +857,75 @@ function getCleanRedirectUrl() {
   return url.toString();
 }
 
+/** Reference to the login popup window (if open). */
+let _loginPopup = null;
+
+/**
+ * Listen for postMessage from the login popup.
+ * The popup simply captures the IdP callback URL (with ?code=&state=)
+ * and forwards it here.  We then call handleIncomingRedirect() on the
+ * *main page* so the token exchange happens in our own context —
+ * tokens land in the main page's in-memory secure storage.
+ * The main page NEVER navigates away.
+ */
+function _setupPopupMessageListener() {
+  window.addEventListener("message", async (event) => {
+    // Only accept messages from our own origin
+    if (event.origin !== window.location.origin) return;
+    if (!event.data || event.data.type !== "solid-popup-callback") return;
+
+    _loginPopup = null; // popup is closing itself
+
+    if (event.data.callbackUrl) {
+      console.log("Received callback URL from popup, exchanging tokens…");
+      localStorage.removeItem("solidLoginPending");
+
+      // The library's handleIncomingRedirect will: extract code+state from
+      // the URL, exchange them for tokens, and populate session info — all
+      // without navigating the browser.
+      // It also calls cleanUrlAfterRedirect which does a replaceState with
+      // the callback origin+path; we counteract that below.
+      const savedHref = window.location.href;
+      const session = await solid.handleIncomingRedirect(
+        event.data.callbackUrl,
+      );
+      // Restore address bar (the library may have replaced it with the
+      // popup callback path during cleanUrlAfterRedirect).
+      if (window.location.href !== savedHref) {
+        window.history.replaceState({}, "", savedHref);
+      }
+
+      if (session && session.isLoggedIn) {
+        console.log("Solid popup auth succeeded for", session.webId);
+        localStorage.setItem("solidProvider", event.data.provider || "");
+      } else {
+        console.warn("Token exchange completed but session not logged in");
+      }
+      populateSolidDrawer();
+    } else {
+      // Popup reported failure
+      console.warn("Solid popup auth failed:", event.data.error || "unknown");
+      localStorage.removeItem("solidLoginPending");
+      populateSolidDrawer();
+    }
+  });
+}
+
 /**
  * Initialise Solid authentication on page load.
  * Processes any incoming OIDC redirect (code in URL), then populates
- * the Solid drawer.  Never triggers a silent re-auth redirect.
+ * the Solid drawer.  Also sets up the popup message listener for
+ * future login attempts.
  */
 export async function initSolidAuth() {
+  // Set up the listener for popup-based logins
+  _setupPopupMessageListener();
+
+  // Process an incoming OIDC redirect if present (code/state in URL).
   // restorePreviousSession is intentionally omitted (defaults to false)
-  // so the library will NOT silently redirect to the IdP.
+  // so the library will NOT silently redirect to the IdP on a plain
+  // page load.  The redirect restore only happens explicitly after
+  // the popup reports success (see _setupPopupMessageListener above).
   await solid.handleIncomingRedirect();
   const session = solid.getDefaultSession();
   if (session.info.isLoggedIn) {
@@ -874,7 +935,22 @@ export async function initSolidAuth() {
 }
 
 /**
- * Initiate Solid login.
+ * Initiate Solid login via a popup window.
+ *
+ * We call solid.login() on the MAIN PAGE with a handleRedirect callback
+ * that intercepts the IdP navigation and opens it in a popup instead.
+ * The popup handles credential entry and the IdP redirects it back to
+ * our callback page.  That page captures the callback URL (with
+ * ?code=&state=) and posts it to us via postMessage.  We then call
+ * handleIncomingRedirect(callbackUrl) on the main page, so the token
+ * exchange happens here — tokens end up in the main page's in-memory
+ * storage.
+ *
+ * The main page NEVER navigates.  Blob URLs, waveforms, and draft
+ * state are fully preserved.
+ *
+ * Falls back to a direct redirect if the popup is blocked.
+ *
  * @param {string} [provider] – OIDC issuer URL; if omitted, reads from #providerSelect
  */
 export async function loginAndFetch(provider) {
@@ -887,13 +963,47 @@ export async function loginAndFetch(provider) {
     provider = providerEl.value;
   }
 
-  localStorage.setItem("solidLoginPending", Date.now().toString());
   localStorage.setItem("solidProvider", provider);
 
+  // The callback URL that the IdP will redirect the popup to.
+  // The popup callback page captures this URL and posts it back.
+  const popupCallbackUrl =
+    window.location.origin + "/solid-popup-callback";
+
+  // Pre-open the popup (must happen synchronously in the click handler
+  // to avoid popup blockers), pointing at a blank/loading page.
+  const w = 520, h = 600;
+  const left = Math.round(screen.width / 2 - w / 2);
+  const top = Math.round(screen.height / 2 - h / 2);
+  const features = `width=${w},height=${h},left=${left},top=${top},toolbar=no,menubar=no`;
+
+  _loginPopup = window.open(popupCallbackUrl, "solidLogin", features);
+
+  if (!_loginPopup || _loginPopup.closed) {
+    // Popup was blocked — fall back to direct redirect
+    console.warn("Popup blocked, falling back to redirect login");
+    _loginPopup = null;
+    localStorage.setItem("solidLoginPending", Date.now().toString());
+    await solid.login({
+      oidcIssuer: provider,
+      redirectUrl: getCleanRedirectUrl(),
+      clientName: "listen-here",
+    });
+    return;
+  }
+
+  // Call solid.login() with handleRedirect — the library prepares the
+  // OIDC auth request (stores code_verifier etc. in localStorage) and
+  // then calls our callback with the full IdP authorization URL instead
+  // of navigating the current page.
   await solid.login({
     oidcIssuer: provider,
-    redirectUrl: getCleanRedirectUrl(),
+    redirectUrl: popupCallbackUrl,
     clientName: "listen-here",
+    handleRedirect: (idpUrl) => {
+      // Navigate the already-open popup to the IdP login page
+      _loginPopup.location.href = idpUrl;
+    },
   });
 }
 

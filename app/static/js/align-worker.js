@@ -71,6 +71,32 @@ SCORE_DOWNSAMPLE = 2     # pool by this factor => coarse at 5 Hz
 ONSET_N_FFT = 1024       # short window (46 ms) for sharp onset detection
 ONSET_WEIGHT = 2.0       # chroma scale-up factor at detected onsets
 
+# Audio-to-audio DTW parameters
+COARSE = 4               # coarse pooling factor
+SLACK  = 80              # Sakoe-Chiba band half-width (fine frames)
+
+
+def _apply_options():
+    """Override module constants from JS _opt_* globals (if set)."""
+    global FEATURE_RATE, HOP, COARSE, SLACK
+    global SCORE_DOWNSAMPLE, ONSET_WEIGHT
+    v = int(_opt_feature_rate) if int(_opt_feature_rate) > 0 else None
+    if v:
+        FEATURE_RATE = v
+        HOP = SR // v
+    v = int(_opt_coarse) if int(_opt_coarse) > 0 else None
+    if v:
+        COARSE = v
+    v = int(_opt_slack) if int(_opt_slack) > 0 else None
+    if v:
+        SLACK = v
+    v = int(_opt_score_downsample) if int(_opt_score_downsample) > 0 else None
+    if v:
+        SCORE_DOWNSAMPLE = v
+    v = float(_opt_onset_weight)
+    if v >= 0:
+        ONSET_WEIGHT = v
+
 
 def _stft_setup(audio, n_fft, hop):
     """Shared STFT prep: pad audio, build window, compute n_frames and byte stride."""
@@ -487,7 +513,6 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
     N, M = ref_chroma.shape[1], other_chroma.shape[1]
 
     # ── Level 1: coarse unconstrained DTW ────────────────────────────────
-    COARSE = 4
     rc = _pool_features(ref_chroma, COARSE)
     oc = _pool_features(other_chroma, COARSE)
     Nc, Mc = rc.shape[1], oc.shape[1]
@@ -500,8 +525,6 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
     # ── Build fine-resolution per-row band bounds from coarse path ───────
     # Linearly interpolate the coarse warping path to fine frames,
     # then expand by ±SLACK to give the fine DTW room to move.
-    SLACK = 80   # fine frames each side (~8 sec at 10 Hz)
-
     # Map every coarse path step to fine (row_i, col_j) coordinates
     fi_pts = wp_c[0].astype(np.float32) * COARSE   # fine row
     fj_pts = wp_c[1].astype(np.float32) * COARSE   # fine col (centre of coarse block)
@@ -857,7 +880,7 @@ self.onmessage = async function (e) {
       if (!pyodideReady) pyodideReady = initPyodide();
       const pyodide = await pyodideReady;
 
-      const { audios, refName, meiMidi, meiUri, peakCount } = e.data;
+      const { audios, refName, meiMidi, meiUri, peakCount, options } = e.data;
       // audios: [{name: string, samples: Float32Array}, ...]
 
       // Pass each audio buffer to Python globals
@@ -874,10 +897,21 @@ self.onmessage = async function (e) {
         pyodide.globals.set("_mei_uri", meiUri || "");
       }
 
+      // Pass alignment quality options to Python
+      const opts = options || {};
+      pyodide.globals.set("_opt_coarse", opts.coarse ?? 0);
+      pyodide.globals.set("_opt_slack", opts.slack ?? 0);
+      pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
+      pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
+      pyodide.globals.set("_opt_onset_weight", opts.onsetWeight ?? -1);
+
       // Run alignment in Python (audio + optional score)
       const resultJson = await pyodide.runPythonAsync(`
 import json
 import numpy as np
+
+# Apply user-selected quality options (overrides module defaults)
+_apply_options()
 
 # Build audio dict from JS globals
 audio_dict = {}

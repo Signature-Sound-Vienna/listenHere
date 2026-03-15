@@ -24,67 +24,52 @@
     <!-- Align panel (shown when mode=align) -->
     <div id="align-panel" style="display:none;">
       <div id="align-card">
-        <div id="align-logo">
-          <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="80" alt="Logo" />
-        </div>
-        <h1>Align Audio Files</h1>
-        <p class="align-hint">
-          Drop a folder of audio files (or select them individually) to compute a
-          DTW-based chroma alignment.
-        </p>
-        <p class="privacy-notice">
-          🔒 Your audio files are processed entirely in your browser and are <strong>never uploaded</strong> or sent onward. Safe to use with copyrighted recordings.
-        </p>
-
-        <!-- File selection -->
-        <div id="align-file-actions">
-          <button id="align-dir-btn" style="display:none">Choose Folder</button>
-          <button id="align-files-btn">Choose Files</button>
-          <input type="file" id="align-file-input" multiple
-            accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac" style="display:none" />
-        </div>
-        <div id="align-drop-zone">
-          <span>or drag &amp; drop audio files here</span>
-        </div>
-
-        <!-- Optional MEI URI for score alignment -->
-        <div id="align-mei-section">
-          <label for="align-mei-input">
-            <strong>MEI URI</strong>
-            <span class="align-mei-hint">(optional — adds score–performance alignment)</span>
-          </label>
-          <input type="url" id="align-mei-input" placeholder="https://example.com/score.mei" />
-        </div>
-
-        <!-- File list + reference selector -->
-        <div id="align-file-list-container" style="display:none">
-          <h3>Selected files</h3>
-          <table id="align-file-table">
-            <thead><tr><th>File</th><th style="text-align:right;">Duration</th><th>Ref</th></tr></thead>
-            <tbody></tbody>
-          </table>
-          <div id="align-peaks-row">
-            <label>
-              <input type="checkbox" id="align-peaks-checkbox" checked />
-              Include pre-calculated waveform envelope (peaks)
-            </label>
-            <div id="align-peaks-count-wrap">
-              &nbsp;
-              <input type="number" id="align-peaks-count" value="4096"
-                min="128" max="16384" step="128" style="width:5em" />
-              pts/track
-              <span id="align-peaks-size-estimate" style="font-size:smaller;color:#555"></span>
-            </div>
+        <div id="align-header">
+          <div id="align-logo">
+            <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="64" alt="Logo" />
           </div>
-          <div id="align-ld-uri-row">
-            <label for="align-ld-uri-prefix">
-              <strong>Audio URI prefix</strong>
-              <span class="align-mei-hint">(optional — identifier prefix for linked data annotations)</span>
-            </label>
-            <input type="url" id="align-ld-uri-prefix" placeholder="https://example.com/media/wav/" />
+          <h1>Align Audio Files</h1>
+          <!-- Step indicator -->
+          <div id="align-steps">
+            <div class="align-step active" data-step="1"><span class="step-num">1</span> Files</div>
+            <div class="align-step-line"></div>
+            <div class="align-step" data-step="2"><span class="step-num">2</span> Quality</div>
+            <div class="align-step-line"></div>
+            <div class="align-step" data-step="3"><span class="step-num">3</span> URIs</div>
+            <div class="align-step-line"></div>
+            <div class="align-step" data-step="4"><span class="step-num">4</span> Align</div>
           </div>
+        </div>
 
-          <!-- Alignment quality presets -->
+        <!-- ─── Tab 1: Files ─── -->
+        <div class="align-tab active" id="align-tab-files">
+          <p class="align-hint">
+            Drop a folder of audio files (or select them individually) to compute a
+            DTW-based chroma alignment.
+          </p>
+          <p class="privacy-notice">
+            🔒 Your audio files are processed entirely in your browser and are <strong>never uploaded</strong> or sent onward. Safe to use with copyrighted recordings.
+          </p>
+          <div id="align-file-actions">
+            <button id="align-dir-btn" style="display:none">Choose Folder</button>
+            <button id="align-files-btn">Choose Files</button>
+            <input type="file" id="align-file-input" multiple
+              accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac" style="display:none" />
+          </div>
+          <div id="align-drop-zone">
+            <span>or drag &amp; drop audio files here</span>
+          </div>
+          <div id="align-file-list-container" style="display:none">
+            <h3>Selected files</h3>
+            <table id="align-file-table">
+              <thead><tr><th>File</th><th style="text-align:right;">Duration</th><th>Ref</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- ─── Tab 2: Quality ─── -->
+        <div class="align-tab" id="align-tab-quality">
           <div id="align-quality-section">
             <label class="align-quality-label">Alignment quality</label>
             <div id="align-quality-presets">
@@ -110,8 +95,6 @@
                 </span>
               </label>
             </div>
-
-            <!-- Advanced parameters disclosure -->
             <details id="align-advanced">
               <summary>Advanced parameters</summary>
               <div id="align-advanced-body">
@@ -156,35 +139,70 @@
               </div>
             </details>
           </div>
-
-          <!-- Include settings in output -->
           <div id="align-output-settings-row">
             <label>
               <input type="checkbox" id="align-include-params" checked />
               Include alignment settings in output
             </label>
           </div>
+        </div>
 
+        <!-- ─── Tab 3: URIs ─── -->
+        <div class="align-tab" id="align-tab-uris">
+          <div id="align-mei-section">
+            <label for="align-mei-input">
+              <strong>MEI URI</strong>
+              <span class="align-mei-hint">(optional — adds score–performance alignment)</span>
+            </label>
+            <input type="url" id="align-mei-input" placeholder="https://example.com/score.mei" />
+          </div>
+          <div id="align-ld-uri-row">
+            <label for="align-ld-uri-prefix">
+              <strong>Audio URI prefix</strong>
+              <span class="align-mei-hint">(optional — identifier prefix for linked data annotations)</span>
+            </label>
+            <input type="url" id="align-ld-uri-prefix" placeholder="https://example.com/media/wav/" />
+          </div>
+        </div>
+
+        <!-- ─── Tab 4: Align ─── -->
+        <div class="align-tab" id="align-tab-align">
+          <div id="align-summary"></div>
+          <div id="align-peaks-row">
+            <label>
+              <input type="checkbox" id="align-peaks-checkbox" checked />
+              Include pre-calculated waveform envelope (peaks)
+            </label>
+            <div id="align-peaks-count-wrap">
+              &nbsp;
+              <input type="number" id="align-peaks-count" value="4096"
+                min="128" max="16384" step="128" style="width:5em" />
+              pts/track
+              <span id="align-peaks-size-estimate" style="font-size:smaller;color:#555"></span>
+            </div>
+          </div>
           <button id="align-start-btn">Start Alignment</button>
+          <div id="align-progress" style="display:none">
+            <div id="align-progress-bar-container">
+              <div id="align-progress-bar"></div>
+            </div>
+            <p id="align-progress-elapsed"></p>
+            <div id="align-step-list-container">
+              <ul id="align-step-list"></ul>
+            </div>
+            <p id="align-progress-text">Initializing...</p>
+          </div>
+          <div id="align-results" style="display:none">
+            <h3>Alignment complete!</h3>
+            <button id="align-download-btn">Download alignment JSON</button>
+            <button id="align-open-btn">Listen!</button>
+          </div>
         </div>
 
-        <!-- Progress -->
-        <div id="align-progress" style="display:none">
-          <div id="align-progress-bar-container">
-            <div id="align-progress-bar"></div>
-          </div>
-          <p id="align-progress-elapsed"></p>
-          <div id="align-step-list-container">
-            <ul id="align-step-list"></ul>
-          </div>
-          <p id="align-progress-text">Initializing...</p>
-        </div>
-
-        <!-- Results -->
-        <div id="align-results" style="display:none">
-          <h3>Alignment complete!</h3>
-          <button id="align-download-btn">Download alignment JSON</button>
-          <button id="align-open-btn">Listen!</button>
+        <!-- Wizard navigation -->
+        <div id="align-wizard-nav">
+          <button id="align-prev-btn" class="align-nav-btn" style="visibility:hidden">&larr; Back</button>
+          <button id="align-next-btn" class="align-nav-btn primary">Next &rarr;</button>
         </div>
       </div>
     </div>

@@ -10,6 +10,8 @@ const TARGET_SR = 22050;
 
 let selectedFiles = []; // Array of File objects
 let alignmentResult = null;
+let currentTab = 1; // Active wizard tab: 1=Files, 2=Quality, 3=URIs, 4=Align
+let alignmentRunning = false; // true while worker is active
 
 // ---------------------------------------------------------------------------
 // Alignment quality presets and parameter defaults
@@ -342,10 +344,11 @@ async function startAlignment() {
     : 0;
 
   // Show progress, hide controls
-  document.getElementById("align-file-list-container").style.display = "none";
-  document.getElementById("align-file-actions").style.display = "none";
-  document.getElementById("align-drop-zone").style.display = "none";
-  document.getElementById("align-mei-section").style.display = "none";
+  alignmentRunning = true;
+  document.getElementById("align-steps").classList.add("disabled");
+  document.getElementById("align-start-btn").style.display = "none";
+  document.getElementById("align-summary").style.display = "none";
+  document.getElementById("align-wizard-nav").style.display = "none";
   const progressEl = document.getElementById("align-progress");
   const progressBar = document.getElementById("align-progress-bar");
   const progressText = document.getElementById("align-progress-text");
@@ -533,6 +536,106 @@ function listenToAlignment() {
 }
 
 // ---------------------------------------------------------------------------
+// Wizard tab navigation
+// ---------------------------------------------------------------------------
+
+const TAB_IDS = [
+  "align-tab-files",
+  "align-tab-quality",
+  "align-tab-uris",
+  "align-tab-align",
+];
+const LAST_TAB = TAB_IDS.length;
+
+/** Switch to the given wizard tab (1-based). */
+function goToTab(n) {
+  if (n < 1 || n > LAST_TAB) return;
+  if (alignmentRunning) return;
+  currentTab = n;
+
+  // Show/hide tab panes
+  TAB_IDS.forEach((id, i) => {
+    document.getElementById(id).classList.toggle("active", i === n - 1);
+  });
+
+  // Update step indicator
+  document.querySelectorAll("#align-steps .align-step").forEach((el) => {
+    const s = parseInt(el.dataset.step);
+    el.classList.toggle("active", s === n);
+    el.classList.toggle("completed", s < n);
+  });
+  document
+    .querySelectorAll("#align-steps .align-step-line")
+    .forEach((el, i) => {
+      el.classList.toggle("completed", i < n - 1);
+    });
+
+  // Update nav buttons
+  const prevBtn = document.getElementById("align-prev-btn");
+  const nextBtn = document.getElementById("align-next-btn");
+  prevBtn.style.visibility = n === 1 ? "hidden" : "";
+
+  if (n === LAST_TAB) {
+    nextBtn.style.display = "none";
+    buildSummary();
+  } else {
+    nextBtn.style.display = "";
+  }
+}
+
+/** Validate whether navigation away from the given tab is allowed. */
+function canLeaveTab(tab) {
+  if (tab === 1 && selectedFiles.length < 2) {
+    alert("Please select at least 2 audio files before continuing.");
+    return false;
+  }
+  return true;
+}
+
+/** Attempt to go to the next tab, with validation. */
+function goNext() {
+  if (!canLeaveTab(currentTab)) return;
+  goToTab(currentTab + 1);
+}
+
+/** Jump directly to a step (clicked in the indicator). */
+function goToStep(n) {
+  if (n === currentTab) return;
+  // When moving forward, validate leaving the current tab
+  if (n > currentTab && !canLeaveTab(currentTab)) return;
+  goToTab(n);
+}
+
+/** Go to the previous tab. */
+function goPrev() {
+  goToTab(currentTab - 1);
+}
+
+/** Build a summary on Tab 3 before alignment starts. */
+function buildSummary() {
+  const el = document.getElementById("align-summary");
+  if (!el) return;
+  const refRadio = document.querySelector('input[name="ref"]:checked');
+  const refName = refRadio ? refRadio.value : selectedFiles[0]?.name || "?";
+  const presetRadio = document.querySelector(
+    'input[name="align-quality"]:checked',
+  );
+  const presetLabel = presetRadio ? presetRadio.value : "Custom";
+  const meiUri = document.getElementById("align-mei-input").value.trim();
+
+  let html = `<strong>${selectedFiles.length}</strong> audio files, reference: <strong>${escapeHtml(refName)}</strong>`;
+  html += `<br>Quality: <strong>${escapeHtml(presetLabel.charAt(0).toUpperCase() + presetLabel.slice(1))}</strong>`;
+  if (meiUri) html += `<br>Score alignment: MEI provided`;
+  el.innerHTML = html;
+}
+
+function escapeHtml(str) {
+  const d = document.createElement("div");
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// ---------------------------------------------------------------------------
 // Panel initialisation — wires up all DOM events inside #align-panel
 // ---------------------------------------------------------------------------
 
@@ -664,4 +767,18 @@ export function initAlignPanel() {
   document
     .getElementById("align-open-btn")
     .addEventListener("click", listenToAlignment);
+
+  // Wizard navigation
+  document.getElementById("align-next-btn").addEventListener("click", goNext);
+  document.getElementById("align-prev-btn").addEventListener("click", goPrev);
+
+  // Clickable step indicators
+  document.querySelectorAll("#align-steps .align-step").forEach((el) => {
+    el.addEventListener("click", () => {
+      goToStep(parseInt(el.dataset.step));
+    });
+  });
+
+  // Set initial tab state
+  goToTab(1);
 }

@@ -12,6 +12,7 @@ import {
   attemptFetchExternalResource,
   markSelection,
   registerExtract,
+  registerMusicalMaterial,
 } from "./annotation.js";
 import { nsp, politeness } from "./linked-data.js";
 
@@ -30,19 +31,30 @@ export const musicalMaterialContainer =
   musicalObjectContainer + "musicalMaterial/";
 export const discoveryFragment = "discovery/";
 
+/**
+ * Resolve a Location header from a fetch response into an absolute URI.
+ * Uses ensureRelativeURL to normalise the Location to a pathname first,
+ * then prepends the origin — the same approach used in postResource().
+ */
+export function resolveLocation(response) {
+  const loc = response.headers.get("Location");
+  if (!loc) return response.url;
+  return new URL(response.url).origin + ensureRelativeURL(loc);
+}
+
 // resource templates
 export const resources = {
   ldpContainer: {
     "@type": [nsp.LDP + "Container", nsp.LDP + "BasicContainer"],
   },
   maoExtract: {
-    "@type": [nsp.MAO + "Extract"],
+    "@type": [nsp.MAO + "Extract", nsp.SCHEMA + "Dataset"],
   },
   maoSelection: {
-    "@type": [nsp.MAO + "Selection"],
+    "@type": [nsp.MAO + "Selection", nsp.SCHEMA + "Dataset"],
   },
   maoMusicalMaterial: {
-    "@type": [nsp.MAO + "MusicalMaterial"],
+    "@type": [nsp.MAO + "MusicalMaterial", nsp.SCHEMA + "Dataset"],
   },
 };
 
@@ -104,45 +116,39 @@ export async function postResource(containerUri, resource) {
  * we do this instead.
  */
 
-export async function safelyPatchResource(uri, patch) {
-  let etag;
-  solid
-    .fetch(uri, {
-      headers: {
-        Accept: "application/ld+json",
-      },
-    })
-    .then((resp) => {
-      etag = resp.headers.get("ETag");
-      return resp.json();
-    })
-    .then((freshlyFetched) => {
-      const patched = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
-      solid
-        .fetch(uri, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/ld+json",
-            "If-Match": etag,
-          },
-          body: JSON.stringify(patched),
-        })
-        .then((putResp) => {
-          if (putResp.status === 412) {
-            console.info(
-              "Precondition failed: resource has changed while we were trying to patch it. Retrying...",
-            );
-            setTimeout(safelyPatchResource(uri, patch), politeness);
-          } else if (putResp.status >= 400) {
-            console.warn("Couldn't PUT patched resource: ", putResp);
-          } else {
-            console.log("Patched successfully: ", uri);
-          }
-        })
-        .catch((e) => {
-          console.warn("Failed to apply patch to resource: ", uri, patch, e);
-        });
-    });
+export async function safelyPatchResource(uri, patch, _retries = 5) {
+  const resp = await solid.fetch(uri, {
+    headers: {
+      Accept: "application/ld+json",
+    },
+  });
+  const etag = resp.headers.get("ETag");
+  const freshlyFetched = await resp.json();
+  const patched = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
+  const putResp = await solid.fetch(uri, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/ld+json",
+      ...(etag ? { "If-Match": etag } : {}),
+    },
+    body: JSON.stringify(patched),
+  });
+  if (putResp.status === 412) {
+    if (_retries <= 0) {
+      console.error("safelyPatchResource: max retries exceeded for", uri);
+      return putResp;
+    }
+    console.info(
+      "Precondition failed: resource changed while patching. Retrying...",
+    );
+    await new Promise((r) => setTimeout(r, politeness));
+    return safelyPatchResource(uri, patch, _retries - 1);
+  } else if (putResp.status >= 400) {
+    console.warn("Couldn't PUT patched resource: ", putResp);
+  } else {
+    console.log("Patched successfully: ", uri);
+  }
+  return putResp;
 }
 
 export async function establishResource(uri, resource) {
@@ -292,13 +298,14 @@ export async function establishDiscoveryResource(currentFileUri) {
   .catch(e => { console.error("Failed to create nsp.MAO Musical Object:", e) })
 }*/
 
-export async function createMAOMusicalObject(selectedElements, label = "") {
+export async function createMAOMusicalObject(
+  selectedElements,
+  currentFileUri,
+  label = "",
+) {
   // Function to build a Musical Object according to the Music Annotation Ontology:
   // https://dl.acm.org/doi/10.1145/3543882.3543891
-  // For the purposes of mei-friend, we want to build a composite structure encompassing MusicalMaterial,
-  // Extract, and Selection (see paper)
-  let currentFileUri = getCurrentFileUri();
-  let currentFileUriHash = encodeURIComponent(currentFileUri);
+  // Build a composite structure encompassing MusicalMaterial, Extract, and Selection.
   let storageResource;
   return establishContainerResource(friendContainer)
     .then(async (stoRes) => {
@@ -342,9 +349,7 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
                         "@id": `${nsp.MAO}MusicalMaterial`,
                       },
                       [`${nsp.SCHEMA}url`]: {
-                        "@id":
-                          new URL(storageResource).origin +
-                          musMatResource.headers.get("Location"),
+                        "@id": resolveLocation(musMatResource),
                       },
                     },
                   },
@@ -362,9 +367,7 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
                         "@id": `${nsp.MAO}Extract`,
                       },
                       [`${nsp.SCHEMA}url`]: {
-                        "@id":
-                          new URL(storageResource).origin +
-                          extractResource.headers.get("Location"),
+                        "@id": resolveLocation(extractResource),
                       },
                     },
                   },
@@ -382,9 +385,7 @@ export async function createMAOMusicalObject(selectedElements, label = "") {
                         "@id": `${nsp.MAO}Selection`,
                       },
                       [`${nsp.SCHEMA}url`]: {
-                        "@id":
-                          new URL(storageResource).origin +
-                          selectionResource.headers.get("Location"),
+                        "@id": resolveLocation(selectionResource),
                       },
                     },
                   },
@@ -421,89 +422,104 @@ export async function addNewMAOSelectionToExtract(
   selectedElements,
   extractResource,
   label = "",
+  peaksData = null,
 ) {
-  let storageResource;
-  let dataCatalogResource;
-  return establishContainers()
-    .then(async (stoRes) => {
-      storageResource = stoRes;
-      return establishDiscoveryResource(currentFileUri);
-    })
-    .then(async (dataCatRes) => {
-      dataCatalogResource = dataCatRes;
-      return createMAOSelection(
-        selectedElements,
-        currentFileUri,
-        dataCatalogResource.url,
-        label,
-      );
-    })
-    .then(async (selectionResource) => {
-      // patch the now-established discovery resource
-      safelyPatchResource(dataCatalogResource.url, [
-        {
-          op: "add",
-          // escape ~ and / characters according to JSON POINTER spec
-          // use '-' at end of path specification to indicate new array item to be created
-          path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll(
-            "/",
-            "~1",
-          )}dataset/-`,
-          value: {
-            "@type": `${nsp.SCHEMA}Dataset`,
-            [`${nsp.SCHEMA}additionalType`]: { "@id": `${nsp.MAO}Selection` },
-            [`${nsp.SCHEMA}url`]: {
-              "@id":
-                new URL(selectionResource.url).origin +
-                selectionResource.headers.get("Location"),
-            },
-          },
-        },
-      ]).catch(() => {
-        console.warn(
-          "Couldn't pach discovery resource: ",
-          dataCatalogResource.url,
-        );
-      });
-      return selectionResource;
-    })
-    .then(async (selectionResource) => {
-      // patch the extract to point to our new selection resource
-      console.log("in finally, selection resource:", selectionResource);
-      return safelyPatchResource(extractResource, [
-        {
-          op: "add",
-          // escape ~ and / characters according to JSON POINTER spec
-          // use '-' at end of path specification to indicate new array item to be created
-          path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll(
-            "/",
-            "~1",
-          )}embodiment/-`,
-          value: {
-            "@id":
-              new URL(selectionResource.url).origin +
-              selectionResource.headers.get("Location"),
-          },
-        },
-      ]);
-    });
+  return addMultipleMAOSelectionsToExtract(
+    [{ currentFileUri, selectedElements, peaksData }],
+    extractResource,
+    label,
+  );
 }
 
-async function createMAOSelection(
+/**
+ * Post multiple MAO Selections in parallel, then batch-patch the discovery
+ * resource and the Extract with all new entries in one round-trip each.
+ * @param {Array<{currentFileUri: string, selectedElements: string, peaksData: object|null}>} items
+ * @param {string} extractResource — the Extract URI to patch
+ * @param {string} label
+ * @returns {Promise<void>}
+ */
+export async function addMultipleMAOSelectionsToExtract(
+  items,
+  extractResource,
+  label = "",
+) {
+  // 1. Establish containers and discovery resources (deduplicated)
+  const storageResource = await establishContainers();
+  const uniqueFileUris = [...new Set(items.map((i) => i.currentFileUri))];
+  const discoveryMap = {}; // fileUri → { url }
+  for (const fileUri of uniqueFileUris) {
+    discoveryMap[fileUri] = await establishDiscoveryResource(fileUri);
+  }
+
+  // 2. POST all selections in parallel
+  const selectionResponses = await Promise.all(
+    items.map((item) =>
+      createMAOSelection(
+        item.selectedElements,
+        item.currentFileUri,
+        discoveryMap[item.currentFileUri].url,
+        label,
+        item.peaksData,
+      ),
+    ),
+  );
+
+  // 3. Build batch patches per discovery resource
+  const discoveryPatches = {}; // discoveryUrl → patch ops[]
+  selectionResponses.forEach((selRes, i) => {
+    const discUrl = discoveryMap[items[i].currentFileUri].url;
+    if (!discoveryPatches[discUrl]) discoveryPatches[discUrl] = [];
+    discoveryPatches[discUrl].push({
+      op: "add",
+      path: `/${nsp.SCHEMA.replaceAll("~", "~0").replaceAll("/", "~1")}dataset/-`,
+      value: {
+        "@type": `${nsp.SCHEMA}Dataset`,
+        [`${nsp.SCHEMA}additionalType`]: { "@id": `${nsp.MAO}Selection` },
+        [`${nsp.SCHEMA}url`]: { "@id": resolveLocation(selRes) },
+      },
+    });
+  });
+
+  // 4. Patch each discovery resource (usually just one)
+  await Promise.all(
+    Object.entries(discoveryPatches).map(([url, ops]) =>
+      safelyPatchResource(url, ops).catch(() =>
+        console.warn("Couldn't patch discovery resource:", url),
+      ),
+    ),
+  );
+
+  // 5. Batch-patch the Extract with all new embodiment entries at once
+  const extractOps = selectionResponses.map((selRes) => ({
+    op: "add",
+    path: `/${nsp.FRBR.replaceAll("~", "~0").replaceAll("/", "~1")}embodiment/-`,
+    value: { "@id": resolveLocation(selRes) },
+  }));
+  await safelyPatchResource(extractResource, extractOps);
+}
+
+export async function createMAOSelection(
   selection,
   aboutUri,
   discoveryUri,
   label = "",
+  peaksData = null,
 ) {
   // private function -- called *after* friendContainer and musicalObjectContainer already established
   let resource = structuredClone(resources.maoSelection);
-  resource[nsp.FRBR + "part"] = [
-    {
-      "@id": selection,
-    },
-  ];
+  // selection can be a single URI string or an array of URIs (non-contiguous regions)
+  const selArr = Array.isArray(selection) ? selection : [selection];
+  resource[nsp.FRBR + "part"] = selArr.map((s) => ({ "@id": s }));
   if (label) {
     resource[nsp.RDFS + "label"] = label;
+  }
+  // Optionally include pre-computed waveform peak data
+  if (peaksData && peaksData.peaks) {
+    resource[nsp.SSV + "peaks"] = JSON.stringify({
+      peaks: peaksData.peaks,
+      duration: peaksData.duration,
+    });
   }
   // resource(s) this MAO object is about
   aboutUri = Array.isArray(aboutUri) ? aboutUri : [aboutUri];
@@ -521,80 +537,209 @@ async function createMAOSelection(
   return response;
 }
 
-async function createMAOExtract(postSelectionResponse, label = "") {
+export async function createMAOExtract(
+  postSelectionResponse,
+  aboutUri,
+  discoveryUri,
+  label = "",
+) {
   console.log("createMAOExtract: ", postSelectionResponse);
-  let selectionUri =
-    new URL(postSelectionResponse.url).origin +
-    postSelectionResponse.headers.get("location");
+  // Accept a single response or an array of responses
+  const responses = Array.isArray(postSelectionResponse)
+    ? postSelectionResponse
+    : [postSelectionResponse];
   let resource = structuredClone(resources.maoExtract);
-  resource[nsp.FRBR + "embodiment"] = { "@id": selectionUri };
+  resource[nsp.FRBR + "embodiment"] = responses.map((r) => ({
+    "@id": resolveLocation(r),
+  }));
   if (label) {
     resource[nsp.RDFS + "label"] = label;
   }
+  aboutUri = Array.isArray(aboutUri) ? aboutUri : [aboutUri];
+  resource[nsp.SCHEMA + "about"] = aboutUri.map((uri) => ({ "@id": uri }));
+  discoveryUri = Array.isArray(discoveryUri) ? discoveryUri : [discoveryUri];
+  resource[nsp.SCHEMA + "includedInDataCatalog"] = discoveryUri.map((uri) => ({
+    "@id": uri,
+  }));
   return postResource(extractContainer, resource);
 }
 
-async function createMAOMusicalMaterial(postExtractResponse, label = "") {
+export async function createMAOMusicalMaterial(
+  postExtractResponse,
+  aboutUri,
+  discoveryUri,
+  label = "",
+) {
   console.log("createMAOMusicalMaterial: ", postExtractResponse);
-  let extractUri =
-    new URL(postExtractResponse.url).origin +
-    postExtractResponse.headers.get("location");
+  let extractUri = resolveLocation(postExtractResponse);
   let resource = structuredClone(resources.maoMusicalMaterial);
   resource[nsp.MAO + "setting"] = { "@id": extractUri };
   if (label) {
     resource[nsp.RDFS + "label"] = label;
   }
+  aboutUri = Array.isArray(aboutUri) ? aboutUri : [aboutUri];
+  resource[nsp.SCHEMA + "about"] = aboutUri.map((uri) => ({ "@id": uri }));
+  discoveryUri = Array.isArray(discoveryUri) ? discoveryUri : [discoveryUri];
+  resource[nsp.SCHEMA + "includedInDataCatalog"] = discoveryUri.map((uri) => ({
+    "@id": uri,
+  }));
   return postResource(musicalMaterialContainer, resource);
 }
 
-export async function populateSolidTab() {
+/**
+ * Post an OA Web Annotation with a textual body targeting a MusicalMaterial.
+ * The annotation is placed in the annotationContainer (friendContainer + "oa/").
+ * @param {string} targetUri — the MusicalMaterial URI to annotate
+ * @param {string} bodyText  — the textual description
+ * @returns {Promise<Response>} — the Solid POST response
+ */
+export async function postWebAnnotation(targetUri, bodyText) {
+  const resource = {
+    "@type": [nsp.OA + "Annotation", nsp.SCHEMA + "Dataset"],
+    [nsp.OA + "motivatedBy"]: [{ "@id": nsp.OA + "describing" }],
+    [nsp.OA + "hasBody"]: [
+      {
+        "@type": [nsp.OA + "TextualBody"],
+        [nsp.RDF + "value"]: bodyText,
+      },
+    ],
+    [nsp.OA + "hasTarget"]: [{ "@id": targetUri }],
+  };
+  return postResource(annotationContainer, resource);
+}
+
+export async function populateSolidDrawer() {
   const solidTab = document.getElementById("solidTab");
-  if (solid.getDefaultSession().info.isLoggedIn) {
-    solidTab.innerHTML = await populateLoggedInSolidTab();
+  const isLoggedIn = solid.getDefaultSession().info.isLoggedIn;
+
+  // Notify other modules of auth state change
+  document.dispatchEvent(
+    new CustomEvent("solid-auth-changed", { detail: { isLoggedIn } }),
+  );
+
+  if (isLoggedIn) {
+    const profile = await getProfile();
+    const webId = solid.getDefaultSession().info.webId;
+    // JSON-LD expanded: foaf:name → [{"@value": "Name"}]
+    const foafName = profile && profile[nsp.FOAF + "name"];
+    const extractedName =
+      Array.isArray(foafName) && foafName.length > 0
+        ? foafName[0]["@value"]
+        : typeof foafName === "string"
+          ? foafName
+          : null;
+    // Fall back to the WebID hostname (e.g. "username.solidcommunity.net")
+    const name = extractedName || (webId ? new URL(webId).hostname : "Unknown");
+
+    solidTab.innerHTML = `
+      <div id="authStatus" style="margin-bottom: 1.5em; color: #1e293b;">
+        Logged in as <strong>${name}</strong>
+        <div style="margin-top: 0.5em;">
+          <a id="solidLogout" style="color: #64748b; font-size: 0.9em; cursor: pointer; text-decoration: underline;">Log out</a>
+        </div>
+      </div>
+      <div class="annotation-loader" style="padding-top: 1.5em; border-top: 1px solid #e2e8f0;">
+        <label for="annotationUrlInput" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Load external annotations (URL)</label>
+        <input type="text" id="annotationUrlInput" placeholder="https://" style="width: 100%; padding: 0.6em; margin-bottom: 0.8em; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;" />
+        <button id="fetchExternalBtn" style="width: 100%; padding: 0.6em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Load</button>
+      </div>
+    `;
+
     document
       .getElementById("solidLogout")
       .addEventListener("click", solidLogout);
-    document.getElementById("fetchExternal").addEventListener("click", () => {
-      let urlstr = window.prompt("Please enter URL:");
-      if (urlstr) {
-        if (!(urlstr.startsWith("http://") || urlstr.startsWith("https://")))
-          urlstr = "https://" + urlstr;
-        try {
-          // ensure working URLs provided
-          attemptFetchExternalResource(
-            new URL(urlstr), // traversal start
-            [new URL(nsp.MAO + "Selection"), new URL(nsp.MAO + "Extract")], // target types
-            {
-              typeToHandlerMap: {
-                [nsp.MAO + "Selection"]: {
-                  func: markSelection,
-                },
-                [nsp.MAO + "Extract"]: {
-                  func: registerExtract,
-                },
-              },
-              followList: [
-                new URL(nsp.LDP + "contains"),
-                new URL(nsp.MAO + "setting"),
-                new URL(nsp.FRBR + "embodiment"),
-              ], // predicates to traverse
-              fetchMethod: fetch /* solid.getDefaultSession().info.isLoggedIn
-                ? solid.fetch
-                : fetch,*/,
-            },
-          );
-        } catch (e) {
-          // invalid URL
-          console.warn("Could not load external resource:", e);
-        }
-      }
-    });
   } else {
-    solidTab.innerHTML = populateLoggedOutSolidTab();
-    document
-      .getElementById("solidLogin")
-      .addEventListener("click", loginAndFetch);
+    const wasCancelled = localStorage.getItem("solidLoginPending") !== null;
+    if (wasCancelled) {
+      localStorage.removeItem("solidLoginPending");
+    }
+
+    const storedProvider = localStorage.getItem("solidProvider");
+    const hasStoredSession =
+      localStorage.getItem("solidClientAuthn:currentSession") !== null;
+
+    const annotationLoaderHTML = `
+      <div class="annotation-loader" style="margin-bottom: 2em; padding-bottom: 2em; border-bottom: 1px solid #e2e8f0;">
+        <label for="annotationUrlInput" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Load public annotations (URL)</label>
+        <input type="text" id="annotationUrlInput" placeholder="https://" style="width: 100%; padding: 0.6em; margin-bottom: 0.8em; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;" />
+        <button id="fetchExternalBtn" style="width: 100%; padding: 0.6em; background: #e2e8f0; color: #1e293b; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; font-weight: 500;">Load</button>
+      </div>`;
+
+    if (storedProvider && hasStoredSession && !wasCancelled) {
+      // Reconnect UI — user has a previous Solid session
+      const providerLabel = storedProvider
+        .replace(/^https?:\/\//, "")
+        .replace(/\/$/, "");
+      solidTab.innerHTML =
+        annotationLoaderHTML +
+        `<div id="authStatus">
+          <p style="font-size: 0.9em; color: #475569; margin-bottom: 1em;">
+            Previously connected via <strong>${providerLabel}</strong>
+          </p>
+          <button id="solidReconnectBtn" style="width: 100%; padding: 0.6em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Reconnect to Solid</button>
+          <div style="text-align: center; margin-top: 0.6em;">
+            <a id="solidDifferentBtn" style="color: #64748b; font-size: 0.85em; cursor: pointer; text-decoration: underline;">Use a different account</a>
+          </div>
+        </div>`;
+      document
+        .getElementById("solidReconnectBtn")
+        .addEventListener("click", () => loginAndFetch(storedProvider));
+      document
+        .getElementById("solidDifferentBtn")
+        .addEventListener("click", () => {
+          localStorage.removeItem("solidProvider");
+          localStorage.removeItem("solidClientAuthn:currentSession");
+          populateSolidDrawer();
+        });
+    } else {
+      // Full login UI
+      solidTab.innerHTML =
+        annotationLoaderHTML +
+        `<div id="authStatus">
+          <label for="providerSelect" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Solid Provider</label>
+          <select name="provider" id="providerSelect" style="width: 100%; padding: 0.6em; margin-bottom: 0.5em; border: 1px solid #cbd5e1; border-radius: 4px;">
+            <option value="https://solidcommunity.net">SolidCommunity.net</option>
+            <option value="https://login.inrupt.com">Inrupt PodSpaces</option>
+            <option value="_other">Other…</option>
+          </select>
+          <div id="customProviderWrap" style="display:none; margin-bottom: 0.5em;">
+            <input type="url" id="customProviderInput" placeholder="https://your-provider.example" style="width: 100%; padding: 0.6em; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;" />
+          </div>
+          ${wasCancelled ? '<div style="color: #ef4444; font-size: 0.85em; margin-bottom: 0.8em;">Login cancelled. Try again?</div>' : ""}
+          <button id="solidLoginBtn" style="width: 100%; padding: 0.6em; margin-top: 0.5em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Connect to Solid Pod</button>
+        </div>`;
+      const providerSelect = document.getElementById("providerSelect");
+      const customWrap = document.getElementById("customProviderWrap");
+      providerSelect.addEventListener("change", () => {
+        customWrap.style.display =
+          providerSelect.value === "_other" ? "" : "none";
+      });
+      document.getElementById("solidLoginBtn").addEventListener("click", () => {
+        if (providerSelect.value === "_other") {
+          const custom = document
+            .getElementById("customProviderInput")
+            .value.trim();
+          if (!custom) return;
+          loginAndFetch(
+            custom.startsWith("http") ? custom : "https://" + custom,
+          );
+        } else {
+          loginAndFetch();
+        }
+      });
+    }
   }
+
+  // Set up annotation loading regardless of auth state
+  document.getElementById("fetchExternalBtn").addEventListener("click", () => {
+    let urlstr = document.getElementById("annotationUrlInput").value.trim();
+    if (urlstr) {
+      if (!(urlstr.startsWith("http://") || urlstr.startsWith("https://"))) {
+        urlstr = "https://" + urlstr;
+      }
+      loadExternalAnnotations(urlstr);
+    }
+  });
 }
 
 export async function getProfile() {
@@ -631,84 +776,241 @@ export async function getProfile() {
   return profile;
 }
 
-async function populateLoggedInSolidTab() {
-  // traverse and fetch from discovery service
-  let authStatus = document.createElement("div");
-  authStatus.innerHTML = `<a id="solidLogout">Log out</a>`;
-  authStatus.id = "authStatus";
-  let fetchExternal = document.createElement("div");
-  fetchExternal.innerHTML = `Load external data`;
-  fetchExternal.id = "fetchExternal";
-  let populated = document.createElement("div");
-  populated.insertAdjacentElement("afterbegin", authStatus);
-  populated.insertAdjacentElement("afterbegin", fetchExternal);
-  return populated.outerHTML;
-}
+function loadExternalAnnotations(urlstr) {
+  const url = new URL(urlstr);
+  const isLoggedIn = solid.getDefaultSession().info.isLoggedIn;
 
-function populateLoggedOutSolidTab() {
-  let providerContainer = document.createElement("div");
-  let provider = document.createElement("select");
-  provider.setAttribute("name", "provider");
-  provider.setAttribute("id", "providerSelect");
-  provider.innerHTML = `
-    <option value="https://solidcommunity.net">SolidCommunity.net</option>
-    <option value="https://login.inrupt.net">Inrupt</option>
-    <option value="https://trompa-solid.upf.edu">TROMPA @ UPF</option>
-  `;
-  providerContainer.insertAdjacentElement("afterbegin", provider);
-  let msg = document.createElement("div");
-  msg.innerHTML =
-    '<div id="authStatus">Please <a id="solidLogin">Click here to log in!</a></div>';
-  msg.insertAdjacentElement("afterbegin", providerContainer);
-  return msg.outerHTML;
-}
+  // Smart fetch strategy
+  let fetchMethod = fetch; // default to plain public fetch
+  const hostname = url.hostname.toLowerCase();
 
-export async function loginAndFetch() {
-  // 1. Call `handleIncomingRedirect()` to complete the authentication process.
-  //    If called after the user has logged in with the Solid Identity Provider,
-  //      the user's credentials are stored in-memory, and
-  //      the login process is complete.
-  //   Otherwise, no-op.
-  await solid.handleIncomingRedirect({ restorePreviousSession: true });
+  // Rule 1: Always plain fetch for known public CDNs/repos to prevent credential leakage
+  if (hostname === "raw.githubusercontent.com" || hostname === "github.com") {
+    fetchMethod = fetch;
+  }
+  // Rule 2: Use solid.fetch for known Solid pods if logged in
+  else if (
+    isLoggedIn &&
+    (hostname.includes("solidcommunity.net") ||
+      hostname.includes("inrupt.net") ||
+      hostname.includes("upf.edu"))
+  ) {
+    fetchMethod = solid.fetch;
+  }
 
-  // 2. Start the Login Process if not already logged in.
-  if (!solid.getDefaultSession().info.isLoggedIn) {
-    storage.restoreSolidSession = true;
-    if (alignmentData) {
-      storage.setItem("alignmentData", alignmentData);
-    } else {
-      alignmentData = storage.getItem("alignmentData");
+  // Ensure we have a wrapper method that falls back securely
+  const smartFetch = async (reqUrl, options) => {
+    let res = await fetchMethod(reqUrl, options);
+    // Fallback: if we tried plain fetch, got 401/403, and are logged in, retry with solid.fetch
+    if (
+      (res.status === 401 || res.status === 403) &&
+      fetchMethod === fetch &&
+      isLoggedIn
+    ) {
+      console.log("Plain fetch denied; retrying with Solid authentication");
+      res = await solid.fetch(reqUrl, options);
     }
-    let providerEl = document.getElementById("providerSelect");
-    if (providerEl) {
-      let provider = providerEl.value;
-      await solid.login({
-        // Specify the URL of the user's Solid Identity Provider;
-        // e.g., "https://login.inrupt.com".
-        oidcIssuer: "https://solidcommunity.net",
-        // Specify the URL the Solid Identity Provider should redirect the user once logged in,
-        // e.g., the current page for a single-page app.
-        redirectUrl: window.location.href, //"http://localhost:5003/test", // URL("/test", window.location.href).toString(),
-        // Provide a name for the application when sending to the Solid Identity Provider
-        clientName: "listen-here",
-      });
-    } else {
-      console.warn(
-        "Couldn't handle incoming redirect from Solid: no provider element",
-      );
-    }
-  } else {
-    populateSolidTab();
-    /*
-    solid.fetch("https://musicog.solidcommunity.net/private/")
-        .then(resp => resp.text())
-        .then(data => console.log("GOT DATA: ", data))
-        */
+    return res;
+  };
+
+  try {
+    attemptFetchExternalResource(
+      url, // traversal start
+      [
+        new URL(nsp.MAO + "Selection"),
+        new URL(nsp.MAO + "Extract"),
+        new URL(nsp.MAO + "MusicalMaterial"),
+      ], // target types
+      {
+        typeToHandlerMap: {
+          [nsp.MAO + "Selection"]: { func: markSelection },
+          [nsp.MAO + "Extract"]: { func: registerExtract },
+          [nsp.MAO + "MusicalMaterial"]: { func: registerMusicalMaterial },
+        },
+        followList: [
+          new URL(nsp.LDP + "contains"),
+          new URL(nsp.MAO + "setting"),
+          new URL(nsp.FRBR + "embodiment"),
+        ],
+        fetchMethod: smartFetch,
+      },
+    );
+  } catch (e) {
+    console.warn("Could not load external resource:", e);
   }
 }
+
+/**
+ * Return a redirect URL suitable for Solid login:
+ * - strips OIDC callback params
+ * - replaces ?mode=align with ?useFiles (post-alignment listen mode)
+ */
+function getCleanRedirectUrl() {
+  const url = new URL(window.location.href);
+  if (url.searchParams.get("mode") === "align") {
+    url.searchParams.delete("mode");
+    url.searchParams.set("useFiles", "");
+  }
+  for (const p of ["code", "state", "iss", "error", "error_description"]) {
+    url.searchParams.delete(p);
+  }
+  return url.toString();
+}
+
+/** Reference to the login popup window (if open). */
+let _loginPopup = null;
+
+/**
+ * Listen for postMessage from the login popup.
+ * The popup simply captures the IdP callback URL (with ?code=&state=)
+ * and forwards it here.  We then call handleIncomingRedirect() on the
+ * *main page* so the token exchange happens in our own context —
+ * tokens land in the main page's in-memory secure storage.
+ * The main page NEVER navigates away.
+ */
+function _setupPopupMessageListener() {
+  window.addEventListener("message", async (event) => {
+    // Only accept messages from our own origin
+    if (event.origin !== window.location.origin) return;
+    if (!event.data || event.data.type !== "solid-popup-callback") return;
+
+    _loginPopup = null; // popup is closing itself
+
+    if (event.data.callbackUrl) {
+      console.log("Received callback URL from popup, exchanging tokens…");
+      localStorage.removeItem("solidLoginPending");
+
+      // The library's handleIncomingRedirect will: extract code+state from
+      // the URL, exchange them for tokens, and populate session info — all
+      // without navigating the browser.
+      // It also calls cleanUrlAfterRedirect which does a replaceState with
+      // the callback origin+path; we counteract that below.
+      const savedHref = window.location.href;
+      const session = await solid.handleIncomingRedirect(
+        event.data.callbackUrl,
+      );
+      // Restore address bar (the library may have replaced it with the
+      // popup callback path during cleanUrlAfterRedirect).
+      if (window.location.href !== savedHref) {
+        window.history.replaceState({}, "", savedHref);
+      }
+
+      if (session && session.isLoggedIn) {
+        console.log("Solid popup auth succeeded for", session.webId);
+        localStorage.setItem("solidProvider", event.data.provider || "");
+      } else {
+        console.warn("Token exchange completed but session not logged in");
+      }
+      populateSolidDrawer();
+    } else {
+      // Popup reported failure
+      console.warn("Solid popup auth failed:", event.data.error || "unknown");
+      localStorage.removeItem("solidLoginPending");
+      populateSolidDrawer();
+    }
+  });
+}
+
+/**
+ * Initialise Solid authentication on page load.
+ * Processes any incoming OIDC redirect (code in URL), then populates
+ * the Solid drawer.  Also sets up the popup message listener for
+ * future login attempts.
+ */
+export async function initSolidAuth() {
+  // Set up the listener for popup-based logins
+  _setupPopupMessageListener();
+
+  // Process an incoming OIDC redirect if present (code/state in URL).
+  // restorePreviousSession is intentionally omitted (defaults to false)
+  // so the library will NOT silently redirect to the IdP on a plain
+  // page load.  The redirect restore only happens explicitly after
+  // the popup reports success (see _setupPopupMessageListener above).
+  await solid.handleIncomingRedirect();
+  const session = solid.getDefaultSession();
+  if (session.info.isLoggedIn) {
+    localStorage.removeItem("solidLoginPending");
+  }
+  populateSolidDrawer();
+}
+
+/**
+ * Initiate Solid login via a popup window.
+ *
+ * We call solid.login() on the MAIN PAGE with a handleRedirect callback
+ * that intercepts the IdP navigation and opens it in a popup instead.
+ * The popup handles credential entry and the IdP redirects it back to
+ * our callback page.  That page captures the callback URL (with
+ * ?code=&state=) and posts it to us via postMessage.  We then call
+ * handleIncomingRedirect(callbackUrl) on the main page, so the token
+ * exchange happens here — tokens end up in the main page's in-memory
+ * storage.
+ *
+ * The main page NEVER navigates.  Blob URLs, waveforms, and draft
+ * state are fully preserved.
+ *
+ * Falls back to a direct redirect if the popup is blocked.
+ *
+ * @param {string} [provider] – OIDC issuer URL; if omitted, reads from #providerSelect
+ */
+export async function loginAndFetch(provider) {
+  if (!provider) {
+    const providerEl = document.getElementById("providerSelect");
+    if (!providerEl) {
+      console.warn("Solid login: no provider available");
+      return;
+    }
+    provider = providerEl.value;
+  }
+
+  localStorage.setItem("solidProvider", provider);
+
+  // The callback URL that the IdP will redirect the popup to.
+  // The popup callback page captures this URL and posts it back.
+  const popupCallbackUrl = window.location.origin + "/solid-popup-callback";
+
+  // Pre-open the popup (must happen synchronously in the click handler
+  // to avoid popup blockers), pointing at a blank/loading page.
+  const w = 520,
+    h = 600;
+  const left = Math.round(screen.width / 2 - w / 2);
+  const top = Math.round(screen.height / 2 - h / 2);
+  const features = `width=${w},height=${h},left=${left},top=${top},toolbar=no,menubar=no`;
+
+  _loginPopup = window.open(popupCallbackUrl, "solidLogin", features);
+
+  if (!_loginPopup || _loginPopup.closed) {
+    // Popup was blocked — fall back to direct redirect
+    console.warn("Popup blocked, falling back to redirect login");
+    _loginPopup = null;
+    localStorage.setItem("solidLoginPending", Date.now().toString());
+    await solid.login({
+      oidcIssuer: provider,
+      redirectUrl: getCleanRedirectUrl(),
+      clientName: "listen-here",
+    });
+    return;
+  }
+
+  // Call solid.login() with handleRedirect — the library prepares the
+  // OIDC auth request (stores code_verifier etc. in localStorage) and
+  // then calls our callback with the full IdP authorization URL instead
+  // of navigating the current page.
+  await solid.login({
+    oidcIssuer: provider,
+    redirectUrl: popupCallbackUrl,
+    clientName: "listen-here",
+    handleRedirect: (idpUrl) => {
+      // Navigate the already-open popup to the IdP login page
+      _loginPopup.location.href = idpUrl;
+    },
+  });
+}
+
 export async function solidLogout() {
   return solid.logout().then(() => {
-    storage.removeItem("restoreSolidSession");
-    populateSolidTab();
+    localStorage.removeItem("solidProvider");
+    storage.removeItem("restoreSolidSession"); // legacy cleanup
+    populateSolidDrawer();
   });
 }

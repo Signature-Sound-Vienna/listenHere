@@ -32,6 +32,9 @@
           Drop a folder of audio files (or select them individually) to compute a
           DTW-based chroma alignment.
         </p>
+        <p class="privacy-notice">
+          🔒 Your audio files are processed entirely in your browser and are <strong>never uploaded</strong> or sent onward. Safe to use with copyrighted recordings.
+        </p>
 
         <!-- File selection -->
         <div id="align-file-actions">
@@ -57,7 +60,7 @@
         <div id="align-file-list-container" style="display:none">
           <h3>Selected files</h3>
           <table id="align-file-table">
-            <thead><tr><th>File</th><th>Ref</th></tr></thead>
+            <thead><tr><th>File</th><th style="text-align:right;">Duration</th><th>Ref</th></tr></thead>
             <tbody></tbody>
           </table>
           <div id="align-peaks-row">
@@ -72,6 +75,13 @@
               pts/track
               <span id="align-peaks-size-estimate" style="font-size:smaller;color:#555"></span>
             </div>
+          </div>
+          <div id="align-ld-uri-row">
+            <label for="align-ld-uri-prefix">
+              <strong>Audio URI prefix</strong>
+              <span class="align-mei-hint">(optional — identifier prefix for linked data annotations)</span>
+            </label>
+            <input type="url" id="align-ld-uri-prefix" placeholder="https://example.com/media/wav/" />
           </div>
           <button id="align-start-btn">Start Alignment</button>
         </div>
@@ -104,22 +114,63 @@
     <!-- File picker overlay (shown when ?useFiles is active) -->
     <div id="file-picker-overlay" style="display:none;">
       <div id="file-picker-card">
-        <h2>Load Files</h2>
-        <p class="file-picker-hint">
-          Select or drag &amp; drop your alignment JSON and audio files.
-          Audio files will be matched to the alignment automatically.
-        </p>
-        <div id="file-picker-actions">
-          <button type="button" id="file-picker-dir-btn" style="display:none;">Choose Folder</button>
-          <button type="button" id="file-picker-files-btn">Choose Files</button>
-          <input type="file" id="file-picker-input" multiple accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac,.wma,.json" style="position:absolute;opacity:0;width:0;height:0;overflow:hidden;pointer-events:none;" />
+        <div id="fp-tabs">
+          <button class="fp-tab active" data-tab="fp-tab-files">Load Files</button>
+          <button class="fp-tab" data-tab="fp-tab-uris">Linked Data URIs</button>
         </div>
-        <p class="file-picker-drop-hint">or drag &amp; drop files anywhere on this panel</p>
-        <div id="file-picker-json-status"></div>
-        <div id="file-picker-status">
-          <div id="file-picker-progress"></div>
-          <ul id="file-picker-list"></ul>
+
+        <!-- Tab 1: Load Files -->
+        <div id="fp-tab-files" class="fp-tab-pane active">
+          <p class="file-picker-hint">
+            Select or drag &amp; drop your alignment JSON and audio files.
+            Audio files will be matched to the alignment automatically.
+          </p>
+          <p class="privacy-notice">
+            🔒 Your audio is loaded directly into your browser and <strong>never sent onward</strong>. Safe to use with copyrighted recordings.
+          </p>
+          <div id="file-picker-actions">
+            <button type="button" id="file-picker-dir-btn" style="display:none;">Choose Folder</button>
+            <button type="button" id="file-picker-files-btn">Choose Files</button>
+            <input type="file" id="file-picker-input" multiple accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac,.wma,.json" style="position:absolute;opacity:0;width:0;height:0;overflow:hidden;pointer-events:none;" />
+          </div>
+          <p class="file-picker-drop-hint">or drag &amp; drop files anywhere on this panel</p>
+          <div id="file-picker-json-status"></div>
+          <div id="file-picker-status">
+            <div id="file-picker-progress"></div>
+            <ul id="file-picker-list"></ul>
+          </div>
         </div>
+
+        <!-- Tab 2: Linked Data URIs -->
+        <div id="fp-tab-uris" class="fp-tab-pane">
+          <div id="ld-uri-section">
+            <p class="ld-uri-hint">
+              Configure identifiers used when posting annotations to Solid.
+              These are persistent identifiers — audio need not be hosted at these URIs.
+            </p>
+            <div id="ld-uri-prefix-row">
+              <label for="ld-uri-prefix">Global URI prefix</label>
+              <input type="text" id="ld-uri-prefix" placeholder="https://example.com/media/wav/" spellcheck="false" />
+            </div>
+            <div id="ld-uri-table-wrap">
+            <table id="ld-uri-table">
+              <thead>
+                <tr>
+                  <th>File</th>
+                  <th>LD Filename</th>
+                  <th>File Prefix</th>
+                  <th>Resolved URI</th>
+                </tr>
+              </thead>
+              <tbody id="ld-uri-tbody"></tbody>
+            </table>
+            </div>
+          </div>
+          <p id="ld-uri-empty-hint" class="ld-uri-hint" style="display:none;">
+            Load an alignment JSON first to configure Linked Data URIs.
+          </p>
+        </div>
+
         <button type="button" id="file-picker-continue" style="display:none;">Continue</button>
       </div>
     </div>
@@ -145,7 +196,11 @@
             <label for="visrelalign">Show relative position</label>
           </span>
           <button id="manage-files-btn" style="display:none;">Manage files</button>
+          <button id="group-files-btn" style="display:none;">Group files</button>
           <button id="download-json-btn" style="display:none;">Download JSON</button>
+          <button id="solid-drawer-btn" title="Linked Data & Annotations">
+            <img src="{{ url_for('static', filename='svg/RDF-logo.svg') }}" width="20" height="20" alt="RDF" />
+          </button>
           <span id="close-listening-badge" style="display:none;">Close Listening</span>
           <div id="audios"></div>
       </nav>
@@ -153,14 +208,19 @@
         <div id="content">
           <div id="waveforms"></div>
         </div>
-        <div id="solidPanel">
-          <div id="solidTab">
-            <div id="solidLogin">
-              Please <a id="solidLogin">Click here to log in!</a>
-            </div>
-          </div>
-          <div id="maoExtracts">
-          </div>
+        <div id="maoExtracts"></div>
+      </div>
+    </div>
+    
+    <!-- Solid / Linked Data Drawer -->
+    <div id="solid-drawer" class="closed">
+      <div class="drawer-header">
+        <h2>Linked Data Annotations</h2>
+        <button id="close-solid-drawer">✕</button>
+      </div>
+      <div id="solidTab">
+        <div id="solidLogin">
+          Please <a id="solidLoginBtn">Click here to log in!</a>
         </div>
       </div>
     </div>

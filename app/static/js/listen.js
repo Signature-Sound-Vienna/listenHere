@@ -2,7 +2,19 @@
 export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
-import { populateSolidTab, loginAndFetch, solidLogout } from "./solid.js";
+import { initSolidAuth, solidLogout } from "./solid.js";
+import {
+  toggleStagedSelection,
+  toggleDraftStagedSelection,
+  getDraftRegionsForWaveform,
+  onDraftRegionCreated,
+  onDraftRegionUpdated,
+  continueAnnotationLoopOnWaveform,
+  prepareAnnotationLoopTransfer,
+  initNewAnnotationButton,
+  onSolidAuthChanged,
+  getLiveColor,
+} from "./annotation.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
@@ -38,9 +50,42 @@ export let storage;
 export let meiUri;
 export let currentlyActiveMaoSelection = "";
 export let wavesurfers = {};
-const _regionsPlugins = {}; // filename -> RegionsPlugin instance
+export const _regionsPlugins = {}; // filename -> RegionsPlugin instance
 const _timerRegions = {}; // filename -> timer Region object
 const _waveformPeaks = {}; // filename -> { peaks: number[], duration: number } when pre-computed
+
+/** Return the pre-computed peak data for a filename, or null if unavailable. */
+export function getWaveformPeaks(filename) {
+  const p = _waveformPeaks[filename];
+  return p && p.peaks ? p : null;
+}
+
+/** Return the current reference audio key (alignment header.ref). */
+export function getReferenceAudioIx() {
+  return referenceAudioIx;
+}
+
+/** Return all alignment-grid keys (i.e. audio filenames loaded). */
+export function getAlignmentKeys() {
+  return Object.keys(alignmentGrids);
+}
+
+/** Return the alignment-grid index closest to a given time on a given waveform. */
+export { getClosestAlignmentIx };
+
+/**
+ * Resolve the linked-data URI for an audio file (alignment key).
+ * Priority: per-file full URI > prefix + ldFilename > prefix + filename > bare filename.
+ */
+export function getAudioLinkedDataUri(filename) {
+  const header = loadedAlignmentJSON?.header;
+  const perFile = header?.linkedDataUris?.[filename];
+  if (perFile?.uri) return perFile.uri;
+  const prefix = header?.linkedDataUriPrefix || "";
+  const name = perFile?.ldFilename || filename;
+  if (prefix) return prefix.replace(/\/$/, "") + "/" + name;
+  return name;
+}
 
 // File picker: maps alignment audio keys to blob URLs from user-selected files
 let fileBlobUrls = new Map();
@@ -437,7 +482,7 @@ function onClickRenditionCheckbox(e) {
   }
 }
 
-function swapCurrentAudio(newAudio) {
+export function swapCurrentAudio(newAudio) {
   if (currentAudioIx === newAudio) {
     // no need to swap
     return;
@@ -448,6 +493,9 @@ function swapCurrentAudio(newAudio) {
       "Current duration: ",
       wavesurfers[currentAudioIx].getDuration(),
     );
+    // Detach annotation loop's pause listener before pausing,
+    // so the swap-pause doesn't kill the active annotation loop.
+    prepareAnnotationLoopTransfer();
     const wasPlaying = wavesurfers[currentAudioIx].isPlaying();
     wavesurfers[currentAudioIx].pause();
     // In close-listening mode, seek to the active marker; otherwise follow
@@ -498,6 +546,8 @@ function swapCurrentAudio(newAudio) {
       newActiveWaveform.classList.add("active");
     }
   }
+  // If an annotation loop is active, continue it on the newly-active waveform
+  continueAnnotationLoopOnWaveform(currentAudioIx);
 }
 
 function generateCheckboxList(list) {
@@ -509,6 +559,7 @@ function generateCheckboxList(list) {
     const li = document.createElement("li");
     li.classList.add("renditionName");
     li.id = n;
+
     const checkboxSpan = document.createElement("span");
     const checkbox = document.createElement("input");
     checkbox.id = "checkbox-" + n;
@@ -517,14 +568,499 @@ function generateCheckboxList(list) {
     checkbox.classList.add("renditionCheckbox");
     checkbox.value = n;
     const label = document.createElement("label");
-    label.for = "checkbox-" + n;
+    label.htmlFor = "checkbox-" + n; // use htmlFor for DOM property
     label.innerText = n.substr(n.indexOf("/") + 1); // HACK, use semantic title
+
     checkboxSpan.appendChild(checkbox);
     checkboxSpan.appendChild(label);
+
     li.appendChild(checkboxSpan);
     ul.appendChild(li);
   });
   return ul;
+}
+
+// ---------------------------------------------------------------------------
+// File grouping — state, persistence, sidebar rendering, modal
+// ---------------------------------------------------------------------------
+const _GROUPS_STORAGE_PREFIX = "listenTool_fileGroups_";
+
+/** Returns the localStorage key for the current context. */
+function _groupsStorageKey() {
+  return _GROUPS_STORAGE_PREFIX + (window.location.pathname || "default");
+}
+
+/**
+ * Load saved groups from localStorage.
+ * Format: [ { name: string, pattern: string, files: string[] }, ... ]
+ */
+function _loadGroups() {
+  try {
+    const raw = localStorage.getItem(_groupsStorageKey());
+    if (raw) return JSON.parse(raw);
+  } catch (e) {
+    console.warn("Could not load file groups from localStorage:", e);
+  }
+  return [];
+}
+
+function _saveGroups(groups) {
+  try {
+    localStorage.setItem(_groupsStorageKey(), JSON.stringify(groups));
+  } catch (e) {
+    console.warn("Could not save file groups to localStorage:", e);
+  }
+}
+
+/**
+ * Build the sidebar file list from the current filenames + saved groups.
+ * Score foldout is added separately if present.
+ */
+function _renderSidebarFileList(filenames) {
+  const audiosElement = document.getElementById("audios");
+  // Remove old foldouts / lists (preserve non-list children like buttons)
+  audiosElement
+    .querySelectorAll("details, ul.ungrouped-files")
+    .forEach((el) => el.remove());
+
+  const groups = _loadGroups();
+
+  const listSelectors = `<span class='listSelectors'>
+    <span class='all'>All</span><span class='none'>None</span>
+  </span>`;
+
+  // Determine which files belong to groups
+  const grouped = new Set();
+  groups.forEach((g) => {
+    (g.files || []).forEach((f) => grouped.add(f));
+    // Also apply the regex pattern if present
+    if (g.pattern) {
+      try {
+        const re = new RegExp(g.pattern);
+        filenames.forEach((f) => {
+          const short = f.substring(f.lastIndexOf("/") + 1);
+          if (re.test(short) || re.test(f)) grouped.add(f);
+        });
+      } catch (_) {
+        /* invalid regex — ignore */
+      }
+    }
+  });
+
+  // Build effective group membership (pattern + explicit)
+  const groupMembers = groups.map((g) => {
+    const members = new Set(g.files || []);
+    if (g.pattern) {
+      try {
+        const re = new RegExp(g.pattern);
+        filenames.forEach((f) => {
+          const short = f.substring(f.lastIndexOf("/") + 1);
+          if (re.test(short) || re.test(f)) members.add(f);
+        });
+      } catch (_) {}
+    }
+    // Only keep files that actually exist in the alignment
+    return [...members].filter((f) => filenames.includes(f)).sort();
+  });
+
+  // Ungrouped files
+  const ungrouped = filenames.filter((f) => !grouped.has(f)).sort();
+
+  // --- Render order: Score first, then groups, then ungrouped ---
+
+  // 1. Score foldout (first, if present)
+  if (SYNTH_MEI_KEY in alignmentGrids) {
+    const synthFoldout = document.createElement("details");
+    synthFoldout.open = true;
+    const synthSummary = document.createElement("summary");
+    synthSummary.innerText = "Score";
+    synthFoldout.appendChild(synthSummary);
+    synthFoldout.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
+    audiosElement.appendChild(synthFoldout);
+  }
+
+  // 2. Render each group as a collapsible foldout
+  groups.forEach((g, i) => {
+    const members = groupMembers[i];
+    if (members.length === 0) return; // skip empty groups
+    const foldout = document.createElement("details");
+    foldout.open = true;
+    const summary = document.createElement("summary");
+    summary.innerText = g.name;
+    foldout.appendChild(summary);
+    foldout.innerHTML += listSelectors;
+    foldout.appendChild(generateCheckboxList(members));
+    audiosElement.appendChild(foldout);
+  });
+
+  // 3. Ungrouped recordings (last)
+  if (ungrouped.length > 0) {
+    const label = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
+    const uf = document.createElement("details");
+    uf.open = true;
+    const us = document.createElement("summary");
+    us.innerText = label;
+    uf.appendChild(us);
+    uf.innerHTML += listSelectors;
+    uf.appendChild(generateCheckboxList(ungrouped));
+    audiosElement.appendChild(uf);
+  }
+
+  // Wire up list selectors (All / None)
+  _wireListSelectors();
+
+  // Rendition click / checkbox handlers
+  Array.from(document.getElementsByClassName("renditionName")).forEach((r) => {
+    r.addEventListener("click", onClickRenditionName);
+  });
+  Array.from(document.getElementsByClassName("renditionCheckbox")).forEach(
+    (r) => {
+      r.addEventListener("click", onClickRenditionCheckbox);
+    },
+  );
+}
+
+function _wireListSelectors() {
+  document.querySelectorAll(".listSelectors .all").forEach((selector) =>
+    selector.addEventListener("click", (e) => {
+      e.target
+        .closest("details")
+        .querySelectorAll("input")
+        .forEach((cb) => {
+          if (!cb.checked) cb.click();
+        });
+    }),
+  );
+  document.querySelectorAll(".listSelectors .none").forEach((selector) =>
+    selector.addEventListener("click", (e) => {
+      e.target
+        .closest("details")
+        .querySelectorAll("input")
+        .forEach((cb) => {
+          if (cb.checked) cb.click();
+        });
+    }),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Group Files modal
+// ---------------------------------------------------------------------------
+
+/** Open the grouping modal. */
+function _openGroupModal() {
+  // Remove any existing modal
+  document.getElementById("group-modal-backdrop")?.remove();
+
+  const filenames = Object.keys(alignmentGrids)
+    .filter((n) => n !== SYNTH_MEI_KEY)
+    .sort();
+  let groups = _loadGroups();
+
+  // --- Build modal DOM ---
+  const backdrop = document.createElement("div");
+  backdrop.id = "group-modal-backdrop";
+  backdrop.className = "gm-backdrop";
+
+  const modal = document.createElement("div");
+  modal.className = "gm-modal";
+
+  // Header
+  const header = document.createElement("div");
+  header.className = "gm-header";
+  header.innerHTML = `<h3>Group Files</h3>`;
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "gm-close";
+  closeBtn.innerHTML = "\u2715";
+  closeBtn.addEventListener("click", () => backdrop.remove());
+  header.appendChild(closeBtn);
+  modal.appendChild(header);
+
+  // Body: two panes
+  const body = document.createElement("div");
+  body.className = "gm-body";
+
+  // Left pane: ungrouped files
+  const leftPane = document.createElement("div");
+  leftPane.className = "gm-pane gm-left";
+  leftPane.innerHTML = `<h4>Ungrouped Files</h4>`;
+  const ungroupedList = document.createElement("ul");
+  ungroupedList.className = "gm-file-list";
+  ungroupedList.id = "gm-ungrouped";
+  leftPane.appendChild(ungroupedList);
+  body.appendChild(leftPane);
+
+  // Right pane: groups
+  const rightPane = document.createElement("div");
+  rightPane.className = "gm-pane gm-right";
+  const rightHeader = document.createElement("div");
+  rightHeader.className = "gm-right-header";
+  rightHeader.innerHTML = `<h4>Groups</h4>`;
+  const addGroupBtn = document.createElement("button");
+  addGroupBtn.className = "gm-add-group";
+  addGroupBtn.textContent = "+ New Group";
+  addGroupBtn.addEventListener("click", () => {
+    groups.push({ name: "New Group", pattern: "", files: [] });
+    renderGroups();
+  });
+  rightHeader.appendChild(addGroupBtn);
+  rightPane.appendChild(rightHeader);
+
+  const groupsContainer = document.createElement("div");
+  groupsContainer.className = "gm-groups-container";
+  groupsContainer.id = "gm-groups-container";
+  rightPane.appendChild(groupsContainer);
+  body.appendChild(rightPane);
+
+  modal.appendChild(body);
+
+  // Footer
+  const footer = document.createElement("div");
+  footer.className = "gm-footer";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", () => backdrop.remove());
+  const applyBtn = document.createElement("button");
+  applyBtn.className = "gm-apply";
+  applyBtn.textContent = "Apply";
+  applyBtn.addEventListener("click", () => {
+    _saveGroups(groups);
+    backdrop.remove();
+    // Re-render sidebar
+    const fns = Object.keys(alignmentGrids)
+      .filter((n) => n !== SYNTH_MEI_KEY)
+      .sort();
+    _renderSidebarFileList(fns);
+    reloadWaveforms();
+  });
+  footer.appendChild(cancelBtn);
+  footer.appendChild(applyBtn);
+  modal.appendChild(footer);
+
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+
+  // Close on backdrop click
+  backdrop.addEventListener("click", (e) => {
+    if (e.target === backdrop) backdrop.remove();
+  });
+
+  // --- Internal helpers to render the modal contents ---
+  function shortName(f) {
+    return f.substring(f.lastIndexOf("/") + 1);
+  }
+
+  /** Compute which files are claimed by any group (explicit + pattern). */
+  function getGroupedSet() {
+    const s = new Set();
+    groups.forEach((g) => {
+      (g.files || []).forEach((f) => s.add(f));
+      if (g.pattern) {
+        try {
+          const re = new RegExp(g.pattern);
+          filenames.forEach((f) => {
+            if (re.test(shortName(f)) || re.test(f)) s.add(f);
+          });
+        } catch (_) {}
+      }
+    });
+    return s;
+  }
+
+  function renderUngrouped() {
+    ungroupedList.innerHTML = "";
+    const grouped = getGroupedSet();
+    const ug = filenames.filter((f) => !grouped.has(f));
+    ug.forEach((f) => {
+      const li = document.createElement("li");
+      li.className = "gm-file-item";
+      li.draggable = true;
+      li.dataset.file = f;
+      li.textContent = shortName(f);
+      li.title = f;
+      li.addEventListener("dragstart", (e) => {
+        e.dataTransfer.setData("text/plain", f);
+        e.dataTransfer.effectAllowed = "move";
+        li.classList.add("gm-dragging");
+      });
+      li.addEventListener("dragend", () => li.classList.remove("gm-dragging"));
+      ungroupedList.appendChild(li);
+    });
+    if (ug.length === 0) {
+      ungroupedList.innerHTML =
+        '<li class="gm-empty">All files are grouped</li>';
+    }
+  }
+
+  function renderGroups() {
+    groupsContainer.innerHTML = "";
+    groups.forEach((g, i) => {
+      const card = document.createElement("div");
+      card.className = "gm-group-card";
+
+      // Group header: name input + controls
+      const gh = document.createElement("div");
+      gh.className = "gm-group-header";
+
+      const nameInput = document.createElement("input");
+      nameInput.type = "text";
+      nameInput.className = "gm-group-name";
+      nameInput.value = g.name;
+      nameInput.addEventListener("input", (e) => {
+        g.name = e.target.value;
+      });
+      gh.appendChild(nameInput);
+
+      // Move up
+      if (i > 0) {
+        const upBtn = document.createElement("button");
+        upBtn.className = "gm-icon-btn";
+        upBtn.title = "Move up";
+        upBtn.textContent = "\u25B2";
+        upBtn.addEventListener("click", () => {
+          [groups[i - 1], groups[i]] = [groups[i], groups[i - 1]];
+          renderAll();
+        });
+        gh.appendChild(upBtn);
+      }
+      // Move down
+      if (i < groups.length - 1) {
+        const downBtn = document.createElement("button");
+        downBtn.className = "gm-icon-btn";
+        downBtn.title = "Move down";
+        downBtn.textContent = "\u25BC";
+        downBtn.addEventListener("click", () => {
+          [groups[i], groups[i + 1]] = [groups[i + 1], groups[i]];
+          renderAll();
+        });
+        gh.appendChild(downBtn);
+      }
+      // Delete
+      const delBtn = document.createElement("button");
+      delBtn.className = "gm-icon-btn gm-delete";
+      delBtn.title = "Delete group";
+      delBtn.textContent = "\u2715";
+      delBtn.addEventListener("click", () => {
+        groups.splice(i, 1);
+        renderAll();
+      });
+      gh.appendChild(delBtn);
+      card.appendChild(gh);
+
+      // Regex pattern input
+      const patRow = document.createElement("div");
+      patRow.className = "gm-pattern-row";
+      const patLabel = document.createElement("label");
+      patLabel.textContent = "Regex:";
+      const patInput = document.createElement("input");
+      patInput.type = "text";
+      patInput.className = "gm-pattern-input";
+      patInput.placeholder = "e.g. ^VPO-";
+      patInput.value = g.pattern || "";
+      patInput.addEventListener("input", (e) => {
+        g.pattern = e.target.value;
+        const cursorPos = e.target.selectionStart;
+        renderAll();
+        // Restore focus to the same regex input after re-render
+        const restored =
+          groupsContainer.querySelectorAll(".gm-pattern-input")[i];
+        if (restored) {
+          restored.focus();
+          restored.setSelectionRange(cursorPos, cursorPos);
+        }
+      });
+      patRow.appendChild(patLabel);
+      patRow.appendChild(patInput);
+      card.appendChild(patRow);
+
+      // File list (explicit + regex-matched)
+      const fileUl = document.createElement("ul");
+      fileUl.className = "gm-group-files";
+
+      // Compute effective members
+      const members = new Set(g.files || []);
+      if (g.pattern) {
+        try {
+          const re = new RegExp(g.pattern);
+          filenames.forEach((f) => {
+            if (re.test(shortName(f)) || re.test(f)) members.add(f);
+          });
+        } catch (_) {}
+      }
+      const memberArr = [...members]
+        .filter((f) => filenames.includes(f))
+        .sort();
+      memberArr.forEach((f) => {
+        const li = document.createElement("li");
+        li.className = "gm-file-item gm-grouped";
+        li.textContent = shortName(f);
+        li.title = f;
+        // Remove button (only for explicitly added files, not regex)
+        const isExplicit = (g.files || []).includes(f);
+        if (isExplicit) {
+          const rmBtn = document.createElement("button");
+          rmBtn.className = "gm-remove-file";
+          rmBtn.textContent = "\u2715";
+          rmBtn.title = "Remove from group";
+          rmBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            g.files = (g.files || []).filter((x) => x !== f);
+            renderAll();
+          });
+          li.appendChild(rmBtn);
+        } else {
+          // Matched by regex — show indicator
+          const tag = document.createElement("span");
+          tag.className = "gm-regex-tag";
+          tag.textContent = "(regex)";
+          li.appendChild(tag);
+        }
+        fileUl.appendChild(li);
+      });
+      if (memberArr.length === 0) {
+        fileUl.innerHTML =
+          '<li class="gm-empty">Drag files here or set a regex</li>';
+      }
+
+      // Drop zone
+      card.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        card.classList.add("gm-drop-target");
+      });
+      card.addEventListener("dragleave", () =>
+        card.classList.remove("gm-drop-target"),
+      );
+      card.addEventListener("drop", (e) => {
+        e.preventDefault();
+        card.classList.remove("gm-drop-target");
+        const file = e.dataTransfer.getData("text/plain");
+        if (file && filenames.includes(file)) {
+          // Remove from any other group's explicit list
+          groups.forEach((og) => {
+            og.files = (og.files || []).filter((x) => x !== file);
+          });
+          if (!g.files) g.files = [];
+          if (!g.files.includes(file)) g.files.push(file);
+          renderAll();
+        }
+      });
+
+      card.appendChild(fileUl);
+      groupsContainer.appendChild(card);
+    });
+
+    if (groups.length === 0) {
+      groupsContainer.innerHTML = `<p class="gm-empty">No groups yet. Click <strong>+ New Group</strong> to create one.</p>`;
+    }
+  }
+
+  function renderAll() {
+    renderUngrouped();
+    renderGroups();
+  }
+
+  renderAll();
 }
 
 function reloadWaveforms() {
@@ -570,16 +1106,34 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     waveform.id = "waveform-" + filename + "-wav";
     waveform.dataset.ix = filename;
     waveform.classList.add("waveform");
+
+    // Full-coverage selection overlay (hidden by default, shown during selection mode)
+    const selectOverlay = document.createElement("div");
+    selectOverlay.className = "wf-select-overlay";
+    selectOverlay.innerHTML = `<img src="${root}svg/RDF-logo.svg" class="wf-overlay-icon" alt="RDF" />`;
+    selectOverlay.addEventListener("click", (e) => {
+      e.stopPropagation();
+      // Route to whichever selection mode is active (both no-op if inactive)
+      toggleStagedSelection(filename);
+      toggleDraftStagedSelection(filename);
+    });
+    waveform.appendChild(selectOverlay);
+
     let waveforms = document.getElementById("waveforms");
     // add waveform element
     waveforms.appendChild(waveform);
-    // now resort waveforms to maintain order, prioritizing VPO
-    let vpo = [...waveforms.children].filter((n) =>
-      n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-"),
-    );
-    let other = [...waveforms.children].filter(
-      (n) => !n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-"),
-    );
+    // now resort waveforms to maintain order:
+    // 1. Score (synthesised from MEI) first
+    // 2. VPO recordings sorted alphabetically
+    // 3. Other recordings sorted alphabetically
+    const allWfChildren = [...waveforms.children];
+    const isScore = (n) => n.dataset.ix === SYNTH_MEI_KEY;
+    const isVPO = (n) =>
+      !isScore(n) && n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-");
+    const score = allWfChildren.filter(isScore);
+    const vpo = allWfChildren.filter(isVPO);
+    const other = allWfChildren.filter((n) => !isScore(n) && !isVPO(n));
+    score.forEach((node) => waveforms.appendChild(node));
     vpo
       .sort((a, b) => (a.id > b.id ? 1 : -1))
       .forEach((node) => waveforms.appendChild(node));
@@ -601,17 +1155,35 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       waveColor: "violet",
       progressColor: "purple",
       normalize: document.getElementById("normalize").checked,
-      height: 128,
       fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)),
       plugins: [_regPlugin, _hoverPlugin],
     });
+
+    // Handle region adjustments (Phase 4 groundwork)
+    _regPlugin.on("region-updated", (region) => {
+      onRegionUpdated(filename, region);
+    });
+
+    // Handle new regions drawn by user (draft annotation mode)
+    _regPlugin.on("region-created", (region) => {
+      // Only handle user-drawn regions (drag selection creates these)
+      // Programmatic regions (timer, anno_, draft_) are added via addRegion
+      if (
+        region.id !== "timer" &&
+        !region.id.startsWith("anno_region_") &&
+        !region.id.startsWith("draft_")
+      ) {
+        onDraftRegionCreated(filename, region);
+      }
+    });
+
     // Add timer region and any annotated regions to the shared RegionsPlugin
     _timerRegions[filename] = _regPlugin.addRegion({
       id: "timer",
       start: 0,
       end: 0,
       drag: false,
-      resize: false,
+      resize: false, // timer shouldn't be resized
       color: "rgba(255, 0, 100, 0.3)",
     });
     regions.forEach((r) => _regPlugin.addRegion(r));
@@ -762,7 +1334,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         ctx.strokeStyle = "#800";
         const dur = wavesurfers[filename].getDuration();
         const minPixelStep = 4; // Prevent overplotting: lines must be at least 4 pixels apart
-        
+
         // Draw solid lines for the top and bottom sections
         ctx.beginPath();
         ctx.setLineDash([]);
@@ -771,7 +1343,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           const absoluteX =
             (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
           const relativeX = (gridPos / dur) * gridCanvas.width;
-          
+
           if (absoluteX - lastAbsX >= minPixelStep) {
             ctx.moveTo(absoluteX, 0);
             ctx.lineTo(relativeX, gridCanvas.height / 6);
@@ -790,7 +1362,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           const absoluteX =
             (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
           const relativeX = (gridPos / dur) * gridCanvas.width;
-          
+
           if (absoluteX - lastAbsX >= minPixelStep) {
             ctx.moveTo(relativeX, gridCanvas.height / 6);
             ctx.lineTo(relativeX, 5 * (gridCanvas.height / 6));
@@ -850,6 +1422,9 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
           _positionUpdaters[currentAudioIx]();
         }
+        // Re-add annotation regions — WaveSurfer's redraw removes and recreates
+        // region SVG elements, so they must be restored after every render cycle.
+        if (currentlyAnnotatedRegions.length) updateRenderAnnoRegions();
         // No _resizeQueue needed: v7 rerenders each waveform independently.
       });
       let listItem = document.getElementById(filename);
@@ -1347,115 +1922,27 @@ async function setGrids(grids) {
     alignmentGrids = grids;
   }
   console.log("setting grids: ", grids);
-  /* separate VPO, external, and other */
-  /* for now, hackily use filenames */
-  /* in glorious future, use knowledge graph */
-  let filenames = Object.keys(alignmentGrids);
-  let vpoFiles = filenames.filter((n) =>
-    n.substr(n.lastIndexOf("/") + 1).startsWith("VPO-"),
+  /* ---- Dynamic file grouping ---- */
+  let filenames = Object.keys(alignmentGrids).filter(
+    (n) => n !== SYNTH_MEI_KEY,
   );
-  let extFiles = filenames.filter((n) =>
-    n.substr(n.lastIndexOf("/") + 1).startsWith("ext-"),
-  );
-  vpoFiles = vpoFiles.sort();
-  extFiles = extFiles.sort();
-  let otherFiles = filenames
-    .filter(
-      (n) =>
-        !vpoFiles.includes(n) && !extFiles.includes(n) && n !== SYNTH_MEI_KEY,
-    )
-    .sort();
-  otherFiles = otherFiles.sort();
+  filenames.sort();
 
-  const vpoList = generateCheckboxList(vpoFiles);
-  const otherList = generateCheckboxList(otherFiles);
-  const extList = generateCheckboxList(extFiles);
+  _renderSidebarFileList(filenames);
 
-  const listSelectors = `<span class='listSelectors'>
-    <span class='all'>All</span><span class='none'>None</span>
-  </span>`;
+  // Show the "Group files" button
+  const groupBtn = document.getElementById("group-files-btn");
+  if (groupBtn) groupBtn.style.display = "";
 
-  const vpoFoldout = document.createElement("details");
-  const vpoSummary = document.createElement("summary");
-
-  vpoSummary.innerText = "VPO";
-  vpoFoldout.appendChild(vpoSummary);
-  vpoFoldout.innerHTML += listSelectors;
-  vpoFoldout.appendChild(vpoList);
-
-  const otherFoldout = document.createElement("details");
-  const otherSummary = document.createElement("summary");
-  otherSummary.innerText = "Other";
-  otherFoldout.appendChild(otherSummary);
-  otherFoldout.innerHTML += listSelectors;
-  otherFoldout.appendChild(otherList);
-
-  const extFoldout = document.createElement("details");
-  const extSummary = document.createElement("summary");
-
-  extSummary.innerText = "External";
-  extFoldout.appendChild(extSummary);
-  extFoldout.innerHTML += listSelectors;
-  extFoldout.appendChild(extList);
-
-  const audiosElement = document.getElementById("audios");
-
-  vpoFoldout.open = true;
-  otherFoldout.open = true;
-  extFoldout.open = true;
-
-  audiosElement.appendChild(vpoFoldout);
-  audiosElement.appendChild(otherFoldout);
-  audiosElement.appendChild(extFoldout);
-
-  // Score foldout: synthesised MEI waveform (only when score alignment data is present)
-  if (SYNTH_MEI_KEY in alignmentGrids) {
-    const synthFoldout = document.createElement("details");
-    synthFoldout.open = true;
-    const synthSummary = document.createElement("summary");
-    synthSummary.innerText = "Score";
-    synthFoldout.appendChild(synthSummary);
-    synthFoldout.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
-    audiosElement.appendChild(synthFoldout);
+  // Always show manage-files button once alignment is loaded (for URI config)
+  const _manageBtn = document.getElementById("manage-files-btn");
+  if (_manageBtn && _manageBtn.style.display === "none") {
+    _manageBtn.style.display = "";
+    _manageBtn.addEventListener("click", () => {
+      document.getElementById("file-picker-overlay").style.display = "flex";
+      populateLdUriSection();
+    });
   }
-
-  // list selectors
-  Array.from(document.querySelectorAll(".listSelectors .all")).forEach(
-    (selector) =>
-      selector.addEventListener("click", (e) => {
-        let checkboxes = Array.from(
-          e.target.closest("details").querySelectorAll("input"),
-        );
-        checkboxes.forEach((cb) => {
-          // we're doing work in clickhandlers, so can't just set checked value
-          if (!cb.checked) cb.click();
-        });
-      }),
-  );
-  Array.from(document.querySelectorAll(".listSelectors .none")).forEach(
-    (selector) =>
-      selector.addEventListener("click", (e) => {
-        let checkboxes = Array.from(
-          e.target.closest("details").querySelectorAll("input"),
-        );
-        checkboxes.forEach((cb) => {
-          // we're doing work in clickhandlers, so can't just unset checked value
-          if (cb.checked) cb.click();
-        });
-      }),
-  );
-
-  // rendition selectors
-  Array.from(document.getElementsByClassName("renditionName")).forEach(
-    (r, ix) => {
-      r.addEventListener("click", onClickRenditionName);
-    },
-  );
-  Array.from(document.getElementsByClassName("renditionCheckbox")).forEach(
-    (r, ix) => {
-      r.addEventListener("click", onClickRenditionCheckbox);
-    },
-  );
 
   // If ?useFiles mode is active, show file picker overlay
   showFilePickerIfNeeded();
@@ -1476,6 +1963,9 @@ async function setGrids(grids) {
       _midiB64,
     );
   }
+
+  // Initialize the "New Annotation" button (idempotent — checks for duplicates)
+  initNewAnnotationButton();
 }
 
 // ---------------------------------------------------------------------------
@@ -1488,6 +1978,9 @@ function onAlignmentComplete(alignmentResult, files) {
   useFilesMode = true;
   loadedAlignmentJSON = alignmentResult;
   workId = "in-browser-alignment";
+
+  // Update URL to reflect listen mode (so Solid redirects return here, not to align)
+  history.replaceState(null, "", "/?useFiles");
 
   // Collapse the align panel and show listen UI
   const alignPanel = document.getElementById("align-panel");
@@ -1503,12 +1996,135 @@ function onAlignmentComplete(alignmentResult, files) {
     manageBtn.style.display = "";
     manageBtn.addEventListener("click", () => {
       document.getElementById("file-picker-overlay").style.display = "flex";
+      populateLdUriSection();
     });
   }
 
   // Load alignment data → build waveforms
   setGrids(alignmentResult);
+
+  // Now in listen mode — initialise the Solid panel
+  initSolidAuth().then(onSolidAuthChanged);
 }
+
+// ----------------------------------------------------------------------------
+// Solid Extraction / Annotation Handlers
+// ----------------------------------------------------------------------------
+
+export async function createSelectionForWaveform(filename) {
+  // We need to know which MAO Extract is currently active.
+  const activeExtract = document.querySelector(".maoExtract.active");
+  if (!activeExtract) {
+    alert("Please select (click on) an active annotation card first.");
+    return;
+  }
+
+  // We need the ID of the extract and its label
+  const extractId = activeExtract.id;
+  const extractLabel =
+    activeExtract.querySelector(".maoExtract-label").innerText;
+
+  // We need to find the bounds for this specific waveform
+  let regionStart = 0;
+  let regionEnd = 0;
+
+  // Find the corresponding global annotation index
+  let mySelections = activeExtract.dataset.selection;
+  // (In drawExtractUIElement we stashed the first embodiment URI in dataset.selection)
+
+  let regionIx = currentlyAnnotatedRegions.findIndex(
+    (r) => r.selection === mySelections,
+  );
+
+  if (regionIx >= 0) {
+    // If we have a local override (Phase 4), use it.
+    const globalRegion = currentlyAnnotatedRegions[regionIx];
+    if (globalRegion.localOverrides && globalRegion.localOverrides[filename]) {
+      regionStart = globalRegion.localOverrides[filename].start;
+      regionEnd = globalRegion.localOverrides[filename].end;
+    } else {
+      // Fallback to global alignment mapping
+      regionStart = getCorrespondingTime(filename, globalRegion.from);
+      regionEnd = getCorrespondingTime(filename, globalRegion.to);
+    }
+  } else {
+    // Fallback if not found in memory (shouldn't happen if card is active)
+    const ws = wavesurfers[filename];
+    if (ws && ws.regions && ws.regions.list && ws.regions.list.anno_region_0) {
+      regionStart = ws.regions.list.anno_region_0.start;
+      regionEnd = ws.regions.list.anno_region_0.end;
+    } else {
+      console.error("Could not determine region bounds for selection");
+      return;
+    }
+  }
+
+  const audioMediaUri = `${dummyUriPrefix}${filename}#t=${regionStart},${regionEnd}`;
+
+  // Call the function from annotation.js (it is a global in the current architecture or imported)
+  if (typeof window.addNewMAOSelectionToExtract === "function") {
+    window.addNewMAOSelectionToExtract(
+      filename,
+      audioMediaUri,
+      extractId,
+      extractLabel,
+    );
+  } else {
+    console.error("addNewMAOSelectionToExtract is not available");
+  }
+}
+
+// Phase 4: Handle Region Edits
+function onRegionUpdated(filename, region) {
+  // Handle draft regions
+  if (region.id.startsWith("draft_")) {
+    onDraftRegionUpdated(filename, region);
+    return;
+  }
+
+  // Only handle our annotation regions (ignore the "timer" region)
+  if (!region.id.startsWith("anno_region_")) return;
+
+  const ix = parseInt(region.id.replace("anno_region_", ""));
+  if (isNaN(ix) || !currentlyAnnotatedRegions[ix]) return;
+
+  const isShiftPressed = window.event && window.event.shiftKey;
+
+  if (isShiftPressed) {
+    // Local Mode: store in overrides and do NOT re-render other waveforms
+    if (!currentlyAnnotatedRegions[ix].localOverrides) {
+      currentlyAnnotatedRegions[ix].localOverrides = {};
+    }
+    currentlyAnnotatedRegions[ix].localOverrides[filename] = {
+      start: region.start,
+      end: region.end,
+    };
+    console.log(
+      `Local override saved for ${filename}:`,
+      currentlyAnnotatedRegions[ix].localOverrides[filename],
+    );
+  } else {
+    // Global Mode: convert to alignment ix, update global, re-render all
+    const newFromGlobalIx = getClosestAlignmentIx(region.start, filename);
+    const newToGlobalIx = getClosestAlignmentIx(region.end, filename);
+
+    // Clear any local overrides for this region since we did a global edit
+    currentlyAnnotatedRegions[ix].localOverrides = {};
+
+    currentlyAnnotatedRegions[ix].from = newFromGlobalIx;
+    currentlyAnnotatedRegions[ix].to = newToGlobalIx;
+
+    // Re-render to propagate to all waveforms
+    updateRenderAnnoRegions();
+    console.log(
+      `Global region updated to ${newFromGlobalIx} - ${newToGlobalIx}`,
+    );
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Document Ready Hook
+// ----------------------------------------------------------------------------
 
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("back").addEventListener("click", () => {
@@ -1516,12 +2132,15 @@ document.addEventListener("DOMContentLoaded", () => {
       () => (window.location.href = window.location.origin + "/"),
     );
   });
-  if (storage.restoreSolidSession) {
-    // attempt to restore Solid session with fresh data
-    loginAndFetch();
+
+  // Initialise Solid auth (process any incoming redirect code, then populate drawer).
+  // Skip in align mode — Solid is irrelevant until user transitions to listen mode.
+  if (window.alignMode !== "align") {
+    initSolidAuth().then(onSolidAuthChanged);
   }
-  // draw appropriate solid authorization message
-  populateSolidTab();
+
+  // Listen for auth state changes (e.g. logout from within the Solid drawer)
+  document.addEventListener("solid-auth-changed", () => onSolidAuthChanged());
 
   // set up Verovio
   const _verovioReady = new Promise((resolve) => {
@@ -1567,6 +2186,12 @@ document.addEventListener("DOMContentLoaded", () => {
       URL.revokeObjectURL(url);
     });
     if (alignmentData === "session") dlBtn.style.display = ""; // legacy fallback
+  }
+
+  // Group files button
+  const groupFilesBtn = document.getElementById("group-files-btn");
+  if (groupFilesBtn) {
+    groupFilesBtn.addEventListener("click", () => _openGroupModal());
   }
 
   // load alignment json
@@ -1625,9 +2250,48 @@ document.addEventListener("DOMContentLoaded", () => {
     );
   });
 
+  // show the Solid drawer button so users can open the linked-data panel
+  document.getElementById("solid-drawer-btn").style.display = "";
+
+  // Solid Drawer toggle logic
+  const solidDrawer = document.getElementById("solid-drawer");
+  document.getElementById("solid-drawer-btn").addEventListener("click", () => {
+    solidDrawer.classList.toggle("closed");
+  });
+  document
+    .getElementById("close-solid-drawer")
+    .addEventListener("click", () => {
+      solidDrawer.classList.add("closed");
+    });
+
+  // Keep focus available for keyboard shortcuts after clicks on nav/sidebar controls.
+  // Blur the focused element after mouseup unless the user clicked into a text input,
+  // textarea, select, or an element inside a modal / the Solid drawer.
+  document.addEventListener("mouseup", () => {
+    const active = document.activeElement;
+    if (!active || active === document.body) return;
+    const tag = active.tagName;
+    if (tag === "TEXTAREA" || tag === "SELECT") return;
+    if (
+      tag === "INPUT" &&
+      active.type !== "checkbox" &&
+      active.type !== "radio"
+    )
+      return;
+    if (active.closest(".gm-modal, #solid-drawer, #file-picker-overlay"))
+      return;
+    active.blur();
+  });
+
   document.querySelector("body").addEventListener("keydown", (e) => {
     // Don't intercept when typing in an input/textarea
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+    // Don't intercept when a modal or the Solid drawer has focus
+    if (
+      e.target.closest &&
+      e.target.closest(".gm-modal, #solid-drawer, #file-picker-overlay")
+    )
+      return;
     console.log("KEYDOWN: ", e);
     if (!currentAudioIx) return;
 
@@ -1678,22 +2342,29 @@ document.addEventListener("DOMContentLoaded", () => {
               }
             }
           } else {
-            // If past active marker, seek back to it; else go to previous
+            // Jump to the closest marker more than 100ms before current position.
+            // This avoids getting "stuck" on the current marker after a recent jump.
             const currentTime = wavesurfers[currentAudioIx].getCurrentTime();
-            const activeTime = getCorrespondingTime(
-              currentAudioIx,
-              markers[activeMarkerIx],
-            );
-            if (currentTime > activeTime + 0.05) {
+            const sorted = getSortedMarkerIndices();
+            let target = null;
+            for (let j = sorted.length - 1; j >= 0; j--) {
+              const mTime = getCorrespondingTime(
+                currentAudioIx,
+                markers[sorted[j]],
+              );
+              if (mTime < currentTime - 0.1) {
+                target = sorted[j];
+                break;
+              }
+            }
+            if (target != null) {
+              activeMarkerIx = target;
+              redrawAllMarkers();
               seekToActiveMarker();
             } else {
-              const sorted = getSortedMarkerIndices();
-              const pos = sorted.indexOf(activeMarkerIx);
-              if (pos > 0) {
-                activeMarkerIx = sorted[pos - 1];
-                redrawAllMarkers();
-                seekToActiveMarker();
-              }
+              // No marker far enough in the past — jump to start of file
+              const ws = wavesurfers[currentAudioIx];
+              ws.seekTo(0);
             }
           }
         } else {
@@ -1730,11 +2401,23 @@ document.addEventListener("DOMContentLoaded", () => {
               seekToActiveMarker();
             }
           } else {
-            // Navigate to next marker
+            // Jump to the closest marker more than 100ms ahead of current position,
+            // or if we're more than 100ms before the current active marker, re-seek it.
+            const currentTime = wavesurfers[currentAudioIx].getCurrentTime();
             const sorted = getSortedMarkerIndices();
-            const pos = sorted.indexOf(activeMarkerIx);
-            if (pos < sorted.length - 1) {
-              activeMarkerIx = sorted[pos + 1];
+            let target = null;
+            for (let j = 0; j < sorted.length; j++) {
+              const mTime = getCorrespondingTime(
+                currentAudioIx,
+                markers[sorted[j]],
+              );
+              if (mTime > currentTime + 0.1) {
+                target = sorted[j];
+                break;
+              }
+            }
+            if (target != null) {
+              activeMarkerIx = target;
               redrawAllMarkers();
               seekToActiveMarker();
             }
@@ -2019,15 +2702,17 @@ export function markScoreRegion(ids, selectionUrl, reset = false) {
       );
       let refRegions = onsets.map((t, expansionIx) => {
         console.log("In loop: ", t, expansionIx);
+        // Verovio's getTimesForElement returns MIDI real-time milliseconds,
+        // which corresponds to the synth_onset timescale (seconds), NOT score_onset
+        // (which is in symbolic score time / quarter-note positions).
+        const onsetTimes =
+          scoreAlignment.synth_onset || scoreAlignment.score_onset;
+        const offsetTimes =
+          scoreAlignment.synth_offset || scoreAlignment.score_offset;
         return {
-          from: scoreAlignment.ref_onset[
-            getClosestScoreTimeIx(t, scoreAlignment.score_onset)
-          ],
+          from: scoreAlignment.ref_onset[getClosestScoreTimeIx(t, onsetTimes)],
           to: scoreAlignment.ref_offset[
-            getClosestScoreTimeIx(
-              offsets[expansionIx],
-              scoreAlignment.score_offset,
-            )
+            getClosestScoreTimeIx(offsets[expansionIx], offsetTimes)
           ],
         };
       });
@@ -2091,31 +2776,48 @@ function updateRenderTimer() {
 }
 
 // todo refactor with updateRenderTimer above
-function updateRenderAnnoRegions() {
+export function updateRenderAnnoRegions() {
   // HACK dlfm2023: for now do nothing, ensure annots are loaded before wavesurfers
   Object.keys(wavesurfers).forEach((ws) => {
     console.log("Update render anno regions: ", ws, currentlyAnnotatedRegions);
     const regPlugin = _regionsPlugins[ws];
     if (!regPlugin) return;
     let regions = extractCurrentlyAnnotatedRegions(ws);
-    // Remove only annotation regions, preserving the timer region
+    // Also include draft regions
+    const draftRegions = getDraftRegionsForWaveform(ws);
+    // Remove only annotation + draft regions, preserving the timer region
     regPlugin
       .getRegions()
       .filter((r) => r.id !== "timer")
       .forEach((r) => r.remove());
     regions.forEach((r) => regPlugin.addRegion(r));
+    draftRegions.forEach((r) => regPlugin.addRegion(r));
   });
 }
 
 function extractCurrentlyAnnotatedRegions(ws) {
   return currentlyAnnotatedRegions.map((r, ix) => {
+    let regionStart, regionEnd;
+
+    // Phase 4: Use local override if it exists, otherwise fall back to global alignment
+    if (r.localOverrides && r.localOverrides[ws]) {
+      regionStart = r.localOverrides[ws].start;
+      regionEnd = r.localOverrides[ws].end;
+    } else {
+      regionStart = getCorrespondingTime(ws, r.from);
+      regionEnd = getCorrespondingTime(ws, r.to);
+    }
+
     return {
       id: "anno_region_" + ix,
-      start: getCorrespondingTime(ws, r.from),
-      end: getCorrespondingTime(ws, r.to),
-      drag: false,
-      resize: false,
-      color: "rgba(200, 130, 80, 0.3)",
+      start: regionStart,
+      end: regionEnd,
+      drag: true,
+      resize: true,
+      color:
+        (r.color && r.color.bg) ||
+        getLiveColor(r.selection)?.bg ||
+        "rgba(200, 130, 80, 0.3)",
     };
   });
 }
@@ -2161,6 +2863,21 @@ function initFilePicker() {
   const fileInput = document.getElementById("file-picker-input");
   const dropZone = document.getElementById("file-picker-card");
   const jsonStatusEl = document.getElementById("file-picker-json-status");
+
+  // --- Tab switching ---
+  document.querySelectorAll("#fp-tabs .fp-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document
+        .querySelectorAll("#fp-tabs .fp-tab")
+        .forEach((t) => t.classList.remove("active"));
+      document
+        .querySelectorAll(".fp-tab-pane")
+        .forEach((p) => p.classList.remove("active"));
+      tab.classList.add("active");
+      const pane = document.getElementById(tab.dataset.tab);
+      if (pane) pane.classList.add("active");
+    });
+  });
 
   // Show directory picker button on browsers that support it (Chromium)
   if (typeof window.showDirectoryPicker === "function") {
@@ -2239,7 +2956,10 @@ function initFilePicker() {
           window._pendingLocalAlignment = data;
           // Set workId from the JSON filename
           workId = jsonFiles[0].name;
+          // Temporarily set loadedAlignmentJSON so LD URI section can read header
+          loadedAlignmentJSON = data;
           renderFileList();
+          populateLdUriSection();
         } else {
           alert(
             "The JSON file does not appear to be a valid alignment file.\nExpected: {header: {ref: ...}, body: {audio: {...}}}",
@@ -2318,8 +3038,9 @@ function initFilePicker() {
     }
   });
 
-  // Continue button
-  continueBtn.addEventListener("click", () => {
+  // Continue button — persist LD config and close
+  function closeOverlay() {
+    if (populateLdUriSection._persist) populateLdUriSection._persist();
     overlay.style.display = "none";
     // If alignment was loaded from a local JSON file, apply it now
     if (window._pendingLocalAlignment) {
@@ -2327,14 +3048,187 @@ function initFilePicker() {
       window._pendingLocalAlignment = null;
       setGrids(data);
     }
+  }
+
+  continueBtn.addEventListener("click", closeOverlay);
+
+  // Close on backdrop click (clicking the overlay outside the card)
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeOverlay();
+  });
+
+  // Close on Escape key
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && overlay.style.display !== "none") {
+      closeOverlay();
+    }
   });
 
   renderFileList();
   overlay.style.display = "flex";
 }
 
+// --- Linked Data URI management in file picker ---
+function populateLdUriSection() {
+  const section = document.getElementById("ld-uri-section");
+  const emptyHint = document.getElementById("ld-uri-empty-hint");
+  const tbody = document.getElementById("ld-uri-tbody");
+  const prefixInput = document.getElementById("ld-uri-prefix");
+  if (!section || !tbody || !prefixInput) return;
+
+  // Enable / disable the LD URI tab based on whether audio keys exist
+  const uriTab = document.querySelector('.fp-tab[data-tab="fp-tab-uris"]');
+  const hasKeys =
+    expectedAudioKeys.length > 0 || Object.keys(alignmentGrids).length > 0;
+  if (uriTab) {
+    uriTab.classList.toggle("disabled", !hasKeys);
+  }
+  if (!hasKeys) {
+    section.style.display = "none";
+    if (emptyHint) emptyHint.style.display = "";
+    return;
+  }
+  section.style.display = "";
+  if (emptyHint) emptyHint.style.display = "none";
+
+  const keys =
+    expectedAudioKeys.length > 0
+      ? expectedAudioKeys
+      : Object.keys(alignmentGrids).filter((n) => n !== SYNTH_MEI_KEY);
+
+  // Ensure header and linkedDataUris exist as live references
+  if (loadedAlignmentJSON && !loadedAlignmentJSON.header)
+    loadedAlignmentJSON.header = {};
+  const header = loadedAlignmentJSON?.header || {};
+  prefixInput.value = header.linkedDataUriPrefix || "";
+  // Work on a local copy; persisted only when the modal is closed
+  const perFileConfig = JSON.parse(JSON.stringify(header.linkedDataUris || {}));
+
+  function resolveUri(key) {
+    const perFile = perFileConfig[key];
+    if (perFile?.uri) return perFile.uri;
+    const filePrefix = perFile?.prefix?.trim();
+    const prefix = filePrefix || prefixInput.value.trim();
+    const name = perFile?.ldFilename || encodeURIComponent(key);
+    if (prefix) return prefix.replace(/\/$/, "") + "/" + name;
+    return name;
+  }
+
+  function renderTable() {
+    tbody.innerHTML = "";
+    for (const key of keys) {
+      const tr = document.createElement("tr");
+
+      // Column 1: original filename
+      const tdFile = document.createElement("td");
+      const shortName = key.substring(key.lastIndexOf("/") + 1);
+      tdFile.textContent = shortName;
+      tdFile.title = key;
+      tr.appendChild(tdFile);
+
+      // Column 2: LD filename (prepopulated with actual filename)
+      const tdLdName = document.createElement("td");
+      const ldNameInput = document.createElement("input");
+      ldNameInput.type = "text";
+      ldNameInput.spellcheck = false;
+      ldNameInput.dataset.key = key;
+      ldNameInput.className = "ld-filename-input";
+      ldNameInput.value =
+        perFileConfig[key]?.ldFilename || encodeURIComponent(key);
+      ldNameInput.addEventListener("input", () => {
+        const val = ldNameInput.value.trim();
+        if (!perFileConfig[key]) perFileConfig[key] = {};
+        if (val && val !== encodeURIComponent(key)) {
+          perFileConfig[key].ldFilename = val;
+        } else {
+          delete perFileConfig[key].ldFilename;
+          if (Object.keys(perFileConfig[key]).length === 0)
+            delete perFileConfig[key];
+        }
+        updateResolvedCell(tr, key);
+      });
+      tdLdName.appendChild(ldNameInput);
+      tr.appendChild(tdLdName);
+
+      // Column 3: per-file prefix override (optional)
+      const tdPrefix = document.createElement("td");
+      const prefOverride = document.createElement("input");
+      prefOverride.type = "text";
+      prefOverride.spellcheck = false;
+      prefOverride.className = "ld-prefix-input";
+      prefOverride.placeholder = "(global)";
+      prefOverride.value = perFileConfig[key]?.prefix || "";
+      prefOverride.addEventListener("input", () => {
+        const val = prefOverride.value.trim();
+        if (!perFileConfig[key]) perFileConfig[key] = {};
+        if (val) {
+          perFileConfig[key].prefix = val;
+        } else {
+          delete perFileConfig[key].prefix;
+          if (Object.keys(perFileConfig[key]).length === 0)
+            delete perFileConfig[key];
+        }
+        updateResolvedCell(tr, key);
+      });
+      tdPrefix.appendChild(prefOverride);
+      tr.appendChild(tdPrefix);
+
+      // Column 4: resolved URI (read-only preview)
+      const tdResolved = document.createElement("td");
+      tdResolved.className = "ld-resolved-uri";
+      tr.appendChild(tdResolved);
+
+      tbody.appendChild(tr);
+      updateResolvedCell(tr, key);
+    }
+  }
+
+  function updateResolvedCell(tr, key) {
+    const td = tr.querySelector(".ld-resolved-uri");
+    if (td) td.textContent = resolveUri(key);
+  }
+
+  function updateAllResolved() {
+    for (const tr of tbody.querySelectorAll("tr")) {
+      const key = tr.querySelector(".ld-filename-input")?.dataset.key;
+      if (key) updateResolvedCell(tr, key);
+    }
+  }
+
+  prefixInput.addEventListener("input", updateAllResolved);
+
+  // Persist local config to loadedAlignmentJSON.header (called on modal close)
+  function persistLdConfig() {
+    if (!loadedAlignmentJSON) return;
+    if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+    const prefix = prefixInput.value.trim();
+    if (prefix) {
+      loadedAlignmentJSON.header.linkedDataUriPrefix = prefix;
+    } else {
+      delete loadedAlignmentJSON.header.linkedDataUriPrefix;
+    }
+    // Clean empty entries and persist
+    const clean = {};
+    for (const key of Object.keys(perFileConfig)) {
+      if (perFileConfig[key] && Object.keys(perFileConfig[key]).length > 0) {
+        clean[key] = { ...perFileConfig[key] };
+      }
+    }
+    if (Object.keys(clean).length > 0) {
+      loadedAlignmentJSON.header.linkedDataUris = clean;
+    } else {
+      delete loadedAlignmentJSON.header.linkedDataUris;
+    }
+  }
+
+  // Expose so the modal-close handler can call it
+  populateLdUriSection._persist = persistLdConfig;
+
+  renderTable();
+}
+
 function showFilePickerIfNeeded() {
-  if (params.get("useFiles") !== null || alignmentData === "local") {
+  if (useFilesMode || params.get("useFiles") !== null || alignmentData === "local") {
     useFilesMode = true;
     // If we already have alignment grids (from URL), populate expected keys
     if (
@@ -2349,6 +3243,7 @@ function showFilePickerIfNeeded() {
       manageBtn.style.display = "";
       manageBtn.addEventListener("click", () => {
         document.getElementById("file-picker-overlay").style.display = "flex";
+        populateLdUriSection();
       });
     }
     // Show download button (useful once alignment is loaded from file)
@@ -2357,6 +3252,7 @@ function showFilePickerIfNeeded() {
     if (!showFilePickerIfNeeded._initialized) {
       showFilePickerIfNeeded._initialized = true;
       initFilePicker();
+      populateLdUriSection();
     }
   }
 }

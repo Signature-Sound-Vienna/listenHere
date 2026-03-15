@@ -1,0 +1,121 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Solid Login</title>
+    <style>
+      body {
+        font-family:
+          system-ui,
+          -apple-system,
+          sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        margin: 0;
+        background: #f8fafc;
+        color: #334155;
+      }
+      .status {
+        text-align: center;
+        padding: 2em;
+      }
+      .spinner {
+        width: 32px;
+        height: 32px;
+        border: 3px solid #e2e8f0;
+        border-top-color: #3b82f6;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        margin: 0 auto 1em;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .error {
+        color: #ef4444;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="status">
+      <div class="spinner" id="spinner"></div>
+      <p id="message">Connecting to Solid provider&hellip;</p>
+    </div>
+    <script>
+      /**
+       * Solid popup callback page.
+       *
+       * This page is used in two ways:
+       * 1. Initially opened as a "loading" placeholder while the main page
+       *    calls solid.login() with handleRedirect, which then navigates
+       *    this popup to the IdP authorization URL.
+       * 2. The IdP redirects back here with ?code=&state= after the user
+       *    authenticates.  We capture the full callback URL and post it to
+       *    the main page (window.opener) via postMessage.  The main page
+       *    then calls handleIncomingRedirect(callbackUrl) in its own
+       *    context, so the token exchange and session happen there.
+       *
+       * This page does NOT load the Solid auth library — it doesn't need to.
+       */
+      (function () {
+        var msg = document.getElementById("message");
+        var spinner = document.getElementById("spinner");
+        var params = new URLSearchParams(window.location.search);
+
+        // Check whether the IdP has redirected back with an auth code
+        if (params.has("code") && params.has("state")) {
+          msg.textContent = "Completing authentication…";
+          var provider = window.localStorage.getItem("solidProvider") || "";
+          if (window.opener) {
+            window.opener.postMessage(
+              {
+                type: "solid-popup-callback",
+                callbackUrl: window.location.href,
+                provider: provider,
+              },
+              window.location.origin,
+            );
+            msg.textContent = "Done! This window will close.";
+            setTimeout(function () {
+              window.close();
+            }, 400);
+          } else {
+            spinner.style.display = "none";
+            msg.innerHTML =
+              '<span class="error">Could not communicate with the main window. Please close this window and try again.</span>';
+          }
+          return;
+        }
+
+        // Check for an IdP error response
+        if (params.has("error")) {
+          spinner.style.display = "none";
+          var errorDesc =
+            params.get("error_description") || params.get("error");
+          msg.innerHTML =
+            '<span class="error">Login failed: ' +
+            errorDesc.replace(/</g, "&lt;") +
+            "</span><br><br>You may close this window and try again.";
+          if (window.opener) {
+            window.opener.postMessage(
+              {
+                type: "solid-popup-callback",
+                callbackUrl: null,
+                error: errorDesc,
+              },
+              window.location.origin,
+            );
+          }
+          return;
+        }
+
+        // Initial load — just show the spinner while the main page prepares
+        // the OIDC request and navigates us to the IdP.
+        msg.textContent = "Preparing login…";
+      })();
+    </script>
+  </body>
+</html>

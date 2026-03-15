@@ -8,6 +8,8 @@ For a detailed description, please see: [Weigl et al (DLfM '23)](https://doi.org
 
 This tool is developed as part of the [Signature Sound Vienna (SSV)](https://iwk.mdw.ac.at/signature-sound-vienna) [FWF P 34664-G](https://doi.org/10.55776/P34664) and [Vienna's New Year's Concerts: Same procedure as every year?](https://iwk.mdw.ac.at/same-procedure) [FWF SCP 1556025](https://doi.org/10.55776/SCP1556025) projects, funded by the Austrian Science Fund.
 
+> **🔒 Your audio is never uploaded.** Whether you load files from your computer or stream them from the web, all audio processing — including alignment, playback, and waveform rendering — happens entirely in your web browser. Audio is fetched directly into your browser and is never sent onward to Listen Here! or any other server. This is particularly important when working with copyrighted recordings.
+
 ## Getting Started
 
 Listen Here! is publicly hosted and runs directly in your web browser at **https://listen-here.mdw.ac.at**.
@@ -75,6 +77,27 @@ Close-listening mode allows targeted navigation between specific markers you've 
 - Use the **`Left`/`Right` Arrow** keys to immediately snap playback to the previous or next marker.
 - Hold **`Shift` + `Left`/`Right` Arrow** to precisely nudge the selected marker's position (100ms, or hold **`Alt`** for 20ms).
 - Press **`Backspace` / `Delete`** to delete the currently selected marker.
+
+### File Grouping
+When many recordings are loaded, you can organise them into named groups for easier navigation.
+- Click the **Group files** button in the toolbar to open the grouping modal.
+- The modal has two panes: **Ungrouped Files** on the left and **Groups** on the right.
+- Click **+ New Group** to create a group. Give it a name and optionally a substring or regex pattern to auto-match filenames.
+- **Drag and drop** files from the ungrouped list into a group, or use the remove button (✕) to move them back.
+- Groups can be **reordered** (▲/▼), **renamed**, or **deleted**.
+- Click **Apply** to save. Groups are persisted in your browser's localStorage and restored automatically on future visits.
+- The sidebar displays groups in order: Score (if present), then your groups, then any ungrouped recordings.
+
+### Annotations (Linked Data)
+If you are logged into a [Solid Pod](https://solidproject.org), you can create and manage linked-data annotations using the Music Annotation Ontology.
+- Click the **RDF logo** button in the toolbar to open the Linked Data drawer and log in.
+- Annotation cards appear pinned at the bottom of the interface. Each card has a **Play** button to loop the annotated region.
+- Use **Select Recordings** on a card to enter selection mode: click waveform overlays to stage recordings, then **Post to Solid** to save.
+- Loop playback automatically transfers when you switch between waveforms during annotation.
+
+**What does "Post to Solid" publish?** Only structured linked-data annotations are posted: timeline interval descriptions (start/end times) identifying selections within recordings, and (if the "Include peaks" option is checked) a compact waveform envelope that allows the waveform shape to be displayed publicly. **No playable audio data is ever uploaded.** Audio content never leaves your browser.
+
+If you are loading annotations from a publicly accessible Web location, logging in to Solid is not required. You will not be able to post selections, however.
 
 ---
 

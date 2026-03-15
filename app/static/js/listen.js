@@ -2951,7 +2951,9 @@ function initFilePicker() {
           alignmentLoadedFromFile = true;
           // Clear old blob URLs and audio keys
           fileBlobUrls.clear();
-          expectedAudioKeys = Object.keys(data.body.audio);
+          expectedAudioKeys = Object.keys(data.body.audio).filter(
+            (k) => k !== SYNTH_MEI_KEY,
+          );
           // Store the alignment data for use when continue is clicked
           window._pendingLocalAlignment = data;
           // Set workId from the JSON filename
@@ -3228,14 +3230,20 @@ function populateLdUriSection() {
 }
 
 function showFilePickerIfNeeded() {
-  if (useFilesMode || params.get("useFiles") !== null || alignmentData === "local") {
+  if (
+    useFilesMode ||
+    params.get("useFiles") !== null ||
+    alignmentData === "local"
+  ) {
     useFilesMode = true;
     // If we already have alignment grids (from URL), populate expected keys
     if (
       Object.keys(alignmentGrids).length > 0 &&
       expectedAudioKeys.length === 0
     ) {
-      expectedAudioKeys = Object.keys(alignmentGrids);
+      expectedAudioKeys = Object.keys(alignmentGrids).filter(
+        (k) => k !== SYNTH_MEI_KEY,
+      );
     }
     // Show the "Manage files" button and wire it to reopen the overlay
     const manageBtn = document.getElementById("manage-files-btn");

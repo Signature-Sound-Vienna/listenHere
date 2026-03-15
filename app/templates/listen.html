@@ -24,45 +24,150 @@
     <!-- Align panel (shown when mode=align) -->
     <div id="align-panel" style="display:none;">
       <div id="align-card">
-        <div id="align-logo">
-          <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="80" alt="Logo" />
-        </div>
-        <h1>Align Audio Files</h1>
-        <p class="align-hint">
-          Drop a folder of audio files (or select them individually) to compute a
-          DTW-based chroma alignment.
-        </p>
-        <p class="privacy-notice">
-          🔒 Your audio files are processed entirely in your browser and are <strong>never uploaded</strong> or sent onward. Safe to use with copyrighted recordings.
-        </p>
-
-        <!-- File selection -->
-        <div id="align-file-actions">
-          <button id="align-dir-btn" style="display:none">Choose Folder</button>
-          <button id="align-files-btn">Choose Files</button>
-          <input type="file" id="align-file-input" multiple
-            accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac" style="display:none" />
-        </div>
-        <div id="align-drop-zone">
-          <span>or drag &amp; drop audio files here</span>
+        <div id="align-header">
+          <div id="align-logo">
+            <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="64" alt="Logo" />
+          </div>
+          <h1>Align Audio Files</h1>
+          <!-- Step indicator -->
+          <div id="align-steps">
+            <div class="align-step active" data-step="1"><span class="step-num">1</span> Files</div>
+            <div class="align-step-line"></div>
+            <div class="align-step" data-step="2"><span class="step-num">2</span> Quality</div>
+            <div class="align-step-line"></div>
+            <div class="align-step" data-step="3"><span class="step-num">3</span> URIs</div>
+            <div class="align-step-line"></div>
+            <div class="align-step" data-step="4"><span class="step-num">4</span> Align</div>
+          </div>
         </div>
 
-        <!-- Optional MEI URI for score alignment -->
-        <div id="align-mei-section">
-          <label for="align-mei-input">
-            <strong>MEI URI</strong>
-            <span class="align-mei-hint">(optional — adds score–performance alignment)</span>
-          </label>
-          <input type="url" id="align-mei-input" placeholder="https://example.com/score.mei" />
+        <!-- ─── Tab 1: Files ─── -->
+        <div class="align-tab active" id="align-tab-files">
+          <p class="align-hint">
+            Drop a folder of audio files (or select them individually) to compute a
+            DTW-based chroma alignment.
+          </p>
+          <p class="privacy-notice">
+            🔒 Your audio files are processed entirely in your browser and are <strong>never uploaded</strong> or sent onward. Safe to use with copyrighted recordings.
+          </p>
+          <div id="align-file-actions">
+            <button id="align-dir-btn" style="display:none">Choose Folder</button>
+            <button id="align-files-btn">Choose Files</button>
+            <input type="file" id="align-file-input" multiple
+              accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac" style="display:none" />
+          </div>
+          <div id="align-drop-zone">
+            <span>or drag &amp; drop audio files here</span>
+          </div>
+          <div id="align-file-list-container" style="display:none">
+            <h3>Selected files</h3>
+            <table id="align-file-table">
+              <thead><tr><th>File</th><th style="text-align:right;">Duration</th><th>Ref</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
         </div>
 
-        <!-- File list + reference selector -->
-        <div id="align-file-list-container" style="display:none">
-          <h3>Selected files</h3>
-          <table id="align-file-table">
-            <thead><tr><th>File</th><th style="text-align:right;">Duration</th><th>Ref</th></tr></thead>
-            <tbody></tbody>
-          </table>
+        <!-- ─── Tab 2: Quality ─── -->
+        <div class="align-tab" id="align-tab-quality">
+          <div id="align-quality-section">
+            <label class="align-quality-label">Alignment quality</label>
+            <div id="align-quality-presets">
+              <label class="align-preset" data-preset="fast">
+                <input type="radio" name="align-quality" value="fast" />
+                <span class="preset-pill">
+                  <strong>Fast</strong>
+                  <span class="preset-desc">Good quality, quickest results. Best for previewing or working with many files.</span>
+                </span>
+              </label>
+              <label class="align-preset" data-preset="balanced">
+                <input type="radio" name="align-quality" value="balanced" checked />
+                <span class="preset-pill">
+                  <strong>Balanced</strong> <span class="preset-badge">recommended</span>
+                  <span class="preset-desc">Better precision, a little slower. Analyses audio at finer detail with more flexible matching.</span>
+                </span>
+              </label>
+              <label class="align-preset" data-preset="hq">
+                <input type="radio" name="align-quality" value="hq" />
+                <span class="preset-pill">
+                  <strong>High quality</strong>
+                  <span class="preset-desc">Best precision, slower. Doubles analysis resolution and widens the search. Best for final or archival alignments.</span>
+                </span>
+              </label>
+            </div>
+            <details id="align-advanced">
+              <summary>Advanced parameters</summary>
+              <div id="align-advanced-body">
+                <p class="align-advanced-hint">Changing a value switches to <em>Custom</em> mode. <a href="#" id="align-reset-preset">Reset to preset</a></p>
+                <div class="align-param-row">
+                  <label for="align-param-coarse">Coarse resolution</label>
+                  <select id="align-param-coarse">
+                    <option value="1">1 (finest)</option>
+                    <option value="2">2</option>
+                    <option value="4">4 (coarsest)</option>
+                  </select>
+                  <span class="align-param-help">How much to downsample for the initial structural pass. Lower = more precise, slower.</span>
+                </div>
+                <div class="align-param-row">
+                  <label for="align-param-slack">Search flexibility</label>
+                  <input type="number" id="align-param-slack" min="40" max="240" step="10" />
+                  <span class="align-param-unit">frames</span>
+                  <span class="align-param-help">How far the fine alignment can deviate from the structural estimate. Wider = more forgiving, slower.</span>
+                </div>
+                <div class="align-param-row">
+                  <label for="align-param-feature-rate">Feature rate</label>
+                  <select id="align-param-feature-rate">
+                    <option value="10">10 Hz</option>
+                    <option value="20">20 Hz</option>
+                  </select>
+                  <span class="align-param-help">How many analysis frames per second. Higher = more precise for fast passages, slower.</span>
+                </div>
+                <div class="align-param-separator">Score alignment parameters</div>
+                <div class="align-param-row align-score-param">
+                  <label for="align-param-score-ds">Score resolution</label>
+                  <select id="align-param-score-ds">
+                    <option value="1">1 (full)</option>
+                    <option value="2">2 (half)</option>
+                  </select>
+                  <span class="align-param-help">Downsampling factor for score alignment. 1 = full resolution, slower but more accurate.</span>
+                </div>
+                <div class="align-param-row align-score-param">
+                  <label for="align-param-onset-weight">Onset emphasis</label>
+                  <input type="number" id="align-param-onset-weight" min="0" max="5" step="0.5" />
+                  <span class="align-param-help">How strongly note attacks are emphasised. Higher = alignment anchors more firmly to clear onsets.</span>
+                </div>
+              </div>
+            </details>
+          </div>
+          <div id="align-output-settings-row">
+            <label>
+              <input type="checkbox" id="align-include-params" checked />
+              Include alignment settings in output
+            </label>
+          </div>
+        </div>
+
+        <!-- ─── Tab 3: URIs ─── -->
+        <div class="align-tab" id="align-tab-uris">
+          <div id="align-mei-section">
+            <label for="align-mei-input">
+              <strong>MEI URI</strong>
+              <span class="align-mei-hint">(optional — adds score–performance alignment)</span>
+            </label>
+            <input type="url" id="align-mei-input" placeholder="https://example.com/score.mei" />
+          </div>
+          <div id="align-ld-uri-row">
+            <label for="align-ld-uri-prefix">
+              <strong>Audio URI prefix</strong>
+              <span class="align-mei-hint">(optional — identifier prefix for linked data annotations)</span>
+            </label>
+            <input type="url" id="align-ld-uri-prefix" placeholder="https://example.com/media/wav/" />
+          </div>
+        </div>
+
+        <!-- ─── Tab 4: Align ─── -->
+        <div class="align-tab" id="align-tab-align">
+          <div id="align-summary"></div>
           <div id="align-peaks-row">
             <label>
               <input type="checkbox" id="align-peaks-checkbox" checked />
@@ -76,33 +181,28 @@
               <span id="align-peaks-size-estimate" style="font-size:smaller;color:#555"></span>
             </div>
           </div>
-          <div id="align-ld-uri-row">
-            <label for="align-ld-uri-prefix">
-              <strong>Audio URI prefix</strong>
-              <span class="align-mei-hint">(optional — identifier prefix for linked data annotations)</span>
-            </label>
-            <input type="url" id="align-ld-uri-prefix" placeholder="https://example.com/media/wav/" />
-          </div>
           <button id="align-start-btn">Start Alignment</button>
+          <div id="align-progress" style="display:none">
+            <div id="align-progress-bar-container">
+              <div id="align-progress-bar"></div>
+            </div>
+            <p id="align-progress-elapsed"></p>
+            <div id="align-step-list-container">
+              <ul id="align-step-list"></ul>
+            </div>
+            <p id="align-progress-text">Initializing...</p>
+          </div>
+          <div id="align-results" style="display:none">
+            <h3>Alignment complete!</h3>
+            <button id="align-download-btn">Download alignment JSON</button>
+            <button id="align-open-btn">Listen!</button>
+          </div>
         </div>
 
-        <!-- Progress -->
-        <div id="align-progress" style="display:none">
-          <div id="align-progress-bar-container">
-            <div id="align-progress-bar"></div>
-          </div>
-          <p id="align-progress-elapsed"></p>
-          <div id="align-step-list-container">
-            <ul id="align-step-list"></ul>
-          </div>
-          <p id="align-progress-text">Initializing...</p>
-        </div>
-
-        <!-- Results -->
-        <div id="align-results" style="display:none">
-          <h3>Alignment complete!</h3>
-          <button id="align-download-btn">Download alignment JSON</button>
-          <button id="align-open-btn">Listen!</button>
+        <!-- Wizard navigation -->
+        <div id="align-wizard-nav">
+          <button id="align-prev-btn" class="align-nav-btn" style="visibility:hidden">&larr; Back</button>
+          <button id="align-next-btn" class="align-nav-btn primary">Next &rarr;</button>
         </div>
       </div>
     </div>

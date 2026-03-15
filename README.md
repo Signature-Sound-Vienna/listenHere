@@ -30,6 +30,8 @@ You can load audio files directly from your computer using your browser's built-
    - **Choose a folder** to automatically match all audio files inside it.
    - **Choose individual files** to select specific audio recordings.
    - **Drag and drop** audio files directly onto the overlay.
+   - Optionally, switch to the **Linked Data URIs** tab to configure how linked-data annotations will be targeted - see [Annotations (Linked Data)](#annotations-linked-data) below.
+4. You can reopen this overlay at any time by clicking the **Manage files** button in the toolbar.
 
 ### 2. Using hosted audio files (Basic Usage)
 If your audio files are already hosted on a web server, you can point the app to load them automatically.
@@ -47,9 +49,23 @@ If you don't have an alignment JSON file yet, you can create one directly in the
 1. Go to the start page at **https://listen-here.mdw.ac.at** and click **Align in browser**.
 2. Alternatively, visit this link directly:
    `https://listen-here.mdw.ac.at/?mode=align`
-3. Follow the on-screen instructions to select your audio files.
-4. (Optional) Check "Include pre-calculated waveform envelope (peaks)" before generating. This significantly speeds up load times when opening the listening interface later, at the cost of a slightly larger alignment file.
-5. Generate your new alignment, which you can then save and use for listening.
+3. A step-by-step wizard guides you through the process:
+
+   **Step 1 — Files:** Select or drag-and-drop the audio files you want to align. You need at least two. The longest file is automatically chosen as the reference, but you can change this using the radio buttons in the file table.
+
+   **Step 2 — Quality:** Choose an alignment quality preset:
+   - **Fast** — good quality, quickest results. Best for previewing or working with many files.
+   - **Balanced** (recommended) — better precision, a little slower.
+   - **High quality** — best precision, slower. Best for final or archival alignments.
+
+   You can also expand **Advanced parameters** to fine-tune individual settings (see [Alignment parameters](#alignment-parameters) below). Changing a value switches automatically to "Custom" mode; you can reset back to a preset at any time. Your quality settings are remembered across sessions.
+
+   **Step 3 — URIs** (optional): Provide a **MEI URI** if you want to include score–performance alignment. You can also set an **Audio URI prefix** to embed linked-data identifiers in the output.
+
+   **Step 4 — Align:** Review a summary of your choices, optionally enable pre-calculated waveform peaks (speeds up later load times at the cost of a slightly larger file), then click **Start Alignment**. A progress display shows each step in real time.
+
+4. You can click any completed step in the indicator bar at the top to jump back and adjust settings before starting.
+5. After alignment completes, you can **download** the alignment JSON file or click **Listen!** to transition seamlessly into the listening interface — no page reload required. Your audio stays loaded and ready to play.
 
 ---
 
@@ -90,14 +106,55 @@ When many recordings are loaded, you can organise them into named groups for eas
 
 ### Annotations (Linked Data)
 If you are logged into a [Solid Pod](https://solidproject.org), you can create and manage linked-data annotations using the Music Annotation Ontology.
-- Click the **RDF logo** button in the toolbar to open the Linked Data drawer and log in.
-- Annotation cards appear pinned at the bottom of the interface. Each card has a **Play** button to loop the annotated region.
+
+#### Getting started
+- Click the **RDF logo** button in the toolbar to open the Linked Data drawer and log in. Login opens in a popup window, so your loaded audio and waveforms are preserved — no page reload.
+- You can also load annotations from any publicly accessible URL by pasting it into the **Load annotations** input at the bottom of the Linked Data drawer — no Solid login required.
+
+#### Creating a new annotation
+Once logged in, a **+ New Annotation** button appears at the bottom of the interface. Clicking it creates a **draft card** — a workspace where you build up an annotation before posting it.
+
+1. **Give it a label.** Type a name into the text field at the top of the card.
+2. **Draw regions.** Click **Draw Regions** to enter drawing mode — your cursor changes and you can click-and-drag on any waveform to mark a time region. Each region appears as a coloured overlay across all synchronised recordings. Click **Stop Drawing** when you are done. You can draw multiple regions per annotation.
+   - Regions can be **resized or repositioned** by dragging their edges or body. By default, adjustments snap to the alignment grid so all recordings stay in sync.
+   - Hold **Shift** while dragging to make a **local override** — an adjustment that applies only to that specific recording's waveform.
+   - Each region is listed on the card with a **delete** button (✕) to remove it.
+3. **Select recordings.** Click **Select Recordings** to enter selection mode. Overlay icons appear on each waveform — click them to **stage** (or unstage) recordings you want to include in the annotation. A counter shows how many are selected.
+4. **Include peaks** (optional). The "Include peaks" checkbox (on by default) attaches a compact waveform envelope so the waveform shape can be displayed publicly without sharing any playable audio.
+5. **Post to Solid.** Click **Post to Solid** to publish the annotation to your Solid Pod. The button is disabled until you have selected at least one recording with a valid audio URI (set via *Manage files → Linked Data URIs*).
+6. **Discard.** Click the **✕** in the card header to discard a draft at any time.
+
+You can have multiple draft cards open simultaneously; each is assigned a distinct colour so its regions are easy to identify on the waveforms.
+
+#### Working with existing annotations
+- Annotation cards appear pinned at the bottom of the interface. Each card has a **Play** button to loop the annotated region. Loop playback automatically transfers when you switch between waveforms.
 - Use **Select Recordings** on a card to enter selection mode: click waveform overlays to stage recordings, then **Post to Solid** to save.
-- Loop playback automatically transfers when you switch between waveforms during annotation.
+- Use **Describe** on a card to add a textual description (posted as a Web Annotation to your Solid Pod).
+- Use **Primal** to open the Primal interface, which identifies the original recording used when creating the annotation.
+- Click the **✕** button on a card to unload it from the interface.
 
 **What does "Post to Solid" publish?** Only structured linked-data annotations are posted: timeline interval descriptions (start/end times) identifying selections within recordings, and (if the "Include peaks" option is checked) a compact waveform envelope that allows the waveform shape to be displayed publicly. **No playable audio data is ever uploaded.** Audio content never leaves your browser.
 
-If you are loading annotations from a publicly accessible Web location, logging in to Solid is not required. You will not be able to post selections, however.
+---
+
+## Alignment parameters
+
+The alignment wizard exposes several parameters that control how the DTW (Dynamic Time Warping) chroma alignment is computed. The three built-in presets set sensible combinations; you can also adjust each value individually.
+
+| Parameter | Fast | Balanced | High quality | Description |
+|-----------|------|----------|--------------|-------------|
+| Coarse resolution | 4 | 2 | 2 | How much to downsample audio for the initial structural pass. Lower values are more precise but slower. |
+| Search flexibility | 80 | 120 | 160 | How far (in frames) the fine alignment can deviate from the structural estimate. Wider values are more forgiving of large tempo changes, but slower. |
+| Feature rate | 10 Hz | 10 Hz | 20 Hz | How many chroma analysis frames are computed per second of audio. Higher rates capture fast passages more accurately but increase processing time. |
+| Score resolution | 2 (half) | 1 (full) | 1 (full) | Downsampling factor for score-to-performance alignment. Only applies when an MEI URI is provided. 1 = full resolution, slower but more accurate. |
+| Onset emphasis | 2.0 | 2.0 | 2.0 | How strongly note attacks in the score are emphasised during alignment. Higher values anchor the alignment more firmly to clear note onsets. Only applies when an MEI URI is provided. |
+
+**Choosing a preset:**
+- Use **Fast** when you want a quick preview or are working with a large number of files.
+- Use **Balanced** (the default) for most situations — it offers noticeably better precision with only a modest speed trade-off.
+- Use **High quality** when precision matters most, for example when producing a final or archival alignment.
+
+All settings are saved in your browser and restored automatically the next time you open the wizard. If the "Include alignment settings in output" checkbox is enabled (on by default), the chosen parameter values are written into the `header.alignmentParams` field of the output JSON for reproducibility.
 
 ---
 
@@ -118,18 +175,28 @@ When `useLocal` is specified, the tool extracts only the filename from each audi
 > **Note:** `serve_local.py` is a minimal CORS-enabled HTTP file server. It accepts any local directory path (absolute or relative) and an optional port number (default: 8080).
 
 ### Alignment JSON format
-The mapping file tells the app how recordings relate. It must follow this structure:
+The alignment file tells the app how recordings relate in time. It follows this structure:
 
 ```json
 {
   "header": {
-    "ref": "<URL of the reference audio>",
-    "meiUri": "<URL of MEI encoding (optional, required if score is provided)>"
+    "ref": "<URL or filename of the reference audio>",
+    "meiUri": "<URL of MEI encoding (optional, for score alignment)>",
+    "linkedDataUriPrefix": "<URI prefix for linked-data annotations (optional)>",
+    "createdBy": "Listen Here! v0.13.0",
+    "createdAt": "2026-03-15T12:00:00.000Z",
+    "alignmentParams": {
+      "coarse": 2,
+      "slack": 120,
+      "featureRate": 10,
+      "scoreDownsample": 1,
+      "onsetWeight": 2.0
+    }
   },
   "body": {
     "audio": {
-      "<audio_URL_1>": [0.0, 0.02, 0.04, ...],
-      "<audio_URL_2>": [0.0, 0.03, 0.05, ...],
+      "<audio_key_1>": [0.0, 0.02, 0.04, ...],
+      "<audio_key_2>": [0.0, 0.03, 0.05, ...],
       ...
     },
     "score": {
@@ -142,9 +209,33 @@ The mapping file tells the app how recordings relate. It must follow this struct
 }
 ```
 
-- **`header.ref`** (required): must match one of the keys in `body.audio`.
-- **`body.audio`** (required): each key is a URL (or filename) identifying an audio recording; its value is an array of alignment times (in seconds).
-- **`body.score`** (optional): score-to-performance alignment arrays. If provided, `header.meiUri` must also be supplied.
+When **peaks** are included (the default), each audio entry becomes an object instead of a plain array:
+
+```json
+"<audio_key>": {
+  "times": [0.0, 0.02, 0.04, ...],
+  "peaks": [0.12, 0.45, 0.87, ...],
+  "duration": 423.576
+}
+```
+
+#### Header fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `ref` | yes | Must match one of the keys in `body.audio`. Identifies the reference recording. |
+| `meiUri` | if score is present | URL of the MEI encoding used for score–performance alignment. |
+| `linkedDataUriPrefix` | no | A URI prefix prepended to audio filenames when constructing linked-data annotation targets. |
+| `createdBy` | no | Tool name and version that generated the file. Added automatically by Listen Here! |
+| `createdAt` | no | ISO 8601 timestamp of when the alignment was created. |
+| `alignmentParams` | no | The DTW parameter values used to produce the alignment (see [Alignment parameters](#alignment-parameters)). Included when the "Include alignment settings in output" option is enabled. |
+
+#### Body fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `body.audio` | yes | Each key is a URL or filename identifying an audio recording. The value is either an array of alignment times (in seconds), or an object with `times`, `peaks`, and `duration` when peaks are included. |
+| `body.score` | no | Score-to-performance alignment arrays (`score_onset`, `ref_onset`, `score_offset`, `ref_offset`). Requires `header.meiUri`. |
 
 Alignment JSON files can be generated using the tool's in-client alignment feature, or offline using the [SSV alignment workflow](https://github.com/signature-sound-vienna/alignment), based on [SyncToolbox](https://github.com/meinhardmueller/synctoolbox).
 

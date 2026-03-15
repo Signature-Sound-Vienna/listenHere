@@ -10,6 +10,147 @@ const TARGET_SR = 22050;
 
 let selectedFiles = []; // Array of File objects
 let alignmentResult = null;
+let currentTab = 1; // Active wizard tab: 1=Files, 2=Quality, 3=URIs, 4=Align
+let alignmentRunning = false; // true while worker is active
+
+// ---------------------------------------------------------------------------
+// Alignment quality presets and parameter defaults
+// ---------------------------------------------------------------------------
+
+const PRESETS = {
+  fast: {
+    coarse: 4,
+    slack: 80,
+    featureRate: 10,
+    scoreDownsample: 2,
+    onsetWeight: 2.0,
+  },
+  balanced: {
+    coarse: 2,
+    slack: 120,
+    featureRate: 10,
+    scoreDownsample: 1,
+    onsetWeight: 2.0,
+  },
+  hq: {
+    coarse: 2,
+    slack: 160,
+    featureRate: 20,
+    scoreDownsample: 1,
+    onsetWeight: 2.0,
+  },
+};
+
+const STORAGE_KEY = "listenHere_alignQuality";
+
+/** Load saved quality settings from localStorage, or return balanced defaults. */
+function loadQualitySettings() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (_) {
+    /* ignore */
+  }
+  return { preset: "balanced", params: { ...PRESETS.balanced } };
+}
+
+/** Persist current quality settings to localStorage. */
+function saveQualitySettings(preset, params) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ preset, params }));
+  } catch (_) {
+    /* ignore */
+  }
+}
+
+/** Get the current alignment parameters from the Advanced UI controls. */
+function readAdvancedParams() {
+  return {
+    coarse: parseInt(document.getElementById("align-param-coarse").value),
+    slack: parseInt(document.getElementById("align-param-slack").value),
+    featureRate: parseInt(
+      document.getElementById("align-param-feature-rate").value,
+    ),
+    scoreDownsample: parseInt(
+      document.getElementById("align-param-score-ds").value,
+    ),
+    onsetWeight: parseFloat(
+      document.getElementById("align-param-onset-weight").value,
+    ),
+  };
+}
+
+/** Write parameter values into the Advanced UI controls. */
+function writeAdvancedParams(p) {
+  document.getElementById("align-param-coarse").value = p.coarse;
+  document.getElementById("align-param-slack").value = p.slack;
+  document.getElementById("align-param-feature-rate").value = p.featureRate;
+  document.getElementById("align-param-score-ds").value = p.scoreDownsample;
+  document.getElementById("align-param-onset-weight").value = p.onsetWeight;
+}
+
+/** Check if current advanced params match any preset. */
+function detectPreset(params) {
+  for (const [name, p] of Object.entries(PRESETS)) {
+    if (
+      p.coarse === params.coarse &&
+      p.slack === params.slack &&
+      p.featureRate === params.featureRate &&
+      p.scoreDownsample === params.scoreDownsample &&
+      p.onsetWeight === params.onsetWeight
+    )
+      return name;
+  }
+  return null;
+}
+
+/** Select a preset radio and sync advanced params. */
+function selectPreset(name) {
+  const radio = document.querySelector(
+    `input[name="align-quality"][value="${name}"]`,
+  );
+  if (radio) radio.checked = true;
+  writeAdvancedParams(PRESETS[name]);
+  saveQualitySettings(name, { ...PRESETS[name] });
+}
+
+/** Called when an advanced param changes — detect or clear preset. */
+function onAdvancedParamChange() {
+  const params = readAdvancedParams();
+  const match = detectPreset(params);
+  if (match) {
+    const radio = document.querySelector(
+      `input[name="align-quality"][value="${match}"]`,
+    );
+    if (radio) radio.checked = true;
+  } else {
+    // Uncheck all preset radios
+    document
+      .querySelectorAll('input[name="align-quality"]')
+      .forEach((r) => (r.checked = false));
+  }
+  saveQualitySettings(match || "custom", params);
+}
+
+/** Update score param enabled/disabled state based on MEI input. */
+function updateScoreParamState() {
+  const hasMei = !!document.getElementById("align-mei-input").value.trim();
+  document.querySelectorAll(".align-score-param").forEach((row) => {
+    if (hasMei) {
+      row.classList.remove("disabled");
+      const tip = row.querySelector(".align-score-param-tooltip");
+      if (tip) tip.remove();
+    } else {
+      row.classList.add("disabled");
+      if (!row.querySelector(".align-score-param-tooltip")) {
+        const tip = document.createElement("span");
+        tip.className = "align-score-param-tooltip";
+        tip.textContent = "Available when an MEI score is provided";
+        row.appendChild(tip);
+      }
+    }
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Verovio helpers (reuse the toolkit that listen.js already initialises)
@@ -203,10 +344,11 @@ async function startAlignment() {
     : 0;
 
   // Show progress, hide controls
-  document.getElementById("align-file-list-container").style.display = "none";
-  document.getElementById("align-file-actions").style.display = "none";
-  document.getElementById("align-drop-zone").style.display = "none";
-  document.getElementById("align-mei-section").style.display = "none";
+  alignmentRunning = true;
+  document.getElementById("align-steps").classList.add("disabled");
+  document.getElementById("align-start-btn").style.display = "none";
+  document.getElementById("align-summary").style.display = "none";
+  document.getElementById("align-wizard-nav").style.display = "none";
   const progressEl = document.getElementById("align-progress");
   const progressBar = document.getElementById("align-progress-bar");
   const progressText = document.getElementById("align-progress-text");
@@ -285,6 +427,7 @@ async function startAlignment() {
   }
 
   // Launch Web Worker
+  const currentOptions = readAdvancedParams();
   const worker = new Worker(_workerUrl);
   const activeSteps = {};
 
@@ -325,6 +468,17 @@ async function startAlignment() {
       if (ldPrefix && alignmentResult.header) {
         alignmentResult.header.linkedDataUriPrefix = ldPrefix;
       }
+      // Inject version & creation timestamp
+      if (alignmentResult.header) {
+        alignmentResult.header.createdBy =
+          "Listen Here! v" + (window.versionString || "?");
+        alignmentResult.header.createdAt = new Date().toISOString();
+      }
+      // Inject alignment parameters if checkbox is checked
+      const includeParams = document.getElementById("align-include-params");
+      if (includeParams && includeParams.checked && alignmentResult.header) {
+        alignmentResult.header.alignmentParams = { ...currentOptions };
+      }
       progressBar.style.width = "100%";
       progressText.textContent = "";
       document.getElementById("align-results").style.display = "";
@@ -353,6 +507,7 @@ async function startAlignment() {
       meiMidi: meiMidi || null,
       meiUri: meiUri || "",
       peakCount,
+      options: currentOptions,
     },
     transferables,
   );
@@ -378,6 +533,106 @@ function downloadJSON() {
 function listenToAlignment() {
   if (!alignmentResult || !_onComplete) return;
   _onComplete(alignmentResult, selectedFiles);
+}
+
+// ---------------------------------------------------------------------------
+// Wizard tab navigation
+// ---------------------------------------------------------------------------
+
+const TAB_IDS = [
+  "align-tab-files",
+  "align-tab-quality",
+  "align-tab-uris",
+  "align-tab-align",
+];
+const LAST_TAB = TAB_IDS.length;
+
+/** Switch to the given wizard tab (1-based). */
+function goToTab(n) {
+  if (n < 1 || n > LAST_TAB) return;
+  if (alignmentRunning) return;
+  currentTab = n;
+
+  // Show/hide tab panes
+  TAB_IDS.forEach((id, i) => {
+    document.getElementById(id).classList.toggle("active", i === n - 1);
+  });
+
+  // Update step indicator
+  document.querySelectorAll("#align-steps .align-step").forEach((el) => {
+    const s = parseInt(el.dataset.step);
+    el.classList.toggle("active", s === n);
+    el.classList.toggle("completed", s < n);
+  });
+  document
+    .querySelectorAll("#align-steps .align-step-line")
+    .forEach((el, i) => {
+      el.classList.toggle("completed", i < n - 1);
+    });
+
+  // Update nav buttons
+  const prevBtn = document.getElementById("align-prev-btn");
+  const nextBtn = document.getElementById("align-next-btn");
+  prevBtn.style.visibility = n === 1 ? "hidden" : "";
+
+  if (n === LAST_TAB) {
+    nextBtn.style.display = "none";
+    buildSummary();
+  } else {
+    nextBtn.style.display = "";
+  }
+}
+
+/** Validate whether navigation away from the given tab is allowed. */
+function canLeaveTab(tab) {
+  if (tab === 1 && selectedFiles.length < 2) {
+    alert("Please select at least 2 audio files before continuing.");
+    return false;
+  }
+  return true;
+}
+
+/** Attempt to go to the next tab, with validation. */
+function goNext() {
+  if (!canLeaveTab(currentTab)) return;
+  goToTab(currentTab + 1);
+}
+
+/** Jump directly to a step (clicked in the indicator). */
+function goToStep(n) {
+  if (n === currentTab) return;
+  // When moving forward, validate leaving the current tab
+  if (n > currentTab && !canLeaveTab(currentTab)) return;
+  goToTab(n);
+}
+
+/** Go to the previous tab. */
+function goPrev() {
+  goToTab(currentTab - 1);
+}
+
+/** Build a summary on Tab 3 before alignment starts. */
+function buildSummary() {
+  const el = document.getElementById("align-summary");
+  if (!el) return;
+  const refRadio = document.querySelector('input[name="ref"]:checked');
+  const refName = refRadio ? refRadio.value : selectedFiles[0]?.name || "?";
+  const presetRadio = document.querySelector(
+    'input[name="align-quality"]:checked',
+  );
+  const presetLabel = presetRadio ? presetRadio.value : "Custom";
+  const meiUri = document.getElementById("align-mei-input").value.trim();
+
+  let html = `<strong>${selectedFiles.length}</strong> audio files, reference: <strong>${escapeHtml(refName)}</strong>`;
+  html += `<br>Quality: <strong>${escapeHtml(presetLabel.charAt(0).toUpperCase() + presetLabel.slice(1))}</strong>`;
+  if (meiUri) html += `<br>Score alignment: MEI provided`;
+  el.innerHTML = html;
+}
+
+function escapeHtml(str) {
+  const d = document.createElement("div");
+  d.textContent = str;
+  return d.innerHTML;
 }
 
 // ---------------------------------------------------------------------------
@@ -444,6 +699,67 @@ export function initAlignPanel() {
   });
   peaksCountInput.addEventListener("input", updatePeakSizeEstimate);
 
+  // --- Quality presets and advanced parameters ---
+
+  // Load saved settings and apply to UI
+  const saved = loadQualitySettings();
+  writeAdvancedParams(saved.params);
+  if (saved.preset && PRESETS[saved.preset]) {
+    const radio = document.querySelector(
+      `input[name="align-quality"][value="${saved.preset}"]`,
+    );
+    if (radio) radio.checked = true;
+  } else {
+    // Custom — uncheck all
+    document
+      .querySelectorAll('input[name="align-quality"]')
+      .forEach((r) => (r.checked = false));
+  }
+
+  // Preset radio change → update advanced params
+  document.querySelectorAll('input[name="align-quality"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      if (radio.checked && PRESETS[radio.value]) {
+        writeAdvancedParams(PRESETS[radio.value]);
+        saveQualitySettings(radio.value, { ...PRESETS[radio.value] });
+      }
+    });
+  });
+
+  // Advanced param inputs → detect or clear preset
+  const advancedInputs = [
+    "align-param-coarse",
+    "align-param-slack",
+    "align-param-feature-rate",
+    "align-param-score-ds",
+    "align-param-onset-weight",
+  ];
+  advancedInputs.forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", onAdvancedParamChange);
+  });
+
+  // "Reset to preset" link
+  const resetLink = document.getElementById("align-reset-preset");
+  if (resetLink) {
+    resetLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      const checked = document.querySelector(
+        'input[name="align-quality"]:checked',
+      );
+      const presetName =
+        checked && PRESETS[checked.value] ? checked.value : "balanced";
+      selectPreset(presetName);
+    });
+  }
+
+  // Score param enable/disable based on MEI input
+  const meiInput = document.getElementById("align-mei-input");
+  if (meiInput) {
+    meiInput.addEventListener("input", updateScoreParamState);
+    updateScoreParamState(); // initial state
+  }
+
   // Results buttons
   document
     .getElementById("align-download-btn")
@@ -451,4 +767,18 @@ export function initAlignPanel() {
   document
     .getElementById("align-open-btn")
     .addEventListener("click", listenToAlignment);
+
+  // Wizard navigation
+  document.getElementById("align-next-btn").addEventListener("click", goNext);
+  document.getElementById("align-prev-btn").addEventListener("click", goPrev);
+
+  // Clickable step indicators
+  document.querySelectorAll("#align-steps .align-step").forEach((el) => {
+    el.addEventListener("click", () => {
+      goToStep(parseInt(el.dataset.step));
+    });
+  });
+
+  // Set initial tab state
+  goToTab(1);
 }

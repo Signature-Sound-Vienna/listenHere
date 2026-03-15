@@ -967,12 +967,12 @@ export async function loginAndFetch(provider) {
 
   // The callback URL that the IdP will redirect the popup to.
   // The popup callback page captures this URL and posts it back.
-  const popupCallbackUrl =
-    window.location.origin + "/solid-popup-callback";
+  const popupCallbackUrl = window.location.origin + "/solid-popup-callback";
 
   // Pre-open the popup (must happen synchronously in the click handler
   // to avoid popup blockers), pointing at a blank/loading page.
-  const w = 520, h = 600;
+  const w = 520,
+    h = 600;
   const left = Math.round(screen.width / 2 - w / 2);
   const top = Math.round(screen.height / 2 - h / 2);
   const features = `width=${w},height=${h},left=${left},top=${top},toolbar=no,menubar=no`;

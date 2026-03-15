@@ -1,5 +1,9 @@
 # Listen Here! CHANGELOG.md
 
+### 0.13.0
+* Popup-based Solid authentication: log in without losing loaded audio, waveforms, or draft state
+* Falls back to redirect-based login if the popup is blocked
+
 ### 0.12.0
 * Create MAO annotations directly from the interface: select regions across recordings, group them into Extracts and MusicalMaterials, and post to a Solid pod
 * Manage audio Linked Data URIs via a dedicated tab in the file picker, with per-file prefix overrides and live URI preview

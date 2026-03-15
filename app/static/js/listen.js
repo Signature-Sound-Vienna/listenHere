@@ -3228,7 +3228,7 @@ function populateLdUriSection() {
 }
 
 function showFilePickerIfNeeded() {
-  if (params.get("useFiles") !== null || alignmentData === "local") {
+  if (useFilesMode || params.get("useFiles") !== null || alignmentData === "local") {
     useFilesMode = true;
     // If we already have alignment grids (from URL), populate expected keys
     if (

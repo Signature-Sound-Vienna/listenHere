@@ -3,6 +3,8 @@
 ### 0.13.0
 * Popup-based Solid authentication: log in without losing loaded audio, waveforms, or draft state
 * Falls back to redirect-based login if the popup is blocked
+* Implement alignment configuration wizard
+* Write alignment info and other metadata into alignment output
 
 ### 0.12.0
 * Create MAO annotations directly from the interface: select regions across recordings, group them into Extracts and MusicalMaterials, and post to a Solid pod

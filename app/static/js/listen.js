@@ -54,6 +54,12 @@ export const _regionsPlugins = {}; // filename -> RegionsPlugin instance
 const _timerRegions = {}; // filename -> timer Region object
 const _waveformPeaks = {}; // filename -> { peaks: number[], duration: number } when pre-computed
 
+// Audio normalization via Web Audio GainNode
+let _normAudioCtx = null; // lazy AudioContext shared across all waveforms
+const _normGainNodes = {}; // filename -> GainNode
+const _normSourceNodes = {}; // filename -> MediaElementAudioSourceNode
+const _normPeaks = {}; // filename -> peak amplitude (0..1)
+
 /** Return the pre-computed peak data for a filename, or null if unavailable. */
 export function getWaveformPeaks(filename) {
   const p = _waveformPeaks[filename];
@@ -1064,6 +1070,86 @@ function _openGroupModal() {
   renderAll();
 }
 
+// ---------------------------------------------------------------------------
+// Audio normalization helpers (Web Audio GainNode)
+// ---------------------------------------------------------------------------
+
+/** Lazily create the shared AudioContext (must happen after a user gesture). */
+function _getNormAudioCtx() {
+  if (!_normAudioCtx) {
+    _normAudioCtx = new AudioContext();
+  }
+  return _normAudioCtx;
+}
+
+/** Compute the peak amplitude of decoded audio data (0..1). */
+function _computePeak(decodedData) {
+  let peak = 0;
+  for (let ch = 0; ch < decodedData.numberOfChannels; ch++) {
+    const chan = decodedData.getChannelData(ch);
+    for (let i = 0; i < chan.length; i++) {
+      const abs = Math.abs(chan[i]);
+      if (abs > peak) peak = abs;
+    }
+  }
+  return peak;
+}
+
+/**
+ * Set up a GainNode for a waveform after it signals "ready".
+ * Routes: <audio> → MediaElementSourceNode → GainNode → destination.
+ */
+function _setupNormGainNode(filename) {
+  const ws = wavesurfers[filename];
+  if (!ws) return;
+  const mediaEl = ws.getMediaElement();
+  // MediaElementAudioSourceNode can only be created once per <audio> element.
+  // If already connected (shouldn't happen), skip.
+  if (_normSourceNodes[filename]) return;
+  const ctx = _getNormAudioCtx();
+  const source = ctx.createMediaElementSource(mediaEl);
+  const gain = ctx.createGain();
+  source.connect(gain);
+  gain.connect(ctx.destination);
+  _normSourceNodes[filename] = source;
+  _normGainNodes[filename] = gain;
+  // Compute and cache peak amplitude from the decoded audio buffer
+  const decoded = ws.getDecodedData();
+  if (decoded) {
+    _normPeaks[filename] = _computePeak(decoded);
+  }
+  // Apply current normalize state
+  if (document.getElementById("normalize").checked) {
+    const peak = _normPeaks[filename] || 1;
+    gain.gain.value = peak > 0 ? 1 / peak : 1;
+  }
+}
+
+/** Disconnect and clean up the GainNode for a waveform being destroyed. */
+function _teardownNormGainNode(filename) {
+  if (_normSourceNodes[filename]) {
+    _normSourceNodes[filename].disconnect();
+    delete _normSourceNodes[filename];
+  }
+  if (_normGainNodes[filename]) {
+    _normGainNodes[filename].disconnect();
+    delete _normGainNodes[filename];
+  }
+  delete _normPeaks[filename];
+}
+
+/** Apply or remove normalization gain across all waveforms. */
+function _applyNormGain(normalize) {
+  for (const [filename, gain] of Object.entries(_normGainNodes)) {
+    if (normalize) {
+      const peak = _normPeaks[filename] || 1;
+      gain.gain.value = peak > 0 ? 1 / peak : 1;
+    } else {
+      gain.gain.value = 1;
+    }
+  }
+}
+
 function reloadWaveforms() {
   let playPosition = 0;
   let isPlaying = false;
@@ -1078,6 +1164,7 @@ function reloadWaveforms() {
     wavesurfers[ws].destroy();
     delete _regionsPlugins[ws];
     delete _timerRegions[ws];
+    _teardownNormGainNode(ws);
   });
   wavesurfers = {};
   // forget waveform elements (and spectorgrams)
@@ -1277,6 +1364,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       updatePositionIndicator();
     });
     wavesurfers[filename].on("ready", () => {
+      // Wire up Web Audio GainNode for volume normalization
+      _setupNormGainNode(filename);
       // signal file is ready in filename list
       loaded.add(filename);
       console.log("READY:...", filename);
@@ -2242,7 +2331,12 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("normalize").checked = false;
   document.getElementById("normalize").addEventListener("click", (e) => {
     const norm = e.target.checked;
-    Object.values(wavesurfers).forEach((ws) => ws.setOptions({ normalize: norm }));
+    // Visual: scale waveform peaks to fill available height
+    Object.values(wavesurfers).forEach((ws) =>
+      ws.setOptions({ normalize: norm }),
+    );
+    // Audio: adjust GainNode so quieter recordings play at equal volume
+    _applyNormGain(norm);
   });
   // visualize alignment checkbox
   document.getElementById("visalign").checked = false;

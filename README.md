@@ -160,6 +160,17 @@ All settings are saved in your browser and restored automatically the next time 
 
 ## Technical & Advanced Usage
 
+### CORS requirements for remote audio
+Listen Here! needs [CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) headers on any remote audio server. The tool fetches and decodes audio in the browser (for waveform rendering and for the "Normalize audio" feature, which routes playback through a Web Audio `GainNode`). Without CORS, the browser will block the fetch request and the audio will fail to load.
+
+If you control the server, ensure it sends at least:
+
+```
+Access-Control-Allow-Origin: *
+```
+
+The bundled `serve_local.py` script already includes this header.
+
 ### Serving audio from your local machine
 If your audio files are on your local computer but you prefer to use a local file server (e.g., when publishing Linked Data about audio files that cannot be put online for copyright reasons), you can use the `?useLocal` parameter along with the included `serve_local.py` script.
 

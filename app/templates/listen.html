@@ -281,7 +281,6 @@
     <div id="wrapper">
       <nav>
           <a id="back">Back</a>
-          <button id="mark">Mark</button>
           <button id="playpause">Play/Pause</button>
           <span>
             <input type="checkbox" id="normalize"/>
@@ -297,14 +296,46 @@
           </span>
           <button id="manage-files-btn" style="display:none;">Manage files</button>
           <button id="group-files-btn" style="display:none;">Group files</button>
-          <button id="align-correct-btn" style="display:none;" title="Click-and-drag alignment grid lines to correct them">&#9998; Correct alignment</button>
-          <button id="align-undo-btn" style="display:none;" title="Undo last correction (Ctrl+Z)">Undo</button>
-          <button id="align-revert-btn" style="display:none;" title="Revert all corrections to original">Revert all</button>
           <button id="download-json-btn" style="display:none;">Download JSON</button>
           <button id="solid-drawer-btn" title="Linked Data & Annotations">
             <img src="{{ url_for('static', filename='svg/RDF-logo.svg') }}" width="20" height="20" alt="RDF" />
           </button>
-          <span id="close-listening-badge" style="display:none;">Close Listening</span>
+          <!-- Tools panel: persistent, collapsible fieldset -->
+          <fieldset id="tools-panel" style="display:none;">
+            <legend id="tools-header" title="Collapse / expand">&#128295; Tools <span id="tools-collapse-arrow">&#9662;</span></legend>
+            <span class="tools-row" id="tools-always">
+              <span class="tools-row"><input type="checkbox" id="close-listening-cb"/><label for="close-listening-cb">Close Listening</label></span>
+              <span id="tools-more-hint" title="Expand for more tools">&#8230;</span>
+            </span>
+            <div id="tools-body">
+              <hr class="tools-divider"/>
+              <button id="mark">Mark</button>
+              <fieldset id="history-fieldset">
+                <legend>History</legend>
+                <button id="tools-undo-btn" disabled title="Undo (Ctrl+Z)">Undo</button>
+                <button id="tools-redo-btn" disabled title="Redo (Ctrl+Shift+Z)">Redo</button>
+              </fieldset>
+              <fieldset id="drag-marker-fieldset">
+                <legend><input type="checkbox" id="drag-markers-cb"/><label for="drag-markers-cb">Drag markers</label></legend>
+                <div class="tools-radio-col">
+                  <label class="tools-radio-label"><input type="radio" name="drag-mode" id="drag-mode-move" value="move" checked disabled/> Move marker</label>
+                  <label class="tools-radio-label"><input type="radio" name="drag-mode" id="drag-mode-fix" value="fix" disabled/> Fix alignment</label>
+                </div>
+              </fieldset>
+              <fieldset id="radius-fieldset" disabled>
+                <legend>Correction spread</legend>
+                <span class="tools-radio-row">
+                  <input type="radio" name="radius" id="radius-narrow" value="10"/>
+                  <label for="radius-narrow">Narrow</label>
+                  <input type="radio" name="radius" id="radius-medium" value="30" checked/>
+                  <label for="radius-medium">Medium</label>
+                  <input type="radio" name="radius" id="radius-wide" value="90"/>
+                  <label for="radius-wide">Wide</label>
+                </span>
+              </fieldset>
+              <button id="revert-all-btn" disabled title="Revert all alignment corrections to original">Revert alignment edits</button>
+            </div>
+          </fieldset>
           <div id="audios"></div>
       </nav>
       <div id="content-wrapper">

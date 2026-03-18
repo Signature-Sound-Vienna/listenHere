@@ -1131,72 +1131,257 @@ details {
   border-color: #94a3b8;
 }
 
-/* === Alignment correction mode === */
+/* === Tools panel (collapsible fieldset) === */
 
-#align-correct-btn {
-  font-size: 0.85em;
-  padding: 0.35em 0.7em;
-  border-radius: 5px;
+#tools-panel {
+  margin: 0.4em 0;
   border: 1.5px solid #94a3b8;
-  background: #f1f5f9;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 0.45em 0.6em;
 }
-#align-correct-btn.active {
-  background: #dbeafe;
-  border-color: #3b82f6;
-  color: #1e40af;
+#tools-panel > legend {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  font-size: 0.85em;
   font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  user-select: none;
+  padding: 0 0.3em;
 }
-#align-correct-btn:hover {
-  background: #e0e7ef;
+#tools-panel > legend:hover {
+  color: #1e293b;
+}
+#tools-collapse-arrow {
+  font-size: 0.75em;
+  transition: transform 0.2s;
+}
+#tools-panel.collapsed #tools-collapse-arrow {
+  transform: rotate(-90deg);
+}
+#tools-panel.collapsed {
+  padding: 0.15em 0.6em 0.1em;
+}
+#tools-panel.collapsed #tools-body {
+  display: none;
+}
+/* "…" hint visible only when collapsed */
+#tools-more-hint {
+  display: none;
+}
+#tools-panel.collapsed #tools-more-hint {
+  display: block;
+  color: #64748b;
+  font-size: 0.85em;
+  line-height: 0.8;
+  letter-spacing: 0.15em;
+  cursor: pointer;
+  text-align: center;
+  align-self: center;
+  margin: 0;
+  padding-bottom: 0.1em;
+}
+/* Always-visible row (Close Listening) */
+#tools-always {
+  margin-top: 0.15em;
+}
+#tools-panel.collapsed #tools-always {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  margin-top: 0;
+}
+#tools-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4em;
+}
+.tools-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+/* Divider between Close Listening and tools body */
+.tools-divider {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 0.15em 0;
 }
 
-#align-undo-btn,
-#align-revert-btn {
-  font-size: 0.8em;
-  padding: 0.3em 0.6em;
+/* History fieldset: stacked undo/redo */
+#history-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+}
+#tools-undo-btn,
+#tools-redo-btn {
+  font-size: 0.78em;
+  padding: 0.25em 0.5em;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #f8fafc;
+  cursor: pointer;
+  white-space: nowrap;
+  text-align: left;
+}
+#tools-undo-btn:disabled,
+#tools-redo-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+#tools-undo-btn:not(:disabled):hover,
+#tools-redo-btn:not(:disabled):hover {
+  background: #e2e8f0;
+}
+
+/* Close Listening checkbox */
+#close-listening-cb + label {
+  font-weight: 600;
+  font-size: 0.85em;
+  color: #334155;
+  cursor: pointer;
+}
+#close-listening-cb:checked + label {
+  color: #8b0000;
+}
+
+/* Mark button inside tools */
+#tools-body #mark {
+  font-size: 0.82em;
+  padding: 0.3em 0.7em;
   border-radius: 4px;
   border: 1px solid #cbd5e1;
   background: #f8fafc;
   cursor: pointer;
+  align-self: stretch;
+  text-align: center;
 }
-#align-undo-btn:disabled,
-#align-revert-btn:disabled {
+#tools-body #mark:hover {
+  background: #e2e8f0;
+}
+
+/* Fieldsets */
+#tools-body fieldset {
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  padding: 0.3em 0.5em 0.4em;
+  margin: 0;
+}
+#tools-body fieldset legend {
+  font-size: 0.8em;
+  font-weight: 600;
+  color: #475569;
+  padding: 0 0.3em;
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+}
+#tools-body fieldset:disabled {
+  opacity: 0.45;
+}
+
+/* Drag-mode radios: stacked vertically, left-aligned */
+.tools-radio-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+}
+.tools-radio-col .tools-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+.tools-radio-col .tools-radio-label input[type="radio"] {
+  margin: 0;
+  cursor: pointer;
+}
+.tools-radio-col .tools-radio-label input[type="radio"]:disabled {
+  cursor: default;
+}
+
+/* Spread radios: horizontal row */
+.tools-radio-row {
+  display: flex;
+  align-items: center;
+  gap: 0.2em;
+  flex-wrap: nowrap;
+}
+.tools-radio-row label {
+  font-size: 0.8em;
+  margin-right: 0.4em;
+  cursor: pointer;
+}
+.tools-radio-row input[type="radio"] {
+  margin: 0 0.1em 0 0;
+  cursor: pointer;
+}
+
+/* Revert all button */
+#revert-all-btn {
+  font-size: 0.78em;
+  padding: 0.3em 0.6em;
+  border-radius: 4px;
+  border: 1px solid #e2a9a9;
+  background: #fef2f2;
+  color: #991b1b;
+  cursor: pointer;
+  align-self: stretch;
+  text-align: center;
+}
+#revert-all-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }
-#align-undo-btn:not(:disabled):hover,
-#align-revert-btn:not(:disabled):hover {
-  background: #e2e8f0;
+#revert-all-btn:not(:disabled):hover {
+  background: #fee2e2;
+}
+
+/* Drag markers pulse animation */
+@keyframes tools-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5); }
+  70%  { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+}
+#drag-marker-fieldset.pulse-hint {
+  animation: tools-pulse 0.6s ease-out 2;
+  border-color: #3b82f6;
+}
+#drag-marker-fieldset.pulse-hint legend {
+  color: #2563eb;
+}
+
+/* Draggable marker visual: thicker + handle bobble (centered vertically) */
+.ws-marker.draggable {
+  border-left-width: 3px !important;
+  cursor: grab;
+}
+.ws-marker.draggable::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: -4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translateY(-50%);
+}
+
+/* Grabbing cursor during marker drag */
+body.marker-dragging,
+body.marker-dragging * {
+  cursor: grabbing !important;
 }
 
 .align-correction-overlay {
   position: absolute;
   top: 0;
   left: 0;
-}
-
-/* While correction mode is active, dim reference waveform slightly */
-body.align-correction-active .waveform .align-correction-overlay {
-  cursor: crosshair;
-}
-
-/* Close-listening mode badge */
-#close-listening-badge {
-  display: block;
-  margin: 0.3em 0;
-  padding: 0.4em 0.8em;
-  border: 2px solid #8b0000;
-  border-radius: 6px;
-  background: #8b0000;
-  color: #fff;
-  font-size: 0.85em;
-  font-weight: 600;
-  text-align: center;
-  letter-spacing: 0.03em;
-  box-sizing: border-box;
-  width: 100%;
 }
 
 /* === Alignment panel (embedded in listen page) === */

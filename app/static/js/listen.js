@@ -90,6 +90,7 @@ export function getAudioLinkedDataUri(filename) {
 // File picker: maps alignment audio keys to blob URLs from user-selected files
 let fileBlobUrls = new Map();
 let useFilesMode = false;
+let _fromAlignmentHandoff = false;
 
 // Synthesised MEI waveform: key used in wavesurfers / alignmentGrids for the synth track
 const SYNTH_MEI_KEY = "Score (synthesised from MEI)";
@@ -1976,6 +1977,7 @@ function onAlignmentComplete(alignmentResult, files) {
   // Create blob URLs for each audio file so WaveSurfer can load them
   files.forEach((f) => fileBlobUrls.set(f.name, URL.createObjectURL(f)));
   useFilesMode = true;
+  _fromAlignmentHandoff = true;
   loadedAlignmentJSON = alignmentResult;
   workId = "in-browser-alignment";
 
@@ -3067,7 +3069,11 @@ function initFilePicker() {
   });
 
   renderFileList();
-  overlay.style.display = "flex";
+  if (_fromAlignmentHandoff) {
+    _fromAlignmentHandoff = false;
+  } else {
+    overlay.style.display = "flex";
+  }
 }
 
 // --- Linked Data URI management in file picker ---

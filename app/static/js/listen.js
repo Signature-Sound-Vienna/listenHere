@@ -2241,7 +2241,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // normalize audio checkbox
   document.getElementById("normalize").checked = false;
   document.getElementById("normalize").addEventListener("click", (e) => {
-    reloadWaveforms();
+    const norm = e.target.checked;
+    Object.values(wavesurfers).forEach((ws) => ws.setOptions({ normalize: norm }));
   });
   // visualize alignment checkbox
   document.getElementById("visalign").checked = false;

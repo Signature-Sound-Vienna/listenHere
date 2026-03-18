@@ -213,6 +213,69 @@ let _resizeDebounce = null;
 // Per-waveform closures that repaint the position indicator on every canvas.
 // Registered in each waveform's "ready" handler.
 const _positionUpdaters = {};
+// Per-waveform closures that redraw the alignment grid canvas.
+const _gridRedrawers = {};
+
+// ---------------------------------------------------------------------------
+// Alignment correction (drag-to-morph)
+// ---------------------------------------------------------------------------
+let _alignCorrectionMode = false;
+// Undo: array of { filename, grid: Float64Array snapshot }
+const _alignUndoStack = [];
+// Revert: original grids captured when alignment first loads
+const _alignOriginalGrids = {};
+// Radius presets (in alignment indices)
+const _ALIGN_RADIUS_SMALL = 10;
+const _ALIGN_RADIUS_BASE = 30;
+const _ALIGN_RADIUS_LARGE = 90;
+// Asymmetry ratio: influence extends further in the direction of drag
+const _ALIGN_ASYM_RATIO = 2;
+
+/** Asymmetric Gaussian weight: stronger toward dragDir, weaker opposite. */
+function _gaussianWeight(j, jCenter, sigma, dragDir) {
+  const diff = j - jCenter;
+  // Use wider sigma on the side the user is dragging toward
+  const s =
+    (dragDir >= 0 && diff >= 0) || (dragDir < 0 && diff < 0)
+      ? sigma * _ALIGN_ASYM_RATIO
+      : sigma;
+  return Math.exp(-(diff * diff) / (2 * s * s));
+}
+
+/** Choose sigma from modifier keys. */
+function _sigmaFromEvent(e) {
+  if (e.shiftKey && e.altKey) return _ALIGN_RADIUS_SMALL;
+  if (e.shiftKey) return _ALIGN_RADIUS_LARGE;
+  return _ALIGN_RADIUS_BASE;
+}
+
+/**
+ * Apply a Gaussian-weighted displacement to a grid, enforcing monotonicity.
+ * Returns a new array (does not mutate the input).
+ *
+ * @param {number[]} grid        - alignment times
+ * @param {number}   jCenter     - index of the drag anchor
+ * @param {number}   dtDrag      - displacement in seconds at the anchor
+ * @param {number}   sigma       - Gaussian radius (in indices)
+ * @returns {number[]} morphed grid
+ */
+function _morphGrid(grid, jCenter, dtDrag, sigma) {
+  const n = grid.length;
+  const out = new Array(n);
+  const dragDir = dtDrag >= 0 ? 1 : -1;
+  for (let j = 0; j < n; j++) {
+    const w = _gaussianWeight(j, jCenter, sigma, dragDir);
+    out[j] = grid[j] + dtDrag * w;
+  }
+  // Enforce monotonicity (left to right)
+  const EPS = 1e-6;
+  for (let j = 1; j < n; j++) {
+    if (out[j] <= out[j - 1]) out[j] = out[j - 1] + EPS;
+  }
+  // Clamp to non-negative
+  if (out[0] < 0) out[0] = 0;
+  return out;
+}
 
 function showWaveformOverlays() {
   document.querySelectorAll("#waveforms .waveform").forEach((wf) => {
@@ -1467,6 +1530,25 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // after resize (the updater reads currentTime from this file's wavesurfer
       // and repaints every position-indicator canvas).
       _positionUpdaters[filename] = updatePositionIndicator;
+      _gridRedrawers[filename] = drawAlignmentGrid;
+
+      // --- Alignment correction overlay canvas ---
+      const corrCanvas = document.createElement("canvas");
+      corrCanvas.classList.add("align-correction-overlay");
+      corrCanvas.width = readyWfContainer.clientWidth;
+      corrCanvas.height = WAVE_HEIGHT;
+      const corrStyle = corrCanvas.style;
+      corrStyle.position = "absolute";
+      corrStyle.top = "0";
+      corrStyle.left = "0";
+      corrStyle.width = "100%";
+      corrStyle.height = WAVE_HEIGHT + "px";
+      corrStyle.zIndex = "4";
+      corrStyle.pointerEvents = "none"; // toggled in edit mode
+      readyWfContainer.appendChild(corrCanvas);
+
+      // Store reference for resize
+      const _corrCanvasRef = corrCanvas;
 
       // Initial draw
       drawAlignmentGrid();
@@ -1482,6 +1564,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       wavesurfers[filename].on("redrawcomplete", () => {
         // Resize our overlay canvases and repaint grid lines.
         drawAlignmentGrid();
+        // Resize correction overlay
+        if (_corrCanvasRef && readyWfContainer.isConnected) {
+          _corrCanvasRef.width = readyWfContainer.clientWidth;
+          _corrCanvasRef.height = wavesurfers[filename].options.height || 128;
+        }
         // Restore markers (canvas has been redrawn, marker positions must refresh).
         _clearMarkers(filename);
         _addMarker(filename, {
@@ -2012,6 +2099,14 @@ async function setGrids(grids) {
     alignmentGrids = grids;
   }
   console.log("setting grids: ", grids);
+
+  // Capture original alignment grids for the "Revert all" feature
+  for (const [key, grid] of Object.entries(alignmentGrids)) {
+    if (key !== SYNTH_MEI_KEY && Array.isArray(grid)) {
+      _alignOriginalGrids[key] = grid.slice();
+    }
+  }
+
   /* ---- Dynamic file grouping ---- */
   let filenames = Object.keys(alignmentGrids).filter(
     (n) => n !== SYNTH_MEI_KEY,
@@ -2023,6 +2118,10 @@ async function setGrids(grids) {
   // Show the "Group files" button
   const groupBtn = document.getElementById("group-files-btn");
   if (groupBtn) groupBtn.style.display = "";
+
+  // Show the "Correct alignment" button
+  const correctBtn = document.getElementById("align-correct-btn");
+  if (correctBtn) correctBtn.style.display = "";
 
   // Always show manage-files button once alignment is loaded (for URI config)
   const _manageBtn = document.getElementById("manage-files-btn");
@@ -2284,6 +2383,410 @@ document.addEventListener("DOMContentLoaded", () => {
   if (groupFilesBtn) {
     groupFilesBtn.addEventListener("click", () => _openGroupModal());
   }
+
+  // -----------------------------------------------------------------------
+  // Alignment correction mode
+  // -----------------------------------------------------------------------
+  const alignCorrectBtn = document.getElementById("align-correct-btn");
+  const alignUndoBtn = document.getElementById("align-undo-btn");
+  const alignRevertBtn = document.getElementById("align-revert-btn");
+
+  function _setAlignCorrectionMode(active) {
+    _alignCorrectionMode = active;
+    alignCorrectBtn.classList.toggle("active", active);
+    // Toggle pointer-events on correction overlay canvases
+    document.querySelectorAll(".align-correction-overlay").forEach((c) => {
+      c.style.pointerEvents = active ? "auto" : "none";
+      c.style.cursor = active ? "crosshair" : "";
+    });
+    // Show/hide undo & revert buttons
+    alignUndoBtn.style.display = active ? "" : "none";
+    alignRevertBtn.style.display = active ? "" : "none";
+    // Body class for global CSS hooks
+    document.body.classList.toggle("align-correction-active", active);
+  }
+
+  if (alignCorrectBtn) {
+    alignCorrectBtn.addEventListener("click", () => {
+      _setAlignCorrectionMode(!_alignCorrectionMode);
+    });
+  }
+
+  /** Push a snapshot onto the undo stack before mutating a grid. */
+  function _pushUndo(filename) {
+    _alignUndoStack.push({
+      filename,
+      grid: alignmentGrids[filename].slice(),
+    });
+    _updateUndoRevertState();
+  }
+
+  /** Pop the most recent undo entry and restore it. */
+  function _undoCorrection() {
+    if (_alignUndoStack.length === 0) return;
+    const entry = _alignUndoStack.pop();
+    alignmentGrids[entry.filename] = entry.grid;
+    _syncGridToJSON(entry.filename);
+    if (_gridRedrawers[entry.filename]) _gridRedrawers[entry.filename]();
+    _updateUndoRevertState();
+  }
+
+  /** Revert all corrections: restore every grid to its original state. */
+  function _revertAll() {
+    for (const [filename, original] of Object.entries(_alignOriginalGrids)) {
+      alignmentGrids[filename] = original.slice();
+      _syncGridToJSON(filename);
+      if (_gridRedrawers[filename]) _gridRedrawers[filename]();
+    }
+    _alignUndoStack.length = 0;
+    _updateUndoRevertState();
+  }
+
+  /** Enable/disable undo and revert buttons based on stack state. */
+  function _updateUndoRevertState() {
+    if (alignUndoBtn) alignUndoBtn.disabled = _alignUndoStack.length === 0;
+    if (alignRevertBtn) {
+      // Disable revert if all grids match originals
+      let hasChanges = false;
+      for (const [filename, original] of Object.entries(_alignOriginalGrids)) {
+        const current = alignmentGrids[filename];
+        if (!current || current.length !== original.length) {
+          hasChanges = true;
+          break;
+        }
+        for (let i = 0; i < original.length; i++) {
+          if (current[i] !== original[i]) {
+            hasChanges = true;
+            break;
+          }
+        }
+        if (hasChanges) break;
+      }
+      alignRevertBtn.disabled = !hasChanges;
+    }
+  }
+
+  /** Write modified grid back into loadedAlignmentJSON.body.audio. */
+  function _syncGridToJSON(filename) {
+    if (!loadedAlignmentJSON) return;
+    if (!loadedAlignmentJSON.body) return;
+    if (!loadedAlignmentJSON.body.audio) return;
+    const entry = loadedAlignmentJSON.body.audio[filename];
+    if (!entry) return;
+    // If entry was originally {times, peaks, duration}, update .times only
+    if (entry && !Array.isArray(entry) && Array.isArray(entry.times)) {
+      entry.times = alignmentGrids[filename];
+    } else {
+      loadedAlignmentJSON.body.audio[filename] = alignmentGrids[filename];
+    }
+  }
+
+  if (alignUndoBtn) {
+    alignUndoBtn.addEventListener("click", _undoCorrection);
+  }
+  if (alignRevertBtn) {
+    alignRevertBtn.addEventListener("click", () => {
+      if (confirm("Revert all alignment corrections to the original?")) {
+        _revertAll();
+      }
+    });
+  }
+
+  // Ctrl+Z / Ctrl+Shift+Z keyboard shortcuts for undo
+  document.addEventListener("keydown", (e) => {
+    if (!_alignCorrectionMode) return;
+    if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+      e.preventDefault();
+      _undoCorrection();
+    }
+  });
+
+  // --- Hover + Drag interaction on correction overlay canvases ---
+  // We attach a single delegated listener on #waveforms for efficiency;
+  // each .align-correction-overlay canvas will capture events when in edit mode.
+
+  let _dragState = null; // { filename, jCenter, origGrid, sigma, canvas }
+
+  /** Draw the influence zone band (shaded Gaussian) on a correction canvas. */
+  function _drawInfluenceZone(canvas, filename, mouseX, sigma) {
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const grid = alignmentGrids[filename];
+    if (!grid || grid.length === 0) return;
+    const dur = wavesurfers[filename]?.getDuration() || 1;
+    // Map mouseX to alignment index
+    const mouseTime = (mouseX / w) * dur;
+    let jCenter = 0;
+    let bestDist = Infinity;
+    for (let j = 0; j < grid.length; j++) {
+      const d = Math.abs(grid[j] - mouseTime);
+      if (d < bestDist) {
+        bestDist = d;
+        jCenter = j;
+      }
+    }
+    // Draw the band
+    const bandColor = "rgba(70, 130, 230, 0.12)";
+    ctx.fillStyle = bandColor;
+    // Find the pixel extent of the zone (where weight > 0.01)
+    const cutoff = Math.ceil(sigma * 3 * _ALIGN_ASYM_RATIO);
+    const jMin = Math.max(0, jCenter - cutoff);
+    const jMax = Math.min(grid.length - 1, jCenter + cutoff);
+    const xMin = (grid[jMin] / dur) * w;
+    const xMax = (grid[jMax] / dur) * w;
+    ctx.fillRect(xMin, 0, xMax - xMin, h);
+    // Highlight center line
+    const xCenter = (grid[jCenter] / dur) * w;
+    ctx.strokeStyle = "rgba(70, 130, 230, 0.5)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(xCenter, 0);
+    ctx.lineTo(xCenter, h);
+    ctx.stroke();
+  }
+
+  /** Draw morphed alignment preview during drag. */
+  function _drawMorphPreview(canvas, filename, morphedGrid) {
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const dur = wavesurfers[filename]?.getDuration() || 1;
+    // Draw influence band (subtle)
+    if (_dragState) {
+      const sigma = _dragState.sigma;
+      const cutoff = Math.ceil(sigma * 3 * _ALIGN_ASYM_RATIO);
+      const jMin = Math.max(0, _dragState.jCenter - cutoff);
+      const jMax = Math.min(
+        morphedGrid.length - 1,
+        _dragState.jCenter + cutoff,
+      );
+      const xMin = (morphedGrid[jMin] / dur) * w;
+      const xMax = (morphedGrid[jMax] / dur) * w;
+      ctx.fillStyle = "rgba(70, 130, 230, 0.08)";
+      ctx.fillRect(xMin, 0, xMax - xMin, h);
+    }
+    // Draw morphed grid lines (green for changed, faint)
+    ctx.strokeStyle = "rgba(40, 160, 40, 0.7)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const n = morphedGrid.length;
+    const minPixelStep = 4;
+    let lastAbsX = -999;
+    for (let j = 0; j < n; j++) {
+      const absoluteX = (j / n) * w;
+      const relativeX = (morphedGrid[j] / dur) * w;
+      if (absoluteX - lastAbsX >= minPixelStep) {
+        ctx.moveTo(absoluteX, 0);
+        ctx.lineTo(relativeX, h / 6);
+        ctx.moveTo(relativeX, 5 * (h / 6));
+        ctx.lineTo(absoluteX, h);
+        lastAbsX = absoluteX;
+      }
+    }
+    ctx.stroke();
+  }
+
+  function _getCorrectionFilename(canvas) {
+    const wfEl = canvas.closest(".waveform");
+    return wfEl ? wfEl.dataset.ix : null;
+  }
+
+  // Delegate events on correction overlays
+  document.getElementById("waveforms").addEventListener("mousemove", (e) => {
+    if (!_alignCorrectionMode) return;
+    const canvas = e.target.closest(".align-correction-overlay");
+    if (!canvas) return;
+    if (_dragState) return; // drag handles its own drawing
+    const filename = _getCorrectionFilename(canvas);
+    if (!filename || filename === referenceAudioIx) {
+      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+      canvas.title =
+        filename === referenceAudioIx
+          ? "The reference recording cannot be corrected"
+          : "";
+      canvas.style.cursor =
+        filename === referenceAudioIx ? "not-allowed" : "crosshair";
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const sigma = _sigmaFromEvent(e);
+    _drawInfluenceZone(canvas, filename, mouseX, sigma);
+  });
+
+  document.getElementById("waveforms").addEventListener(
+    "mouseleave",
+    (e) => {
+      if (!_alignCorrectionMode || _dragState) return;
+      const canvas = e.target.closest(".align-correction-overlay");
+      if (canvas)
+        canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+    },
+    true,
+  );
+
+  document.getElementById("waveforms").addEventListener("mousedown", (e) => {
+    if (!_alignCorrectionMode) return;
+    const canvas = e.target.closest(".align-correction-overlay");
+    if (!canvas) return;
+    const filename = _getCorrectionFilename(canvas);
+    if (!filename || filename === referenceAudioIx) return;
+    if (filename === SYNTH_MEI_KEY) return;
+    e.preventDefault();
+    const grid = alignmentGrids[filename];
+    const dur = wavesurfers[filename]?.getDuration() || 1;
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const mouseTime = (mouseX / canvas.width) * dur;
+    // Find closest alignment index
+    let jCenter = 0;
+    let bestDist = Infinity;
+    for (let j = 0; j < grid.length; j++) {
+      const d = Math.abs(grid[j] - mouseTime);
+      if (d < bestDist) {
+        bestDist = d;
+        jCenter = j;
+      }
+    }
+    const sigma = _sigmaFromEvent(e);
+    const isGlobal = e.ctrlKey || e.metaKey;
+    const origGrid = grid.slice();
+    // Push undo for this waveform (and all non-ref waveforms if global)
+    if (isGlobal) {
+      for (const fn of Object.keys(alignmentGrids)) {
+        if (fn === referenceAudioIx || fn === SYNTH_MEI_KEY) continue;
+        _pushUndo(fn);
+      }
+    } else {
+      _pushUndo(filename);
+    }
+    _dragState = {
+      filename,
+      jCenter,
+      origGrid,
+      sigma,
+      canvas,
+      startX: e.clientX,
+      dur,
+      isGlobal,
+      origTime: origGrid[jCenter],
+    };
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!_dragState) return;
+    const { filename, jCenter, origGrid, canvas, startX, dur, isGlobal } =
+      _dragState;
+    // Allow modifier change during drag
+    _dragState.sigma = _sigmaFromEvent(e);
+    const sigma = _dragState.sigma;
+    const rect = canvas.getBoundingClientRect();
+    const dtDrag = (e.clientX - startX) / (rect.width / dur);
+    // Morph the dragged waveform
+    const morphed = _morphGrid(origGrid, jCenter, dtDrag, sigma);
+    // Preview on the overlay
+    _drawMorphPreview(canvas, filename, morphed);
+    // If global, preview on all other non-ref waveforms
+    if (isGlobal) {
+      document.querySelectorAll(".align-correction-overlay").forEach((c) => {
+        const fn = _getCorrectionFilename(c);
+        if (
+          !fn ||
+          fn === filename ||
+          fn === referenceAudioIx ||
+          fn === SYNTH_MEI_KEY
+        )
+          return;
+        // Use the pre-drag snapshot from the undo stack
+        const fnOrigGrid = _alignUndoStack
+          .slice()
+          .reverse()
+          .find((u) => u.filename === fn)?.grid;
+        if (!fnOrigGrid) return;
+        // Scale displacement by local grid spacing ratio
+        const refSpacing = origGrid[jCenter] || 1;
+        const localSpacing = fnOrigGrid[jCenter] || 1;
+        const scale = localSpacing / refSpacing;
+        const localMorphed = _morphGrid(
+          fnOrigGrid,
+          jCenter,
+          dtDrag * scale,
+          sigma,
+        );
+        _drawMorphPreview(c, fn, localMorphed);
+      });
+    }
+  });
+
+  document.addEventListener("mouseup", (e) => {
+    if (!_dragState) return;
+    const {
+      filename,
+      jCenter,
+      origGrid,
+      canvas,
+      startX,
+      dur,
+      sigma,
+      isGlobal,
+    } = _dragState;
+    const rect = canvas.getBoundingClientRect();
+    const dtDrag = (e.clientX - startX) / (rect.width / dur);
+    if (Math.abs(dtDrag) < 1e-4) {
+      // No meaningful drag — pop the undo entry/entries we just pushed
+      if (isGlobal) {
+        for (const fn of Object.keys(alignmentGrids)) {
+          if (fn === referenceAudioIx || fn === SYNTH_MEI_KEY) continue;
+          _alignUndoStack.pop();
+        }
+      } else {
+        _alignUndoStack.pop();
+      }
+    } else {
+      // Apply the morph
+      const morphed = _morphGrid(origGrid, jCenter, dtDrag, sigma);
+      alignmentGrids[filename] = morphed;
+      _syncGridToJSON(filename);
+      if (_gridRedrawers[filename]) _gridRedrawers[filename]();
+      // If global, apply to all other non-ref waveforms
+      if (isGlobal) {
+        for (const fn of Object.keys(alignmentGrids)) {
+          if (
+            fn === filename ||
+            fn === referenceAudioIx ||
+            fn === SYNTH_MEI_KEY
+          )
+            continue;
+          const fnOrigGrid = _alignUndoStack
+            .slice()
+            .reverse()
+            .find((u) => u.filename === fn)?.grid;
+          if (!fnOrigGrid) continue;
+          const refSpacing = origGrid[jCenter] || 1;
+          const localSpacing = fnOrigGrid[jCenter] || 1;
+          const scale = localSpacing / refSpacing;
+          const localMorphed = _morphGrid(
+            fnOrigGrid,
+            jCenter,
+            dtDrag * scale,
+            sigma,
+          );
+          alignmentGrids[fn] = localMorphed;
+          _syncGridToJSON(fn);
+          if (_gridRedrawers[fn]) _gridRedrawers[fn]();
+        }
+      }
+    }
+    // Clear all correction overlays
+    document.querySelectorAll(".align-correction-overlay").forEach((c) => {
+      c.getContext("2d").clearRect(0, 0, c.width, c.height);
+    });
+    _dragState = null;
+    _updateUndoRevertState();
+  });
 
   // load alignment json
   if (window.alignMode === "align") {

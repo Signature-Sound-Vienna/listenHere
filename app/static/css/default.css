@@ -1131,6 +1131,57 @@ details {
   border-color: #94a3b8;
 }
 
+/* === Alignment correction mode === */
+
+#align-correct-btn {
+  font-size: 0.85em;
+  padding: 0.35em 0.7em;
+  border-radius: 5px;
+  border: 1.5px solid #94a3b8;
+  background: #f1f5f9;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+#align-correct-btn.active {
+  background: #dbeafe;
+  border-color: #3b82f6;
+  color: #1e40af;
+  font-weight: 600;
+}
+#align-correct-btn:hover {
+  background: #e0e7ef;
+}
+
+#align-undo-btn,
+#align-revert-btn {
+  font-size: 0.8em;
+  padding: 0.3em 0.6em;
+  border-radius: 4px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  cursor: pointer;
+}
+#align-undo-btn:disabled,
+#align-revert-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+#align-undo-btn:not(:disabled):hover,
+#align-revert-btn:not(:disabled):hover {
+  background: #e2e8f0;
+}
+
+.align-correction-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+/* While correction mode is active, dim reference waveform slightly */
+body.align-correction-active .waveform .align-correction-overlay {
+  cursor: crosshair;
+}
+
 /* Close-listening mode badge */
 #close-listening-badge {
   display: block;

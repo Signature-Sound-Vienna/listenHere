@@ -205,11 +205,12 @@ canvas {
   max-height: 2000px; 
 }
 
-#nav-middle.collapsed, #nav-bottom.collapsed {
+.nav-card.collapsed #nav-middle, .nav-card.collapsed #nav-bottom {
   max-height: 0;
   opacity: 0;
   pointer-events: none;
   transition: max-height 0.3s ease-in-out, opacity 0.2s ease;
+  overflow: hidden;
 }
 
 #nav-bottom {
@@ -543,7 +544,7 @@ details {
   margin-left: 0.4em;
 }
 
-.collapsible-fieldset.collapsed .collapse-arrow {
+.nav-card.collapsed .collapse-arrow {
   transform: rotate(-90deg);
 }
 
@@ -2746,16 +2747,23 @@ body.marker-dragging * {
   z-index: 10;
 }
 
-/* Parent indicator only visible when region is collapsed */
+/* Bobble Migration: Parent indicator only visible when region is collapsed */
+.nav-section-header {
+  position: relative;
+}
+
 .nav-section-header.json-dirty::after {
   display: none;
   top: 6px;
-  right: 2.5em; /* position it away from the chevron */
+  right: 2.5em; /* position away from chevron */
 }
 
-#nav-middle.collapsed ~ #nav-middle-toggle.json-dirty::after,
-#region-controls:has(#nav-middle.collapsed) #nav-middle-toggle.json-dirty::after {
+.nav-card.collapsed .nav-section-header.json-dirty::after {
   display: block;
+}
+
+.nav-card.collapsed #download-json-btn.json-dirty::after {
+  display: none;
 }
 
 /* Annotation load notices (shown in Solid drawer) */
@@ -2938,3 +2946,9 @@ body.marker-dragging * {
   display: flex;
 }
 
+
+@keyframes dirty-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
+  70% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}

@@ -335,6 +335,43 @@
                 </span>
                 <div id="tools-body" class="fieldset-body">
                   <hr class="tools-divider"/>
+                  <fieldset id="drag-marker-fieldset" class="collapsible-fieldset">
+                    <legend>&#10024; Drag Markers</legend>
+                    <div class="fieldset-body">
+                      <span>
+                        <input type="checkbox" id="drag-markers-cb"/>
+                        <label for="drag-markers-cb">Enable dragging</label>
+                      </span>
+                      <div class="tools-row">
+                        <span>
+                          <input type="radio" name="drag-mode" id="drag-mode-move" value="move" checked/>
+                          <label for="drag-mode-move">Move marker</label>
+                        </span>
+                        <span>
+                          <input type="radio" name="drag-mode" id="drag-mode-fix" value="fix"/>
+                          <label for="drag-mode-fix">Fix alignment</label>
+                        </span>
+                      </div>
+                      <fieldset id="radius-fieldset" disabled>
+                        <legend>Radius</legend>
+                        <div class="tools-row">
+                          <span>
+                            <input type="radio" name="radius" id="radius-narrow" value="50"/>
+                            <label for="radius-narrow">Narrow</label>
+                          </span>
+                          <span>
+                            <input type="radio" name="radius" id="radius-medium" value="100" checked/>
+                            <label for="radius-medium">Medium</label>
+                          </span>
+                          <span>
+                            <input type="radio" name="radius" id="radius-wide" value="200"/>
+                            <label for="radius-wide">Wide</label>
+                          </span>
+                        </div>
+                      </fieldset>
+                    </div>
+                  </fieldset>
+                  <hr class="tools-divider"/>
                   <button id="undo-btn" disabled title="Undo (Ctrl+Z)">Undo</button>
                   <button id="redo-btn" disabled title="Redo (Ctrl+Shift+Z)">Redo</button>
                   <button id="revert-all-btn" disabled title="Revert all alignment corrections to original">Revert alignment edits</button>

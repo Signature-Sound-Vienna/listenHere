@@ -2498,8 +2498,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const arrow = document.getElementById(arrowId);
     if (!toggle || !body) return;
 
+    const card = toggle.closest(".nav-card") || toggle.parentElement;
+
     toggle.addEventListener("click", () => {
-      const isCollapsed = body.classList.toggle("collapsed");
+      const isCollapsed = card.classList.toggle("collapsed");
       if (arrow) {
         arrow.innerHTML = isCollapsed ? "&#9656;" : "&#9662;";
       }
@@ -2511,7 +2513,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Restore state
     try {
       if (localStorage.getItem(storageKey) === "true") {
-        body.classList.add("collapsed");
+        card.classList.add("collapsed");
         if (arrow) arrow.innerHTML = "&#9656;";
       }
     } catch (_) {}

@@ -99,7 +99,7 @@ let useFilesMode = false;
 let _fromAlignmentHandoff = false;
 
 // Synthesised MEI waveform: key used in wavesurfers / alignmentGrids for the synth track
-const SYNTH_MEI_KEY = "Score (synthesised from MEI)";
+const SYNTH_MEI_KEY = "Score (sonified MEI)";
 // Maps SYNTH_MEI_KEY -> blob URL once synthesis is done, or the sentinel '__pending__'
 const _synthBlobUrls = new Map();
 
@@ -124,12 +124,16 @@ let activeMarkerIx = null; // index into markers[] array
 function _markJsonDirty() {
   const btn = document.getElementById("download-json-btn");
   if (btn) btn.classList.add("json-dirty");
+  const toggle = document.getElementById("nav-middle-toggle");
+  if (toggle) toggle.classList.add("json-dirty");
 }
 
 /** Clear the unsaved-changes indicator (called after download). */
 function _clearJsonDirty() {
   const btn = document.getElementById("download-json-btn");
   if (btn) btn.classList.remove("json-dirty");
+  const toggle = document.getElementById("nav-middle-toggle");
+  if (toggle) toggle.classList.remove("json-dirty");
 }
 
 /** Sync current markers array into loadedAlignmentJSON.header.markers. */
@@ -586,7 +590,7 @@ function onClickRenditionName(e) {
   let checkbox;
   if (e.target.nodeName.toLowerCase() === "label") {
     // retrieve checkbox
-    checkbox = document.getElementById(e.target.for);
+    checkbox = document.getElementById(e.target.htmlFor);
   } else if (e.target.nodeName.toLowerCase === "li") {
     checkbox = e.target.querySelector("input");
   } else {
@@ -747,7 +751,11 @@ function _groupsStorageKey() {
  * Format: [ { name: string, pattern: string, files: string[] }, ... ]
  */
 function _loadGroups() {
-  if (loadedAlignmentJSON && loadedAlignmentJSON.header && loadedAlignmentJSON.header.fileGroups) {
+  if (
+    loadedAlignmentJSON &&
+    loadedAlignmentJSON.header &&
+    loadedAlignmentJSON.header.fileGroups
+  ) {
     return loadedAlignmentJSON.header.fileGroups;
   }
   return [];
@@ -774,7 +782,7 @@ function _renderSidebarFileList(filenames) {
   const audiosElement = document.getElementById("audios");
   // Remove old elements (preserve non-list children like buttons)
   Array.from(audiosElement.children).forEach((el) => {
-    if (el.tagName !== "BUTTON" && el.tagName !== "SPAN" && el.id !== "score-container") {
+    if (el.tagName !== "BUTTON" && el.tagName !== "SPAN") {
       el.remove();
     }
   });
@@ -824,18 +832,20 @@ function _renderSidebarFileList(filenames) {
 
   // --- Render order: Score first, then groups, then ungrouped ---
 
-  // 1. Score foldout (first, if present)
+  // 1. Synthesized audio fieldset (first, if present)
   if (SYNTH_MEI_KEY in alignmentGrids) {
-    const synthWrap = document.createElement("div");
+    const synthWrap = document.createElement("fieldset");
     synthWrap.id = "score-container";
-    synthWrap.style.marginBottom = "1em";
-    const synthLabel = document.createElement("div");
-    synthLabel.style.fontWeight = "600";
-    synthLabel.style.color = "#1e293b";
-    synthLabel.style.marginBottom = "0.3em";
-    synthLabel.innerText = "Score";
-    synthWrap.appendChild(synthLabel);
-    synthWrap.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
+    synthWrap.className = "nav-fieldset";
+    const legend = document.createElement("legend");
+    legend.innerText = "Synthesized audio";
+    synthWrap.appendChild(legend);
+
+    // Patterned after the "always visible" part of Tools
+    const synthRow = document.createElement("span");
+    synthRow.className = "tools-row";
+    synthRow.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
+    synthWrap.appendChild(synthRow);
     audiosElement.appendChild(synthWrap);
   }
 
@@ -849,7 +859,7 @@ function _renderSidebarFileList(filenames) {
     legend.title = "Collapse / expand";
     legend.innerHTML = `${g.name} <span class="collapse-arrow">&#9662;</span>`;
     foldout.appendChild(legend);
-    
+
     const body = document.createElement("div");
     body.className = "fieldset-body";
     body.innerHTML = listSelectors;
@@ -867,7 +877,7 @@ function _renderSidebarFileList(filenames) {
     us.title = "Collapse / expand";
     us.innerHTML = `${label} <span class="collapse-arrow">&#9662;</span>`;
     uf.appendChild(us);
-    
+
     const uBody = document.createElement("div");
     uBody.className = "fieldset-body";
     uBody.innerHTML = listSelectors;
@@ -894,7 +904,7 @@ function _wireListSelectors() {
   document.querySelectorAll(".listSelectors .all").forEach((selector) =>
     selector.addEventListener("click", (e) => {
       e.target
-        .closest("details")
+        .closest("fieldset")
         .querySelectorAll("input")
         .forEach((cb) => {
           if (!cb.checked) cb.click();
@@ -904,7 +914,7 @@ function _wireListSelectors() {
   document.querySelectorAll(".listSelectors .none").forEach((selector) =>
     selector.addEventListener("click", (e) => {
       e.target
-        .closest("details")
+        .closest("fieldset")
         .querySelectorAll("input")
         .forEach((cb) => {
           if (cb.checked) cb.click();
@@ -2455,9 +2465,70 @@ document.addEventListener("DOMContentLoaded", () => {
     const legend = e.target.closest(".collapsible-fieldset legend");
     if (legend) {
       const fieldset = legend.closest(".collapsible-fieldset");
-      fieldset.classList.toggle("collapsed");
+      const isCollapsed = fieldset.classList.toggle("collapsed");
+
+      // Persist state if it's not a file group
+      if (fieldset.id && !fieldset.classList.contains("group-fieldset")) {
+        try {
+          localStorage.setItem(
+            `fieldset-collapsed-${fieldset.id}`,
+            isCollapsed,
+          );
+        } catch (_) {}
+      }
     }
   });
+
+  // Restore persistent fieldset states
+  document.querySelectorAll(".collapsible-fieldset[id]").forEach((fs) => {
+    if (fs.classList.contains("group-fieldset")) return;
+    try {
+      const isCollapsed =
+        localStorage.getItem(`fieldset-collapsed-${fs.id}`) === "true";
+      if (isCollapsed) {
+        fs.classList.add("collapsed");
+      }
+    } catch (_) {}
+  });
+
+  // Sidebar sections (Controls, Waveforms) toggle logic
+  function setupNavSection(toggleId, bodyId, arrowId, storageKey) {
+    const toggle = document.getElementById(toggleId);
+    const body = document.getElementById(bodyId);
+    const arrow = document.getElementById(arrowId);
+    if (!toggle || !body) return;
+
+    toggle.addEventListener("click", () => {
+      const isCollapsed = body.classList.toggle("collapsed");
+      if (arrow) {
+        arrow.innerHTML = isCollapsed ? "&#9656;" : "&#9662;";
+      }
+      try {
+        localStorage.setItem(storageKey, isCollapsed);
+      } catch (_) {}
+    });
+
+    // Restore state
+    try {
+      if (localStorage.getItem(storageKey) === "true") {
+        body.classList.add("collapsed");
+        if (arrow) arrow.innerHTML = "&#9656;";
+      }
+    } catch (_) {}
+  }
+
+  setupNavSection(
+    "nav-middle-toggle",
+    "nav-middle",
+    "middle-collapse-arrow",
+    "nav-middle-collapsed",
+  );
+  setupNavSection(
+    "nav-bottom-toggle",
+    "nav-bottom",
+    "bottom-collapse-arrow",
+    "nav-bottom-collapsed",
+  );
 
   // Initialise Solid auth (process any incoming redirect code, then populate drawer).
   // Skip in align mode — Solid is irrelevant until user transitions to listen mode.
@@ -4437,7 +4508,7 @@ function populateLdUriSection() {
         changed = true;
       }
     } else {
-      if ('linkedDataUriPrefix' in loadedAlignmentJSON.header) {
+      if ("linkedDataUriPrefix" in loadedAlignmentJSON.header) {
         delete loadedAlignmentJSON.header.linkedDataUriPrefix;
         changed = true;
       }
@@ -4586,3 +4657,7 @@ function initGlobalJsonDrop() {
 
 // Initialize global JSON drop handler
 initGlobalJsonDrop();
+
+window.addEventListener("load", () => {
+  window.focus();
+});

@@ -3,6 +3,9 @@
     <title>Listen Here!</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='bat/favicon.svg') }}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='css/default.css') }}" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Lora:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
     <script> 
       var root = "{{ url_for('static', filename='') }}";
       var params = new URL(window.location.toLocaleString()).searchParams;
@@ -275,84 +278,86 @@
       </div>
     </div>
 
-    <div id="logo">
-      <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="140" alt="Logo" />
-    </div>
     <div id="wrapper">
       <nav>
-          <a href="/" class="nav-logo" title="Back to landing page">
-            <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" alt="Listen Here!" />
-          </a>
-          <button id="playpause">Play/Pause</button>
-          
-          <!-- Settings panel-->
-          <fieldset id="settings-panel" class="collapsible-fieldset">
-            <legend title="Collapse / expand">&#9881; Settings <span class="collapse-arrow">&#9662;</span></legend>
-            <div class="fieldset-body">
-              <span>
-                <input type="checkbox" id="normalize"/>
-                <label for="normalize">Normalize audio</label>
-              </span>
-              <span>
-                <input type="checkbox" id="visalign"/>
-                <label for="visalign">Visualise alignments</label>
-              </span>
-              <span>
-                <input type="checkbox" id="visrelalign"/>
-                <label for="visrelalign">Show relative position</label>
-              </span>
-            </div>
-          </fieldset>
+        <div id="nav-top">
+            <a href="/" class="nav-logo">
+                <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" alt="Listen Here!">
+            </a>
+            <button id="playpause">Play/Pause</button>
+            <button id="mark">Mark</button>
+        </div>
 
-          <!-- Files panel -->
-          <fieldset id="files-panel" class="collapsible-fieldset">
-            <legend title="Collapse / expand">&#128193; Files <span class="collapse-arrow">&#9662;</span></legend>
-            <span class="tools-row" id="files-always">
-              <button id="download-json-btn" style="display:none;">Save data</button>
-            </span>
-            <div class="fieldset-body">
-              <hr class="tools-divider"/>
-              <button id="manage-files-btn" style="display:none;">Manage files</button>
-              <button id="group-files-btn" style="display:none;">Group files</button>
+        <!-- Middle: Functional Controls (Collapsible Region) -->
+        <div class="nav-region" id="region-controls">
+          <div class="nav-card">
+            <div id="nav-middle-toggle" class="nav-section-header" title="Collapse / expand controls">
+              Controls <span id="middle-collapse-arrow" class="collapse-arrow">&#9662;</span>
             </div>
-          </fieldset>
-
-          <!-- Tools panel: persistent, collapsible fieldset -->
-          <fieldset id="tools-panel" class="collapsible-fieldset">
-            <legend id="tools-header" title="Collapse / expand">&#128295; Tools <span class="collapse-arrow">&#9662;</span></legend>
-            <span class="tools-row" id="tools-always">
-              <span class="tools-row"><input type="checkbox" id="close-listening-cb"/><label for="close-listening-cb">Close Listening</label></span>
-            </span>
-            <div id="tools-body" class="fieldset-body">
-              <hr class="tools-divider"/>
-              <button id="mark">Mark</button>
-              <fieldset id="history-fieldset">
-                <legend>History</legend>
-                <button id="tools-undo-btn" disabled title="Undo (Ctrl+Z)">Undo</button>
-                <button id="tools-redo-btn" disabled title="Redo (Ctrl+Shift+Z)">Redo</button>
-              </fieldset>
-              <fieldset id="drag-marker-fieldset">
-                <legend><input type="checkbox" id="drag-markers-cb"/><label for="drag-markers-cb">Drag markers</label></legend>
-                <div class="tools-radio-col">
-                  <label class="tools-radio-label"><input type="radio" name="drag-mode" id="drag-mode-move" value="move" checked disabled/> Move marker</label>
-                  <label class="tools-radio-label"><input type="radio" name="drag-mode" id="drag-mode-fix" value="fix" disabled/> Fix alignment</label>
+            <div id="nav-middle" class="nav-section-body grow">
+              <!-- Settings panel-->
+              <fieldset id="settings-panel" class="collapsible-fieldset">
+                <legend title="Collapse / expand">&#128187; Settings <span class="collapse-arrow">&#9662;</span></legend>
+                <div class="fieldset-body">
+                  <span>
+                    <input type="checkbox" id="normalize"/>
+                    <label for="normalize">Normalize audio</label>
+                  </span>
+                  <span>
+                    <input type="checkbox" id="visalign"/>
+                    <label for="visalign">Visualise alignments</label>
+                  </span>
+                  <span>
+                    <input type="checkbox" id="visrelalign"/>
+                    <label for="visrelalign">Show relative position</label>
+                  </span>
                 </div>
               </fieldset>
-              <fieldset id="radius-fieldset" disabled>
-                <legend>Correction spread</legend>
-                <span class="tools-radio-row">
-                  <input type="radio" name="radius" id="radius-narrow" value="10"/>
-                  <label for="radius-narrow">Narrow</label>
-                  <input type="radio" name="radius" id="radius-medium" value="30" checked/>
-                  <label for="radius-medium">Medium</label>
-                  <input type="radio" name="radius" id="radius-wide" value="90"/>
-                  <label for="radius-wide">Wide</label>
+
+              <!-- Files panel -->
+              <fieldset id="files-panel" class="collapsible-fieldset">
+                <legend title="Collapse / expand">&#128193; Files <span class="collapse-arrow">&#9662;</span></legend>
+                <span class="tools-row" id="files-always">
+                  <button id="download-json-btn">Save data</button>
                 </span>
+                <div class="fieldset-body">
+                  <hr class="tools-divider"/>
+                  <button id="manage-files-btn">Manage files</button>
+                  <button id="group-files-btn">Group files</button>
+                </div>
               </fieldset>
-              <button id="revert-all-btn" disabled title="Revert all alignment corrections to original">Revert alignment edits</button>
+
+              <!-- Tools panel: persistent, collapsible fieldset -->
+              <fieldset id="tools-panel" class="collapsible-fieldset">
+                <legend id="tools-header" title="Collapse / expand">&#128295; Tools <span class="collapse-arrow">&#9662;</span></legend>
+                <span class="tools-row" id="tools-always">
+                  <span class="tools-row">
+                    <input type="checkbox" id="close-listening-cb"/>
+                    <label for="close-listening-cb">Close Listening</label>
+                  </span>
+                </span>
+                <div id="tools-body" class="fieldset-body">
+                  <hr class="tools-divider"/>
+                  <button id="undo-btn" disabled title="Undo (Ctrl+Z)">Undo</button>
+                  <button id="redo-btn" disabled title="Redo (Ctrl+Shift+Z)">Redo</button>
+                  <button id="revert-all-btn" disabled title="Revert all alignment corrections to original">Revert alignment edits</button>
+                </div>
+              </fieldset>
             </div>
-          </fieldset>
-          <div id="audios"></div>
+          </div>
+        </div>
+
+        <!-- Bottom: Audio Listings (Expanding Region) -->
+        <div class="nav-region" id="region-waveforms">
+          <div class="nav-card">
+            <div id="nav-bottom-toggle" class="nav-section-header" title="Collapse / expand waveforms">
+              Waveforms <span id="bottom-collapse-arrow" class="collapse-arrow">&#9662;</span>
+            </div>
+            <div id="nav-bottom" class="nav-section-body grow">
+              <div id="audios"></div>
+            </div>
+          </div>
+        </div>
       </nav>
       <div id="content-wrapper">
         <div id="content">

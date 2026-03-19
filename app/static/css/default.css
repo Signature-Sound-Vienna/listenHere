@@ -1,8 +1,15 @@
+:root {
+  --font-size-large: 14px;
+  --font-size-medium: 13px;
+  --font-size-small: 12.5px;
+}
+
 html, body {
   margin: 0;
   padding: 0;
   overflow: hidden;
   height: 100%;
+  font-family: 'Roboto', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
 }
 
 #logo { 
@@ -31,8 +38,147 @@ canvas {
   flex-direction:column;
   width:200px;
   min-width:200px;
-  overflow-y:auto;
-  font-size: smaller;
+  height: 100%;
+  overflow: hidden; /* children will scroll */
+  background-color: #f8fafc; /* sidebar default backdrop (Top/Bottom) */
+  border-right: 1px solid #e2e8f0;
+}
+
+#nav-top {
+  padding: 0.5em 0.5em 1em; /* matched horizontal padding */
+  flex: 0 0 auto; /* fixed header size */
+  display: flex;
+  flex-direction: column;
+  gap: 0.5em;
+}
+
+.nav-region {
+  transition: background-color 0.2s ease;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-card {
+  margin: 0.5em;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+  flex: 0 1 auto; /* Grow to fit content, but shrink if region too small */
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+  background-color: #f8fafc;
+}
+
+.nav-card:hover {
+  background-color: #f1f5f9;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+#region-controls {
+  flex: 0 0 auto; /* Keep fixed content size */
+}
+
+#region-controls .nav-card {
+  background-color: #f7faeb; /* pastel olive green */
+  border-color: #cbd5e1;
+}
+
+#region-controls .nav-card:hover {
+  background-color: #f0f4e3; /* subtle darkening */
+}
+
+#region-waveforms {
+  flex: 1 1 auto; /* Grow to fill all available space below controls */
+  min-height: 0;
+}
+
+#region-waveforms .nav-card {
+  background-color: #f7faeb; /* pastel olive green */
+}
+
+#region-waveforms .nav-card:hover {
+  background-color: #f0f4e3; /* subtle darkening */
+}
+
+#region-waveforms .nav-section-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.collapsible-fieldset:not(.collapsed) {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.fieldset-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.nav-section-header {
+  padding: 0.4em 0.8em;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #475569;
+  font-size: var(--font-size-large);
+}
+
+.nav-section-header:hover {
+  color: #1e293b;
+}
+
+.nav-section-body {
+  overflow: hidden;
+  transition: max-height 0.3s ease-in-out, opacity 0.2s ease;
+  max-height: none;
+  opacity: 1;
+  padding: 0 0.5em;
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-section-body.grow {
+  /* grow class remains for transition initiation if needed */
+  max-height: 2000px; 
+}
+
+#nav-middle.collapsed, #nav-bottom.collapsed {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: max-height 0.3s ease-in-out, opacity 0.2s ease;
+}
+
+#nav-bottom {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* background & border handled by #region-waveforms */
+}
+
+#audios {
+  flex: 1;
+  overflow-y: visible; /* disable top-level scroll */
+  overflow-x: hidden;
+  font-size: var(--font-size-small);
+  padding-top: 0.5em;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 #content-wrapper { 
@@ -50,14 +196,6 @@ canvas {
   min-height: 0;
 }
 
-#audios { 
-  flex-shrink:2;
-  flex-direction:column;
-  overflow-y:auto;
-  overflow-x:clip;
-  font-size:small;
-  padding-top:1em;
-}
 
 #waveforms { 
   display:flex;
@@ -131,17 +269,21 @@ details {
   cursor:pointer;
 }
 
-.listSelectors { 
-  font-size: smaller;
-  text-decoration:underline;
+.listSelectors {
+  padding: 0.2em 1em;
+  font-size: var(--font-size-small);
+  color: #64748b;
 }
 
-.listSelectors .all { 
-  padding-right:1em;
+.listSelectors .all, .listSelectors .none {
+  cursor: pointer;
+  margin-right: 0.8em;
+  text-decoration: underline;
+  transition: color 0.2s;
 }
 
-.listSelectors .none{ 
-  padding-left:1em;
+.listSelectors .all:hover, .listSelectors .none:hover {
+  color: #2563eb;
 }
 
 /* Per-waveform resize overlay */
@@ -195,9 +337,10 @@ details {
   left: 50%;
   transform: translate(-50%, -50%);
   font-size: 2.8em;
-  font-weight: bold;
+  font-weight: 700;
+  font-family: 'Lora', 'Georgia', serif;
   color: white;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.7);
   width: 1.5em;
   height: 1.5em;
   border-radius: 50%;
@@ -207,8 +350,9 @@ details {
   z-index: 60;
   pointer-events: none;
   user-select: none;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.2);
 }
 
 #waveforms .waveform { 
@@ -286,28 +430,56 @@ details {
 .nav-logo {
   display: flex;
   justify-content: center;
-  margin-bottom: 2em;
+  margin-bottom: 0.5em; /* reduced */
 }
 
 .nav-logo img {
   height: 60px;
-  filter: drop-shadow(0 4px 6px rgba(0,0,0,0.1));
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
 }
 
-.collapsible-fieldset {
+#playpause, #mark {
+  width: 100%;
+  padding: 0.8em;
+  background-color: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease, transform 0.1s;
+  box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
+  margin-bottom: 0.5em;
+}
+
+#playpause:hover, #mark:hover {
+  background-color: #1d4ed8;
+  transform: translateY(-1px);
+}
+
+#playpause:active, #mark:active {
+  transform: translateY(0);
+}
+
+.nav-fieldset, .collapsible-fieldset {
   margin: 0.5em 0;
   padding: 0.5em;
   border: 1px solid #cbd5e1;
   border-radius: 6px;
-  background-color: #f8fafc;
+  background-color: transparent; /* transparent to inherit region background */
+}
+
+.nav-fieldset legend, .collapsible-fieldset legend {
+  font-weight: 600;
+  color: #1e293b;
+  user-select: none;
+  padding: 0 0.4em;
+  font-size: var(--font-size-medium);
 }
 
 .collapsible-fieldset legend {
-  font-weight: 600;
-  color: #1e293b;
   cursor: pointer;
-  user-select: none;
-  padding: 0 0.4em;
+  line-height: 1.4;
 }
 
 .collapsible-fieldset legend:hover {
@@ -316,9 +488,9 @@ details {
 
 .collapse-arrow {
   display: inline-block;
-  transition: transform 0.2s;
+  transition: transform 0.2s ease;
   font-size: 0.8em;
-  margin-left: 0.3em;
+  margin-left: 0.4em;
 }
 
 .collapsible-fieldset.collapsed .collapse-arrow {
@@ -329,11 +501,61 @@ details {
   display: none;
 }
 
+.nav-fieldset {
+  padding: 0.15em 0.5em 0.3em; /* ultra tight vertical padding */
+  margin: 0.2em 0;
+}
+
+.nav-fieldset .fieldset-body,
+.nav-fieldset .tools-row {
+  margin-top: -0.1em;        /* pull content up closer to legend */
+}
+
+/* Ensure checkbox lists inside the nav don't add extra height */
+.nav-fieldset ul, .collapsible-fieldset ul {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
 .fieldset-body {
   display: flex;
   flex-direction: column;
   gap: 0.5em;
   margin-top: 0.5em;
+  font-size: var(--font-size-small);
+  line-height: 1.5;
+}
+
+.fieldset-body button {
+  font-size: var(--font-size-large);
+  font-family: inherit;
+  width: 100%;
+  margin-top: 0.4em;
+  padding: 0.4em 0.8em;
+  background-color: transparent;
+  border: 1px solid #606c38;
+  color: #606c38;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: 500;
+}
+
+.fieldset-body button:hover {
+  background-color: #606c38;
+  color: #f7faeb;
+}
+
+.fieldset-body button:active {
+  background-color: #4c562d;
+  transform: translateY(1px);
+}
+
+.fieldset-body button:disabled {
+  border-color: #cbd5e1;
+  color: #94a3b8;
+  cursor: not-allowed;
+  background-color: transparent;
 }
 
 #tools-always, #files-always {
@@ -1229,28 +1451,7 @@ body:has(#solid-drawer:not(.closed)) #solid-drawer-btn {
   background: #1e40af;
 }
 
-#wrapper nav button,
-#wrapper nav a#back {
-  margin: 0.3em 0;
-  padding: 0.4em 0.8em;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  background: #f1f5f9;
-  font-size: 0.85em;
-  cursor: pointer;
-  width: 100%;
-  box-sizing: border-box;
-  text-align: center;
-  text-decoration: none;
-  color: inherit;
-  display: block;
-}
-
-#wrapper nav button:hover,
-#wrapper nav a#back:hover {
-  background: #e0e7ef;
-  border-color: #94a3b8;
-}
+/* Legacy sidebar button styles removed to allow olive theme overrides */
 
 /* === Tools panel (collapsible fieldset) === */
 
@@ -1258,7 +1459,7 @@ body:has(#solid-drawer:not(.closed)) #solid-drawer-btn {
   margin: 0.4em 0;
   border: 1.5px solid #94a3b8;
   border-radius: 6px;
-  background: #f8fafc;
+  background: transparent; /* match others */
   padding: 0.45em 0.6em;
 }
 #tools-panel > legend {
@@ -2451,32 +2652,60 @@ body.marker-dragging * {
 
 /* Group files button in nav */
 #group-files-btn {
-  font-size: 0.85em;
+  font-size: var(--font-size-large);
   cursor: pointer;
 }
 
 /* Save data (download JSON) button — unsaved-changes indicator */
 #download-json-btn {
   position: relative;
+  font-size: var(--font-size-large);
+  font-family: inherit;
+  background-color: transparent;
+  border: 1px solid #606c38;
+  color: #606c38;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: 500;
+  padding: 0.4em 0.8em;
+  width: 100%;
 }
+
+#download-json-btn:hover {
+  background-color: #606c38;
+  color: #f7faeb;
+}
+
 #download-json-btn.json-dirty {
   font-weight: 600;
 }
-#download-json-btn.json-dirty::after {
+
+#download-json-btn.json-dirty::after,
+.nav-section-header.json-dirty::after {
   content: "";
   position: absolute;
-  top: 2px;
-  right: 2px;
+  top: 4px;
+  right: 4px;
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: #f59e0b;
   box-shadow: 0 0 0 2px #fff;
   animation: dirty-pulse 1.8s ease-in-out infinite;
+  z-index: 10;
 }
-@keyframes dirty-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+
+/* Parent indicator only visible when region is collapsed */
+.nav-section-header.json-dirty::after {
+  display: none;
+  top: 6px;
+  right: 2.5em; /* position it away from the chevron */
+}
+
+#nav-middle.collapsed ~ #nav-middle-toggle.json-dirty::after,
+#region-controls:has(#nav-middle.collapsed) #nav-middle-toggle.json-dirty::after {
+  display: block;
 }
 
 /* Annotation load notices (shown in Solid drawer) */

@@ -123,17 +123,29 @@ let activeMarkerIx = null; // index into markers[] array
 /** Mark the alignment JSON as having unsaved changes. */
 function _markJsonDirty() {
   const btn = document.getElementById("download-json-btn");
-  if (btn) btn.classList.add("json-dirty");
+  if (btn) {
+    btn.classList.add("json-dirty");
+    btn.title = "Save the current alignment and markers to a JSON file (Unsaved changes)";
+  }
   const toggle = document.getElementById("nav-middle-toggle");
-  if (toggle) toggle.classList.add("json-dirty");
+  if (toggle) {
+    toggle.classList.add("json-dirty");
+    toggle.title = "Collapse / expand controls (Unsaved changes)";
+  }
 }
 
 /** Clear the unsaved-changes indicator (called after download). */
 function _clearJsonDirty() {
   const btn = document.getElementById("download-json-btn");
-  if (btn) btn.classList.remove("json-dirty");
+  if (btn) {
+    btn.classList.remove("json-dirty");
+    btn.title = "Save the current alignment and markers to a JSON file (No unsaved changes)";
+  }
   const toggle = document.getElementById("nav-middle-toggle");
-  if (toggle) toggle.classList.remove("json-dirty");
+  if (toggle) {
+    toggle.classList.remove("json-dirty");
+    toggle.title = "Collapse / expand controls (No unsaved changes)";
+  }
 }
 
 /** Sync current markers array into loadedAlignmentJSON.header.markers. */
@@ -2462,9 +2474,9 @@ function onRegionUpdated(filename, region) {
 document.addEventListener("DOMContentLoaded", () => {
   // Global delegation for collapsible fieldsets
   document.addEventListener("click", (e) => {
-    const legend = e.target.closest(".collapsible-fieldset legend");
-    if (legend) {
-      const fieldset = legend.closest(".collapsible-fieldset");
+    const legend = e.target.closest("legend");
+    if (legend && legend.parentElement.classList.contains("collapsible-fieldset")) {
+      const fieldset = legend.parentElement;
       const isCollapsed = fieldset.classList.toggle("collapsed");
 
       // Persist state if it's not a file group

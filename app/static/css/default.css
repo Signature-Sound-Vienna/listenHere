@@ -2334,6 +2334,30 @@ body.marker-dragging * {
   cursor: pointer;
 }
 
+/* Save data (download JSON) button — unsaved-changes indicator */
+#download-json-btn {
+  position: relative;
+}
+#download-json-btn.json-dirty {
+  font-weight: 600;
+}
+#download-json-btn.json-dirty::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px #fff;
+  animation: dirty-pulse 1.8s ease-in-out infinite;
+}
+@keyframes dirty-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 /* Annotation load notices (shown in Solid drawer) */
 .annotation-notice {
   display: flex;

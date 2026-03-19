@@ -116,6 +116,30 @@ let _jumpToTargetActive = false;
 let _jumpToTargetWaveforms = []; // snapshot of badged waveforms for the current session
 let activeMarkerIx = null; // index into markers[] array
 
+// ---------------------------------------------------------------------------
+// Unsaved-changes indicator
+// ---------------------------------------------------------------------------
+
+/** Mark the alignment JSON as having unsaved changes. */
+function _markJsonDirty() {
+  const btn = document.getElementById("download-json-btn");
+  if (btn) btn.classList.add("json-dirty");
+}
+
+/** Clear the unsaved-changes indicator (called after download). */
+function _clearJsonDirty() {
+  const btn = document.getElementById("download-json-btn");
+  if (btn) btn.classList.remove("json-dirty");
+}
+
+/** Sync current markers array into loadedAlignmentJSON.header.markers. */
+function _syncMarkersToJSON() {
+  if (!loadedAlignmentJSON) return;
+  if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+  loadedAlignmentJSON.header.markers = markers.slice();
+  _markJsonDirty();
+}
+
 function getOrigin(url) {
   try {
     return new URL(url).origin;
@@ -719,24 +743,26 @@ function _groupsStorageKey() {
 }
 
 /**
- * Load saved groups from localStorage.
+ * Load saved groups from alignment JSON.
  * Format: [ { name: string, pattern: string, files: string[] }, ... ]
  */
 function _loadGroups() {
-  try {
-    const raw = localStorage.getItem(_groupsStorageKey());
-    if (raw) return JSON.parse(raw);
-  } catch (e) {
-    console.warn("Could not load file groups from localStorage:", e);
+  if (loadedAlignmentJSON && loadedAlignmentJSON.header && loadedAlignmentJSON.header.fileGroups) {
+    return loadedAlignmentJSON.header.fileGroups;
   }
   return [];
 }
 
 function _saveGroups(groups) {
-  try {
-    localStorage.setItem(_groupsStorageKey(), JSON.stringify(groups));
-  } catch (e) {
-    console.warn("Could not save file groups to localStorage:", e);
+  // Persist to alignment JSON for round-tripping
+  if (loadedAlignmentJSON) {
+    if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+    if (groups.length > 0) {
+      loadedAlignmentJSON.header.fileGroups = groups;
+    } else {
+      delete loadedAlignmentJSON.header.fileGroups;
+    }
+    _markJsonDirty();
   }
 }
 
@@ -1603,7 +1629,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       corrStyle.width = "100%";
       corrStyle.height = WAVE_HEIGHT + "px";
       corrStyle.zIndex = "4";
-      corrStyle.pointerEvents = "none"; // toggled in edit mode
+      corrStyle.pointerEvents = _alignCorrectionMode ? "auto" : "none";
       readyWfContainer.appendChild(corrCanvas);
 
       // Store reference for resize
@@ -2146,6 +2172,27 @@ async function setGrids(grids) {
         if ("ref" in grids.header) {
           referenceAudioIx = grids.header.ref;
         }
+
+        // Restore file groups from JSON (fallback if localStorage empty)
+        if (grids.header.fileGroups && Array.isArray(grids.header.fileGroups)) {
+          const existingGroups = _loadGroups();
+          if (existingGroups.length === 0) {
+            _saveGroups(grids.header.fileGroups);
+          }
+        }
+
+        // Restore markers from JSON (fallback if localStorage empty)
+        if (grids.header.markers && Array.isArray(grids.header.markers)) {
+          const existingMarkers = storage
+            ? storage.getItem("markers_" + workId)
+            : null;
+          if (!existingMarkers) {
+            markers = grids.header.markers.slice();
+            if (storage) {
+              storage.setItem("markers_" + workId, JSON.stringify(markers));
+            }
+          }
+        }
       } else {
         console.error(
           "Broken grids received from alignment json file: ",
@@ -2240,7 +2287,15 @@ function onAlignmentComplete(alignmentResult, files) {
 
   // Show download button so user can save the result
   const dlBtn = document.getElementById("download-json-btn");
-  if (dlBtn) dlBtn.style.display = "";
+  if (dlBtn) {
+    dlBtn.style.display = "";
+    if (sessionStorage.getItem("alignSavedBeforeListen") !== "true") {
+      dlBtn.classList.add("json-dirty");
+    } else {
+      dlBtn.classList.remove("json-dirty");
+    }
+  }
+  sessionStorage.removeItem("alignSavedBeforeListen");
 
   // Show manage-files button in case user wants to re-match files
   const manageBtn = document.getElementById("manage-files-btn");
@@ -2436,6 +2491,7 @@ document.addEventListener("DOMContentLoaded", () => {
       a.download = "alignment.json";
       a.click();
       URL.revokeObjectURL(url);
+      _clearJsonDirty();
     });
     if (alignmentData === "session") dlBtn.style.display = ""; // legacy fallback
   }
@@ -2578,6 +2634,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         alignmentGrids[entry.filename] = entry.grid;
         _syncGridToJSON(entry.filename);
+        _markJsonDirty();
         if (_gridRedrawers[entry.filename]) _gridRedrawers[entry.filename]();
         break;
       }
@@ -2588,6 +2645,7 @@ document.addEventListener("DOMContentLoaded", () => {
           markers.splice(ix, 1);
           if (storage)
             storage.setItem("markers_" + workId, JSON.stringify(markers));
+          _syncMarkersToJSON();
           _redoStack.push({
             type: "marker-add",
             alignIx: entry.alignIx,
@@ -2613,6 +2671,7 @@ document.addEventListener("DOMContentLoaded", () => {
         markers.splice(insertIx, 0, entry.alignIx);
         if (storage)
           storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _syncMarkersToJSON();
         _redoStack.push({
           type: "marker-delete",
           alignIx: entry.alignIx,
@@ -2629,6 +2688,7 @@ document.addEventListener("DOMContentLoaded", () => {
         markers[entry.markerArrayIx] = entry.oldAlignIx;
         if (storage)
           storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _syncMarkersToJSON();
         _redoStack.push({
           type: "marker-move",
           markerArrayIx: entry.markerArrayIx,
@@ -2655,6 +2715,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         alignmentGrids[entry.filename] = entry.grid;
         _syncGridToJSON(entry.filename);
+        _markJsonDirty();
         if (_gridRedrawers[entry.filename]) _gridRedrawers[entry.filename]();
         break;
       }
@@ -2664,6 +2725,7 @@ document.addEventListener("DOMContentLoaded", () => {
         markers.splice(insertIx, 0, entry.alignIx);
         if (storage)
           storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _syncMarkersToJSON();
         _undoStack.push({
           type: "marker-add",
           alignIx: entry.alignIx,
@@ -2679,6 +2741,7 @@ document.addEventListener("DOMContentLoaded", () => {
           markers.splice(ix, 1);
           if (storage)
             storage.setItem("markers_" + workId, JSON.stringify(markers));
+          _syncMarkersToJSON();
           _undoStack.push({
             type: "marker-delete",
             alignIx: entry.alignIx,
@@ -2702,6 +2765,7 @@ document.addEventListener("DOMContentLoaded", () => {
         markers[entry.markerArrayIx] = entry.newAlignIx;
         if (storage)
           storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _syncMarkersToJSON();
         _undoStack.push({
           type: "marker-move",
           markerArrayIx: entry.markerArrayIx,
@@ -2788,6 +2852,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } else {
       loadedAlignmentJSON.body.audio[filename] = alignmentGrids[filename];
     }
+    _markJsonDirty();
   }
 
   if (undoBtn) undoBtn.addEventListener("click", _undoOne);
@@ -3342,6 +3407,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (storage) {
       storage.setItem("markers_" + workId, JSON.stringify(markers));
     }
+    _syncMarkersToJSON();
     _pushUndo(
       { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
       true,
@@ -3639,6 +3705,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (storage) {
           storage.setItem("markers_" + workId, JSON.stringify(markers));
         }
+        _syncMarkersToJSON();
         _pushUndo(
           { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
           true,
@@ -3666,6 +3733,7 @@ document.addEventListener("DOMContentLoaded", () => {
           if (storage) {
             storage.setItem("markers_" + workId, JSON.stringify(markers));
           }
+          _syncMarkersToJSON();
           _pushUndo(
             {
               type: "marker-delete",
@@ -4364,11 +4432,20 @@ function populateLdUriSection() {
     if (!loadedAlignmentJSON) return;
     if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
     const prefix = prefixInput.value.trim();
+    let changed = false;
+
     if (prefix) {
-      loadedAlignmentJSON.header.linkedDataUriPrefix = prefix;
+      if (loadedAlignmentJSON.header.linkedDataUriPrefix !== prefix) {
+        loadedAlignmentJSON.header.linkedDataUriPrefix = prefix;
+        changed = true;
+      }
     } else {
-      delete loadedAlignmentJSON.header.linkedDataUriPrefix;
+      if ('linkedDataUriPrefix' in loadedAlignmentJSON.header) {
+        delete loadedAlignmentJSON.header.linkedDataUriPrefix;
+        changed = true;
+      }
     }
+
     // Clean empty entries and persist
     const clean = {};
     for (const key of Object.keys(perFileConfig)) {
@@ -4376,10 +4453,19 @@ function populateLdUriSection() {
         clean[key] = { ...perFileConfig[key] };
       }
     }
-    if (Object.keys(clean).length > 0) {
-      loadedAlignmentJSON.header.linkedDataUris = clean;
-    } else {
-      delete loadedAlignmentJSON.header.linkedDataUris;
+
+    const oldUris = loadedAlignmentJSON.header.linkedDataUris || {};
+    if (JSON.stringify(clean) !== JSON.stringify(oldUris)) {
+      changed = true;
+      if (Object.keys(clean).length > 0) {
+        loadedAlignmentJSON.header.linkedDataUris = clean;
+      } else {
+        delete loadedAlignmentJSON.header.linkedDataUris;
+      }
+    }
+
+    if (changed) {
+      _markJsonDirty();
     }
   }
 

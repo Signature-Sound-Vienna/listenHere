@@ -280,34 +280,50 @@
     </div>
     <div id="wrapper">
       <nav>
-          <a id="back">Back</a>
+          <a href="/" class="nav-logo" title="Back to landing page">
+            <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" alt="Listen Here!" />
+          </a>
           <button id="playpause">Play/Pause</button>
-          <span>
-            <input type="checkbox" id="normalize"/>
-            <label for="normalize">Normalize audio</label>
-          </span>
-          <span>
-            <input type="checkbox" id="visalign"/>
-            <label for="visalign">Visualise alignments</label>
-          </span>
-          <span>
-            <input type="checkbox" id="visrelalign"/>
-            <label for="visrelalign">Show relative position</label>
-          </span>
-          <button id="manage-files-btn" style="display:none;">Manage files</button>
-          <button id="group-files-btn" style="display:none;">Group files</button>
-          <button id="download-json-btn" style="display:none;">Save data</button>
-          <button id="solid-drawer-btn" title="Linked Data & Annotations">
-            <img src="{{ url_for('static', filename='svg/RDF-logo.svg') }}" width="20" height="20" alt="RDF" />
-          </button>
+          
+          <!-- Settings panel-->
+          <fieldset id="settings-panel" class="collapsible-fieldset">
+            <legend title="Collapse / expand">&#9881; Settings <span class="collapse-arrow">&#9662;</span></legend>
+            <div class="fieldset-body">
+              <span>
+                <input type="checkbox" id="normalize"/>
+                <label for="normalize">Normalize audio</label>
+              </span>
+              <span>
+                <input type="checkbox" id="visalign"/>
+                <label for="visalign">Visualise alignments</label>
+              </span>
+              <span>
+                <input type="checkbox" id="visrelalign"/>
+                <label for="visrelalign">Show relative position</label>
+              </span>
+            </div>
+          </fieldset>
+
+          <!-- Files panel -->
+          <fieldset id="files-panel" class="collapsible-fieldset">
+            <legend title="Collapse / expand">&#128193; Files <span class="collapse-arrow">&#9662;</span></legend>
+            <span class="tools-row" id="files-always">
+              <button id="download-json-btn" style="display:none;">Save data</button>
+            </span>
+            <div class="fieldset-body">
+              <hr class="tools-divider"/>
+              <button id="manage-files-btn" style="display:none;">Manage files</button>
+              <button id="group-files-btn" style="display:none;">Group files</button>
+            </div>
+          </fieldset>
+
           <!-- Tools panel: persistent, collapsible fieldset -->
-          <fieldset id="tools-panel" style="display:none;">
-            <legend id="tools-header" title="Collapse / expand">&#128295; Tools <span id="tools-collapse-arrow">&#9662;</span></legend>
+          <fieldset id="tools-panel" class="collapsible-fieldset">
+            <legend id="tools-header" title="Collapse / expand">&#128295; Tools <span class="collapse-arrow">&#9662;</span></legend>
             <span class="tools-row" id="tools-always">
               <span class="tools-row"><input type="checkbox" id="close-listening-cb"/><label for="close-listening-cb">Close Listening</label></span>
-              <span id="tools-more-hint" title="Expand for more tools">&#8230;</span>
             </span>
-            <div id="tools-body">
+            <div id="tools-body" class="fieldset-body">
               <hr class="tools-divider"/>
               <button id="mark">Mark</button>
               <fieldset id="history-fieldset">
@@ -358,5 +374,11 @@
         </div>
       </div>
     </div>
+
+    <!-- Solid / Linked Data Drawer Button (Floating Handle) -->
+    <button id="solid-drawer-btn" title="Linked Data & Annotations">
+      <img src="{{ url_for('static', filename='svg/RDF-logo.svg') }}" width="20" height="20" alt="RDF" />
+      <span class="solid-status-dot"></span>
+    </button>
   </body>
 </html>

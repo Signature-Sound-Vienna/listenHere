@@ -772,10 +772,12 @@ function _saveGroups(groups) {
  */
 function _renderSidebarFileList(filenames) {
   const audiosElement = document.getElementById("audios");
-  // Remove old foldouts / lists (preserve non-list children like buttons)
-  audiosElement
-    .querySelectorAll("details, ul.ungrouped-files")
-    .forEach((el) => el.remove());
+  // Remove old elements (preserve non-list children like buttons)
+  Array.from(audiosElement.children).forEach((el) => {
+    if (el.tagName !== "BUTTON" && el.tagName !== "SPAN" && el.id !== "score-container") {
+      el.remove();
+    }
+  });
 
   const groups = _loadGroups();
 
@@ -824,39 +826,53 @@ function _renderSidebarFileList(filenames) {
 
   // 1. Score foldout (first, if present)
   if (SYNTH_MEI_KEY in alignmentGrids) {
-    const synthFoldout = document.createElement("details");
-    synthFoldout.open = true;
-    const synthSummary = document.createElement("summary");
-    synthSummary.innerText = "Score";
-    synthFoldout.appendChild(synthSummary);
-    synthFoldout.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
-    audiosElement.appendChild(synthFoldout);
+    const synthWrap = document.createElement("div");
+    synthWrap.id = "score-container";
+    synthWrap.style.marginBottom = "1em";
+    const synthLabel = document.createElement("div");
+    synthLabel.style.fontWeight = "600";
+    synthLabel.style.color = "#1e293b";
+    synthLabel.style.marginBottom = "0.3em";
+    synthLabel.innerText = "Score";
+    synthWrap.appendChild(synthLabel);
+    synthWrap.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
+    audiosElement.appendChild(synthWrap);
   }
 
-  // 2. Render each group as a collapsible foldout
+  // 2. Render each group as a collapsible fieldset
   groups.forEach((g, i) => {
     const members = groupMembers[i];
     if (members.length === 0) return; // skip empty groups
-    const foldout = document.createElement("details");
-    foldout.open = true;
-    const summary = document.createElement("summary");
-    summary.innerText = g.name;
-    foldout.appendChild(summary);
-    foldout.innerHTML += listSelectors;
-    foldout.appendChild(generateCheckboxList(members));
+    const foldout = document.createElement("fieldset");
+    foldout.className = "collapsible-fieldset group-fieldset";
+    const legend = document.createElement("legend");
+    legend.title = "Collapse / expand";
+    legend.innerHTML = `${g.name} <span class="collapse-arrow">&#9662;</span>`;
+    foldout.appendChild(legend);
+    
+    const body = document.createElement("div");
+    body.className = "fieldset-body";
+    body.innerHTML = listSelectors;
+    body.appendChild(generateCheckboxList(members));
+    foldout.appendChild(body);
     audiosElement.appendChild(foldout);
   });
 
   // 3. Ungrouped recordings (last)
   if (ungrouped.length > 0) {
     const label = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
-    const uf = document.createElement("details");
-    uf.open = true;
-    const us = document.createElement("summary");
-    us.innerText = label;
+    const uf = document.createElement("fieldset");
+    uf.className = "collapsible-fieldset group-fieldset";
+    const us = document.createElement("legend");
+    us.title = "Collapse / expand";
+    us.innerHTML = `${label} <span class="collapse-arrow">&#9662;</span>`;
     uf.appendChild(us);
-    uf.innerHTML += listSelectors;
-    uf.appendChild(generateCheckboxList(ungrouped));
+    
+    const uBody = document.createElement("div");
+    uBody.className = "fieldset-body";
+    uBody.innerHTML = listSelectors;
+    uBody.appendChild(generateCheckboxList(ungrouped));
+    uf.appendChild(uBody);
     audiosElement.appendChild(uf);
   }
 
@@ -2434,10 +2450,13 @@ function onRegionUpdated(filename, region) {
 // ----------------------------------------------------------------------------
 
 document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("back").addEventListener("click", () => {
-    solidLogout().then(
-      () => (window.location.href = window.location.origin + "/"),
-    );
+  // Global delegation for collapsible fieldsets
+  document.addEventListener("click", (e) => {
+    const legend = e.target.closest(".collapsible-fieldset legend");
+    if (legend) {
+      const fieldset = legend.closest(".collapsible-fieldset");
+      fieldset.classList.toggle("collapsed");
+    }
   });
 
   // Initialise Solid auth (process any incoming redirect code, then populate drawer).
@@ -2521,34 +2540,12 @@ document.addEventListener("DOMContentLoaded", () => {
   const revertBtn = document.getElementById("revert-all-btn");
 
   // --- Tools panel collapse ---
-  if (toolsHeader) {
-    toolsHeader.addEventListener("click", () => {
-      toolsPanel.classList.toggle("collapsed");
-      try {
-        localStorage.setItem(
-          "tools-collapsed",
-          toolsPanel.classList.contains("collapsed"),
-        );
-      } catch (_) {}
-    });
-    // Restore collapse state
-    try {
-      if (localStorage.getItem("tools-collapsed") === "true") {
-        toolsPanel.classList.add("collapsed");
-      }
-    } catch (_) {}
-  }
-  // Clicking the "…" hint also expands
-  const moreHint = document.getElementById("tools-more-hint");
-  if (moreHint) {
-    moreHint.addEventListener("click", (e) => {
-      e.stopPropagation();
-      _expandToolsPanel();
-      try {
-        localStorage.setItem("tools-collapsed", "false");
-      } catch (_) {}
-    });
-  }
+  // Restore collapse state
+  try {
+    if (localStorage.getItem("tools-collapsed") === "true") {
+      toolsPanel.classList.add("collapsed");
+    }
+  } catch (_) {}
 
   /** Expand the tools panel (e.g. for pulse hint). */
   function _expandToolsPanel() {

@@ -544,7 +544,8 @@ details {
   margin-left: 0.4em;
 }
 
-.nav-card.collapsed .collapse-arrow {
+.nav-card.collapsed .collapse-arrow,
+.collapsible-fieldset.collapsed .collapse-arrow {
   transform: rotate(-90deg);
 }
 
@@ -736,6 +737,59 @@ body:has(#solid-drawer:not(.closed)) #solid-drawer-btn {
   color: #3b82f6;
   cursor: pointer;
   text-decoration: underline;
+}
+
+/* --- Custom Checkboxes (Alignment Theme) --- */
+nav input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+  height: 1.1em;
+  margin: 0 0.4em 0 0;
+  vertical-align: middle;
+  position: relative;
+  border: none;
+  background: transparent;
+  outline: none;
+}
+
+nav input[type="checkbox"]::before {
+  content: '○';
+  color: #2563eb; /* Blue for running/empty */
+  font-size: 1.15em;
+  line-height: 1;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+nav input[type="checkbox"]:checked::before {
+  content: '\2713'; 
+  color: #16a34a; 
+  font-weight: 700;
+  font-size: 0.9em;
+}
+
+nav input[type="checkbox"]:hover::before {
+  transform: scale(1.1);
+  filter: brightness(1.1);
+}
+
+nav input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
+
+nav input[type="checkbox"]:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+  border-radius: 2px;
 }
 
 #solidTab input[type="text"] {

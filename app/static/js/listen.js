@@ -2,7 +2,7 @@
 export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
-import { initSolidAuth, solidLogout } from "./solid.js";
+import { initSolidAuth } from "./solid.js";
 import {
   toggleStagedSelection,
   toggleDraftStagedSelection,
@@ -99,7 +99,7 @@ let useFilesMode = false;
 let _fromAlignmentHandoff = false;
 
 // Synthesised MEI waveform: key used in wavesurfers / alignmentGrids for the synth track
-const SYNTH_MEI_KEY = "Score (sonified MEI)";
+const SYNTH_MEI_KEY = "Score (synthesised from MEI)";
 // Maps SYNTH_MEI_KEY -> blob URL once synthesis is done, or the sentinel '__pending__'
 const _synthBlobUrls = new Map();
 
@@ -115,46 +115,6 @@ let closeListeningMode = false;
 let _jumpToTargetActive = false;
 let _jumpToTargetWaveforms = []; // snapshot of badged waveforms for the current session
 let activeMarkerIx = null; // index into markers[] array
-
-// ---------------------------------------------------------------------------
-// Unsaved-changes indicator
-// ---------------------------------------------------------------------------
-
-/** Mark the alignment JSON as having unsaved changes. */
-function _markJsonDirty() {
-  const btn = document.getElementById("download-json-btn");
-  if (btn) {
-    btn.classList.add("json-dirty");
-    btn.title = "Save the current alignment and markers to a JSON file (Unsaved changes)";
-  }
-  const toggle = document.getElementById("nav-middle-toggle");
-  if (toggle) {
-    toggle.classList.add("json-dirty");
-    toggle.title = "Collapse / expand controls (Unsaved changes)";
-  }
-}
-
-/** Clear the unsaved-changes indicator (called after download). */
-function _clearJsonDirty() {
-  const btn = document.getElementById("download-json-btn");
-  if (btn) {
-    btn.classList.remove("json-dirty");
-    btn.title = "Save the current alignment and markers to a JSON file (No unsaved changes)";
-  }
-  const toggle = document.getElementById("nav-middle-toggle");
-  if (toggle) {
-    toggle.classList.remove("json-dirty");
-    toggle.title = "Collapse / expand controls (No unsaved changes)";
-  }
-}
-
-/** Sync current markers array into loadedAlignmentJSON.header.markers. */
-function _syncMarkersToJSON() {
-  if (!loadedAlignmentJSON) return;
-  if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
-  loadedAlignmentJSON.header.markers = markers.slice();
-  _markJsonDirty();
-}
 
 function getOrigin(url) {
   try {
@@ -602,7 +562,7 @@ function onClickRenditionName(e) {
   let checkbox;
   if (e.target.nodeName.toLowerCase() === "label") {
     // retrieve checkbox
-    checkbox = document.getElementById(e.target.htmlFor);
+    checkbox = document.getElementById(e.target.for);
   } else if (e.target.nodeName.toLowerCase === "li") {
     checkbox = e.target.querySelector("input");
   } else {
@@ -718,7 +678,7 @@ export function swapCurrentAudio(newAudio) {
   continueAnnotationLoopOnWaveform(currentAudioIx);
 }
 
-function generateCheckboxList(list) {
+function generateCheckboxList(list, isDraggable = false) {
   console.log("Generate checkbox list: ", list);
   // generate content for <ul>:
   // <li> containing a checkbox for each list member
@@ -743,6 +703,41 @@ function generateCheckboxList(list) {
     checkboxSpan.appendChild(label);
 
     li.appendChild(checkboxSpan);
+
+    if (isDraggable) {
+      const handle = document.createElement("span");
+      handle.className = "nav-drag-handle";
+      handle.setAttribute("aria-hidden", "true");
+      handle.textContent = "⠿";
+      li.appendChild(handle);
+
+      // Only start a drag when the handle is the pointer-down target
+      let _fromHandle = false;
+      handle.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        _fromHandle = true;
+      });
+      handle.addEventListener("click", (e) => e.stopPropagation());
+      li.addEventListener("pointerup", () => {
+        _fromHandle = false;
+      });
+      li.draggable = true;
+      li.addEventListener("dragstart", (ev) => {
+        if (!_fromHandle) {
+          ev.preventDefault();
+          return;
+        }
+        _fromHandle = false;
+        ev.dataTransfer.setData("nav-file", n);
+        ev.dataTransfer.effectAllowed = "move";
+        li.classList.add("nav-dragging");
+      });
+      li.addEventListener("dragend", () => {
+        _fromHandle = false;
+        li.classList.remove("nav-dragging");
+      });
+    }
+
     ul.appendChild(li);
   });
   return ul;
@@ -759,30 +754,24 @@ function _groupsStorageKey() {
 }
 
 /**
- * Load saved groups from alignment JSON.
+ * Load saved groups from localStorage.
  * Format: [ { name: string, pattern: string, files: string[] }, ... ]
  */
 function _loadGroups() {
-  if (
-    loadedAlignmentJSON &&
-    loadedAlignmentJSON.header &&
-    loadedAlignmentJSON.header.fileGroups
-  ) {
-    return loadedAlignmentJSON.header.fileGroups;
+  try {
+    const raw = localStorage.getItem(_groupsStorageKey());
+    if (raw) return JSON.parse(raw);
+  } catch (e) {
+    console.warn("Could not load file groups from localStorage:", e);
   }
   return [];
 }
 
 function _saveGroups(groups) {
-  // Persist to alignment JSON for round-tripping
-  if (loadedAlignmentJSON) {
-    if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
-    if (groups.length > 0) {
-      loadedAlignmentJSON.header.fileGroups = groups;
-    } else {
-      delete loadedAlignmentJSON.header.fileGroups;
-    }
-    _markJsonDirty();
+  try {
+    localStorage.setItem(_groupsStorageKey(), JSON.stringify(groups));
+  } catch (e) {
+    console.warn("Could not save file groups to localStorage:", e);
   }
 }
 
@@ -792,24 +781,24 @@ function _saveGroups(groups) {
  */
 function _renderSidebarFileList(filenames) {
   const audiosElement = document.getElementById("audios");
-  // Remove old elements (preserve non-list children like buttons)
-  Array.from(audiosElement.children).forEach((el) => {
-    if (el.tagName !== "BUTTON" && el.tagName !== "SPAN") {
-      el.remove();
-    }
-  });
+  // Remove old fieldsets / lists (preserve non-list children like buttons)
+  audiosElement
+    .querySelectorAll("fieldset.audio-group, ul.ungrouped-files")
+    .forEach((el) => el.remove());
 
-  const groups = _loadGroups();
-
-  const listSelectors = `<span class='listSelectors'>
-    <span class='all'>All</span><span class='none'>None</span>
-  </span>`;
+  // Prefer groups stored in the alignment JSON header if present,
+  // otherwise fall back to localStorage groups.
+  const groups =
+    loadedAlignmentJSON &&
+    loadedAlignmentJSON.header &&
+    Array.isArray(loadedAlignmentJSON.header.fileGroups)
+      ? loadedAlignmentJSON.header.fileGroups
+      : _loadGroups();
 
   // Determine which files belong to groups
   const grouped = new Set();
   groups.forEach((g) => {
     (g.files || []).forEach((f) => grouped.add(f));
-    // Also apply the regex pattern if present
     if (g.pattern) {
       try {
         const re = new RegExp(g.pattern);
@@ -835,67 +824,75 @@ function _renderSidebarFileList(filenames) {
         });
       } catch (_) {}
     }
-    // Only keep files that actually exist in the alignment
     return [...members].filter((f) => filenames.includes(f)).sort();
   });
 
   // Ungrouped files
   const ungrouped = filenames.filter((f) => !grouped.has(f)).sort();
 
+  /** Helper: create a <fieldset class="audio-group collapsible-fieldset"> */
+  function _makeGroupFieldset(label, filesArray, isDraggable) {
+    const fs = document.createElement("fieldset");
+    fs.className = "audio-group collapsible-fieldset";
+    fs.id = "audio-group-" + label.toLowerCase().replace(/\s+/g, "-");
+
+    const legend = document.createElement("legend");
+    legend.title = "Collapse / expand " + label;
+    legend.textContent = label + " ";
+    const arrow = document.createElement("span");
+    arrow.className = "collapse-arrow";
+    arrow.innerHTML = "&#9662;";
+    legend.appendChild(arrow);
+    fs.appendChild(legend);
+
+    const body = document.createElement("div");
+    body.className = "fieldset-body";
+
+    if (isDraggable) {
+      const listSelectors = document.createElement("span");
+      listSelectors.className = "listSelectors";
+      listSelectors.innerHTML =
+        "<span class='all'>All</span><span class='none'>None</span>";
+      body.appendChild(listSelectors);
+    }
+
+    body.appendChild(generateCheckboxList(filesArray, isDraggable));
+    fs.appendChild(body);
+
+    // Restore collapsed state from localStorage
+    try {
+      if (localStorage.getItem("fieldset-collapsed-" + fs.id) === "true") {
+        fs.classList.add("collapsed");
+      }
+    } catch (_) {}
+
+    return fs;
+  }
+
   // --- Render order: Score first, then groups, then ungrouped ---
 
-  // 1. Synthesized audio fieldset (first, if present)
+  // 1. Score fieldset (first, if present)
   if (SYNTH_MEI_KEY in alignmentGrids) {
-    const synthWrap = document.createElement("fieldset");
-    synthWrap.id = "score-container";
-    synthWrap.className = "nav-fieldset";
-    const legend = document.createElement("legend");
-    legend.innerText = "Synthesized audio";
-    synthWrap.appendChild(legend);
-
-    // Patterned after the "always visible" part of Tools
-    const synthRow = document.createElement("span");
-    synthRow.className = "tools-row";
-    synthRow.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
-    synthWrap.appendChild(synthRow);
-    audiosElement.appendChild(synthWrap);
+    audiosElement.appendChild(
+      _makeGroupFieldset("Score", [SYNTH_MEI_KEY], false),
+    );
   }
 
   // 2. Render each group as a collapsible fieldset
   groups.forEach((g, i) => {
     const members = groupMembers[i];
-    if (members.length === 0) return; // skip empty groups
-    const foldout = document.createElement("fieldset");
-    foldout.className = "collapsible-fieldset group-fieldset";
-    const legend = document.createElement("legend");
-    legend.title = "Collapse / expand";
-    legend.innerHTML = `${g.name} <span class="collapse-arrow">&#9662;</span>`;
-    foldout.appendChild(legend);
-
-    const body = document.createElement("div");
-    body.className = "fieldset-body";
-    body.innerHTML = listSelectors;
-    body.appendChild(generateCheckboxList(members));
-    foldout.appendChild(body);
-    audiosElement.appendChild(foldout);
+    if (members.length === 0) return;
+    const fs = _makeGroupFieldset(g.name, members, true);
+    audiosElement.appendChild(fs);
+    _wireNavGroupDrop(fs);
   });
 
   // 3. Ungrouped recordings (last)
   if (ungrouped.length > 0) {
     const label = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
-    const uf = document.createElement("fieldset");
-    uf.className = "collapsible-fieldset group-fieldset";
-    const us = document.createElement("legend");
-    us.title = "Collapse / expand";
-    us.innerHTML = `${label} <span class="collapse-arrow">&#9662;</span>`;
-    uf.appendChild(us);
-
-    const uBody = document.createElement("div");
-    uBody.className = "fieldset-body";
-    uBody.innerHTML = listSelectors;
-    uBody.appendChild(generateCheckboxList(ungrouped));
-    uf.appendChild(uBody);
-    audiosElement.appendChild(uf);
+    const fs = _makeGroupFieldset(label, ungrouped, true);
+    audiosElement.appendChild(fs);
+    _wireNavGroupDrop(fs);
   }
 
   // Wire up list selectors (All / None)
@@ -912,11 +909,344 @@ function _renderSidebarFileList(filenames) {
   );
 }
 
+/**
+ * Wire drag-over / drop onto the <ul> inside a nav group fieldset so that
+ * nav items can be reordered within and between non-Score groups.
+ *
+ * During dragover the <li> is moved live in the sidebar and the content panel
+ * is reordered (without animation) via a throttled rAF.  On drop we persist
+ * the new order and run a final sync.
+ */
+let _navDragRafPending = false;
+
+function _wireNavGroupDrop(groupEl) {
+  const ul = groupEl.querySelector("ul");
+  if (!ul) return;
+
+  /** Move draggedLi into `targetUl` at the position closest to `clientY`. */
+  function _moveToPosition(draggedLi, targetUl, clientY) {
+    const items = Array.from(targetUl.querySelectorAll("li.renditionName"));
+    const insertBefore = items.find((li) => {
+      if (li === draggedLi) return false;
+      const r = li.getBoundingClientRect();
+      return clientY < r.top + r.height / 2;
+    });
+    if (insertBefore) {
+      targetUl.insertBefore(draggedLi, insertBefore);
+    } else {
+      targetUl.appendChild(draggedLi);
+    }
+  }
+
+  ul.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer.types.includes("nav-file")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+
+    // Find the currently dragged <li> (it has .nav-dragging)
+    const draggedLi = document.querySelector("li.nav-dragging");
+    if (!draggedLi) return;
+
+    // Live-move the <li> within this <ul>
+    _moveToPosition(draggedLi, ul, e.clientY);
+
+    // Throttled content-panel sync with FLIP animation
+    if (!_navDragRafPending) {
+      _navDragRafPending = true;
+      requestAnimationFrame(() => {
+        _navDragRafPending = false;
+        _applyNavOrderToContentPanel();
+      });
+    }
+  });
+
+  ul.addEventListener("drop", (e) => {
+    e.preventDefault();
+    // Final sync + persist
+    _syncGroupsFromNav();
+  });
+}
+
+/**
+ * Read the current sidebar DOM order and persist it to
+ * loadedAlignmentJSON.header.fileGroups, then sync the content panel.
+ */
+function _syncGroupsFromNav() {
+  if (!loadedAlignmentJSON) return;
+  if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+
+  const audios = document.getElementById("audios");
+  const groups = [];
+
+  audios.querySelectorAll("fieldset.audio-group").forEach((fs) => {
+    const legend = fs.querySelector("legend");
+    const groupName = legend
+      ? legend.textContent.replace(/\s*▾\s*$/, "").trim()
+      : "";
+    if (groupName === "Score") return; // Score group is immutable
+
+    const files = Array.from(fs.querySelectorAll("li.renditionName"))
+      .map((li) => li.id)
+      .filter(Boolean);
+
+    // Ungrouped container is not stored as an explicit group
+    if (groupName === "Ungrouped recordings" || groupName === "All recordings")
+      return;
+
+    groups.push({ name: groupName, files });
+  });
+
+  loadedAlignmentJSON.header.fileGroups = groups;
+  _markJsonDirty();
+  _applyNavOrderToContentPanel();
+}
+
+/**
+ * Reorder waveform elements in the content panel to match the nav sidebar order,
+ * using a FLIP animation (First → Last → Invert → Play).
+ */
+function _applyNavOrderToContentPanel() {
+  const waveformsRoot = document.getElementById("waveforms");
+  if (!waveformsRoot) return;
+
+  // FIRST: snapshot positions of all non-Score waveforms
+  const allWaveforms = Array.from(
+    waveformsRoot.querySelectorAll(
+      ".file-group:not(.file-group-score) .waveform",
+    ),
+  );
+  const firstRects = new Map();
+  allWaveforms.forEach((wf) => {
+    firstRects.set(wf, wf.getBoundingClientRect());
+  });
+
+  // Build desired order from the nav
+  const audios = document.getElementById("audios");
+  audios.querySelectorAll("fieldset.audio-group").forEach((fs) => {
+    const legend = fs.querySelector("legend");
+    const groupName = legend
+      ? legend.textContent.replace(/\s*▾\s*$/, "").trim()
+      : "";
+    if (groupName === "Score") return;
+
+    const filenames = Array.from(fs.querySelectorAll("li.renditionName"))
+      .map((li) => li.id)
+      .filter(Boolean);
+
+    // Find the corresponding content-panel group-list
+    let groupList = null;
+    if (
+      groupName === "Ungrouped recordings" ||
+      groupName === "All recordings"
+    ) {
+      groupList = waveformsRoot.querySelector(
+        ".file-group-ungrouped .group-list",
+      );
+    } else {
+      const fg = waveformsRoot.querySelector(
+        `.file-group[data-group='${CSS.escape(groupName)}']`,
+      );
+      groupList = fg ? fg.querySelector(".group-list") : null;
+    }
+    if (!groupList) return;
+
+    // Move any cross-group waveforms into this group-list first
+    filenames.forEach((fname) => {
+      const wf = waveformsRoot.querySelector(
+        `.waveform[data-ix='${CSS.escape(fname)}']`,
+      );
+      if (wf && wf.parentElement !== groupList) {
+        groupList.appendChild(wf);
+      }
+    });
+
+    // Re-order within the group-list to match nav order
+    filenames.forEach((fname, idx) => {
+      const wf = groupList.querySelector(
+        `.waveform[data-ix='${CSS.escape(fname)}']`,
+      );
+      if (!wf) return;
+      const ref = groupList.children[idx];
+      if (ref && ref !== wf) groupList.insertBefore(wf, ref);
+      else if (!ref) groupList.appendChild(wf);
+    });
+  });
+
+  // INVERT: shift elements back to where they visually were
+  allWaveforms.forEach((wf) => {
+    const first = firstRects.get(wf);
+    if (!first) return;
+    const last = wf.getBoundingClientRect();
+    const dy = first.top - last.top;
+    if (dy !== 0) {
+      wf.style.transition = "none";
+      wf.style.transform = `translateY(${dy}px)`;
+    }
+  });
+
+  // PLAY: animate to final positions
+  requestAnimationFrame(() => {
+    allWaveforms.forEach((wf) => {
+      if (wf.style.transform) {
+        wf.style.transition = "transform 300ms ease";
+        wf.style.transform = "";
+        const onEnd = () => {
+          wf.style.transition = "";
+          wf.removeEventListener("transitionend", onEnd);
+        };
+        wf.addEventListener("transitionend", onEnd);
+      }
+    });
+  });
+}
+
+/**
+ * Ensure waveform group containers exist in the main content pane.
+ * Idempotent: creates only missing containers; never destroys existing ones
+ * (which would orphan already-mounted waveforms).
+ * Pass `forceRebuild = true` (e.g. from reloadWaveforms) to tear down first.
+ */
+function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
+  const waveformsRoot = document.getElementById("waveforms");
+
+  if (forceRebuild) {
+    Array.from(waveformsRoot.querySelectorAll(".file-group")).forEach((el) =>
+      el.remove(),
+    );
+  }
+
+  // If containers already exist, nothing to do
+  if (waveformsRoot.querySelector(".file-group")) return;
+
+  const groups =
+    loadedAlignmentJSON &&
+    loadedAlignmentJSON.header &&
+    Array.isArray(loadedAlignmentJSON.header.fileGroups)
+      ? loadedAlignmentJSON.header.fileGroups
+      : _loadGroups();
+
+  // Determine membership similar to sidebar: support explicit files + pattern
+  const grouped = new Set();
+  groups.forEach((g) => {
+    (g.files || []).forEach((f) => grouped.add(f));
+    if (g.pattern) {
+      try {
+        const re = new RegExp(g.pattern);
+        filenames.forEach((f) => {
+          const short = f.substring(f.lastIndexOf("/") + 1);
+          if (re.test(short) || re.test(f)) grouped.add(f);
+        });
+      } catch (_) {}
+    }
+  });
+
+  const groupMembers = groups.map((g) => {
+    const members = new Set(g.files || []);
+    if (g.pattern) {
+      try {
+        const re = new RegExp(g.pattern);
+        filenames.forEach((f) => {
+          const short = f.substring(f.lastIndexOf("/") + 1);
+          if (re.test(short) || re.test(f)) members.add(f);
+        });
+      } catch (_) {}
+    }
+    return [...members].filter((f) => filenames.includes(f)).sort();
+  });
+
+  const ungrouped = filenames.filter((f) => !grouped.has(f)).sort();
+
+  // Score container (if present)
+  if (SYNTH_MEI_KEY in alignmentGrids) {
+    const g = document.createElement("div");
+    g.className = "file-group file-group-score";
+    g.dataset.group = "Score";
+    g.innerHTML = `<div class="group-title">Score</div><div class="group-list"></div>`;
+    waveformsRoot.appendChild(g);
+  }
+
+  // Create containers for each named group
+  groups.forEach((g, i) => {
+    const members = groupMembers[i];
+    if (members.length === 0) return;
+    const container = document.createElement("div");
+    container.className = "file-group";
+    container.dataset.group = g.name;
+    container.innerHTML = `<div class="group-title">${g.name}</div><div class="group-list"></div>`;
+    waveformsRoot.appendChild(container);
+  });
+
+  // Ungrouped container
+  if (ungrouped.length > 0) {
+    const uc = document.createElement("div");
+    uc.className = "file-group file-group-ungrouped";
+    uc.dataset.group = "Ungrouped";
+    uc.innerHTML = `<div class="group-title">Ungrouped recordings</div><div class="group-list"></div>`;
+    waveformsRoot.appendChild(uc);
+  }
+
+  // Make non-Score group-lists droppable for reordering
+  waveformsRoot.querySelectorAll(".group-list").forEach((list) => {
+    // Score group-list must not accept drops
+    if (list.closest(".file-group-score")) return;
+
+    list.addEventListener("dragover", (e) => {
+      e.preventDefault();
+    });
+    list.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const fname = e.dataTransfer.getData("text/plain");
+      if (!fname) return;
+      const draggedEl = document.querySelector(
+        `.waveform[data-ix='${CSS.escape(fname)}']`,
+      );
+      if (!draggedEl) return;
+      const targetList = e.currentTarget;
+      // Find child under pointer to place before/after
+      const afterEl = Array.from(targetList.querySelectorAll(".waveform")).find(
+        (el) => {
+          const r = el.getBoundingClientRect();
+          return e.clientY < r.top + r.height / 2;
+        },
+      );
+      if (afterEl) targetList.insertBefore(draggedEl, afterEl);
+      else targetList.appendChild(draggedEl);
+
+      _persistGroupOrder();
+    });
+  });
+}
+
+function _markJsonDirty() {
+  const dlBtn = document.getElementById("download-json-btn");
+  if (dlBtn) dlBtn.classList.add("json-dirty");
+}
+
+/** Persist the current group ordering into loadedAlignmentJSON.header.fileGroups */
+function _persistGroupOrder() {
+  if (!loadedAlignmentJSON) return;
+  if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+  const waveformsRoot = document.getElementById("waveforms");
+  const groups = [];
+  // Iterate existing file-group containers (skip Score)
+  Array.from(waveformsRoot.querySelectorAll(".file-group")).forEach((fg) => {
+    const gname = fg.dataset.group || "Ungrouped";
+    if (gname === "Score") return; // do not include score
+    const list = fg.querySelector(".group-list");
+    const files = Array.from(list.querySelectorAll(".waveform"))
+      .map((w) => w.dataset.ix)
+      .filter(Boolean);
+    groups.push({ name: gname, files });
+  });
+  loadedAlignmentJSON.header.fileGroups = groups;
+  _markJsonDirty();
+}
+
 function _wireListSelectors() {
   document.querySelectorAll(".listSelectors .all").forEach((selector) =>
     selector.addEventListener("click", (e) => {
       e.target
-        .closest("fieldset")
+        .closest("fieldset.audio-group")
         .querySelectorAll("input")
         .forEach((cb) => {
           if (!cb.checked) cb.click();
@@ -926,7 +1256,7 @@ function _wireListSelectors() {
   document.querySelectorAll(".listSelectors .none").forEach((selector) =>
     selector.addEventListener("click", (e) => {
       e.target
-        .closest("fieldset")
+        .closest("fieldset.audio-group")
         .querySelectorAll("input")
         .forEach((cb) => {
           if (cb.checked) cb.click();
@@ -1016,7 +1346,12 @@ function _openGroupModal() {
   applyBtn.className = "gm-apply";
   applyBtn.textContent = "Apply";
   applyBtn.addEventListener("click", () => {
+    // Persist groups both to localStorage (legacy) and into the alignment JSON header
     _saveGroups(groups);
+    if (!loadedAlignmentJSON) loadedAlignmentJSON = {};
+    if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+    loadedAlignmentJSON.header.fileGroups = groups;
+    _markJsonDirty();
     backdrop.remove();
     // Re-render sidebar
     const fns = Object.keys(alignmentGrids)
@@ -1392,9 +1727,79 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     });
     waveform.appendChild(selectOverlay);
 
-    let waveforms = document.getElementById("waveforms");
+    // Ensure group containers exist and append into the appropriate group-list
+    const allFilenames = Object.keys(alignmentGrids || {})
+      .filter((n) => n !== SYNTH_MEI_KEY)
+      .sort();
+    _ensureWaveformGroupContainers(allFilenames.concat(SYNTH_MEI_KEY));
+    const waveformsRoot = document.getElementById("waveforms");
+    // determine which group this filename belongs to (match by header.fileGroups or local groups)
+    // Score waveform goes into the Score group container
+    let parentList = null;
+    let placed = false;
+    if (filename === SYNTH_MEI_KEY) {
+      parentList = waveformsRoot.querySelector(".file-group-score .group-list");
+      if (parentList) placed = true;
+    }
+    if (!parentList) {
+      parentList = waveformsRoot.querySelector(
+        ".file-group-ungrouped .group-list",
+      );
+    }
+    const groups =
+      loadedAlignmentJSON &&
+      loadedAlignmentJSON.header &&
+      Array.isArray(loadedAlignmentJSON.header.fileGroups)
+        ? loadedAlignmentJSON.header.fileGroups
+        : _loadGroups();
+    for (const g of groups) {
+      const members = new Set(g.files || []);
+      if (members.has(filename)) {
+        const fg = waveformsRoot.querySelector(
+          `.file-group[data-group='${CSS.escape(g.name)}']`,
+        );
+        if (fg) {
+          parentList = fg.querySelector(".group-list");
+          placed = true;
+          break;
+        }
+      } else if (g.pattern) {
+        try {
+          const re = new RegExp(g.pattern);
+          const short = filename.substring(filename.lastIndexOf("/") + 1);
+          if (re.test(short) || re.test(filename)) {
+            const fg = waveformsRoot.querySelector(
+              `.file-group[data-group='${CSS.escape(g.name)}']`,
+            );
+            if (fg) {
+              parentList = fg.querySelector(".group-list");
+              placed = true;
+              break;
+            }
+          }
+        } catch (_) {}
+      }
+    }
+    if (!placed) {
+      // Leave in ungrouped container (or append to root if none)
+      parentList = parentList || waveformsRoot;
+    }
+
     // add waveform element
-    waveforms.appendChild(waveform);
+    parentList.appendChild(waveform);
+
+    // Add small drag handle and enable dragging
+    const handle = document.createElement("div");
+    handle.className = "wf-drag-handle";
+    waveform.appendChild(handle);
+    waveform.draggable = true;
+    waveform.addEventListener("dragstart", (ev) => {
+      ev.dataTransfer.setData("text/plain", filename);
+      ev.currentTarget.classList.add("dragging");
+    });
+    waveform.addEventListener("dragend", (ev) => {
+      ev.currentTarget.classList.remove("dragging");
+    });
     // now resort waveforms to maintain order:
     // 1. Score (synthesised from MEI) first
     // 2. VPO recordings sorted alphabetically
@@ -2210,27 +2615,6 @@ async function setGrids(grids) {
         if ("ref" in grids.header) {
           referenceAudioIx = grids.header.ref;
         }
-
-        // Restore file groups from JSON (fallback if localStorage empty)
-        if (grids.header.fileGroups && Array.isArray(grids.header.fileGroups)) {
-          const existingGroups = _loadGroups();
-          if (existingGroups.length === 0) {
-            _saveGroups(grids.header.fileGroups);
-          }
-        }
-
-        // Restore markers from JSON (fallback if localStorage empty)
-        if (grids.header.markers && Array.isArray(grids.header.markers)) {
-          const existingMarkers = storage
-            ? storage.getItem("markers_" + workId)
-            : null;
-          if (!existingMarkers) {
-            markers = grids.header.markers.slice();
-            if (storage) {
-              storage.setItem("markers_" + workId, JSON.stringify(markers));
-            }
-          }
-        }
       } else {
         console.error(
           "Broken grids received from alignment json file: ",
@@ -2272,8 +2656,8 @@ async function setGrids(grids) {
 
   // Always show manage-files button once alignment is loaded (for URI config)
   const _manageBtn = document.getElementById("manage-files-btn");
-  if (_manageBtn && _manageBtn.style.display === "none") {
-    _manageBtn.style.display = "";
+  if (_manageBtn && !_manageBtn._wired) {
+    _manageBtn._wired = true;
     _manageBtn.addEventListener("click", () => {
       document.getElementById("file-picker-overlay").style.display = "flex";
       populateLdUriSection();
@@ -2325,20 +2709,12 @@ function onAlignmentComplete(alignmentResult, files) {
 
   // Show download button so user can save the result
   const dlBtn = document.getElementById("download-json-btn");
-  if (dlBtn) {
-    dlBtn.style.display = "";
-    if (sessionStorage.getItem("alignSavedBeforeListen") !== "true") {
-      dlBtn.classList.add("json-dirty");
-    } else {
-      dlBtn.classList.remove("json-dirty");
-    }
-  }
-  sessionStorage.removeItem("alignSavedBeforeListen");
+  if (dlBtn) dlBtn.style.display = "";
 
   // Show manage-files button in case user wants to re-match files
   const manageBtn = document.getElementById("manage-files-btn");
-  if (manageBtn && manageBtn.style.display === "none") {
-    manageBtn.style.display = "";
+  if (manageBtn && !manageBtn._wired) {
+    manageBtn._wired = true;
     manageBtn.addEventListener("click", () => {
       document.getElementById("file-picker-overlay").style.display = "flex";
       populateLdUriSection();
@@ -2472,111 +2848,50 @@ function onRegionUpdated(filename, region) {
 // ----------------------------------------------------------------------------
 
 document.addEventListener("DOMContentLoaded", () => {
-  // Global delegation for collapsible fieldsets
-  document.addEventListener("click", (e) => {
-    const legend = e.target.closest("legend");
-    if (legend && legend.parentElement.classList.contains("collapsible-fieldset")) {
-      const fieldset = legend.parentElement;
-      const isCollapsed = fieldset.classList.toggle("collapsed");
+  // --- Collapse wiring for nav cards and collapsible fieldsets ---
 
-      // Persist state if it's not a file group
-      if (fieldset.id && !fieldset.classList.contains("group-fieldset")) {
-        try {
-          localStorage.setItem(
-            `fieldset-collapsed-${fieldset.id}`,
-            isCollapsed,
-          );
-        } catch (_) {}
-      }
-    }
-  });
-
-  // Restore persistent fieldset states
-  document.querySelectorAll(".collapsible-fieldset[id]").forEach((fs) => {
-    if (fs.classList.contains("group-fieldset")) return;
-    try {
-      const isCollapsed =
-        localStorage.getItem(`fieldset-collapsed-${fs.id}`) === "true";
-      if (isCollapsed) {
-        fs.classList.add("collapsed");
-      }
-    } catch (_) {}
-  });
-
-  // Sidebar sections (Controls, Waveforms) toggle logic
-  function setupNavSection(toggleId, bodyId, arrowId, storageKey) {
+  // Nav card collapse (Controls / Waveforms)
+  function setupNavSection(toggleId, storageKey) {
     const toggle = document.getElementById(toggleId);
-    const body = document.getElementById(bodyId);
-    const arrow = document.getElementById(arrowId);
-    if (!toggle || !body) return;
-
-    const card = toggle.closest(".nav-card") || toggle.parentElement;
-
+    if (!toggle) return;
+    const card = toggle.closest(".nav-card");
+    if (!card) return;
     toggle.addEventListener("click", () => {
-      const isCollapsed = card.classList.toggle("collapsed");
-      if (arrow) {
-        arrow.innerHTML = isCollapsed ? "&#9656;" : "&#9662;";
-      }
+      card.classList.toggle("collapsed");
       try {
-        localStorage.setItem(storageKey, isCollapsed);
+        localStorage.setItem(storageKey, card.classList.contains("collapsed"));
       } catch (_) {}
     });
-
-    // Restore state
     try {
-      if (localStorage.getItem(storageKey) === "true") {
+      if (localStorage.getItem(storageKey) === "true")
         card.classList.add("collapsed");
-        if (arrow) arrow.innerHTML = "&#9656;";
-      }
     } catch (_) {}
   }
+  setupNavSection("nav-middle-toggle", "nav-middle-collapsed");
+  setupNavSection("nav-bottom-toggle", "nav-bottom-collapsed");
 
-  setupNavSection(
-    "nav-middle-toggle",
-    "nav-middle",
-    "middle-collapse-arrow",
-    "nav-middle-collapsed",
-  );
-  setupNavSection(
-    "nav-bottom-toggle",
-    "nav-bottom",
-    "bottom-collapse-arrow",
-    "nav-bottom-collapsed",
-  );
-
-  // Settings: only show an internal scrollbar when its content truly overflows.
-  // This prevents a "phantom" scrollbar when the layout has enough space.
-  const settingsBody = document.querySelector(
-    "#settings-panel .fieldset-body",
-  );
-  const syncSettingsOverflow = () => {
-    if (!settingsBody) return;
-    // Add generous slack to avoid "phantom" scrollbars due to rounding.
-    // scrollHeight/clientHeight are usually integers, but some layouts can still
-    // report a few extra pixels even when content visibly fits.
-    const scrollH = Math.ceil(settingsBody.scrollHeight);
-    const clientH = Math.floor(settingsBody.clientHeight);
-    const needsScroll = scrollH - clientH > 12;
-    settingsBody.classList.toggle("settings-scroll", needsScroll);
-  };
-
-  if (settingsBody) {
-    syncSettingsOverflow();
-    if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(() => {
-        // Let layout settle after transition/reflow.
-        requestAnimationFrame(() => syncSettingsOverflow());
-      });
-      ro.observe(settingsBody);
-      // Also observe the containers that change height when collapsing sections.
-      const navMiddle = document.getElementById("nav-middle");
-      const regionControls = document.getElementById("region-controls");
-      if (navMiddle) ro.observe(navMiddle);
-      if (regionControls) ro.observe(regionControls);
-    } else {
-      window.addEventListener("resize", syncSettingsOverflow);
-    }
-  }
+  // Collapsible fieldset legend clicks (event delegation)
+  document.addEventListener("click", (e) => {
+    const legend = e.target.closest(".collapsible-fieldset > legend");
+    if (!legend) return;
+    const fieldset = legend.parentElement;
+    fieldset.classList.toggle("collapsed");
+    try {
+      if (fieldset.id) {
+        localStorage.setItem(
+          "fieldset-collapsed-" + fieldset.id,
+          fieldset.classList.contains("collapsed"),
+        );
+      }
+    } catch (_) {}
+  });
+  // Restore fieldset collapse states
+  document.querySelectorAll(".collapsible-fieldset[id]").forEach((fs) => {
+    try {
+      if (localStorage.getItem("fieldset-collapsed-" + fs.id) === "true")
+        fs.classList.add("collapsed");
+    } catch (_) {}
+  });
 
   // Initialise Solid auth (process any incoming redirect code, then populate drawer).
   // Skip in align mode — Solid is irrelevant until user transitions to listen mode.
@@ -2629,7 +2944,6 @@ document.addEventListener("DOMContentLoaded", () => {
       a.download = "alignment.json";
       a.click();
       URL.revokeObjectURL(url);
-      _clearJsonDirty();
     });
     if (alignmentData === "session") dlBtn.style.display = ""; // legacy fallback
   }
@@ -2644,8 +2958,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // Tools panel + Unified undo/redo + Marker drag + Alignment correction
   // -----------------------------------------------------------------------
   const toolsPanel = document.getElementById("tools-panel");
-  const toolsHeader = document.getElementById("tools-header");
-  const toolsBody = document.getElementById("tools-body");
   const closeListeningCb = document.getElementById("close-listening-cb");
   const dragMarkersCb = document.getElementById("drag-markers-cb");
   const dragModeMove = document.getElementById("drag-mode-move");
@@ -2658,17 +2970,19 @@ document.addEventListener("DOMContentLoaded", () => {
   const redoBtn = document.getElementById("tools-redo-btn");
   const revertBtn = document.getElementById("revert-all-btn");
 
-  // --- Tools panel collapse ---
-  // Restore collapse state
-  try {
-    if (localStorage.getItem("tools-collapsed") === "true") {
-      toolsPanel.classList.add("collapsed");
-    }
-  } catch (_) {}
-
-  /** Expand the tools panel (e.g. for pulse hint). */
-  function _expandToolsPanel() {
-    if (toolsPanel) toolsPanel.classList.remove("collapsed");
+  // Tools panel collapse is handled by the generic .collapsible-fieldset
+  // legend delegation above. The "…" hint also expands it.
+  const moreHint = document.getElementById("tools-more-hint");
+  if (moreHint) {
+    moreHint.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (toolsPanel) toolsPanel.classList.remove("collapsed");
+      try {
+        if (toolsPanel && toolsPanel.id) {
+          localStorage.setItem("fieldset-collapsed-" + toolsPanel.id, "false");
+        }
+      } catch (_) {}
+    });
   }
 
   // --- Close Listening checkbox ---
@@ -2750,7 +3064,6 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         alignmentGrids[entry.filename] = entry.grid;
         _syncGridToJSON(entry.filename);
-        _markJsonDirty();
         if (_gridRedrawers[entry.filename]) _gridRedrawers[entry.filename]();
         break;
       }
@@ -2761,7 +3074,6 @@ document.addEventListener("DOMContentLoaded", () => {
           markers.splice(ix, 1);
           if (storage)
             storage.setItem("markers_" + workId, JSON.stringify(markers));
-          _syncMarkersToJSON();
           _redoStack.push({
             type: "marker-add",
             alignIx: entry.alignIx,
@@ -2787,7 +3099,6 @@ document.addEventListener("DOMContentLoaded", () => {
         markers.splice(insertIx, 0, entry.alignIx);
         if (storage)
           storage.setItem("markers_" + workId, JSON.stringify(markers));
-        _syncMarkersToJSON();
         _redoStack.push({
           type: "marker-delete",
           alignIx: entry.alignIx,
@@ -2804,7 +3115,6 @@ document.addEventListener("DOMContentLoaded", () => {
         markers[entry.markerArrayIx] = entry.oldAlignIx;
         if (storage)
           storage.setItem("markers_" + workId, JSON.stringify(markers));
-        _syncMarkersToJSON();
         _redoStack.push({
           type: "marker-move",
           markerArrayIx: entry.markerArrayIx,
@@ -2831,7 +3141,6 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         alignmentGrids[entry.filename] = entry.grid;
         _syncGridToJSON(entry.filename);
-        _markJsonDirty();
         if (_gridRedrawers[entry.filename]) _gridRedrawers[entry.filename]();
         break;
       }
@@ -2841,7 +3150,6 @@ document.addEventListener("DOMContentLoaded", () => {
         markers.splice(insertIx, 0, entry.alignIx);
         if (storage)
           storage.setItem("markers_" + workId, JSON.stringify(markers));
-        _syncMarkersToJSON();
         _undoStack.push({
           type: "marker-add",
           alignIx: entry.alignIx,
@@ -2857,7 +3165,6 @@ document.addEventListener("DOMContentLoaded", () => {
           markers.splice(ix, 1);
           if (storage)
             storage.setItem("markers_" + workId, JSON.stringify(markers));
-          _syncMarkersToJSON();
           _undoStack.push({
             type: "marker-delete",
             alignIx: entry.alignIx,
@@ -2881,7 +3188,6 @@ document.addEventListener("DOMContentLoaded", () => {
         markers[entry.markerArrayIx] = entry.newAlignIx;
         if (storage)
           storage.setItem("markers_" + workId, JSON.stringify(markers));
-        _syncMarkersToJSON();
         _undoStack.push({
           type: "marker-move",
           markerArrayIx: entry.markerArrayIx,
@@ -2968,7 +3274,6 @@ document.addEventListener("DOMContentLoaded", () => {
     } else {
       loadedAlignmentJSON.body.audio[filename] = alignmentGrids[filename];
     }
-    _markJsonDirty();
   }
 
   if (undoBtn) undoBtn.addEventListener("click", _undoOne);
@@ -3523,7 +3828,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (storage) {
       storage.setItem("markers_" + workId, JSON.stringify(markers));
     }
-    _syncMarkersToJSON();
     _pushUndo(
       { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
       true,
@@ -3821,7 +4125,6 @@ document.addEventListener("DOMContentLoaded", () => {
         if (storage) {
           storage.setItem("markers_" + workId, JSON.stringify(markers));
         }
-        _syncMarkersToJSON();
         _pushUndo(
           { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
           true,
@@ -3849,7 +4152,6 @@ document.addEventListener("DOMContentLoaded", () => {
           if (storage) {
             storage.setItem("markers_" + workId, JSON.stringify(markers));
           }
-          _syncMarkersToJSON();
           _pushUndo(
             {
               type: "marker-delete",
@@ -4548,20 +4850,11 @@ function populateLdUriSection() {
     if (!loadedAlignmentJSON) return;
     if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
     const prefix = prefixInput.value.trim();
-    let changed = false;
-
     if (prefix) {
-      if (loadedAlignmentJSON.header.linkedDataUriPrefix !== prefix) {
-        loadedAlignmentJSON.header.linkedDataUriPrefix = prefix;
-        changed = true;
-      }
+      loadedAlignmentJSON.header.linkedDataUriPrefix = prefix;
     } else {
-      if ("linkedDataUriPrefix" in loadedAlignmentJSON.header) {
-        delete loadedAlignmentJSON.header.linkedDataUriPrefix;
-        changed = true;
-      }
+      delete loadedAlignmentJSON.header.linkedDataUriPrefix;
     }
-
     // Clean empty entries and persist
     const clean = {};
     for (const key of Object.keys(perFileConfig)) {
@@ -4569,19 +4862,10 @@ function populateLdUriSection() {
         clean[key] = { ...perFileConfig[key] };
       }
     }
-
-    const oldUris = loadedAlignmentJSON.header.linkedDataUris || {};
-    if (JSON.stringify(clean) !== JSON.stringify(oldUris)) {
-      changed = true;
-      if (Object.keys(clean).length > 0) {
-        loadedAlignmentJSON.header.linkedDataUris = clean;
-      } else {
-        delete loadedAlignmentJSON.header.linkedDataUris;
-      }
-    }
-
-    if (changed) {
-      _markJsonDirty();
+    if (Object.keys(clean).length > 0) {
+      loadedAlignmentJSON.header.linkedDataUris = clean;
+    } else {
+      delete loadedAlignmentJSON.header.linkedDataUris;
     }
   }
 
@@ -4609,8 +4893,8 @@ function showFilePickerIfNeeded() {
     }
     // Show the "Manage files" button and wire it to reopen the overlay
     const manageBtn = document.getElementById("manage-files-btn");
-    if (manageBtn && manageBtn.style.display === "none") {
-      manageBtn.style.display = "";
+    if (manageBtn && !manageBtn._wired) {
+      manageBtn._wired = true;
       manageBtn.addEventListener("click", () => {
         document.getElementById("file-picker-overlay").style.display = "flex";
         populateLdUriSection();
@@ -4628,84 +4912,41 @@ function showFilePickerIfNeeded() {
 }
 
 // --- Global drag-and-drop for JSON replacement ---
-// When the file picker overlay is NOT showing, allow dropping a JSON file
-// anywhere on the page to replace the current alignment.
+// Dragging a JSON file anywhere on the page auto-opens the Load Files modal,
+// which handles the drop itself. This keeps JSON loading constrained to the modal.
 function initGlobalJsonDrop() {
-  let dragCounter = 0;
-  const dropOverlay = document.getElementById("json-drop-overlay");
-  if (!dropOverlay) return;
+  function _hasJsonItem(dataTransfer) {
+    if (!dataTransfer || !dataTransfer.items) return false;
+    return Array.from(dataTransfer.items).some(
+      (item) =>
+        item.kind === "file" &&
+        (item.type === "application/json" || item.type === "text/json"),
+    );
+  }
 
   document.addEventListener("dragenter", (e) => {
-    // Don't show global overlay if file picker is visible
-    if (document.getElementById("file-picker-overlay").style.display === "flex")
-      return;
-    dragCounter++;
-    if (dragCounter === 1) {
-      dropOverlay.style.display = "flex";
+    const overlay = document.getElementById("file-picker-overlay");
+    if (!overlay || overlay.style.display === "flex") return; // already open
+    if (_hasJsonItem(e.dataTransfer)) {
+      // Auto-open the modal so the user can drop the JSON into it.
+      // Ensure local-file mode is active so the file picker initialises.
+      useFilesMode = true;
+      if (!showFilePickerIfNeeded._initialized) {
+        showFilePickerIfNeeded(); // initialises file picker, which opens the overlay
+      } else {
+        overlay.style.display = "flex";
+      }
     }
   });
 
-  document.addEventListener("dragleave", (e) => {
-    dragCounter--;
-    if (dragCounter <= 0) {
-      dragCounter = 0;
-      dropOverlay.style.display = "none";
-    }
-  });
-
+  // Allow dragover so the browser doesn't cancel the drag session before
+  // the user reaches the modal card.
   document.addEventListener("dragover", (e) => {
-    // Only if file picker overlay is not showing
-    if (
-      document.getElementById("file-picker-overlay").style.display !== "flex"
-    ) {
+    if (_hasJsonItem(e.dataTransfer)) {
       e.preventDefault();
     }
-  });
-
-  document.addEventListener("drop", (e) => {
-    dragCounter = 0;
-    dropOverlay.style.display = "none";
-    // Don't handle if file picker overlay is showing (it has its own handler)
-    if (document.getElementById("file-picker-overlay").style.display === "flex")
-      return;
-    e.preventDefault();
-    const files = Array.from(e.dataTransfer.files);
-    const jsonFile = files.find((f) => f.name.toLowerCase().endsWith(".json"));
-    if (!jsonFile) return;
-    processPickedJsonFile(jsonFile)
-      .then((data) => {
-        if (data.body && data.body.audio && data.header && data.header.ref) {
-          // Destroy existing waveforms
-          Object.values(wavesurfers).forEach((ws) => ws.destroy());
-          wavesurfers = {};
-          // Clear containers
-          document.querySelectorAll(".wfContainer").forEach((c) => c.remove());
-          // Reset state
-          alignmentGrids = {};
-          fileBlobUrls.clear();
-          markers = [];
-          loadedAlignmentJSON = data;
-          workId = jsonFile.name;
-          // Enable local mode
-          useFilesMode = true;
-          alignmentLoadedFromFile = true;
-          // Apply new alignment
-          setGrids(data);
-        } else {
-          alert(
-            "The dropped JSON file does not appear to be a valid alignment file.",
-          );
-        }
-      })
-      .catch((err) => {
-        alert("Error reading dropped JSON: " + err.message);
-      });
   });
 }
 
 // Initialize global JSON drop handler
 initGlobalJsonDrop();
-
-window.addEventListener("load", () => {
-  window.focus();
-});

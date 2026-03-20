@@ -1,8 +1,65 @@
+/* --- Local Fonts (GDPR Compliant) --- */
+
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/roboto-regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('../fonts/roboto-medium.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Roboto';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/roboto-bold.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/lora-regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Lora';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/lora-italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Lora';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/lora-bold.woff2') format('woff2');
+}
+
+:root {
+  --font-size-large: 14px;
+  --font-size-medium: 13px;
+  --font-size-small: 12.5px;
+}
+
 html, body {
   margin: 0;
   padding: 0;
   overflow: hidden;
   height: 100%;
+  font-family: 'Roboto', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
 }
 
 #logo { 
@@ -31,8 +88,148 @@ canvas {
   flex-direction:column;
   width:200px;
   min-width:200px;
-  overflow-y:auto;
-  font-size: smaller;
+  height: 100%;
+  overflow: hidden; /* children will scroll */
+  background-color: #f8fafc; /* sidebar default backdrop (Top/Bottom) */
+  border-right: 1px solid #e2e8f0;
+}
+
+#nav-top {
+  padding: 0.15em 0.5em 0.25em; /* matched horizontal padding */
+  flex: 0 0 auto; /* fixed header size */
+  display: flex;
+  flex-direction: column;
+  gap: 0.2em;
+}
+
+.nav-region {
+  transition: background-color 0.2s ease;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-card {
+  margin: 0.18em;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+  flex: 0 1 auto; /* Grow to fit content, but shrink if region too small */
+  transition: background-color 0.2s ease, box-shadow 0.2s ease;
+  background-color: #f8fafc;
+}
+
+.nav-card:hover {
+  background-color: #f1f5f9;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+#region-controls {
+  flex: 0 0 auto; /* Keep fixed content size */
+}
+
+#region-controls .nav-card {
+  background-color: #f7faeb; /* pastel olive green */
+  border-color: #cbd5e1;
+}
+
+#region-controls .nav-card:hover {
+  background-color: #f0f4e3; /* subtle darkening */
+}
+
+#region-waveforms {
+  flex: 1 1 auto; /* Grow to fill all available space below controls */
+  min-height: 0;
+}
+
+#region-waveforms .nav-card {
+  background-color: #f7faeb; /* pastel olive green */
+}
+
+#region-waveforms .nav-card:hover {
+  background-color: #f0f4e3; /* subtle darkening */
+}
+
+#region-waveforms .nav-section-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.collapsible-fieldset:not(.collapsed) {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.fieldset-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.nav-section-header {
+  padding: 0.2em 0.8em;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #475569;
+  font-size: var(--font-size-large);
+}
+
+.nav-section-header:hover {
+  color: #1e293b;
+}
+
+.nav-section-body {
+  overflow: hidden;
+  transition: max-height 0.3s ease-in-out, opacity 0.2s ease;
+  max-height: none;
+  opacity: 1;
+  padding: 0 0.5em;
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-section-body.grow {
+  /* grow class remains for transition initiation if needed */
+  max-height: 2000px; 
+}
+
+.nav-card.collapsed #nav-middle, .nav-card.collapsed #nav-bottom {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: max-height 0.3s ease-in-out, opacity 0.2s ease;
+  overflow: hidden;
+}
+
+#nav-bottom {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  /* background & border handled by #region-waveforms */
+}
+
+#audios {
+  flex: 1;
+  overflow-y: visible; /* disable top-level scroll */
+  overflow-x: hidden;
+  font-size: var(--font-size-small);
+  padding-top: 0.2em;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
 
 #content-wrapper { 
@@ -50,14 +247,6 @@ canvas {
   min-height: 0;
 }
 
-#audios { 
-  flex-shrink:2;
-  flex-direction:column;
-  overflow-y:auto;
-  overflow-x:clip;
-  font-size:small;
-  padding-top:1em;
-}
 
 #waveforms { 
   display:flex;
@@ -131,17 +320,21 @@ details {
   cursor:pointer;
 }
 
-.listSelectors { 
-  font-size: smaller;
-  text-decoration:underline;
+.listSelectors {
+  padding: 0.2em 1em;
+  font-size: var(--font-size-small);
+  color: #64748b;
 }
 
-.listSelectors .all { 
-  padding-right:1em;
+.listSelectors .all, .listSelectors .none {
+  cursor: pointer;
+  margin-right: 0.8em;
+  text-decoration: underline;
+  transition: color 0.2s;
 }
 
-.listSelectors .none{ 
-  padding-left:1em;
+.listSelectors .all:hover, .listSelectors .none:hover {
+  color: #2563eb;
 }
 
 /* Per-waveform resize overlay */
@@ -195,9 +388,10 @@ details {
   left: 50%;
   transform: translate(-50%, -50%);
   font-size: 2.8em;
-  font-weight: bold;
+  font-weight: 700;
+  font-family: 'Lora', 'Georgia', serif;
   color: white;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.7);
   width: 1.5em;
   height: 1.5em;
   border-radius: 50%;
@@ -207,8 +401,9 @@ details {
   z-index: 60;
   pointer-events: none;
   user-select: none;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.8);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  border: 2px solid rgba(255, 255, 255, 0.2);
 }
 
 #waveforms .waveform { 
@@ -283,6 +478,223 @@ details {
   min-width: 120px;
 }
 
+.nav-logo {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 0.15em; /* reduced */
+}
+
+.nav-logo img {
+  height: 44px;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+}
+
+#playpause, #mark {
+  width: 100%;
+  padding: 0.45em;
+  background-color: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease, transform 0.1s;
+  box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
+  margin-bottom: 0.2em;
+}
+
+#playpause:hover, #mark:hover {
+  background-color: #1d4ed8;
+  transform: translateY(-1px);
+}
+
+#playpause:active, #mark:active {
+  transform: translateY(0);
+}
+
+.nav-fieldset, .collapsible-fieldset {
+  margin: 0.35em 0;
+  padding: 0.35em;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background-color: transparent; /* transparent to inherit region background */
+  flex: 0 1 auto;
+}
+
+.nav-fieldset legend, .collapsible-fieldset legend {
+  font-weight: 600;
+  color: #1e293b;
+  user-select: none;
+  padding: 0 0.4em;
+  font-size: var(--font-size-medium);
+}
+
+.collapsible-fieldset legend {
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.collapsible-fieldset legend:hover {
+  color: #2563eb;
+}
+
+.collapse-arrow {
+  display: inline-block;
+  transition: transform 0.2s ease;
+  font-size: 0.8em;
+  margin-left: 0.4em;
+}
+
+.nav-card.collapsed .collapse-arrow,
+.collapsible-fieldset.collapsed .collapse-arrow {
+  transform: rotate(-90deg);
+}
+
+.collapsible-fieldset.collapsed .fieldset-body {
+  display: none;
+}
+
+.nav-fieldset {
+  padding: 0.1em 0.5em 0.22em; /* ultra tight vertical padding */
+  margin: 0.12em 0;
+}
+
+.nav-fieldset .fieldset-body,
+.nav-fieldset .tools-row {
+  margin-top: -0.2em;        /* pull content up closer to legend */
+}
+
+.collapsible-fieldset {
+  padding: 0.1em 0.5em 0.22em; /* ultra tight vertical padding */
+  margin: 0.12em 0;
+}
+
+.collapsible-fieldset .fieldset-body,
+.collapsible-fieldset .tools-row {
+  margin-top: -0.2em; /* pull content up closer to legend */
+}
+
+/* When waveforms groups are forced to share vertical space, each group
+   should become its own scrolling container (not the whole Waveforms card). */
+.group-fieldset {
+  min-height: 0;
+}
+
+/* Ensure checkbox lists inside the nav don't add extra height */
+.nav-fieldset ul, .collapsible-fieldset ul {
+  margin: 0 !important;
+  padding: 0 !important;
+}
+
+.fieldset-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+  margin-top: 0.25em;
+  font-size: var(--font-size-small);
+  line-height: 1.35;
+}
+
+.fieldset-body button {
+  font-size: var(--font-size-large);
+  font-family: inherit;
+  width: 100%;
+  margin-top: 0.2em;
+  padding: 0.2em 0.65em;
+  background-color: transparent;
+  border: 1px solid #606c38;
+  color: #606c38;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: 500;
+}
+
+.fieldset-body button:hover {
+  background-color: #606c38;
+  color: #f7faeb;
+}
+
+.fieldset-body button:active {
+  background-color: #4c562d;
+  transform: translateY(1px);
+}
+
+.fieldset-body button:disabled {
+  border-color: #cbd5e1;
+  color: #94a3b8;
+  cursor: not-allowed;
+  background-color: transparent;
+}
+
+#tools-always, #files-always {
+  display: block;
+  margin-bottom: 0.2em;
+}
+
+.tools-divider {
+  border: 0;
+  border-top: 1px solid #cbd5e1;
+  margin: 0.08em 0 0.3em;
+}
+
+/* Solid Drawer Button Handle */
+#solid-drawer-btn {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  background-color: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-right: none;
+  border-radius: 8px 0 0 8px;
+  padding: 0.8em 0.5em 0.8em 0.8em;
+  box-shadow: -4px 0 12px rgba(0,0,0,0.1);
+  cursor: pointer;
+  z-index: 1001;
+  transition: background-color 0.2s, right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#solid-drawer-btn:hover {
+  background-color: #e2e8f0;
+}
+
+#solid-drawer-btn img {
+  opacity: 0.6;
+  filter: grayscale(100%);
+  transition: opacity 0.3s, filter 0.3s;
+  display: block;
+}
+
+#solid-drawer-btn.logged-in img {
+  opacity: 1;
+  filter: none;
+}
+
+.solid-status-dot {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #22c55e; /* green */
+  border: 2px solid #f8fafc; /* match button background */
+  display: none;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.4);
+  transition: background-color 0.3s, box-shadow 0.3s;
+}
+
+#solid-drawer-btn.logged-in .solid-status-dot {
+  display: block;
+}
+
+/* Push the button out when the drawer opens so it stays attached */
+#solid-drawer:not(.closed) ~ #solid-drawer-btn,
+body:has(#solid-drawer:not(.closed)) #solid-drawer-btn {
+  right: 340px; /* matches drawer width */
+}
+
 /* Solid Drawer */
 #solid-drawer {
   position: fixed;
@@ -342,6 +754,59 @@ details {
   color: #3b82f6;
   cursor: pointer;
   text-decoration: underline;
+}
+
+/* --- Custom Checkboxes (Alignment Theme) --- */
+nav input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+  height: 1.1em;
+  margin: 0 0.4em 0 0;
+  vertical-align: middle;
+  position: relative;
+  border: none;
+  background: transparent;
+  outline: none;
+}
+
+nav input[type="checkbox"]::before {
+  content: '○';
+  color: #2563eb; /* Blue for running/empty */
+  font-size: 1.15em;
+  line-height: 1;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+nav input[type="checkbox"]:checked::before {
+  content: '\2713'; 
+  color: #16a34a; 
+  font-weight: 700;
+  font-size: 0.9em;
+}
+
+nav input[type="checkbox"]:hover::before {
+  transform: scale(1.1);
+  filter: brightness(1.1);
+}
+
+nav input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
+
+nav input[type="checkbox"]:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+  border-radius: 2px;
 }
 
 #solidTab input[type="text"] {
@@ -1108,44 +1573,284 @@ details {
   background: #1e40af;
 }
 
-#wrapper nav button,
-#wrapper nav a#back {
-  margin: 0.3em 0;
-  padding: 0.4em 0.8em;
-  border: 1px solid #cbd5e1;
+/* Legacy sidebar button styles removed to allow olive theme overrides */
+
+/* === Tools panel (collapsible fieldset) === */
+
+#tools-panel {
+  margin: 0.2em 0;
+  border: 1.5px solid #94a3b8;
   border-radius: 6px;
-  background: #f1f5f9;
-  font-size: 0.85em;
-  cursor: pointer;
-  width: 100%;
-  box-sizing: border-box;
-  text-align: center;
-  text-decoration: none;
-  color: inherit;
-  display: block;
+  background: transparent; /* match others */
+  padding: 0.3em 0.45em;
 }
 
-#wrapper nav button:hover,
-#wrapper nav a#back:hover {
-  background: #e0e7ef;
-  border-color: #94a3b8;
+/* Settings can scroll only when truly necessary (e.g. if Controls grows in the future).
+   In normal cases there should be enough space so it won't overflow or show a scrollbar. */
+#settings-panel {
+  min-height: 0;
 }
 
-/* Close-listening mode badge */
-#close-listening-badge {
-  display: block;
-  margin: 0.3em 0;
-  padding: 0.4em 0.8em;
-  border: 2px solid #8b0000;
-  border-radius: 6px;
-  background: #8b0000;
-  color: #fff;
+#settings-panel .fieldset-body {
+  /* Don't force a reduced flex height (which can create an always-on
+     scrollbar). Let it size to content, but cap by the available height. */
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: hidden; /* JS will enable scrolling only if content overflows */
+}
+
+#settings-panel .fieldset-body.settings-scroll {
+  overflow-y: auto;
+}
+
+/* The compact nav layout uses negative top margins to pull content up
+   near the legend; add a tiny padding to prevent clipping/overlap. */
+#settings-panel .fieldset-body {
+  padding-top: 0.12em;
+}
+#tools-panel > legend {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
   font-size: 0.85em;
   font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  user-select: none;
+  padding: 0 0.3em;
+}
+#tools-panel > legend:hover {
+  color: #1e293b;
+}
+#tools-collapse-arrow {
+  font-size: 0.75em;
+  transition: transform 0.2s;
+}
+#tools-panel.collapsed #tools-collapse-arrow {
+  transform: rotate(-90deg);
+}
+#tools-panel.collapsed {
+  padding: 0.15em 0.6em 0.1em;
+}
+#tools-panel.collapsed #tools-body {
+  display: none;
+}
+/* "…" hint visible only when collapsed */
+#tools-more-hint {
+  display: none;
+}
+#tools-panel.collapsed #tools-more-hint {
+  display: block;
+  color: #64748b;
+  font-size: 0.85em;
+  line-height: 0.8;
+  letter-spacing: 0.15em;
+  cursor: pointer;
   text-align: center;
-  letter-spacing: 0.03em;
-  box-sizing: border-box;
-  width: 100%;
+  align-self: center;
+  margin: 0;
+  padding-bottom: 0.1em;
+}
+/* Always-visible row (Close Listening) */
+#tools-always {
+  margin-top: 0.03em;
+}
+#tools-panel.collapsed #tools-always {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  margin-top: 0;
+}
+#tools-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2em;
+}
+.tools-row {
+  display: flex;
+  align-items: center;
+  gap: 0.2em;
+}
+/* Divider between Close Listening and tools body */
+.tools-divider {
+  border: none;
+  border-top: 1px solid #e2e8f0;
+  margin: 0.08em 0;
+}
+
+/* History fieldset: stacked undo/redo */
+#history-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+}
+#tools-undo-btn,
+#tools-redo-btn {
+  font-size: 0.78em;
+  padding: 0.25em 0.5em;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #f8fafc;
+  cursor: pointer;
+  white-space: nowrap;
+  text-align: left;
+}
+#tools-undo-btn:disabled,
+#tools-redo-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+#tools-undo-btn:not(:disabled):hover,
+#tools-redo-btn:not(:disabled):hover {
+  background: #e2e8f0;
+}
+
+/* Close Listening checkbox */
+#close-listening-cb + label {
+  font-weight: 600;
+  font-size: 0.85em;
+  color: #334155;
+  cursor: pointer;
+}
+#close-listening-cb:checked + label {
+  color: #8b0000;
+}
+
+/* Mark button inside tools */
+#tools-body #mark {
+  font-size: 0.82em;
+  padding: 0.3em 0.7em;
+  border-radius: 4px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  cursor: pointer;
+  align-self: stretch;
+  text-align: center;
+}
+#tools-body #mark:hover {
+  background: #e2e8f0;
+}
+
+/* Fieldsets */
+#tools-body fieldset {
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  padding: 0.2em 0.4em 0.25em;
+  margin: 0;
+}
+#tools-body fieldset legend {
+  font-size: 0.8em;
+  font-weight: 600;
+  color: #475569;
+  padding: 0 0.3em;
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+}
+#tools-body fieldset:disabled {
+  opacity: 0.45;
+}
+
+/* Drag-mode radios: stacked vertically, left-aligned */
+.tools-radio-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+}
+.tools-radio-col .tools-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  font-size: 0.8em;
+  cursor: pointer;
+}
+.tools-radio-col .tools-radio-label input[type="radio"] {
+  margin: 0;
+  cursor: pointer;
+}
+.tools-radio-col .tools-radio-label input[type="radio"]:disabled {
+  cursor: default;
+}
+
+/* Spread radios: horizontal row */
+.tools-radio-row {
+  display: flex;
+  align-items: center;
+  gap: 0.2em;
+  flex-wrap: nowrap;
+}
+.tools-radio-row label {
+  font-size: 0.8em;
+  margin-right: 0.4em;
+  cursor: pointer;
+}
+.tools-radio-row input[type="radio"] {
+  margin: 0 0.1em 0 0;
+  cursor: pointer;
+}
+
+/* Revert all button */
+#revert-all-btn {
+  font-size: 0.78em;
+  padding: 0.3em 0.6em;
+  border-radius: 4px;
+  border: 1px solid #e2a9a9;
+  background: #fef2f2;
+  color: #991b1b;
+  cursor: pointer;
+  align-self: stretch;
+  text-align: center;
+}
+#revert-all-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+#revert-all-btn:not(:disabled):hover {
+  background: #fee2e2;
+}
+
+/* Drag markers pulse animation */
+@keyframes tools-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.5); }
+  70%  { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+}
+#drag-marker-fieldset.pulse-hint {
+  animation: tools-pulse 0.6s ease-out 2;
+  border-color: #3b82f6;
+}
+#drag-marker-fieldset.pulse-hint legend {
+  color: #2563eb;
+}
+
+/* Draggable marker visual: thicker + handle bobble (centered vertically) */
+.ws-marker.draggable {
+  border-left-width: 3px !important;
+  cursor: grab;
+}
+.ws-marker.draggable::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: -4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  transform: translateY(-50%);
+}
+
+/* Grabbing cursor during marker drag */
+body.marker-dragging,
+body.marker-dragging * {
+  cursor: grabbing !important;
+}
+
+.align-correction-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
 }
 
 /* === Alignment panel (embedded in listen page) === */
@@ -2094,8 +2799,67 @@ details {
 
 /* Group files button in nav */
 #group-files-btn {
-  font-size: 0.85em;
+  font-size: var(--font-size-large);
   cursor: pointer;
+}
+
+/* Save data (download JSON) button — unsaved-changes indicator */
+#download-json-btn {
+  position: relative;
+  font-size: var(--font-size-large);
+  font-family: inherit;
+  background-color: transparent;
+  border: 1px solid #606c38;
+  color: #606c38;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-weight: 500;
+  padding: 0.4em 0.8em;
+  width: 100%;
+}
+
+#download-json-btn:hover {
+  background-color: #606c38;
+  color: #f7faeb;
+}
+
+#download-json-btn.json-dirty {
+  font-weight: 600;
+}
+
+#download-json-btn.json-dirty::after,
+.nav-section-header.json-dirty::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 0 0 2px #fff;
+  animation: dirty-pulse 1.8s ease-in-out infinite;
+  z-index: 10;
+}
+
+/* Bobble Migration: Parent indicator only visible when region is collapsed */
+.nav-section-header {
+  position: relative;
+}
+
+.nav-section-header.json-dirty::after {
+  display: none;
+  top: 6px;
+  right: 2.5em; /* position away from chevron */
+}
+
+.nav-card.collapsed .nav-section-header.json-dirty::after {
+  display: block;
+}
+
+.nav-card.collapsed #download-json-btn.json-dirty::after {
+  display: none;
 }
 
 /* Annotation load notices (shown in Solid drawer) */
@@ -2278,3 +3042,9 @@ details {
   display: flex;
 }
 
+
+@keyframes dirty-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
+  70% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}

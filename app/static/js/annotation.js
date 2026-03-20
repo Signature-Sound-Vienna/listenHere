@@ -980,9 +980,20 @@ function _refreshNewAnnotationBtnVisibility() {
   btn.style.display = isLoggedIn ? "" : "none";
 }
 
-/** Call after Solid login/logout to update button visibility. */
+/** Call after Solid login/logout to update button visibility and tab badge. */
 export function onSolidAuthChanged() {
   _refreshNewAnnotationBtnVisibility();
+  
+  // Update the RDF drawer button styling to reflect login status
+  const isLoggedIn = solid.getDefaultSession().info.isLoggedIn;
+  const rdfBtn = document.getElementById("solid-drawer-btn");
+  if (rdfBtn) {
+    if (isLoggedIn) {
+      rdfBtn.classList.add("logged-in");
+    } else {
+      rdfBtn.classList.remove("logged-in");
+    }
+  }
 }
 
 function _drawDraftCard(draft) {

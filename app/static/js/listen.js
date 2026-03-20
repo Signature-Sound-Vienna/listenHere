@@ -54,6 +54,12 @@ export const _regionsPlugins = {}; // filename -> RegionsPlugin instance
 const _timerRegions = {}; // filename -> timer Region object
 const _waveformPeaks = {}; // filename -> { peaks: number[], duration: number } when pre-computed
 
+// Audio normalization via Web Audio GainNode
+let _normAudioCtx = null; // lazy AudioContext shared across all waveforms
+const _normGainNodes = {}; // filename -> GainNode
+const _normSourceNodes = {}; // filename -> MediaElementAudioSourceNode
+const _normPeaks = {}; // filename -> peak amplitude (0..1)
+
 /** Return the pre-computed peak data for a filename, or null if unavailable. */
 export function getWaveformPeaks(filename) {
   const p = _waveformPeaks[filename];
@@ -90,9 +96,10 @@ export function getAudioLinkedDataUri(filename) {
 // File picker: maps alignment audio keys to blob URLs from user-selected files
 let fileBlobUrls = new Map();
 let useFilesMode = false;
+let _fromAlignmentHandoff = false;
 
 // Synthesised MEI waveform: key used in wavesurfers / alignmentGrids for the synth track
-const SYNTH_MEI_KEY = "Score (synthesised from MEI)";
+const SYNTH_MEI_KEY = "Score (sonified MEI)";
 // Maps SYNTH_MEI_KEY -> blob URL once synthesis is done, or the sentinel '__pending__'
 const _synthBlobUrls = new Map();
 
@@ -108,6 +115,46 @@ let closeListeningMode = false;
 let _jumpToTargetActive = false;
 let _jumpToTargetWaveforms = []; // snapshot of badged waveforms for the current session
 let activeMarkerIx = null; // index into markers[] array
+
+// ---------------------------------------------------------------------------
+// Unsaved-changes indicator
+// ---------------------------------------------------------------------------
+
+/** Mark the alignment JSON as having unsaved changes. */
+function _markJsonDirty() {
+  const btn = document.getElementById("download-json-btn");
+  if (btn) {
+    btn.classList.add("json-dirty");
+    btn.title = "Save the current alignment and markers to a JSON file (Unsaved changes)";
+  }
+  const toggle = document.getElementById("nav-middle-toggle");
+  if (toggle) {
+    toggle.classList.add("json-dirty");
+    toggle.title = "Collapse / expand controls (Unsaved changes)";
+  }
+}
+
+/** Clear the unsaved-changes indicator (called after download). */
+function _clearJsonDirty() {
+  const btn = document.getElementById("download-json-btn");
+  if (btn) {
+    btn.classList.remove("json-dirty");
+    btn.title = "Save the current alignment and markers to a JSON file (No unsaved changes)";
+  }
+  const toggle = document.getElementById("nav-middle-toggle");
+  if (toggle) {
+    toggle.classList.remove("json-dirty");
+    toggle.title = "Collapse / expand controls (No unsaved changes)";
+  }
+}
+
+/** Sync current markers array into loadedAlignmentJSON.header.markers. */
+function _syncMarkersToJSON() {
+  if (!loadedAlignmentJSON) return;
+  if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+  loadedAlignmentJSON.header.markers = markers.slice();
+  _markJsonDirty();
+}
 
 function getOrigin(url) {
   try {
@@ -197,6 +244,8 @@ function redrawAllMarkers() {
       _addMarker(ws, { time: t, color, alignIx: m });
     });
   });
+  // Re-apply draggable visual class after DOM recreation
+  _updateMarkerDraggableClass();
 }
 
 // --- Resize handling ---
@@ -206,6 +255,80 @@ let _resizeDebounce = null;
 // Per-waveform closures that repaint the position indicator on every canvas.
 // Registered in each waveform's "ready" handler.
 const _positionUpdaters = {};
+// Per-waveform closures that redraw the alignment grid canvas.
+const _gridRedrawers = {};
+
+// ---------------------------------------------------------------------------
+// Alignment correction (drag-to-morph)
+// ---------------------------------------------------------------------------
+let _alignCorrectionMode = false;
+// Unified Undo/Redo: arrays of tagged entries
+// Entry types:
+//   { type:'align-fix', filename, grid }
+//   { type:'marker-add', alignIx, markerArrayIx }
+//   { type:'marker-delete', alignIx, markerArrayIx }
+//   { type:'marker-move', markerArrayIx, oldAlignIx, newAlignIx }
+const _undoStack = [];
+const _redoStack = [];
+// Revert: original grids captured when alignment first loads
+const _alignOriginalGrids = {};
+// Radius presets (in alignment indices)
+const _ALIGN_RADIUS_NARROW = 10;
+const _ALIGN_RADIUS_MEDIUM = 30;
+const _ALIGN_RADIUS_WIDE = 90;
+// Current radius selection (set from UI)
+let _alignRadius = _ALIGN_RADIUS_MEDIUM;
+// Drag markers: whether markers are currently draggable
+let _dragMarkersEnabled = false;
+// Drag mode: 'move' or 'fix'
+let _dragMode = "move";
+// Track whether pulse hint has been shown (first-time tooltip)
+let _pulseHintShown = false;
+
+/** Symmetric Gaussian weight. */
+function _gaussianWeight(j, jCenter, sigma) {
+  const diff = j - jCenter;
+  return Math.exp(-(diff * diff) / (2 * sigma * sigma));
+}
+
+/** Choose sigma: modifier keys override the UI selection. */
+function _sigmaFromEvent(e) {
+  if (e.shiftKey && e.altKey) return _ALIGN_RADIUS_NARROW;
+  if (e.shiftKey) return _ALIGN_RADIUS_MEDIUM;
+  return _alignRadius;
+}
+
+/**
+ * Apply a Gaussian-weighted displacement to a grid, enforcing monotonicity.
+ * Returns a new array (does not mutate the input).
+ *
+ * @param {number[]} grid        - alignment times
+ * @param {number}   jCenter     - index of the drag anchor
+ * @param {number}   dtDrag      - displacement in seconds at the anchor
+ * @param {number}   sigma       - Gaussian radius (in indices)
+ * @returns {number[]} morphed grid
+ */
+function _morphGrid(grid, jCenter, dtDrag, sigma) {
+  const n = grid.length;
+
+  const out = new Array(n);
+  for (let j = 0; j < n; j++) {
+    const w = _gaussianWeight(j, jCenter, sigma);
+    out[j] = grid[j] + dtDrag * w;
+  }
+  // Enforce monotonicity outward from the drag anchor: entries that
+  // would violate ordering get shoved aside in the appropriate direction.
+  const EPS = 1e-6;
+  // Left of anchor: push entries leftward if they collide
+  for (let j = jCenter - 1; j >= 0; j--) {
+    if (out[j] >= out[j + 1]) out[j] = out[j + 1] - EPS;
+  }
+  // Right of anchor: push entries rightward if they collide
+  for (let j = jCenter + 1; j < n; j++) {
+    if (out[j] <= out[j - 1]) out[j] = out[j - 1] + EPS;
+  }
+  return out;
+}
 
 function showWaveformOverlays() {
   document.querySelectorAll("#waveforms .waveform").forEach((wf) => {
@@ -283,6 +406,9 @@ function _onMarkerClick(filename, markerEl) {
   if (markerEl.dataset.position === "top") return;
   const alignIxStr = markerEl.dataset.alignIx;
   if (alignIxStr == null) return;
+  // If drag markers is enabled, let the mousedown handler on #waveforms
+  // handle it (start a drag instead of seeking/entering close-listening).
+  if (_dragMarkersEnabled) return;
   const alignmentIx = parseInt(alignIxStr);
   const markerArrayIx = markers.indexOf(alignmentIx);
   if (markerArrayIx > -1) {
@@ -358,6 +484,11 @@ function enterCloseListeningMode(markerArrayIndex) {
 function exitCloseListeningMode() {
   closeListeningMode = false;
   activeMarkerIx = null;
+  // Reset clip-path on the active waveform so the waveform isn't clipped
+  // from a prior seekToActiveMarker() call (score-only page bug).
+  if (currentAudioIx && wavesurfers[currentAudioIx]) {
+    wavesurfers[currentAudioIx].seekTo(0);
+  }
   redrawAllMarkers();
   updateCloseListeningBadge();
 }
@@ -374,6 +505,12 @@ function findClosestMarkerIndex() {
   // Find the closest marker at or before current playback position.
   // If none, use the closest marker in the future.
   if (markers.length === 0) return null;
+  // Ensure we have a valid currentAudioIx (focus fix)
+  if (!currentAudioIx || !wavesurfers[currentAudioIx]) {
+    const keys = Object.keys(wavesurfers);
+    if (keys.length === 0) return 0;
+    currentAudioIx = keys[0];
+  }
   const currentAlignIx = getClosestAlignmentIx();
   // Build sorted array of {markerArrayIndex, alignmentIx}
   const sorted = markers.map((m, i) => ({ i, m })).sort((a, b) => a.m - b.m);
@@ -396,10 +533,41 @@ function getSortedMarkerIndices() {
 }
 
 function updateCloseListeningBadge() {
-  const badge = document.getElementById("close-listening-badge");
-  if (badge) {
-    badge.style.display = closeListeningMode ? "" : "none";
+  const cb = document.getElementById("close-listening-cb");
+  if (cb) cb.checked = closeListeningMode;
+  // Update dependent controls
+  _updateDragFieldsetState();
+}
+
+/** Update enabled state of drag-marker fieldset and radius fieldset. */
+function _updateDragFieldsetState() {
+  const dragFieldset = document.getElementById("drag-marker-fieldset");
+  const radiusFieldset = document.getElementById("radius-fieldset");
+  // Drag markers is always available (not gated on close-listening)
+  if (dragFieldset) dragFieldset.disabled = false;
+  if (radiusFieldset)
+    radiusFieldset.disabled = !(_dragMarkersEnabled && _dragMode === "fix");
+  // Update marker visual classes
+  _updateMarkerDraggableClass();
+  // Update correction overlay pointer-events
+  const corrActive = _dragMarkersEnabled && _dragMode === "fix";
+  if (corrActive !== _alignCorrectionMode) {
+    _alignCorrectionMode = corrActive;
+    document.querySelectorAll(".align-correction-overlay").forEach((c) => {
+      c.style.pointerEvents = corrActive ? "auto" : "none";
+      // Cursor is set dynamically in hover handler (grab near marker)
+      if (!corrActive) c.style.cursor = "";
+    });
+    document.body.classList.toggle("align-correction-active", corrActive);
   }
+}
+
+/** Toggle .draggable class on all marker elements. */
+function _updateMarkerDraggableClass() {
+  const draggable = _dragMarkersEnabled;
+  document.querySelectorAll(".ws-marker[data-align-ix]").forEach((el) => {
+    el.classList.toggle("draggable", draggable);
+  });
 }
 
 function getClosestAlignmentIx(
@@ -434,7 +602,7 @@ function onClickRenditionName(e) {
   let checkbox;
   if (e.target.nodeName.toLowerCase() === "label") {
     // retrieve checkbox
-    checkbox = document.getElementById(e.target.for);
+    checkbox = document.getElementById(e.target.htmlFor);
   } else if (e.target.nodeName.toLowerCase === "li") {
     checkbox = e.target.querySelector("input");
   } else {
@@ -591,24 +759,30 @@ function _groupsStorageKey() {
 }
 
 /**
- * Load saved groups from localStorage.
+ * Load saved groups from alignment JSON.
  * Format: [ { name: string, pattern: string, files: string[] }, ... ]
  */
 function _loadGroups() {
-  try {
-    const raw = localStorage.getItem(_groupsStorageKey());
-    if (raw) return JSON.parse(raw);
-  } catch (e) {
-    console.warn("Could not load file groups from localStorage:", e);
+  if (
+    loadedAlignmentJSON &&
+    loadedAlignmentJSON.header &&
+    loadedAlignmentJSON.header.fileGroups
+  ) {
+    return loadedAlignmentJSON.header.fileGroups;
   }
   return [];
 }
 
 function _saveGroups(groups) {
-  try {
-    localStorage.setItem(_groupsStorageKey(), JSON.stringify(groups));
-  } catch (e) {
-    console.warn("Could not save file groups to localStorage:", e);
+  // Persist to alignment JSON for round-tripping
+  if (loadedAlignmentJSON) {
+    if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+    if (groups.length > 0) {
+      loadedAlignmentJSON.header.fileGroups = groups;
+    } else {
+      delete loadedAlignmentJSON.header.fileGroups;
+    }
+    _markJsonDirty();
   }
 }
 
@@ -618,10 +792,12 @@ function _saveGroups(groups) {
  */
 function _renderSidebarFileList(filenames) {
   const audiosElement = document.getElementById("audios");
-  // Remove old foldouts / lists (preserve non-list children like buttons)
-  audiosElement
-    .querySelectorAll("details, ul.ungrouped-files")
-    .forEach((el) => el.remove());
+  // Remove old elements (preserve non-list children like buttons)
+  Array.from(audiosElement.children).forEach((el) => {
+    if (el.tagName !== "BUTTON" && el.tagName !== "SPAN") {
+      el.remove();
+    }
+  });
 
   const groups = _loadGroups();
 
@@ -668,41 +844,57 @@ function _renderSidebarFileList(filenames) {
 
   // --- Render order: Score first, then groups, then ungrouped ---
 
-  // 1. Score foldout (first, if present)
+  // 1. Synthesized audio fieldset (first, if present)
   if (SYNTH_MEI_KEY in alignmentGrids) {
-    const synthFoldout = document.createElement("details");
-    synthFoldout.open = true;
-    const synthSummary = document.createElement("summary");
-    synthSummary.innerText = "Score";
-    synthFoldout.appendChild(synthSummary);
-    synthFoldout.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
-    audiosElement.appendChild(synthFoldout);
+    const synthWrap = document.createElement("fieldset");
+    synthWrap.id = "score-container";
+    synthWrap.className = "nav-fieldset";
+    const legend = document.createElement("legend");
+    legend.innerText = "Synthesized audio";
+    synthWrap.appendChild(legend);
+
+    // Patterned after the "always visible" part of Tools
+    const synthRow = document.createElement("span");
+    synthRow.className = "tools-row";
+    synthRow.appendChild(generateCheckboxList([SYNTH_MEI_KEY]));
+    synthWrap.appendChild(synthRow);
+    audiosElement.appendChild(synthWrap);
   }
 
-  // 2. Render each group as a collapsible foldout
+  // 2. Render each group as a collapsible fieldset
   groups.forEach((g, i) => {
     const members = groupMembers[i];
     if (members.length === 0) return; // skip empty groups
-    const foldout = document.createElement("details");
-    foldout.open = true;
-    const summary = document.createElement("summary");
-    summary.innerText = g.name;
-    foldout.appendChild(summary);
-    foldout.innerHTML += listSelectors;
-    foldout.appendChild(generateCheckboxList(members));
+    const foldout = document.createElement("fieldset");
+    foldout.className = "collapsible-fieldset group-fieldset";
+    const legend = document.createElement("legend");
+    legend.title = "Collapse / expand";
+    legend.innerHTML = `${g.name} <span class="collapse-arrow">&#9662;</span>`;
+    foldout.appendChild(legend);
+
+    const body = document.createElement("div");
+    body.className = "fieldset-body";
+    body.innerHTML = listSelectors;
+    body.appendChild(generateCheckboxList(members));
+    foldout.appendChild(body);
     audiosElement.appendChild(foldout);
   });
 
   // 3. Ungrouped recordings (last)
   if (ungrouped.length > 0) {
     const label = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
-    const uf = document.createElement("details");
-    uf.open = true;
-    const us = document.createElement("summary");
-    us.innerText = label;
+    const uf = document.createElement("fieldset");
+    uf.className = "collapsible-fieldset group-fieldset";
+    const us = document.createElement("legend");
+    us.title = "Collapse / expand";
+    us.innerHTML = `${label} <span class="collapse-arrow">&#9662;</span>`;
     uf.appendChild(us);
-    uf.innerHTML += listSelectors;
-    uf.appendChild(generateCheckboxList(ungrouped));
+
+    const uBody = document.createElement("div");
+    uBody.className = "fieldset-body";
+    uBody.innerHTML = listSelectors;
+    uBody.appendChild(generateCheckboxList(ungrouped));
+    uf.appendChild(uBody);
     audiosElement.appendChild(uf);
   }
 
@@ -724,7 +916,7 @@ function _wireListSelectors() {
   document.querySelectorAll(".listSelectors .all").forEach((selector) =>
     selector.addEventListener("click", (e) => {
       e.target
-        .closest("details")
+        .closest("fieldset")
         .querySelectorAll("input")
         .forEach((cb) => {
           if (!cb.checked) cb.click();
@@ -734,7 +926,7 @@ function _wireListSelectors() {
   document.querySelectorAll(".listSelectors .none").forEach((selector) =>
     selector.addEventListener("click", (e) => {
       e.target
-        .closest("details")
+        .closest("fieldset")
         .querySelectorAll("input")
         .forEach((cb) => {
           if (cb.checked) cb.click();
@@ -1063,6 +1255,86 @@ function _openGroupModal() {
   renderAll();
 }
 
+// ---------------------------------------------------------------------------
+// Audio normalization helpers (Web Audio GainNode)
+// ---------------------------------------------------------------------------
+
+/** Lazily create the shared AudioContext (must happen after a user gesture). */
+function _getNormAudioCtx() {
+  if (!_normAudioCtx) {
+    _normAudioCtx = new AudioContext();
+  }
+  return _normAudioCtx;
+}
+
+/** Compute the peak amplitude of decoded audio data (0..1). */
+function _computePeak(decodedData) {
+  let peak = 0;
+  for (let ch = 0; ch < decodedData.numberOfChannels; ch++) {
+    const chan = decodedData.getChannelData(ch);
+    for (let i = 0; i < chan.length; i++) {
+      const abs = Math.abs(chan[i]);
+      if (abs > peak) peak = abs;
+    }
+  }
+  return peak;
+}
+
+/**
+ * Set up a GainNode for a waveform after it signals "ready".
+ * Routes: <audio> → MediaElementSourceNode → GainNode → destination.
+ */
+function _setupNormGainNode(filename) {
+  const ws = wavesurfers[filename];
+  if (!ws) return;
+  const mediaEl = ws.getMediaElement();
+  // MediaElementAudioSourceNode can only be created once per <audio> element.
+  // If already connected (shouldn't happen), skip.
+  if (_normSourceNodes[filename]) return;
+  const ctx = _getNormAudioCtx();
+  const source = ctx.createMediaElementSource(mediaEl);
+  const gain = ctx.createGain();
+  source.connect(gain);
+  gain.connect(ctx.destination);
+  _normSourceNodes[filename] = source;
+  _normGainNodes[filename] = gain;
+  // Compute and cache peak amplitude from the decoded audio buffer
+  const decoded = ws.getDecodedData();
+  if (decoded) {
+    _normPeaks[filename] = _computePeak(decoded);
+  }
+  // Apply current normalize state
+  if (document.getElementById("normalize").checked) {
+    const peak = _normPeaks[filename] || 1;
+    gain.gain.value = peak > 0 ? 1 / peak : 1;
+  }
+}
+
+/** Disconnect and clean up the GainNode for a waveform being destroyed. */
+function _teardownNormGainNode(filename) {
+  if (_normSourceNodes[filename]) {
+    _normSourceNodes[filename].disconnect();
+    delete _normSourceNodes[filename];
+  }
+  if (_normGainNodes[filename]) {
+    _normGainNodes[filename].disconnect();
+    delete _normGainNodes[filename];
+  }
+  delete _normPeaks[filename];
+}
+
+/** Apply or remove normalization gain across all waveforms. */
+function _applyNormGain(normalize) {
+  for (const [filename, gain] of Object.entries(_normGainNodes)) {
+    if (normalize) {
+      const peak = _normPeaks[filename] || 1;
+      gain.gain.value = peak > 0 ? 1 / peak : 1;
+    } else {
+      gain.gain.value = 1;
+    }
+  }
+}
+
 function reloadWaveforms() {
   let playPosition = 0;
   let isPlaying = false;
@@ -1077,6 +1349,7 @@ function reloadWaveforms() {
     wavesurfers[ws].destroy();
     delete _regionsPlugins[ws];
     delete _timerRegions[ws];
+    _teardownNormGainNode(ws);
   });
   wavesurfers = {};
   // forget waveform elements (and spectorgrams)
@@ -1276,6 +1549,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       updatePositionIndicator();
     });
     wavesurfers[filename].on("ready", () => {
+      // Wire up Web Audio GainNode for volume normalization
+      _setupNormGainNode(filename);
       // signal file is ready in filename list
       loaded.add(filename);
       console.log("READY:...", filename);
@@ -1331,7 +1606,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         const ctx = gridCanvas.getContext("2d");
         ctx.clearRect(0, 0, gridCanvas.width, gridCanvas.height);
         ctx.lineWidth = 1;
-        ctx.strokeStyle = "#800";
+        ctx.strokeStyle = "rgba(140, 90, 90, 0.55)";
         const dur = wavesurfers[filename].getDuration();
         const minPixelStep = 4; // Prevent overplotting: lines must be at least 4 pixels apart
 
@@ -1356,6 +1631,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
         // Draw sparsely dotted lines over the waveform section
         ctx.beginPath();
+        ctx.strokeStyle = "rgba(140, 90, 90, 0.3)";
         ctx.setLineDash([2, 1]);
         lastAbsX = -999; // Reset for the second rendering pass
         alignmentGrids[filename].forEach((gridPos, gridIx) => {
@@ -1377,6 +1653,25 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // after resize (the updater reads currentTime from this file's wavesurfer
       // and repaints every position-indicator canvas).
       _positionUpdaters[filename] = updatePositionIndicator;
+      _gridRedrawers[filename] = drawAlignmentGrid;
+
+      // --- Alignment correction overlay canvas ---
+      const corrCanvas = document.createElement("canvas");
+      corrCanvas.classList.add("align-correction-overlay");
+      corrCanvas.width = readyWfContainer.clientWidth;
+      corrCanvas.height = WAVE_HEIGHT;
+      const corrStyle = corrCanvas.style;
+      corrStyle.position = "absolute";
+      corrStyle.top = "0";
+      corrStyle.left = "0";
+      corrStyle.width = "100%";
+      corrStyle.height = WAVE_HEIGHT + "px";
+      corrStyle.zIndex = "4";
+      corrStyle.pointerEvents = _alignCorrectionMode ? "auto" : "none";
+      readyWfContainer.appendChild(corrCanvas);
+
+      // Store reference for resize
+      const _corrCanvasRef = corrCanvas;
 
       // Initial draw
       drawAlignmentGrid();
@@ -1392,6 +1687,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       wavesurfers[filename].on("redrawcomplete", () => {
         // Resize our overlay canvases and repaint grid lines.
         drawAlignmentGrid();
+        // Resize correction overlay
+        if (_corrCanvasRef && readyWfContainer.isConnected) {
+          _corrCanvasRef.width = readyWfContainer.clientWidth;
+          _corrCanvasRef.height = wavesurfers[filename].options.height || 128;
+        }
         // Restore markers (canvas has been redrawn, marker positions must refresh).
         _clearMarkers(filename);
         _addMarker(filename, {
@@ -1425,6 +1725,9 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         // Re-add annotation regions — WaveSurfer's redraw removes and recreates
         // region SVG elements, so they must be restored after every render cycle.
         if (currentlyAnnotatedRegions.length) updateRenderAnnoRegions();
+        // Ensure newly-created marker elements inherit the draggable class
+        // so that drag works without re-toggling the checkbox.
+        _updateMarkerDraggableClass();
         // No _resizeQueue needed: v7 rerenders each waveform independently.
       });
       let listItem = document.getElementById(filename);
@@ -1907,6 +2210,27 @@ async function setGrids(grids) {
         if ("ref" in grids.header) {
           referenceAudioIx = grids.header.ref;
         }
+
+        // Restore file groups from JSON (fallback if localStorage empty)
+        if (grids.header.fileGroups && Array.isArray(grids.header.fileGroups)) {
+          const existingGroups = _loadGroups();
+          if (existingGroups.length === 0) {
+            _saveGroups(grids.header.fileGroups);
+          }
+        }
+
+        // Restore markers from JSON (fallback if localStorage empty)
+        if (grids.header.markers && Array.isArray(grids.header.markers)) {
+          const existingMarkers = storage
+            ? storage.getItem("markers_" + workId)
+            : null;
+          if (!existingMarkers) {
+            markers = grids.header.markers.slice();
+            if (storage) {
+              storage.setItem("markers_" + workId, JSON.stringify(markers));
+            }
+          }
+        }
       } else {
         console.error(
           "Broken grids received from alignment json file: ",
@@ -1922,6 +2246,14 @@ async function setGrids(grids) {
     alignmentGrids = grids;
   }
   console.log("setting grids: ", grids);
+
+  // Capture original alignment grids for the "Revert all" feature
+  for (const [key, grid] of Object.entries(alignmentGrids)) {
+    if (key !== SYNTH_MEI_KEY && Array.isArray(grid)) {
+      _alignOriginalGrids[key] = grid.slice();
+    }
+  }
+
   /* ---- Dynamic file grouping ---- */
   let filenames = Object.keys(alignmentGrids).filter(
     (n) => n !== SYNTH_MEI_KEY,
@@ -1933,6 +2265,10 @@ async function setGrids(grids) {
   // Show the "Group files" button
   const groupBtn = document.getElementById("group-files-btn");
   if (groupBtn) groupBtn.style.display = "";
+
+  // Show the "Tools" panel (visible once alignment loaded)
+  const toolsPanelEl = document.getElementById("tools-panel");
+  if (toolsPanelEl) toolsPanelEl.style.display = "";
 
   // Always show manage-files button once alignment is loaded (for URI config)
   const _manageBtn = document.getElementById("manage-files-btn");
@@ -1976,6 +2312,7 @@ function onAlignmentComplete(alignmentResult, files) {
   // Create blob URLs for each audio file so WaveSurfer can load them
   files.forEach((f) => fileBlobUrls.set(f.name, URL.createObjectURL(f)));
   useFilesMode = true;
+  _fromAlignmentHandoff = true;
   loadedAlignmentJSON = alignmentResult;
   workId = "in-browser-alignment";
 
@@ -1988,7 +2325,15 @@ function onAlignmentComplete(alignmentResult, files) {
 
   // Show download button so user can save the result
   const dlBtn = document.getElementById("download-json-btn");
-  if (dlBtn) dlBtn.style.display = "";
+  if (dlBtn) {
+    dlBtn.style.display = "";
+    if (sessionStorage.getItem("alignSavedBeforeListen") !== "true") {
+      dlBtn.classList.add("json-dirty");
+    } else {
+      dlBtn.classList.remove("json-dirty");
+    }
+  }
+  sessionStorage.removeItem("alignSavedBeforeListen");
 
   // Show manage-files button in case user wants to re-match files
   const manageBtn = document.getElementById("manage-files-btn");
@@ -2127,11 +2472,111 @@ function onRegionUpdated(filename, region) {
 // ----------------------------------------------------------------------------
 
 document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("back").addEventListener("click", () => {
-    solidLogout().then(
-      () => (window.location.href = window.location.origin + "/"),
-    );
+  // Global delegation for collapsible fieldsets
+  document.addEventListener("click", (e) => {
+    const legend = e.target.closest("legend");
+    if (legend && legend.parentElement.classList.contains("collapsible-fieldset")) {
+      const fieldset = legend.parentElement;
+      const isCollapsed = fieldset.classList.toggle("collapsed");
+
+      // Persist state if it's not a file group
+      if (fieldset.id && !fieldset.classList.contains("group-fieldset")) {
+        try {
+          localStorage.setItem(
+            `fieldset-collapsed-${fieldset.id}`,
+            isCollapsed,
+          );
+        } catch (_) {}
+      }
+    }
   });
+
+  // Restore persistent fieldset states
+  document.querySelectorAll(".collapsible-fieldset[id]").forEach((fs) => {
+    if (fs.classList.contains("group-fieldset")) return;
+    try {
+      const isCollapsed =
+        localStorage.getItem(`fieldset-collapsed-${fs.id}`) === "true";
+      if (isCollapsed) {
+        fs.classList.add("collapsed");
+      }
+    } catch (_) {}
+  });
+
+  // Sidebar sections (Controls, Waveforms) toggle logic
+  function setupNavSection(toggleId, bodyId, arrowId, storageKey) {
+    const toggle = document.getElementById(toggleId);
+    const body = document.getElementById(bodyId);
+    const arrow = document.getElementById(arrowId);
+    if (!toggle || !body) return;
+
+    const card = toggle.closest(".nav-card") || toggle.parentElement;
+
+    toggle.addEventListener("click", () => {
+      const isCollapsed = card.classList.toggle("collapsed");
+      if (arrow) {
+        arrow.innerHTML = isCollapsed ? "&#9656;" : "&#9662;";
+      }
+      try {
+        localStorage.setItem(storageKey, isCollapsed);
+      } catch (_) {}
+    });
+
+    // Restore state
+    try {
+      if (localStorage.getItem(storageKey) === "true") {
+        card.classList.add("collapsed");
+        if (arrow) arrow.innerHTML = "&#9656;";
+      }
+    } catch (_) {}
+  }
+
+  setupNavSection(
+    "nav-middle-toggle",
+    "nav-middle",
+    "middle-collapse-arrow",
+    "nav-middle-collapsed",
+  );
+  setupNavSection(
+    "nav-bottom-toggle",
+    "nav-bottom",
+    "bottom-collapse-arrow",
+    "nav-bottom-collapsed",
+  );
+
+  // Settings: only show an internal scrollbar when its content truly overflows.
+  // This prevents a "phantom" scrollbar when the layout has enough space.
+  const settingsBody = document.querySelector(
+    "#settings-panel .fieldset-body",
+  );
+  const syncSettingsOverflow = () => {
+    if (!settingsBody) return;
+    // Add generous slack to avoid "phantom" scrollbars due to rounding.
+    // scrollHeight/clientHeight are usually integers, but some layouts can still
+    // report a few extra pixels even when content visibly fits.
+    const scrollH = Math.ceil(settingsBody.scrollHeight);
+    const clientH = Math.floor(settingsBody.clientHeight);
+    const needsScroll = scrollH - clientH > 12;
+    settingsBody.classList.toggle("settings-scroll", needsScroll);
+  };
+
+  if (settingsBody) {
+    syncSettingsOverflow();
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => {
+        // Let layout settle after transition/reflow.
+        requestAnimationFrame(() => syncSettingsOverflow());
+      });
+      ro.observe(settingsBody);
+      // Also observe the containers that change height when collapsing sections.
+      const navMiddle = document.getElementById("nav-middle");
+      const regionControls = document.getElementById("region-controls");
+      if (navMiddle) ro.observe(navMiddle);
+      if (regionControls) ro.observe(regionControls);
+    } else {
+      window.addEventListener("resize", syncSettingsOverflow);
+    }
+  }
 
   // Initialise Solid auth (process any incoming redirect code, then populate drawer).
   // Skip in align mode — Solid is irrelevant until user transitions to listen mode.
@@ -2184,6 +2629,7 @@ document.addEventListener("DOMContentLoaded", () => {
       a.download = "alignment.json";
       a.click();
       URL.revokeObjectURL(url);
+      _clearJsonDirty();
     });
     if (alignmentData === "session") dlBtn.style.display = ""; // legacy fallback
   }
@@ -2193,6 +2639,852 @@ document.addEventListener("DOMContentLoaded", () => {
   if (groupFilesBtn) {
     groupFilesBtn.addEventListener("click", () => _openGroupModal());
   }
+
+  // -----------------------------------------------------------------------
+  // Tools panel + Unified undo/redo + Marker drag + Alignment correction
+  // -----------------------------------------------------------------------
+  const toolsPanel = document.getElementById("tools-panel");
+  const toolsHeader = document.getElementById("tools-header");
+  const toolsBody = document.getElementById("tools-body");
+  const closeListeningCb = document.getElementById("close-listening-cb");
+  const dragMarkersCb = document.getElementById("drag-markers-cb");
+  const dragModeMove = document.getElementById("drag-mode-move");
+  const dragModeFix = document.getElementById("drag-mode-fix");
+  const radiusFieldset = document.getElementById("radius-fieldset");
+  const radiusNarrow = document.getElementById("radius-narrow");
+  const radiusMedium = document.getElementById("radius-medium");
+  const radiusWide = document.getElementById("radius-wide");
+  const undoBtn = document.getElementById("tools-undo-btn");
+  const redoBtn = document.getElementById("tools-redo-btn");
+  const revertBtn = document.getElementById("revert-all-btn");
+
+  // --- Tools panel collapse ---
+  // Restore collapse state
+  try {
+    if (localStorage.getItem("tools-collapsed") === "true") {
+      toolsPanel.classList.add("collapsed");
+    }
+  } catch (_) {}
+
+  /** Expand the tools panel (e.g. for pulse hint). */
+  function _expandToolsPanel() {
+    if (toolsPanel) toolsPanel.classList.remove("collapsed");
+  }
+
+  // --- Close Listening checkbox ---
+  if (closeListeningCb) {
+    closeListeningCb.addEventListener("change", () => {
+      if (closeListeningCb.checked) {
+        if (markers.length > 0) {
+          enterCloseListeningMode(findClosestMarkerIndex());
+        } else {
+          closeListeningCb.checked = false; // can't enter without markers
+        }
+      } else {
+        exitCloseListeningMode();
+      }
+    });
+  }
+
+  // --- Drag markers checkbox ---
+  if (dragMarkersCb) {
+    // Sync initial state from (possibly browser-cached) form value
+    _dragMarkersEnabled = dragMarkersCb.checked;
+    if (dragModeMove) dragModeMove.disabled = !_dragMarkersEnabled;
+    if (dragModeFix) dragModeFix.disabled = !_dragMarkersEnabled;
+    dragMarkersCb.addEventListener("change", () => {
+      _dragMarkersEnabled = dragMarkersCb.checked;
+      // Enable/disable the drag-mode radio buttons
+      if (dragModeMove) dragModeMove.disabled = !_dragMarkersEnabled;
+      if (dragModeFix) dragModeFix.disabled = !_dragMarkersEnabled;
+      _updateDragFieldsetState();
+    });
+  }
+
+  // --- Drag mode radios ---
+  // Sync initial state from (possibly browser-cached) radio selection
+  _dragMode =
+    document.querySelector('input[name="drag-mode"]:checked')?.value || "move";
+  [dragModeMove, dragModeFix].forEach((r) => {
+    if (r)
+      r.addEventListener("change", () => {
+        _dragMode =
+          document.querySelector('input[name="drag-mode"]:checked')?.value ||
+          "move";
+        _updateDragFieldsetState();
+      });
+  });
+
+  // Apply initial enabled/correction state
+  _updateDragFieldsetState();
+
+  // --- Radius radios ---
+  // Sync initial state from (possibly browser-cached) radio selection
+  const _initRadius = document.querySelector('input[name="radius"]:checked');
+  if (_initRadius) _alignRadius = parseInt(_initRadius.value);
+  [radiusNarrow, radiusMedium, radiusWide].forEach((r) => {
+    if (r)
+      r.addEventListener("change", () => {
+        _alignRadius = parseInt(r.value);
+      });
+  });
+
+  // --- Unified Undo / Redo ---
+
+  /** Push an entry onto the undo stack. Clears redo on commit=true. */
+  function _pushUndo(entry, commit = false) {
+    _undoStack.push(entry);
+    if (commit) _redoStack.length = 0;
+    _updateUndoRedoState();
+  }
+
+  function _undoOne() {
+    if (_undoStack.length === 0) return;
+    const entry = _undoStack.pop();
+    switch (entry.type) {
+      case "align-fix": {
+        _redoStack.push({
+          type: "align-fix",
+          filename: entry.filename,
+          grid: alignmentGrids[entry.filename].slice(),
+        });
+        alignmentGrids[entry.filename] = entry.grid;
+        _syncGridToJSON(entry.filename);
+        _markJsonDirty();
+        if (_gridRedrawers[entry.filename]) _gridRedrawers[entry.filename]();
+        break;
+      }
+      case "marker-add": {
+        // Undo add = remove the marker
+        const ix = markers.indexOf(entry.alignIx);
+        if (ix > -1) {
+          markers.splice(ix, 1);
+          if (storage)
+            storage.setItem("markers_" + workId, JSON.stringify(markers));
+          _syncMarkersToJSON();
+          _redoStack.push({
+            type: "marker-add",
+            alignIx: entry.alignIx,
+            markerArrayIx: ix,
+          });
+          if (closeListeningMode) {
+            if (markers.length === 0) {
+              exitCloseListeningMode();
+            } else {
+              activeMarkerIx = Math.min(
+                activeMarkerIx || 0,
+                markers.length - 1,
+              );
+            }
+          }
+          redrawAllMarkers();
+        }
+        break;
+      }
+      case "marker-delete": {
+        // Undo delete = re-insert the marker
+        const insertIx = Math.min(entry.markerArrayIx, markers.length);
+        markers.splice(insertIx, 0, entry.alignIx);
+        if (storage)
+          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _syncMarkersToJSON();
+        _redoStack.push({
+          type: "marker-delete",
+          alignIx: entry.alignIx,
+          markerArrayIx: insertIx,
+        });
+        if (closeListeningMode) {
+          activeMarkerIx = insertIx;
+        }
+        redrawAllMarkers();
+        break;
+      }
+      case "marker-move": {
+        // Undo move = restore old position
+        markers[entry.markerArrayIx] = entry.oldAlignIx;
+        if (storage)
+          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _syncMarkersToJSON();
+        _redoStack.push({
+          type: "marker-move",
+          markerArrayIx: entry.markerArrayIx,
+          oldAlignIx: entry.newAlignIx,
+          newAlignIx: entry.oldAlignIx,
+        });
+        redrawAllMarkers();
+        if (closeListeningMode) seekToActiveMarker();
+        break;
+      }
+    }
+    _updateUndoRedoState();
+  }
+
+  function _redoOne() {
+    if (_redoStack.length === 0) return;
+    const entry = _redoStack.pop();
+    switch (entry.type) {
+      case "align-fix": {
+        _undoStack.push({
+          type: "align-fix",
+          filename: entry.filename,
+          grid: alignmentGrids[entry.filename].slice(),
+        });
+        alignmentGrids[entry.filename] = entry.grid;
+        _syncGridToJSON(entry.filename);
+        _markJsonDirty();
+        if (_gridRedrawers[entry.filename]) _gridRedrawers[entry.filename]();
+        break;
+      }
+      case "marker-add": {
+        // Redo add = re-insert
+        const insertIx = Math.min(entry.markerArrayIx, markers.length);
+        markers.splice(insertIx, 0, entry.alignIx);
+        if (storage)
+          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _syncMarkersToJSON();
+        _undoStack.push({
+          type: "marker-add",
+          alignIx: entry.alignIx,
+          markerArrayIx: insertIx,
+        });
+        redrawAllMarkers();
+        break;
+      }
+      case "marker-delete": {
+        // Redo delete = remove again
+        const ix = markers.indexOf(entry.alignIx);
+        if (ix > -1) {
+          markers.splice(ix, 1);
+          if (storage)
+            storage.setItem("markers_" + workId, JSON.stringify(markers));
+          _syncMarkersToJSON();
+          _undoStack.push({
+            type: "marker-delete",
+            alignIx: entry.alignIx,
+            markerArrayIx: ix,
+          });
+          if (closeListeningMode) {
+            if (markers.length === 0) {
+              exitCloseListeningMode();
+            } else {
+              activeMarkerIx = Math.min(
+                activeMarkerIx || 0,
+                markers.length - 1,
+              );
+            }
+          }
+          redrawAllMarkers();
+        }
+        break;
+      }
+      case "marker-move": {
+        markers[entry.markerArrayIx] = entry.newAlignIx;
+        if (storage)
+          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _syncMarkersToJSON();
+        _undoStack.push({
+          type: "marker-move",
+          markerArrayIx: entry.markerArrayIx,
+          oldAlignIx: entry.oldAlignIx,
+          newAlignIx: entry.newAlignIx,
+        });
+        redrawAllMarkers();
+        if (closeListeningMode) seekToActiveMarker();
+        break;
+      }
+    }
+    _updateUndoRedoState();
+  }
+
+  function _revertAll() {
+    for (const [filename, original] of Object.entries(_alignOriginalGrids)) {
+      alignmentGrids[filename] = original.slice();
+      _syncGridToJSON(filename);
+      if (_gridRedrawers[filename]) _gridRedrawers[filename]();
+    }
+    _undoStack.length = 0;
+    _redoStack.length = 0;
+    _updateUndoRedoState();
+  }
+
+  /** Short description of an undo/redo entry's action. */
+  function _actionLabel(entry) {
+    if (!entry) return "";
+    switch (entry.type) {
+      case "align-fix":
+        return "fix alignment";
+      case "marker-add":
+        return "add marker";
+      case "marker-delete":
+        return "delete marker";
+      case "marker-move":
+        return "move marker";
+      default:
+        return "";
+    }
+  }
+
+  function _updateUndoRedoState() {
+    if (undoBtn) {
+      undoBtn.disabled = _undoStack.length === 0;
+      const uLabel = _actionLabel(_undoStack[_undoStack.length - 1]);
+      undoBtn.textContent = uLabel ? `Undo: ${uLabel}` : "Undo";
+      undoBtn.title = uLabel ? `Undo: ${uLabel} (Ctrl+Z)` : "Undo (Ctrl+Z)";
+    }
+    if (redoBtn) {
+      redoBtn.disabled = _redoStack.length === 0;
+      const rLabel = _actionLabel(_redoStack[_redoStack.length - 1]);
+      redoBtn.textContent = rLabel ? `Redo: ${rLabel}` : "Redo";
+      redoBtn.title = rLabel
+        ? `Redo: ${rLabel} (Ctrl+Shift+Z)`
+        : "Redo (Ctrl+Shift+Z)";
+    }
+    if (revertBtn) {
+      let hasChanges = false;
+      for (const [filename, original] of Object.entries(_alignOriginalGrids)) {
+        const current = alignmentGrids[filename];
+        if (!current || current.length !== original.length) {
+          hasChanges = true;
+          break;
+        }
+        for (let i = 0; i < original.length; i++) {
+          if (current[i] !== original[i]) {
+            hasChanges = true;
+            break;
+          }
+        }
+        if (hasChanges) break;
+      }
+      revertBtn.disabled = !hasChanges;
+    }
+  }
+
+  function _syncGridToJSON(filename) {
+    if (!loadedAlignmentJSON?.body?.audio) return;
+    const entry = loadedAlignmentJSON.body.audio[filename];
+    if (!entry) return;
+    if (entry && !Array.isArray(entry) && Array.isArray(entry.times)) {
+      entry.times = alignmentGrids[filename];
+    } else {
+      loadedAlignmentJSON.body.audio[filename] = alignmentGrids[filename];
+    }
+    _markJsonDirty();
+  }
+
+  if (undoBtn) undoBtn.addEventListener("click", _undoOne);
+  if (redoBtn) redoBtn.addEventListener("click", _redoOne);
+  if (revertBtn) {
+    revertBtn.addEventListener("click", () => {
+      if (confirm("Revert all alignment corrections to the original?"))
+        _revertAll();
+    });
+  }
+
+  // Ctrl+Z / Ctrl+Shift+Z keyboard shortcuts for undo / redo
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+      e.preventDefault();
+      _undoOne();
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === "z" && e.shiftKey) {
+      e.preventDefault();
+      _redoOne();
+    }
+  });
+
+  // --- Marker drag interaction ---
+  // Proximity detection: within MARKER_GRAB_PX pixels of a marker line
+  const MARKER_GRAB_PX = 20;
+  let _markerDragState = null; // { filename, markerArrayIx, startX, startAlignIx, wfEl }
+
+  /** Find the closest marker element near clientX on a waveform element.
+   *  Returns { markerEl, markerArrayIx, distPx } or null. */
+  function _findNearbyMarker(wfEl, clientX) {
+    const markers_els = wfEl.querySelectorAll(".ws-marker[data-align-ix]");
+    let best = null;
+    markers_els.forEach((el) => {
+      const rect = el.getBoundingClientRect();
+      const markerX = rect.left + rect.width / 2;
+      const dist = Math.abs(clientX - markerX);
+      if (dist < MARKER_GRAB_PX && (!best || dist < best.distPx)) {
+        const alignIx = parseInt(el.dataset.alignIx);
+        const arrIx = markers.indexOf(alignIx);
+        if (arrIx > -1)
+          best = { markerEl: el, markerArrayIx: arrIx, distPx: dist };
+      }
+    });
+    return best;
+  }
+
+  // Pulse hint for "Drag markers" when user clicks near a marker with drag disabled
+  function _showDragMarkerPulse() {
+    _expandToolsPanel();
+    const fieldset = document.getElementById("drag-marker-fieldset");
+    if (!fieldset) return;
+    fieldset.classList.add("pulse-hint");
+    fieldset.addEventListener(
+      "animationend",
+      () => {
+        fieldset.classList.remove("pulse-hint");
+      },
+      { once: true },
+    );
+    // First-time tooltip
+    if (!_pulseHintShown) {
+      _pulseHintShown = true;
+      const tip = document.createElement("div");
+      tip.className = "pulse-tooltip";
+      tip.textContent = "Enable to drag markers";
+      tip.style.cssText =
+        "position:absolute;top:-1.5em;left:50%;transform:translateX(-50%);font-size:0.72em;background:#1e40af;color:#fff;padding:0.2em 0.5em;border-radius:3px;white-space:nowrap;z-index:10;pointer-events:none;";
+      fieldset.style.position = "relative";
+      fieldset.appendChild(tip);
+      setTimeout(() => tip.remove(), 2500);
+    }
+  }
+
+  // Mousedown on waveforms: handle marker drag start
+  document.getElementById("waveforms").addEventListener("mousedown", (e) => {
+    const wfEl = e.target.closest(".waveform");
+    if (!wfEl) return;
+    const filename = wfEl.dataset.ix;
+    if (!filename) return;
+
+    // Check proximity to a marker
+    const nearby = _findNearbyMarker(wfEl, e.clientX);
+    if (!nearby) return;
+
+    // If close-listening not active, enter it with this marker
+    if (!closeListeningMode) {
+      enterCloseListeningMode(nearby.markerArrayIx);
+    } else if (!_dragMarkersEnabled) {
+      // Not dragging — select this marker and seek to it
+      activeMarkerIx = nearby.markerArrayIx;
+      redrawAllMarkers();
+      seekToActiveMarker();
+    } else {
+      // Drag enabled — just select the marker (no seek/jump)
+      activeMarkerIx = nearby.markerArrayIx;
+      redrawAllMarkers();
+    }
+
+    // If drag markers not enabled, show pulse hint
+    if (!_dragMarkersEnabled) {
+      _showDragMarkerPulse();
+      return;
+    }
+
+    // Start drag
+    e.preventDefault();
+    document.body.classList.add("marker-dragging");
+    _markerDragState = {
+      filename,
+      markerArrayIx: nearby.markerArrayIx,
+      startX: e.clientX,
+      startAlignIx: markers[nearby.markerArrayIx],
+      wfEl,
+    };
+
+    // If in fix-alignment mode, also set up the correction drag
+    if (_dragMode === "fix") {
+      const grid = alignmentGrids[filename];
+      if (
+        !grid ||
+        filename === referenceAudioIx ||
+        filename === SYNTH_MEI_KEY
+      ) {
+        _markerDragState = null;
+        document.body.classList.remove("marker-dragging");
+        return;
+      }
+      const jCenter = markers[nearby.markerArrayIx];
+      const sigma = _sigmaFromEvent(e);
+      const isGlobal = e.ctrlKey || e.metaKey;
+      const origGrid = grid.slice();
+      const dur = wavesurfers[filename]?.getDuration() || 1;
+      // Push undo entries for alignment grids
+      if (isGlobal) {
+        for (const fn of Object.keys(alignmentGrids)) {
+          if (fn === referenceAudioIx || fn === SYNTH_MEI_KEY) continue;
+          _pushUndo({
+            type: "align-fix",
+            filename: fn,
+            grid: alignmentGrids[fn].slice(),
+          });
+        }
+      } else {
+        _pushUndo({ type: "align-fix", filename, grid: origGrid });
+      }
+      _markerDragState.fixMode = true;
+      _markerDragState.jCenter = jCenter;
+      _markerDragState.origGrid = origGrid;
+      _markerDragState.sigma = sigma;
+      _markerDragState.dur = dur;
+      _markerDragState.isGlobal = isGlobal;
+    }
+  });
+
+  // Mousemove: drag marker
+  document.addEventListener("mousemove", (e) => {
+    if (!_markerDragState) return;
+    const { filename, markerArrayIx, startX, wfEl, fixMode } = _markerDragState;
+    const dur = wavesurfers[filename]?.getDuration() || 1;
+    const rect = wfEl.getBoundingClientRect();
+
+    if (fixMode) {
+      // Fix alignment mode: morph the grid
+      _markerDragState.sigma = _sigmaFromEvent(e);
+      const sigma = _markerDragState.sigma;
+      const dtDrag = (e.clientX - startX) / (rect.width / dur);
+      const morphed = _morphGrid(
+        _markerDragState.origGrid,
+        _markerDragState.jCenter,
+        dtDrag,
+        sigma,
+      );
+      const corrCanvas = wfEl.querySelector(".align-correction-overlay");
+      if (corrCanvas) {
+        _drawMorphPreview(
+          corrCanvas,
+          filename,
+          morphed,
+          _markerDragState.origGrid,
+        );
+      }
+      // Show the dragged marker at its morphed position
+      const morphedTime = morphed[_markerDragState.jCenter];
+      const pct =
+        dur > 0 ? Math.max(0, Math.min(100, (morphedTime / dur) * 100)) : 0;
+      const markerEl = wfEl.querySelector(
+        `.ws-marker[data-align-ix="${markers[markerArrayIx]}"]`,
+      );
+      if (markerEl) markerEl.style.left = `${pct}%`;
+      // Update all other markers on this waveform to their morphed positions
+      wfEl.querySelectorAll(".ws-marker[data-align-ix]").forEach((el) => {
+        if (el === markerEl) return;
+        const aIx = parseInt(el.dataset.alignIx);
+        if (aIx >= 0 && aIx < morphed.length) {
+          const t = morphed[aIx];
+          const p = dur > 0 ? Math.max(0, Math.min(100, (t / dur) * 100)) : 0;
+          el.style.left = `${p}%`;
+        }
+      });
+      // Global preview on other waveforms
+      if (_markerDragState.isGlobal) {
+        document.querySelectorAll(".align-correction-overlay").forEach((c) => {
+          const fn = c.closest(".waveform")?.dataset.ix;
+          if (
+            !fn ||
+            fn === filename ||
+            fn === referenceAudioIx ||
+            fn === SYNTH_MEI_KEY
+          )
+            return;
+          const fnOrigGrid = _undoStack
+            .slice()
+            .reverse()
+            .find((u) => u.type === "align-fix" && u.filename === fn)?.grid;
+          if (!fnOrigGrid) return;
+          const refSpacing =
+            _markerDragState.origGrid[_markerDragState.jCenter] || 1;
+          const localSpacing = fnOrigGrid[_markerDragState.jCenter] || 1;
+          const scale = localSpacing / refSpacing;
+          const localMorphed = _morphGrid(
+            fnOrigGrid,
+            _markerDragState.jCenter,
+            dtDrag * scale,
+            sigma,
+          );
+          _drawMorphPreview(c, fn, localMorphed, fnOrigGrid);
+        });
+      }
+    } else {
+      // Move marker mode: show cursor at new position
+      const pxDelta = e.clientX - startX;
+      const timeDelta = (pxDelta / rect.width) * dur;
+      const origTime = getCorrespondingTime(
+        filename,
+        _markerDragState.startAlignIx,
+      );
+      const newTime = Math.max(0, Math.min(dur, origTime + timeDelta));
+      const newAlignIx = getClosestAlignmentIx(newTime, filename);
+      // Temporarily update marker position for visual feedback
+      markers[markerArrayIx] = newAlignIx;
+      redrawAllMarkers();
+    }
+  });
+
+  // Mouseup: commit marker drag
+  document.addEventListener("mouseup", (e) => {
+    if (!_markerDragState) return;
+    const { filename, markerArrayIx, startX, startAlignIx, wfEl, fixMode } =
+      _markerDragState;
+    const dur = wavesurfers[filename]?.getDuration() || 1;
+    const rect = wfEl.getBoundingClientRect();
+
+    if (fixMode) {
+      const dtDrag = (e.clientX - startX) / (rect.width / dur);
+      if (Math.abs(dtDrag) < 1e-4) {
+        // No meaningful drag — pop the undo entries
+        if (_markerDragState.isGlobal) {
+          for (const fn of Object.keys(alignmentGrids)) {
+            if (fn === referenceAudioIx || fn === SYNTH_MEI_KEY) continue;
+            _undoStack.pop();
+          }
+        } else {
+          _undoStack.pop();
+        }
+      } else {
+        const sigma = _markerDragState.sigma;
+        const morphed = _morphGrid(
+          _markerDragState.origGrid,
+          _markerDragState.jCenter,
+          dtDrag,
+          sigma,
+        );
+        alignmentGrids[filename] = morphed;
+        _syncGridToJSON(filename);
+        if (_gridRedrawers[filename]) _gridRedrawers[filename]();
+        if (_markerDragState.isGlobal) {
+          for (const fn of Object.keys(alignmentGrids)) {
+            if (
+              fn === filename ||
+              fn === referenceAudioIx ||
+              fn === SYNTH_MEI_KEY
+            )
+              continue;
+            const fnOrigGrid = _undoStack
+              .slice()
+              .reverse()
+              .find((u) => u.type === "align-fix" && u.filename === fn)?.grid;
+            if (!fnOrigGrid) continue;
+            const refSpacing =
+              _markerDragState.origGrid[_markerDragState.jCenter] || 1;
+            const localSpacing = fnOrigGrid[_markerDragState.jCenter] || 1;
+            const scale = localSpacing / refSpacing;
+            const localMorphed = _morphGrid(
+              fnOrigGrid,
+              _markerDragState.jCenter,
+              dtDrag * scale,
+              sigma,
+            );
+            alignmentGrids[fn] = localMorphed;
+            _syncGridToJSON(fn);
+            if (_gridRedrawers[fn]) _gridRedrawers[fn]();
+          }
+        }
+        // Commit: clear redo stack
+        _redoStack.length = 0;
+      }
+      // Clear correction overlays
+      document.querySelectorAll(".align-correction-overlay").forEach((c) => {
+        c.getContext("2d").clearRect(0, 0, c.width, c.height);
+      });
+      // Redraw markers — grid times have changed, so marker positions must update
+      redrawAllMarkers();
+    } else {
+      // Move marker mode: commit the new position
+      const pxDelta = e.clientX - startX;
+      const timeDelta = (pxDelta / rect.width) * dur;
+      const origTime = getCorrespondingTime(filename, startAlignIx);
+      const newTime = Math.max(0, Math.min(dur, origTime + timeDelta));
+      const newAlignIx = getClosestAlignmentIx(newTime, filename);
+      if (newAlignIx !== startAlignIx) {
+        markers[markerArrayIx] = newAlignIx;
+        if (storage)
+          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _pushUndo(
+          {
+            type: "marker-move",
+            markerArrayIx,
+            oldAlignIx: startAlignIx,
+            newAlignIx,
+          },
+          true,
+        );
+        redrawAllMarkers();
+        if (closeListeningMode) seekToActiveMarker();
+      } else {
+        // Restore original position (no change)
+        markers[markerArrayIx] = startAlignIx;
+        redrawAllMarkers();
+      }
+    }
+    _markerDragState = null;
+    document.body.classList.remove("marker-dragging");
+    _updateUndoRedoState();
+  });
+
+  // --- Hover influence zone for fix-alignment mode ---
+  let _lastHoverCanvas = null;
+  let _lastHoverFilename = null;
+  let _lastHoverMouseX = null;
+
+  document.addEventListener("keydown", _onModifierChange);
+  document.addEventListener("keyup", _onModifierChange);
+  function _onModifierChange(e) {
+    if (!_alignCorrectionMode || _markerDragState) return;
+    if (!(e.key === "Shift" || e.key === "Alt")) return;
+    if (_lastHoverCanvas && _lastHoverFilename && _lastHoverMouseX != null) {
+      const sigma = _sigmaFromEvent(e);
+      _drawInfluenceZone(
+        _lastHoverCanvas,
+        _lastHoverFilename,
+        _lastHoverMouseX,
+        sigma,
+      );
+    }
+  }
+
+  function _drawInfluenceZone(canvas, filename, mouseX, sigma) {
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const grid = alignmentGrids[filename];
+    if (!grid || grid.length === 0) return;
+    const dur = wavesurfers[filename]?.getDuration() || 1;
+    const mouseTime = (mouseX / w) * dur;
+    let jCenter = 0;
+    let bestDist = Infinity;
+    for (let j = 0; j < grid.length; j++) {
+      const d = Math.abs(grid[j] - mouseTime);
+      if (d < bestDist) {
+        bestDist = d;
+        jCenter = j;
+      }
+    }
+    const bandColor = "rgba(70, 130, 230, 0.12)";
+    ctx.fillStyle = bandColor;
+    const cutoff = Math.ceil(sigma * 3);
+    const jMin = Math.max(0, jCenter - cutoff);
+    const jMax = Math.min(grid.length - 1, jCenter + cutoff);
+    const xMin = (grid[jMin] / dur) * w;
+    const xMax = (grid[jMax] / dur) * w;
+    ctx.fillRect(xMin, 0, xMax - xMin, h);
+    const xCenter = (grid[jCenter] / dur) * w;
+    ctx.strokeStyle = "rgba(70, 130, 230, 0.5)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(xCenter, 0);
+    ctx.lineTo(xCenter, h);
+    ctx.stroke();
+  }
+
+  function _drawMorphPreview(canvas, filename, morphedGrid, origGrid) {
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+    const dur = wavesurfers[filename]?.getDuration() || 1;
+    // Dynamic extent band: highlight all entries with displacement > 0.5% of peak
+    if (_markerDragState && _markerDragState.fixMode && origGrid) {
+      let peakDisp = 0;
+      for (let j = 0; j < morphedGrid.length; j++) {
+        peakDisp = Math.max(peakDisp, Math.abs(morphedGrid[j] - origGrid[j]));
+      }
+      if (peakDisp > 1e-6) {
+        const threshold = peakDisp * 0.005;
+        let jMin = morphedGrid.length - 1;
+        let jMax = 0;
+        for (let j = 0; j < morphedGrid.length; j++) {
+          if (Math.abs(morphedGrid[j] - origGrid[j]) > threshold) {
+            if (j < jMin) jMin = j;
+            if (j > jMax) jMax = j;
+          }
+        }
+        if (jMin <= jMax) {
+          const xMin = (morphedGrid[jMin] / dur) * w;
+          const xMax = (morphedGrid[jMax] / dur) * w;
+          ctx.fillStyle = "rgba(70, 130, 230, 0.08)";
+          ctx.fillRect(xMin, 0, xMax - xMin, h);
+        }
+      }
+    }
+    ctx.strokeStyle = "rgba(40, 160, 40, 0.7)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const n = morphedGrid.length;
+    const minPixelStep = 4;
+    let lastAbsX = -999;
+    for (let j = 0; j < n; j++) {
+      const absoluteX = (j / n) * w;
+      const relativeX = (morphedGrid[j] / dur) * w;
+      if (absoluteX - lastAbsX >= minPixelStep) {
+        ctx.moveTo(absoluteX, 0);
+        ctx.lineTo(relativeX, h / 6);
+        ctx.moveTo(relativeX, 5 * (h / 6));
+        ctx.lineTo(absoluteX, h);
+        lastAbsX = absoluteX;
+      }
+    }
+    ctx.stroke();
+  }
+
+  // Hover: show influence zone near active marker in fix mode
+  // Only display when cursor is close to a marker (within MARKER_GRAB_PX).
+  document.getElementById("waveforms").addEventListener("mousemove", (e) => {
+    if (!_alignCorrectionMode) return;
+    if (_markerDragState) return;
+    const wfEl = e.target.closest(".waveform");
+    if (!wfEl) return;
+    const filename = wfEl.dataset.ix;
+    if (!filename || filename === referenceAudioIx) return;
+    const canvas = wfEl.querySelector(".align-correction-overlay");
+    if (!canvas) return;
+
+    // Only show influence zone when near a marker
+    const nearby = _findNearbyMarker(wfEl, e.clientX);
+    if (!nearby) {
+      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+      canvas.style.cursor = "";
+      canvas.title = "";
+      _lastHoverCanvas = null;
+      _lastHoverFilename = null;
+      _lastHoverMouseX = null;
+      return;
+    }
+    // Score waveform alignment is derived from the notation — show forbidden
+    if (filename === SYNTH_MEI_KEY) {
+      canvas.style.cursor = "not-allowed";
+      canvas.title =
+        "Score alignment cannot be adjusted — it is derived from note onsets";
+      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+      _lastHoverCanvas = null;
+      _lastHoverFilename = null;
+      _lastHoverMouseX = null;
+      return;
+    }
+    canvas.style.cursor = "grab";
+    canvas.title = "";
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    _lastHoverCanvas = canvas;
+    _lastHoverFilename = filename;
+    _lastHoverMouseX = mouseX;
+    const sigma = _sigmaFromEvent(e);
+    _drawInfluenceZone(canvas, filename, mouseX, sigma);
+  });
+
+  document.getElementById("waveforms").addEventListener(
+    "mouseleave",
+    (e) => {
+      if (!_alignCorrectionMode || _markerDragState) return;
+      const wfEl = e.target.closest(".waveform");
+      if (wfEl) {
+        const canvas = wfEl.querySelector(".align-correction-overlay");
+        if (canvas) {
+          canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
+          canvas.style.cursor = "";
+          canvas.title = "";
+        }
+      }
+      _lastHoverCanvas = null;
+      _lastHoverFilename = null;
+      _lastHoverMouseX = null;
+    },
+    true,
+  );
 
   // load alignment json
   if (window.alignMode === "align") {
@@ -2225,11 +3517,17 @@ document.addEventListener("DOMContentLoaded", () => {
   // mark button
   document.getElementById("mark").addEventListener("click", function (e) {
     let toMark = getClosestAlignmentIx();
+    const arrIx = markers.length;
     markers.push(toMark);
     // update markers in storage, if possible
     if (storage) {
       storage.setItem("markers_" + workId, JSON.stringify(markers));
     }
+    _syncMarkersToJSON();
+    _pushUndo(
+      { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
+      true,
+    );
     Object.keys(wavesurfers).forEach((ws) => {
       const t = getCorrespondingTime(ws, toMark);
       console.log("got corresponding time: ", t);
@@ -2239,7 +3537,13 @@ document.addEventListener("DOMContentLoaded", () => {
   // normalize audio checkbox
   document.getElementById("normalize").checked = false;
   document.getElementById("normalize").addEventListener("click", (e) => {
-    reloadWaveforms();
+    const norm = e.target.checked;
+    // Visual: scale waveform peaks to fill available height
+    Object.values(wavesurfers).forEach((ws) =>
+      ws.setOptions({ normalize: norm }),
+    );
+    // Audio: adjust GainNode so quieter recordings play at equal volume
+    _applyNormGain(norm);
   });
   // visualize alignment checkbox
   document.getElementById("visalign").checked = false;
@@ -2334,9 +3638,19 @@ document.addEventListener("DOMContentLoaded", () => {
               const newIx = getClosestAlignmentIx(targetTime, currentAudioIx);
               // Only update if actually different from current position
               if (newIx !== markers[activeMarkerIx]) {
+                const oldIx = markers[activeMarkerIx];
                 markers[activeMarkerIx] = newIx;
                 if (storage)
                   storage.setItem("markers_" + workId, JSON.stringify(markers));
+                _pushUndo(
+                  {
+                    type: "marker-move",
+                    markerArrayIx: activeMarkerIx,
+                    oldAlignIx: oldIx,
+                    newAlignIx: newIx,
+                  },
+                  true,
+                );
                 redrawAllMarkers();
                 seekToActiveMarker();
               }
@@ -2394,9 +3708,19 @@ document.addEventListener("DOMContentLoaded", () => {
             const newIx = getClosestAlignmentIx(targetTime, currentAudioIx);
             // Only update if actually different and in bounds
             if (newIx !== markers[activeMarkerIx] && newIx < gridLength) {
+              const oldIx = markers[activeMarkerIx];
               markers[activeMarkerIx] = newIx;
               if (storage)
                 storage.setItem("markers_" + workId, JSON.stringify(markers));
+              _pushUndo(
+                {
+                  type: "marker-move",
+                  markerArrayIx: activeMarkerIx,
+                  oldAlignIx: oldIx,
+                  newAlignIx: newIx,
+                },
+                true,
+              );
               redrawAllMarkers();
               seekToActiveMarker();
             }
@@ -2492,10 +3816,16 @@ document.addEventListener("DOMContentLoaded", () => {
       case "KeyM": {
         // Add marker at current playback position
         const toMark = getClosestAlignmentIx();
+        const arrIx = markers.length;
         markers.push(toMark);
         if (storage) {
           storage.setItem("markers_" + workId, JSON.stringify(markers));
         }
+        _syncMarkersToJSON();
+        _pushUndo(
+          { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
+          true,
+        );
         if (closeListeningMode) {
           // Make the newly added marker active
           activeMarkerIx = markers.length - 1;
@@ -2514,10 +3844,20 @@ document.addEventListener("DOMContentLoaded", () => {
         // Delete active marker (close-listening mode only)
         if (closeListeningMode && activeMarkerIx != null) {
           const deletedAlignIx = markers[activeMarkerIx];
+          const deletedArrayIx = activeMarkerIx;
           markers.splice(activeMarkerIx, 1);
           if (storage) {
             storage.setItem("markers_" + workId, JSON.stringify(markers));
           }
+          _syncMarkersToJSON();
+          _pushUndo(
+            {
+              type: "marker-delete",
+              alignIx: deletedAlignIx,
+              markerArrayIx: deletedArrayIx,
+            },
+            true,
+          );
           if (markers.length === 0) {
             exitCloseListeningMode();
           } else {
@@ -3067,7 +4407,11 @@ function initFilePicker() {
   });
 
   renderFileList();
-  overlay.style.display = "flex";
+  if (_fromAlignmentHandoff) {
+    _fromAlignmentHandoff = false;
+  } else {
+    overlay.style.display = "flex";
+  }
 }
 
 // --- Linked Data URI management in file picker ---
@@ -3204,11 +4548,20 @@ function populateLdUriSection() {
     if (!loadedAlignmentJSON) return;
     if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
     const prefix = prefixInput.value.trim();
+    let changed = false;
+
     if (prefix) {
-      loadedAlignmentJSON.header.linkedDataUriPrefix = prefix;
+      if (loadedAlignmentJSON.header.linkedDataUriPrefix !== prefix) {
+        loadedAlignmentJSON.header.linkedDataUriPrefix = prefix;
+        changed = true;
+      }
     } else {
-      delete loadedAlignmentJSON.header.linkedDataUriPrefix;
+      if ("linkedDataUriPrefix" in loadedAlignmentJSON.header) {
+        delete loadedAlignmentJSON.header.linkedDataUriPrefix;
+        changed = true;
+      }
     }
+
     // Clean empty entries and persist
     const clean = {};
     for (const key of Object.keys(perFileConfig)) {
@@ -3216,10 +4569,19 @@ function populateLdUriSection() {
         clean[key] = { ...perFileConfig[key] };
       }
     }
-    if (Object.keys(clean).length > 0) {
-      loadedAlignmentJSON.header.linkedDataUris = clean;
-    } else {
-      delete loadedAlignmentJSON.header.linkedDataUris;
+
+    const oldUris = loadedAlignmentJSON.header.linkedDataUris || {};
+    if (JSON.stringify(clean) !== JSON.stringify(oldUris)) {
+      changed = true;
+      if (Object.keys(clean).length > 0) {
+        loadedAlignmentJSON.header.linkedDataUris = clean;
+      } else {
+        delete loadedAlignmentJSON.header.linkedDataUris;
+      }
+    }
+
+    if (changed) {
+      _markJsonDirty();
     }
   }
 
@@ -3343,3 +4705,7 @@ function initGlobalJsonDrop() {
 
 // Initialize global JSON drop handler
 initGlobalJsonDrop();
+
+window.addEventListener("load", () => {
+  window.focus();
+});

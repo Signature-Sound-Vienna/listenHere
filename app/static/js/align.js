@@ -343,6 +343,8 @@ async function startAlignment() {
       )
     : 0;
 
+  sessionStorage.removeItem("alignSavedBeforeListen");
+
   // Show progress, hide controls
   alignmentRunning = true;
   document.getElementById("align-steps").classList.add("disabled");
@@ -528,6 +530,7 @@ function downloadJSON() {
   a.download = "alignment.json";
   a.click();
   URL.revokeObjectURL(url);
+  sessionStorage.setItem("alignSavedBeforeListen", "true");
 }
 
 function listenToAlignment() {

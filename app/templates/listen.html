@@ -194,7 +194,7 @@
           </div>
           <div id="align-results" style="display:none">
             <h3>Alignment complete!</h3>
-            <button id="align-download-btn">Download alignment JSON</button>
+            <button id="align-download-btn">Save data</button>
             <button id="align-open-btn">Listen!</button>
           </div>
         </div>
@@ -275,34 +275,123 @@
       </div>
     </div>
 
-    <div id="logo">
-      <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="140" alt="Logo" />
-    </div>
     <div id="wrapper">
       <nav>
-          <a id="back">Back</a>
-          <button id="mark">Mark</button>
-          <button id="playpause">Play/Pause</button>
-          <span>
-            <input type="checkbox" id="normalize"/>
-            <label for="normalize">Normalize audio</label>
-          </span>
-          <span>
-            <input type="checkbox" id="visalign"/>
-            <label for="visalign">Visualise alignments</label>
-          </span>
-          <span>
-            <input type="checkbox" id="visrelalign"/>
-            <label for="visrelalign">Show relative position</label>
-          </span>
-          <button id="manage-files-btn" style="display:none;">Manage files</button>
-          <button id="group-files-btn" style="display:none;">Group files</button>
-          <button id="download-json-btn" style="display:none;">Download JSON</button>
-          <button id="solid-drawer-btn" title="Linked Data & Annotations">
-            <img src="{{ url_for('static', filename='svg/RDF-logo.svg') }}" width="20" height="20" alt="RDF" />
-          </button>
-          <span id="close-listening-badge" style="display:none;">Close Listening</span>
-          <div id="audios"></div>
+        <div id="nav-top">
+            <a href="/" class="nav-logo">
+                <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" alt="Listen Here!">
+            </a>
+            <button id="playpause">Play/Pause</button>
+            <button id="mark">Mark</button>
+        </div>
+
+        <!-- Middle: Functional Controls (Collapsible Region) -->
+        <div class="nav-region" id="region-controls">
+          <div class="nav-card">
+            <div id="nav-middle-toggle" class="nav-section-header" title="Collapse / expand controls (No unsaved changes)">
+              Controls <span id="middle-collapse-arrow" class="collapse-arrow">&#9662;</span>
+            </div>
+            <div id="nav-middle" class="nav-section-body grow">
+              <!-- Settings panel-->
+              <fieldset id="settings-panel" class="collapsible-fieldset">
+                <legend title="Collapse / expand settings">Settings <span class="collapse-arrow">&#9662;</span></legend>
+                <div class="fieldset-body">
+                  <span>
+                    <input type="checkbox" id="normalize" title="Normalize audio levels for better visibility"/>
+                    <label for="normalize" title="Normalize audio levels for better visibility">Normalize audio</label>
+                  </span>
+                  <span>
+                    <input type="checkbox" id="visalign" title="Show alignment markers on the waveforms"/>
+                    <label for="visalign" title="Show alignment markers on the waveforms">Visualise alignments</label>
+                  </span>
+                  <span>
+                    <input type="checkbox" id="visrelalign" title="Show markers relative to the global timeline"/>
+                    <label for="visrelalign" title="Show markers relative to the global timeline">Show relative position</label>
+                  </span>
+                </div>
+              </fieldset>
+
+              <!-- Files panel -->
+              <fieldset id="files-panel" class="collapsible-fieldset">
+                <legend title="Collapse / expand file management">Files <span class="collapse-arrow">&#9662;</span></legend>
+                <span class="tools-row" id="files-always">
+                  <button id="download-json-btn" title="Save the current alignment and markers to a JSON file (No unsaved changes)">Save data</button>
+                </span>
+                <div class="fieldset-body">
+                  <hr class="tools-divider"/>
+                  <button id="manage-files-btn" title="Add or remove audio files from the session">Manage files</button>
+                  <button id="group-files-btn" title="Group multiple recordings together for synchronized view">Group files</button>
+                </div>
+              </fieldset>
+
+              <!-- Tools panel: persistent, collapsible fieldset -->
+              <fieldset id="tools-panel" class="collapsible-fieldset">
+                <legend id="tools-header" title="Collapse / expand tools">Tools <span class="collapse-arrow">&#9662;</span></legend>
+                <div id="tools-body" class="fieldset-body">
+                  <div class="tools-row" id="tools-always">
+                    <span>
+                      <input type="checkbox" id="close-listening-cb" title="Toggle Close-Listening focus mode"/>
+                      <label for="close-listening-cb" title="Toggle Close-Listening focus mode">Close Listening</label>
+                    </span>
+                  </div>
+                  <hr class="tools-divider"/>
+                  <fieldset id="drag-marker-fieldset" class="collapsible-fieldset">
+                    <legend title="Collapse / expand marker adjustment settings">Drag Markers <span class="collapse-arrow">&#9662;</span></legend>
+                    <div class="fieldset-body">
+                      <span>
+                        <input type="checkbox" id="drag-markers-cb" title="Enable manual adjustment of alignment markers by dragging"/>
+                        <label for="drag-markers-cb" title="Enable manual adjustment of alignment markers by dragging">Enable dragging</label>
+                      </span>
+                      <div class="tools-row">
+                        <span>
+                          <input type="radio" name="drag-mode" id="drag-mode-move" value="move" checked title="Adjust a marker by moving its point"/>
+                          <label for="drag-mode-move" title="Adjust a marker by moving its point">Move marker</label>
+                        </span>
+                        <span>
+                          <input type="radio" name="drag-mode" id="drag-mode-fix" value="fix" title="Fix alignment by dragging the background grid"/>
+                          <label for="drag-mode-fix" title="Fix alignment by dragging the background grid">Fix alignment</label>
+                        </span>
+                      </div>
+                      <fieldset id="radius-fieldset" disabled>
+                        <legend title="Controls the width of the area affected by alignment grid edits (radius of Gaussian kernel)">Fix alignment: Range</legend>
+                        <div class="tools-row">
+                          <span>
+                            <input type="radio" name="radius" id="radius-narrow" value="50" title="Adjustment influence: 50ms (Narrow radius)"/>
+                            <label for="radius-narrow" title="Adjustment influence: 50ms (Narrow radius)">Narrow</label>
+                          </span>
+                          <span>
+                            <input type="radio" name="radius" id="radius-medium" value="100" checked title="Adjustment influence: 100ms (Medium radius)"/>
+                            <label for="radius-medium" title="Adjustment influence: 100ms (Medium radius)">Medium</label>
+                          </span>
+                          <span>
+                            <input type="radio" name="radius" id="radius-wide" value="200" title="Adjustment influence: 200ms (Wide radius)"/>
+                            <label for="radius-wide" title="Adjustment influence: 200ms (Wide radius)">Wide</label>
+                          </span>
+                        </div>
+                      </fieldset>
+                    </div>
+                  </fieldset>
+                  <hr class="tools-divider"/>
+                  <button id="undo-btn" disabled title="Undo (Cmd+Z)">Undo</button>
+                  <button id="redo-btn" disabled title="Redo (Cmd+Shift+Z)">Redo</button>
+                  <button id="revert-all-btn" disabled title="Revert all alignment corrections to original">Revert alignment edits</button>
+                </div>
+              </fieldset>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bottom: Audio Listings (Expanding Region) -->
+        <div class="nav-region" id="region-waveforms">
+          <div class="nav-card">
+            <div id="nav-bottom-toggle" class="nav-section-header" title="Collapse / expand waveforms">
+              Waveforms <span id="bottom-collapse-arrow" class="collapse-arrow">&#9662;</span>
+            </div>
+            <div id="nav-bottom" class="nav-section-body grow">
+              <div id="audios"></div>
+            </div>
+          </div>
+        </div>
       </nav>
       <div id="content-wrapper">
         <div id="content">
@@ -324,5 +413,11 @@
         </div>
       </div>
     </div>
+
+    <!-- Solid / Linked Data Drawer Button (Floating Handle) -->
+    <button id="solid-drawer-btn" title="Linked Data & Annotations">
+      <img src="{{ url_for('static', filename='svg/RDF-logo.svg') }}" width="20" height="20" alt="RDF" />
+      <span class="solid-status-dot"></span>
+    </button>
   </body>
 </html>

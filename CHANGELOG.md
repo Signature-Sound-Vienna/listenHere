@@ -1,5 +1,9 @@
 # Listen Here! CHANGELOG.md
 
+### 0.15.0
+* Reflect waveform groupings into content pane
+* Make waveforms reorderable through click-and-drag in nav bar
+
 ### 0.14.0
 * Improve styling of navigation menu
 * Implement 'drag marker' modes for marker movement and alignment correction

@@ -95,11 +95,11 @@ canvas {
 }
 
 #nav-top {
-  padding: 0.5em 0.5em 1em; /* matched horizontal padding */
+  padding: 0.15em 0.5em 0.25em; /* matched horizontal padding */
   flex: 0 0 auto; /* fixed header size */
   display: flex;
   flex-direction: column;
-  gap: 0.5em;
+  gap: 0.2em;
 }
 
 .nav-region {
@@ -110,7 +110,7 @@ canvas {
 }
 
 .nav-card {
-  margin: 0.5em;
+  margin: 0.18em;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
   overflow: hidden;
@@ -175,7 +175,7 @@ canvas {
 }
 
 .nav-section-header {
-  padding: 0.4em 0.8em;
+  padding: 0.2em 0.8em;
   font-weight: 600;
   cursor: pointer;
   user-select: none;
@@ -226,7 +226,7 @@ canvas {
   overflow-y: visible; /* disable top-level scroll */
   overflow-x: hidden;
   font-size: var(--font-size-small);
-  padding-top: 0.5em;
+  padding-top: 0.2em;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -481,17 +481,17 @@ details {
 .nav-logo {
   display: flex;
   justify-content: center;
-  margin-bottom: 0.5em; /* reduced */
+  margin-bottom: 0.15em; /* reduced */
 }
 
 .nav-logo img {
-  height: 60px;
+  height: 44px;
   filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
 }
 
 #playpause, #mark {
   width: 100%;
-  padding: 0.8em;
+  padding: 0.45em;
   background-color: #2563eb;
   color: white;
   border: none;
@@ -500,7 +500,7 @@ details {
   cursor: pointer;
   transition: all 0.2s ease, transform 0.1s;
   box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
-  margin-bottom: 0.5em;
+  margin-bottom: 0.2em;
 }
 
 #playpause:hover, #mark:hover {
@@ -513,11 +513,12 @@ details {
 }
 
 .nav-fieldset, .collapsible-fieldset {
-  margin: 0.5em 0;
-  padding: 0.5em;
+  margin: 0.35em 0;
+  padding: 0.35em;
   border: 1px solid #cbd5e1;
   border-radius: 6px;
   background-color: transparent; /* transparent to inherit region background */
+  flex: 0 1 auto;
 }
 
 .nav-fieldset legend, .collapsible-fieldset legend {
@@ -554,13 +555,29 @@ details {
 }
 
 .nav-fieldset {
-  padding: 0.15em 0.5em 0.3em; /* ultra tight vertical padding */
-  margin: 0.2em 0;
+  padding: 0.1em 0.5em 0.22em; /* ultra tight vertical padding */
+  margin: 0.12em 0;
 }
 
 .nav-fieldset .fieldset-body,
 .nav-fieldset .tools-row {
-  margin-top: -0.1em;        /* pull content up closer to legend */
+  margin-top: -0.2em;        /* pull content up closer to legend */
+}
+
+.collapsible-fieldset {
+  padding: 0.1em 0.5em 0.22em; /* ultra tight vertical padding */
+  margin: 0.12em 0;
+}
+
+.collapsible-fieldset .fieldset-body,
+.collapsible-fieldset .tools-row {
+  margin-top: -0.2em; /* pull content up closer to legend */
+}
+
+/* When waveforms groups are forced to share vertical space, each group
+   should become its own scrolling container (not the whole Waveforms card). */
+.group-fieldset {
+  min-height: 0;
 }
 
 /* Ensure checkbox lists inside the nav don't add extra height */
@@ -572,18 +589,18 @@ details {
 .fieldset-body {
   display: flex;
   flex-direction: column;
-  gap: 0.5em;
-  margin-top: 0.5em;
+  gap: 0.25em;
+  margin-top: 0.25em;
   font-size: var(--font-size-small);
-  line-height: 1.5;
+  line-height: 1.35;
 }
 
 .fieldset-body button {
   font-size: var(--font-size-large);
   font-family: inherit;
   width: 100%;
-  margin-top: 0.4em;
-  padding: 0.4em 0.8em;
+  margin-top: 0.2em;
+  padding: 0.2em 0.65em;
   background-color: transparent;
   border: 1px solid #606c38;
   color: #606c38;
@@ -612,13 +629,13 @@ details {
 
 #tools-always, #files-always {
   display: block;
-  margin-bottom: 0.5em;
+  margin-bottom: 0.2em;
 }
 
 .tools-divider {
   border: 0;
   border-top: 1px solid #cbd5e1;
-  margin: 0.2em 0 0.6em;
+  margin: 0.08em 0 0.3em;
 }
 
 /* Solid Drawer Button Handle */
@@ -1561,11 +1578,36 @@ nav input[type="checkbox"]:focus-visible {
 /* === Tools panel (collapsible fieldset) === */
 
 #tools-panel {
-  margin: 0.4em 0;
+  margin: 0.2em 0;
   border: 1.5px solid #94a3b8;
   border-radius: 6px;
   background: transparent; /* match others */
-  padding: 0.45em 0.6em;
+  padding: 0.3em 0.45em;
+}
+
+/* Settings can scroll only when truly necessary (e.g. if Controls grows in the future).
+   In normal cases there should be enough space so it won't overflow or show a scrollbar. */
+#settings-panel {
+  min-height: 0;
+}
+
+#settings-panel .fieldset-body {
+  /* Don't force a reduced flex height (which can create an always-on
+     scrollbar). Let it size to content, but cap by the available height. */
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: hidden; /* JS will enable scrolling only if content overflows */
+}
+
+#settings-panel .fieldset-body.settings-scroll {
+  overflow-y: auto;
+}
+
+/* The compact nav layout uses negative top margins to pull content up
+   near the legend; add a tiny padding to prevent clipping/overlap. */
+#settings-panel .fieldset-body {
+  padding-top: 0.12em;
 }
 #tools-panel > legend {
   display: flex;
@@ -1612,7 +1654,7 @@ nav input[type="checkbox"]:focus-visible {
 }
 /* Always-visible row (Close Listening) */
 #tools-always {
-  margin-top: 0.15em;
+  margin-top: 0.03em;
 }
 #tools-panel.collapsed #tools-always {
   flex-direction: column;
@@ -1623,18 +1665,18 @@ nav input[type="checkbox"]:focus-visible {
 #tools-body {
   display: flex;
   flex-direction: column;
-  gap: 0.4em;
+  gap: 0.2em;
 }
 .tools-row {
   display: flex;
   align-items: center;
-  gap: 0.4em;
+  gap: 0.2em;
 }
 /* Divider between Close Listening and tools body */
 .tools-divider {
   border: none;
   border-top: 1px solid #e2e8f0;
-  margin: 0.15em 0;
+  margin: 0.08em 0;
 }
 
 /* History fieldset: stacked undo/redo */
@@ -1694,7 +1736,7 @@ nav input[type="checkbox"]:focus-visible {
 #tools-body fieldset {
   border: 1px solid #cbd5e1;
   border-radius: 5px;
-  padding: 0.3em 0.5em 0.4em;
+  padding: 0.2em 0.4em 0.25em;
   margin: 0;
 }
 #tools-body fieldset legend {

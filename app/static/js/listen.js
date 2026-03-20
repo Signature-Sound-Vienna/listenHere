@@ -2544,6 +2544,40 @@ document.addEventListener("DOMContentLoaded", () => {
     "nav-bottom-collapsed",
   );
 
+  // Settings: only show an internal scrollbar when its content truly overflows.
+  // This prevents a "phantom" scrollbar when the layout has enough space.
+  const settingsBody = document.querySelector(
+    "#settings-panel .fieldset-body",
+  );
+  const syncSettingsOverflow = () => {
+    if (!settingsBody) return;
+    // Add generous slack to avoid "phantom" scrollbars due to rounding.
+    // scrollHeight/clientHeight are usually integers, but some layouts can still
+    // report a few extra pixels even when content visibly fits.
+    const scrollH = Math.ceil(settingsBody.scrollHeight);
+    const clientH = Math.floor(settingsBody.clientHeight);
+    const needsScroll = scrollH - clientH > 12;
+    settingsBody.classList.toggle("settings-scroll", needsScroll);
+  };
+
+  if (settingsBody) {
+    syncSettingsOverflow();
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => {
+        // Let layout settle after transition/reflow.
+        requestAnimationFrame(() => syncSettingsOverflow());
+      });
+      ro.observe(settingsBody);
+      // Also observe the containers that change height when collapsing sections.
+      const navMiddle = document.getElementById("nav-middle");
+      const regionControls = document.getElementById("region-controls");
+      if (navMiddle) ro.observe(navMiddle);
+      if (regionControls) ro.observe(regionControls);
+    } else {
+      window.addEventListener("resize", syncSettingsOverflow);
+    }
+  }
+
   // Initialise Solid auth (process any incoming redirect code, then populate drawer).
   // Skip in align mode — Solid is irrelevant until user transitions to listen mode.
   if (window.alignMode !== "align") {

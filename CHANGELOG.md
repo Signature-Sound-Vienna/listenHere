@@ -3,6 +3,7 @@
 ### 0.16.0
 * Global waveform zoom (1x–50x) with alignment-aware cross-waveform scroll sync
 * Three playback scroll modes: Page (jump at edge), Follow (auto-centre), Manual
+* Add count indicators and Add/Remove all to file-groups in content pane
 
 ### 0.15.0
 * Reflect waveform groupings into content pane

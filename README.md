@@ -102,6 +102,17 @@ Close-listening mode allows targeted navigation between specific markers you've 
 - Hold **`Shift` + `Left`/`Right` Arrow** to precisely nudge the selected marker's position (100ms, or hold **`Alt`** for 20ms).
 - Press **`Backspace` / `Delete`** to delete the currently selected marker.
 
+### Zoom
+
+The zoom slider in the Settings panel lets you magnify all waveforms simultaneously (up to 50x) for detailed analysis, and alignment inspection and correction.
+
+- When zoomed, waveforms become horizontally scrollable. Scrolling one waveform automatically scrolls all others to the corresponding aligned position.
+- Three **scroll modes** appear when zoomed (selectable via radio buttons below the slider):
+  - **Page** — the view jumps when the playhead reaches the edge of the visible area (default).
+  - **Follow** — the playhead stays centred during playback.
+  - **Manual** — no automatic scrolling; scroll freely by hand.
+- The **alignment grid** ("Visualise alignments") scales with zoom: more grid lines become visible at higher magnification, up to the grid's native resolution (at 20 ms in the reference audio).
+
 ### File Grouping
 
 When many recordings are loaded, you can organise them into named groups for easier navigation.

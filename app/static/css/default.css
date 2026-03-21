@@ -287,6 +287,26 @@ canvas {
   color: #3f4b2a;
   margin-bottom: 6px;
 }
+.group-count {
+  font-weight: 400;
+  font-size: 0.85em;
+  opacity: 0.6;
+}
+.group-actions {
+  font-weight: 400;
+  font-size: 0.8em;
+  margin-left: 0.4em;
+}
+.group-all, .group-none {
+  cursor: pointer;
+  color: #64748b;
+  text-decoration: underline;
+  margin-right: 0.5em;
+  transition: color 0.2s;
+}
+.group-all:hover, .group-none:hover {
+  color: #2563eb;
+}
 .file-group .group-list {
   display: flex;
   flex-direction: column;
@@ -310,6 +330,7 @@ canvas {
 }
 .wf-drag-handle:hover { opacity: 1; }
 .waveform.dragging { opacity: 0.6; }
+.waveform.wf-displaced { opacity: 0.8; }
 
 /* WaveSurfer v7: wave height is set via the `height` option (128 px).
    Hide progress bar and cursor on non-active waveforms via shadow-DOM parts. */

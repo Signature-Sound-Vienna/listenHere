@@ -800,6 +800,7 @@ function onClickRenditionCheckbox(e) {
     // uncheck it again - it wil set itself after loading finished
     checkbox.checked = false;
   }
+  _updateGroupCounts();
 }
 
 export function swapCurrentAudio(newAudio) {
@@ -1278,6 +1279,10 @@ function _applyNavOrderToContentPanel() {
     if (dy !== 0) {
       wf.style.transition = "none";
       wf.style.transform = `translateY(${dy}px)`;
+      // Mark displaced waveforms (not the one being dragged)
+      if (!wf.classList.contains("dragging")) {
+        wf.classList.add("wf-displaced");
+      }
     }
   });
 
@@ -1301,6 +1306,7 @@ function _applyNavOrderToContentPanel() {
         wf.style.transform = "";
         const onEnd = () => {
           wf.style.transition = "";
+          wf.classList.remove("wf-displaced");
           wf.removeEventListener("transitionend", onEnd);
           if (--_pendingTransitions === 0) _onAllTransitionsDone();
         };
@@ -1373,7 +1379,7 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     const g = document.createElement("div");
     g.className = "file-group file-group-score";
     g.dataset.group = "Score";
-    g.innerHTML = `<div class="group-title">Score</div><div class="group-list"></div>`;
+    g.innerHTML = `<div class="group-title">Score <span class="group-count"></span></div><div class="group-list"></div>`;
     waveformsRoot.appendChild(g);
   }
 
@@ -1384,7 +1390,7 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     const container = document.createElement("div");
     container.className = "file-group";
     container.dataset.group = g.name;
-    container.innerHTML = `<div class="group-title">${g.name}</div><div class="group-list"></div>`;
+    container.innerHTML = `<div class="group-title">${g.name} <span class="group-count"></span><span class="group-actions"><span class="group-all">All</span><span class="group-none">None</span></span></div><div class="group-list"></div>`;
     waveformsRoot.appendChild(container);
   });
 
@@ -1393,7 +1399,8 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     const uc = document.createElement("div");
     uc.className = "file-group file-group-ungrouped";
     uc.dataset.group = "Ungrouped";
-    uc.innerHTML = `<div class="group-title">Ungrouped recordings</div><div class="group-list"></div>`;
+    const ungroupedLabel = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
+    uc.innerHTML = `<div class="group-title">${ungroupedLabel} <span class="group-count"></span><span class="group-actions"><span class="group-all">All</span><span class="group-none">None</span></span></div><div class="group-list"></div>`;
     waveformsRoot.appendChild(uc);
   }
 
@@ -1426,6 +1433,45 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
 
       _persistGroupOrder();
     });
+  });
+
+  // Wire All/None buttons on content-pane group headers
+  waveformsRoot.querySelectorAll(".group-all").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fg = btn.closest(".file-group");
+      if (!fg) return;
+      fg.querySelectorAll(".waveform").forEach((wf) => {
+        const fname = wf.dataset.ix;
+        const cb = document.getElementById("checkbox-" + fname);
+        if (cb && !cb.checked) cb.click();
+      });
+    });
+  });
+  waveformsRoot.querySelectorAll(".group-none").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const fg = btn.closest(".file-group");
+      if (!fg) return;
+      fg.querySelectorAll(".waveform").forEach((wf) => {
+        const fname = wf.dataset.ix;
+        const cb = document.getElementById("checkbox-" + fname);
+        if (cb && cb.checked) cb.click();
+      });
+    });
+  });
+}
+
+/** Update (x/y) loaded-count badges on content-pane file-group headers. */
+function _updateGroupCounts() {
+  const waveformsRoot = document.getElementById("waveforms");
+  if (!waveformsRoot) return;
+  waveformsRoot.querySelectorAll(".file-group").forEach((fg) => {
+    const list = fg.querySelector(".group-list");
+    const badge = fg.querySelector(".group-count");
+    if (!list || !badge) return;
+    const wfs = list.querySelectorAll(".waveform");
+    const total = wfs.length;
+    const vis = Array.from(wfs).filter((w) => w.style.display !== "none").length;
+    badge.textContent = total > 0 ? `(${vis}/${total})` : "";
   });
 }
 
@@ -2173,6 +2219,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       _setupNormGainNode(filename);
       // signal file is ready in filename list
       loaded.add(filename);
+      _updateGroupCounts();
       console.log("READY:...", filename);
       // In WaveSurfer v7 the canvas lives inside a shadow root; we cannot
       // query it from outside.  Size our overlay canvases to the container

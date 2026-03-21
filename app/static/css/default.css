@@ -1976,7 +1976,7 @@ nav input[type="checkbox"]:focus-visible {
   animation: tools-pulse 0.6s ease-out 2;
   border-color: #3b82f6;
 }
-#drag-marker-fieldset.pulse-hint legend {
+#drag-marker-fieldset.pulse-hint > legend {
   color: #2563eb;
 }
 

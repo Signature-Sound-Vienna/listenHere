@@ -416,8 +416,9 @@ let _alignRadius = _ALIGN_RADIUS_MEDIUM;
 let _dragMarkersEnabled = false;
 // Drag mode: 'move' or 'fix'
 let _dragMode = "move";
-// Track whether pulse hint has been shown (first-time tooltip)
+// Track whether pulse hints have been shown (first-time tooltips)
 let _pulseHintShown = false;
+let _disableDragHintShown = false;
 
 /** Symmetric Gaussian weight. */
 function _gaussianWeight(j, jCenter, sigma) {
@@ -1435,27 +1436,35 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     });
   });
 
-  // Wire All/None buttons on content-pane group headers
+  // Wire All/None buttons on content-pane group headers.
+  // Use the nav sidebar checkboxes (always present) rather than content-pane
+  // .waveform elements (only present after loading).
+  function _getNavCheckboxesForGroup(fg) {
+    const groupName = fg.dataset.group;
+    if (!groupName) return [];
+    // Find corresponding sidebar nav group by matching the ID convention
+    const navId = "audio-group-" + groupName.toLowerCase().replace(/\s+/g, "-");
+    const navGroup = document.getElementById(navId);
+    if (navGroup) return [...navGroup.querySelectorAll("input[type='checkbox']")];
+    // Fallback for ungrouped: try sidebar groups with "ungrouped" or "all" in name
+    for (const id of ["audio-group-ungrouped-recordings", "audio-group-all-recordings"]) {
+      const el = document.getElementById(id);
+      if (el) return [...el.querySelectorAll("input[type='checkbox']")];
+    }
+    return [];
+  }
   waveformsRoot.querySelectorAll(".group-all").forEach((btn) => {
     btn.addEventListener("click", () => {
       const fg = btn.closest(".file-group");
       if (!fg) return;
-      fg.querySelectorAll(".waveform").forEach((wf) => {
-        const fname = wf.dataset.ix;
-        const cb = document.getElementById("checkbox-" + fname);
-        if (cb && !cb.checked) cb.click();
-      });
+      _getNavCheckboxesForGroup(fg).forEach((cb) => { if (!cb.checked) cb.click(); });
     });
   });
   waveformsRoot.querySelectorAll(".group-none").forEach((btn) => {
     btn.addEventListener("click", () => {
       const fg = btn.closest(".file-group");
       if (!fg) return;
-      fg.querySelectorAll(".waveform").forEach((wf) => {
-        const fname = wf.dataset.ix;
-        const cb = document.getElementById("checkbox-" + fname);
-        if (cb && cb.checked) cb.click();
-      });
+      _getNavCheckboxesForGroup(fg).forEach((cb) => { if (cb.checked) cb.click(); });
     });
   });
 }
@@ -3633,6 +3642,29 @@ document.addEventListener("DOMContentLoaded", () => {
     return best;
   }
 
+  // Expand Controls nav card, Tools panel, and Drag Markers sub-fieldset if collapsed
+  function _expandToolsPanel() {
+    // Expand the Controls nav card
+    const navMiddleToggle = document.getElementById("nav-middle-toggle");
+    if (navMiddleToggle) {
+      const card = navMiddleToggle.closest(".nav-card");
+      if (card && card.classList.contains("collapsed")) {
+        card.classList.remove("collapsed");
+        try { localStorage.setItem("nav-middle-collapsed", "false"); } catch (_) {}
+      }
+    }
+    const toolsPanel = document.getElementById("tools-panel");
+    if (toolsPanel && toolsPanel.classList.contains("collapsed")) {
+      toolsPanel.classList.remove("collapsed");
+      try { localStorage.setItem("fieldset-collapsed-tools-panel", "false"); } catch (_) {}
+    }
+    const dragFieldset = document.getElementById("drag-marker-fieldset");
+    if (dragFieldset && dragFieldset.classList.contains("collapsed")) {
+      dragFieldset.classList.remove("collapsed");
+      try { localStorage.setItem("fieldset-collapsed-drag-marker-fieldset", "false"); } catch (_) {}
+    }
+  }
+
   // Pulse hint for "Drag markers" when user clicks near a marker with drag disabled
   function _showDragMarkerPulse() {
     _expandToolsPanel();
@@ -3660,6 +3692,32 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // Pulse hint to disable drag mode when user clicks empty area with drag enabled
+  function _showDisableDragPulse() {
+    _expandToolsPanel();
+    const fieldset = document.getElementById("drag-marker-fieldset");
+    if (!fieldset) return;
+    fieldset.classList.add("pulse-hint");
+    fieldset.addEventListener(
+      "animationend",
+      () => {
+        fieldset.classList.remove("pulse-hint");
+      },
+      { once: true },
+    );
+    if (!_disableDragHintShown) {
+      _disableDragHintShown = true;
+      const tip = document.createElement("div");
+      tip.className = "pulse-tooltip";
+      tip.textContent = "Uncheck to click freely";
+      tip.style.cssText =
+        "position:absolute;top:-1.5em;left:50%;transform:translateX(-50%);font-size:0.72em;background:#1e40af;color:#fff;padding:0.2em 0.5em;border-radius:3px;white-space:nowrap;z-index:10;pointer-events:none;";
+      fieldset.style.position = "relative";
+      fieldset.appendChild(tip);
+      setTimeout(() => tip.remove(), 2500);
+    }
+  }
+
   // Mousedown on waveforms: handle marker drag start
   document.getElementById("waveforms").addEventListener("mousedown", (e) => {
     const wfEl = e.target.closest(".waveform");
@@ -3669,7 +3727,11 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Check proximity to a marker
     const nearby = _findNearbyMarker(wfEl, e.clientX);
-    if (!nearby) return;
+    if (!nearby) {
+      // Clicked away from markers — if drag mode is on, hint to disable it
+      if (_dragMarkersEnabled) _showDisableDragPulse();
+      return;
+    }
 
     // If close-listening not active, enter it with this marker
     if (!closeListeningMode) {

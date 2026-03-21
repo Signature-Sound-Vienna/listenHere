@@ -1,5 +1,9 @@
 # Listen Here! CHANGELOG.md
 
+### 0.16.0
+* Global waveform zoom (1x–50x) with alignment-aware cross-waveform scroll sync
+* Three playback scroll modes: Page (jump at edge), Follow (auto-centre), Manual
+
 ### 0.15.0
 * Reflect waveform groupings into content pane
 * Make waveforms reorderable through click-and-drag in nav bar

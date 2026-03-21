@@ -291,7 +291,20 @@
               <!-- Settings panel-->
               <fieldset id="settings-panel" class="collapsible-fieldset">
                 <legend title="Collapse / expand settings">Settings <span class="collapse-arrow">&#9662;</span></legend>
+                <div id="zoom-controls">
+                  <label for="zoom-slider" id="zoom-icon" title="Zoom level for all waveforms"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="21" y2="21"/></svg><span id="zoom-label">1x</span></label>
+                  <input type="range" id="zoom-slider" min="0" max="5" step="1" value="0" title="Zoom level for all waveforms"/>
+                </div>
+                <div id="scroll-mode-controls" style="display:none">
+                  <input type="radio" name="scroll-mode" id="scroll-mode-page" value="page" checked/>
+                  <label for="scroll-mode-page" title="Scroll in page-jumps when playhead reaches edge">Page</label>
+                  <input type="radio" name="scroll-mode" id="scroll-mode-follow" value="follow"/>
+                  <label for="scroll-mode-follow" title="Keep playhead centered during playback">Follow</label>
+                  <input type="radio" name="scroll-mode" id="scroll-mode-manual" value="manual"/>
+                  <label for="scroll-mode-manual" title="No automatic scrolling during playback">Manual</label>
+                </div>
                 <div class="fieldset-body">
+                  <hr class="tools-divider"/>
                   <span>
                     <input type="checkbox" id="normalize" title="Normalize audio levels for better visibility"/>
                     <label for="normalize" title="Normalize audio levels for better visibility">Normalize audio</label>

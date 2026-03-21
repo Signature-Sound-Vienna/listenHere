@@ -575,6 +575,7 @@ details {
   border-radius: 6px;
   background-color: transparent; /* transparent to inherit region background */
   flex: 0 1 auto;
+  min-width: 0; /* override browser default min-width:min-content on fieldsets */
 }
 
 .nav-fieldset legend, .collapsible-fieldset legend {
@@ -693,6 +694,89 @@ details {
   border-top: 1px solid #cbd5e1;
   margin: 0.08em 0 0.3em;
 }
+
+/* Zoom controls */
+#zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+}
+#zoom-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15em;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#zoom-icon svg {
+  vertical-align: middle;
+  opacity: 0.65;
+}
+#zoom-label {
+  font-size: var(--font-size-small);
+  font-weight: 600;
+  min-width: 1.6em;
+}
+#zoom-slider {
+  flex: 1;
+  min-width: 40px;
+}
+#scroll-mode-controls {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-top: 0.3em;
+  font-size: var(--font-size-small);
+}
+/* Breathing space between zoom controls and the fieldset-body HR */
+#settings-panel > #scroll-mode-controls + .fieldset-body {
+  margin-top: 0.25em;
+}
+#scroll-mode-controls label {
+  margin-right: 0.5em;
+}
+#scroll-mode-controls input[type="radio"] {
+  margin: 0 0.05em 0 0;
+}
+
+/* Sticky waveform filename label (stays at left edge on zoom scroll) */
+.wf-label {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  font-size: 9px;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  background-color: rgba(255, 255, 255, 0.7);
+  padding: 1px 4px;
+  border-radius: 4px;
+  color: black;
+  z-index: 4;
+}
+
+/* Waveform overlay wrapper (for zoom-aware canvases + markers) */
+.wf-overlays {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 2;
+}
+.wf-overlays > canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+.wf-overlays-inner {
+  position: relative;
+  height: 100%;
+}
+.wf-overlays-inner .ws-marker { pointer-events: auto; }
+.wf-overlays .align-correction-overlay { pointer-events: auto; }
 
 /* Solid Drawer Button Handle */
 #solid-drawer-btn {
@@ -1658,6 +1742,7 @@ nav input[type="checkbox"]:focus-visible {
    near the legend; add a tiny padding to prevent clipping/overlap. */
 #settings-panel .fieldset-body {
   padding-top: 0.12em;
+  padding-bottom: 0.25em;
 }
 #tools-panel > legend {
   display: flex;

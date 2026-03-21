@@ -196,7 +196,7 @@ function resolveAudioUrl(filename) {
 function redrawAllMarkers() {
   Object.keys(wavesurfers).forEach((ws) => {
     _clearMarkers(ws);
-    _addMarker(ws, { time: 0, label: ws, color: "black", position: "top" });
+    _ensureWfLabel(ws);
     markers.forEach((m, i) => {
       const t = getCorrespondingTime(ws, m);
       const color =
@@ -217,6 +217,180 @@ let _resizeDebounce = null;
 const _positionUpdaters = {};
 // Per-waveform closures that redraw the alignment grid canvas.
 const _gridRedrawers = {};
+
+// ---------------------------------------------------------------------------
+// Zoom state
+// ---------------------------------------------------------------------------
+const ZOOM_LEVELS = [1, 2, 5, 10, 20, 50];
+let _currentZoomLevel = 1; // multiplier (1 = no zoom)
+let _scrollMode = "page"; // "follow" | "page" | "manual"
+let _scrollSyncLock = false; // prevents infinite loop in cross-waveform scroll sync
+const _overlayWrappers = {}; // filename → { wrapper, inner }
+
+/** Get the shadow-DOM scroll container for a WaveSurfer instance. */
+function _getScrollContainer(filename) {
+  const ws = wavesurfers[filename];
+  if (!ws) return null;
+  // ws.getWrapper() returns the .wrapper div; its parent is the .scroll div
+  return ws.getWrapper().parentElement;
+}
+
+/** Get the full rendered width of the waveform (accounts for zoom). */
+function _getZoomedWidth(filename) {
+  const ws = wavesurfers[filename];
+  if (!ws) return 0;
+  if (_currentZoomLevel <= 1) {
+    const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+    return wfEl ? wfEl.clientWidth : 0;
+  }
+  const wrapper = ws.getWrapper();
+  return wrapper ? wrapper.clientWidth : 0;
+}
+
+/** Create the overlay wrapper structure for a waveform. */
+function _createOverlayWrapper(wfEl, height) {
+  const wrapper = document.createElement("div");
+  wrapper.className = "wf-overlays";
+  wrapper.style.height = height + "px";
+
+  const inner = document.createElement("div");
+  inner.className = "wf-overlays-inner";
+  wrapper.appendChild(inner);
+
+  wfEl.appendChild(wrapper);
+  return { wrapper, inner };
+}
+
+/** Ensure a sticky filename label exists on the waveform overlay (not in the scrolling inner). */
+function _ensureWfLabel(filename) {
+  const ow = _overlayWrappers[filename];
+  const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+  const parent = ow ? ow.wrapper : wfEl;
+  if (!parent) return;
+  // Remove any existing label
+  const existing = parent.querySelector(".wf-label");
+  if (existing) return; // already exists
+  const lbl = document.createElement("div");
+  lbl.className = "wf-label";
+  lbl.textContent = filename;
+  parent.appendChild(lbl);
+}
+
+/** Sync overlay scroll transform to match WaveSurfer's scroll position. */
+function _syncOverlayScroll(filename) {
+  const ow = _overlayWrappers[filename];
+  if (!ow) return;
+  const scrollLeft = wavesurfers[filename] ? wavesurfers[filename].getScroll() : 0;
+  ow.inner.style.transform = `translateX(${-scrollLeft}px)`;
+}
+
+/** Configure WaveSurfer autoScroll/autoCenter for a waveform based on scroll mode. */
+function _applyScrollMode(filename) {
+  const ws = wavesurfers[filename];
+  if (!ws) return;
+  if (_currentZoomLevel <= 1) {
+    ws.options.autoScroll = false;
+    ws.options.autoCenter = false;
+    return;
+  }
+  switch (_scrollMode) {
+    case "follow":
+      ws.options.autoScroll = true;
+      ws.options.autoCenter = true;
+      break;
+    case "page":
+    case "manual":
+      ws.options.autoScroll = false;
+      ws.options.autoCenter = false;
+      break;
+  }
+}
+
+/** Apply zoom level to all loaded waveforms. */
+function applyZoom(level) {
+  _currentZoomLevel = level;
+  const label = document.getElementById("zoom-label");
+  if (label) label.textContent = level + "x";
+  const scrollControls = document.getElementById("scroll-mode-controls");
+  if (scrollControls) scrollControls.style.display = level > 1 ? "" : "none";
+
+  Object.keys(wavesurfers).forEach((filename) => {
+    if (!loaded.has(filename)) return;
+    const ws = wavesurfers[filename];
+    const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+    if (!ws || !wfEl) return;
+    const containerWidth = wfEl.clientWidth;
+    const duration = ws.getDuration();
+
+    if (level <= 1) {
+      ws.zoom(0); // reset to fillParent
+    } else {
+      ws.zoom((level * containerWidth) / duration);
+    }
+    _applyScrollMode(filename);
+    // redrawcomplete will fire and handle overlay resize + marker redraw
+  });
+}
+
+/** Page-scroll the active waveform if playhead is about to leave visible area. */
+function _pageScrollIfNeeded(filename) {
+  const ws = wavesurfers[filename];
+  const scrollContainer = _getScrollContainer(filename);
+  if (!ws || !scrollContainer) return;
+  const currentTime = ws.getCurrentTime();
+  const duration = ws.getDuration();
+  const visibleWidth = scrollContainer.clientWidth;
+  const totalWidth = scrollContainer.scrollWidth;
+  const currentScroll = scrollContainer.scrollLeft;
+  const playheadPx = (currentTime / duration) * totalWidth;
+  const visibleEnd = currentScroll + visibleWidth;
+  const margin = visibleWidth * 0.05;
+  if (playheadPx > visibleEnd - margin || playheadPx < currentScroll) {
+    const newScroll = Math.max(0, playheadPx - visibleWidth * 0.1);
+    ws.setScroll(newScroll);
+    _syncOverlayScroll(filename);
+  }
+}
+
+/** Sync all waveform scroll positions to match the source waveform's center time. */
+function _syncAllWaveformScrolls(sourceFilename) {
+  if (_currentZoomLevel <= 1) return;
+  const sourceWs = wavesurfers[sourceFilename];
+  if (!sourceWs) return;
+  const sourceWrapper = sourceWs.getWrapper();
+  if (!sourceWrapper) return;
+  const sourceScrollEl = sourceWrapper.parentElement;
+  const sourceVisibleWidth = sourceScrollEl.clientWidth;
+  const sourceTotalWidth = sourceWrapper.clientWidth;
+  const sourceScroll = sourceWs.getScroll();
+  const sourceDuration = sourceWs.getDuration();
+  // Time at center of source viewport
+  const centerFraction =
+    (sourceScroll + sourceVisibleWidth / 2) / sourceTotalWidth;
+  const centerTime = centerFraction * sourceDuration;
+  const sourceAlignIx = getClosestAlignmentIx(centerTime, sourceFilename);
+
+  Object.keys(wavesurfers).forEach((targetFilename) => {
+    if (targetFilename === sourceFilename) return;
+    if (!loaded.has(targetFilename)) return;
+    const targetWs = wavesurfers[targetFilename];
+    if (!targetWs) return;
+    const targetWrapper = targetWs.getWrapper();
+    if (!targetWrapper) return;
+    const targetTime = getCorrespondingTime(targetFilename, sourceAlignIx);
+    const targetDuration = targetWs.getDuration();
+    const targetTotalWidth = targetWrapper.clientWidth;
+    const targetScrollEl = targetWrapper.parentElement;
+    const targetVisibleWidth = targetScrollEl.clientWidth;
+    const targetFraction = targetTime / targetDuration;
+    const targetCenterPx = targetFraction * targetTotalWidth;
+    const targetScroll = Math.max(0, targetCenterPx - targetVisibleWidth / 2);
+    targetWs.setScroll(targetScroll);
+    _syncOverlayScroll(targetFilename);
+    // Redraw viewport-based canvases for this target
+    if (_gridRedrawers[targetFilename]) _gridRedrawers[targetFilename]();
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Alignment correction (drag-to-morph)
@@ -339,14 +513,15 @@ function _addMarker(
   const duration = ws.getDuration();
   const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
   if (!wfEl) return null;
-  const pct =
-    duration > 0 ? Math.max(0, Math.min(100, (time / duration) * 100)) : 0;
+  // Use pixel positioning on the full-width overlay inner div
+  const fullW = _getZoomedWidth(filename);
+  const leftPx = duration > 0 ? Math.max(0, Math.min(fullW, (time / duration) * fullW)) : 0;
   const marker = document.createElement("div");
   marker.className = "ws-marker";
   marker.dataset.time = time;
   marker.dataset.position = position;
   if (alignIx != null) marker.dataset.alignIx = alignIx;
-  marker.style.left = `${pct}%`;
+  marker.style.left = `${leftPx}px`;
   marker.style.color = color;
   if (label) {
     const lbl = document.createElement("span");
@@ -358,7 +533,9 @@ function _addMarker(
     ev.stopPropagation();
     _onMarkerClick(filename, marker);
   });
-  wfEl.appendChild(marker);
+  // Append to the overlay inner div (scrolls with the waveform)
+  const overlayInner = _overlayWrappers[filename]?.inner;
+  (overlayInner || wfEl).appendChild(marker);
   return marker;
 }
 
@@ -459,6 +636,21 @@ function seekToActiveMarker() {
   const t = getCorrespondingTime(currentAudioIx, alignIx);
   const duration = wavesurfers[currentAudioIx].getDuration();
   wavesurfers[currentAudioIx].seekTo(t / duration);
+  // At zoom: only scroll if the marker is outside the visible viewport
+  if (_currentZoomLevel > 1) {
+    const ws = wavesurfers[currentAudioIx];
+    const fullW = _getZoomedWidth(currentAudioIx);
+    const scrollLeft = ws.getScroll();
+    const scrollContainer = _getScrollContainer(currentAudioIx);
+    const viewW = scrollContainer ? scrollContainer.clientWidth : fullW;
+    const markerPx = (t / duration) * fullW;
+    const inView = markerPx >= scrollLeft && markerPx <= scrollLeft + viewW;
+    if (!inView) {
+      ws.setScrollTime(t);
+      _syncOverlayScroll(currentAudioIx);
+      _syncAllWaveformScrolls(currentAudioIx);
+    }
+  }
 }
 
 function findClosestMarkerIndex() {
@@ -664,6 +856,11 @@ export function swapCurrentAudio(newAudio) {
     let newPosition =
       correspondingPosition / wavesurfers[currentAudioIx].getDuration();
     wavesurfers[currentAudioIx].seekTo(newPosition);
+    // At zoom: the new waveform is already scroll-synced via
+    // _syncAllWaveformScrolls, so don't reposition — just sync overlays.
+    if (_currentZoomLevel > 1) {
+      _syncOverlayScroll(currentAudioIx);
+    }
     if (wasPlaying) wavesurfers[currentAudioIx].play();
   } else {
     currentAudioIx = newAudio;
@@ -1085,18 +1282,33 @@ function _applyNavOrderToContentPanel() {
   });
 
   // PLAY: animate to final positions
+  let _pendingTransitions = 0;
+  function _onAllTransitionsDone() {
+    // After DOM reorder + animation, WaveSurfer containers may need a
+    // re-render (especially when zoomed — shadow DOM can go blank).
+    Object.keys(wavesurfers).forEach((fn) => {
+      if (!loaded.has(fn)) return;
+      _syncOverlayScroll(fn);
+      if (_gridRedrawers[fn]) _gridRedrawers[fn]();
+    });
+    redrawAllMarkers();
+  }
   requestAnimationFrame(() => {
     allWaveforms.forEach((wf) => {
       if (wf.style.transform) {
+        _pendingTransitions++;
         wf.style.transition = "transform 300ms ease";
         wf.style.transform = "";
         const onEnd = () => {
           wf.style.transition = "";
           wf.removeEventListener("transitionend", onEnd);
+          if (--_pendingTransitions === 0) _onAllTransitionsDone();
         };
         wf.addEventListener("transitionend", onEnd);
       }
     });
+    // If no transitions were queued (no elements moved), still redraw
+    if (_pendingTransitions === 0) _onAllTransitionsDone();
   });
 }
 
@@ -1835,6 +2047,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       normalize: document.getElementById("normalize").checked,
       fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)),
       plugins: [_regPlugin, _hoverPlugin],
+      autoScroll: false, // managed by our zoom scroll logic
+      autoCenter: false, // managed by our zoom scroll logic
     });
 
     // Handle region adjustments (Phase 4 groundwork)
@@ -1915,24 +2129,25 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         if (grid[mid] <= currentTime) lo = mid + 1;
         else hi = mid;
       }
-      // lo is now the first index where grid[lo] > currentTime;
-      // subtract 1 to get the last index at or before currentTime
       let currentGridIx = Math.max(0, lo - 1);
       if (currentGridIx <= 0 && currentTime > grid[grid.length - 1]) {
-        // past the end
         currentGridIx = grid.length - 1;
       }
-      // iterate through all positionIndicatorCanvases, drawing in current ix position for that canvas
+      // iterate through all positionIndicatorCanvases, drawing in current ix position
       const canvases = document.getElementsByClassName("position-indicator");
       const playingDuration = wavesurfers[filename].getDuration();
       Array.from(canvases).forEach((c) => {
-        const file = c.closest(".waveform").dataset["ix"];
+        const file = c.closest(".wf-overlays")?.parentElement?.dataset["ix"]
+          || c.closest(".waveform")?.dataset["ix"];
+        if (!file || !wavesurfers[file]) return;
         const ctx = c.getContext("2d");
         const correspondingSeconds = alignmentGrids[file][currentGridIx];
         const duration = wavesurfers[file].getDuration();
-        // absoluteX: where the playing file's cursor actually is (proportional position)
-        const absoluteX = (currentTime / playingDuration) * c.width;
-        const relativeX = (correspondingSeconds / duration) * c.width;
+        // Viewport-based drawing: compute positions in full zoomed width, offset by scroll
+        const fullW = _getZoomedWidth(file);
+        const scrollLeft = wavesurfers[file].getScroll();
+        const absoluteX = (currentTime / playingDuration) * fullW - scrollLeft;
+        const relativeX = (correspondingSeconds / duration) * fullW - scrollLeft;
         const diffMapped = Math.floor((255 * (absoluteX - relativeX)) / 100);
         ctx.clearRect(0, 0, c.width, c.height);
         if (document.getElementById("visrelalign").checked) {
@@ -1966,6 +2181,13 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       const readyWfContainer = document.querySelector(
         `.waveform[data-ix='${filename}']`,
       );
+
+      // --- Overlay wrapper structure ---
+      // Canvases sit on .wf-overlays (viewport-sized, no transform).
+      // Markers sit on .wf-overlays-inner (full zoom width, translateX'd).
+      const ow = _createOverlayWrapper(readyWfContainer, WAVE_HEIGHT);
+      _overlayWrappers[filename] = ow;
+
       const gridCanvas = document.createElement("canvas");
       const gridStyle = gridCanvas.style;
       const positionIndicatorCanvas = document.createElement("canvas");
@@ -1973,12 +2195,6 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       gridCanvas.classList.add("alignment-grid");
       gridCanvas.width = readyWfContainer.clientWidth;
       gridCanvas.height = WAVE_HEIGHT;
-      gridStyle.zIndex = "2";
-      gridStyle.position = "absolute";
-      gridStyle.top = "0";
-      gridStyle.left = "0";
-      gridStyle.width = "100%";
-      gridStyle.height = WAVE_HEIGHT + "px";
       gridStyle.pointerEvents = "none";
       gridStyle.display = document.getElementById("visalign").checked
         ? "unset"
@@ -1986,49 +2202,55 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       positionIndicatorCanvas.classList.add("position-indicator");
       positionIndicatorCanvas.width = readyWfContainer.clientWidth;
       positionIndicatorCanvas.height = WAVE_HEIGHT;
-      positionIndicatorStyle.zIndex = "3";
-      positionIndicatorStyle.position = "absolute";
-      positionIndicatorStyle.top = "0";
-      positionIndicatorStyle.left = "0";
-      positionIndicatorStyle.width = "100%";
-      positionIndicatorStyle.height = WAVE_HEIGHT + "px";
       positionIndicatorStyle.pointerEvents = "none";
-      readyWfContainer.appendChild(gridCanvas);
-      readyWfContainer.appendChild(positionIndicatorCanvas);
+      // Canvases go on the wrapper (viewport-fixed, not transformed)
+      ow.wrapper.insertBefore(positionIndicatorCanvas, ow.inner);
+      ow.wrapper.insertBefore(gridCanvas, positionIndicatorCanvas);
 
-      // Function to draw (or redraw) the alignment grid
+      // Function to draw (or redraw) the alignment grid.
+      // At zoom, draws only the visible viewport portion offset by scroll.
       function drawAlignmentGrid() {
-        // Size our overlay canvases to the container width; readyWfContainer
-        // is captured at ready-time and stays valid for this waveform's lifetime.
         if (!readyWfContainer || !readyWfContainer.isConnected) return;
-        const w = readyWfContainer.clientWidth;
+        const viewW = readyWfContainer.clientWidth;
         const h = wavesurfers[filename].options.height || 128;
-        gridCanvas.width = w;
+        gridCanvas.width = viewW;
         gridCanvas.height = h;
-        positionIndicatorCanvas.width = w;
+        positionIndicatorCanvas.width = viewW;
         positionIndicatorCanvas.height = h;
-        // Redraw grid lines
+        // Update overlay wrapper height
+        ow.wrapper.style.height = h + "px";
+        // Update inner wrapper width to match zoomed waveform width
+        const fullW = _getZoomedWidth(filename);
+        ow.inner.style.width = fullW + "px";
+
+        // Redraw grid lines (viewport-based at zoom)
         const ctx = gridCanvas.getContext("2d");
-        ctx.clearRect(0, 0, gridCanvas.width, gridCanvas.height);
+        ctx.clearRect(0, 0, viewW, h);
         ctx.lineWidth = 1;
         ctx.strokeStyle = "rgba(140, 90, 90, 0.55)";
         const dur = wavesurfers[filename].getDuration();
-        const minPixelStep = 4; // Prevent overplotting: lines must be at least 4 pixels apart
+        const minPixelStep = 4;
+        const scrollLeft = wavesurfers[filename].getScroll();
 
         // Draw solid lines for the top and bottom sections
         ctx.beginPath();
         ctx.setLineDash([]);
         let lastAbsX = -999;
         alignmentGrids[filename].forEach((gridPos, gridIx) => {
+          // Positions in the full zoomed width, offset to viewport
           const absoluteX =
-            (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
-          const relativeX = (gridPos / dur) * gridCanvas.width;
+            (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
+          const relativeX = (gridPos / dur) * fullW - scrollLeft;
+
+          // Skip lines outside the visible viewport
+          if (absoluteX > viewW + 10 && relativeX > viewW + 10) return;
+          if (absoluteX < -10 && relativeX < -10) return;
 
           if (absoluteX - lastAbsX >= minPixelStep) {
             ctx.moveTo(absoluteX, 0);
-            ctx.lineTo(relativeX, gridCanvas.height / 6);
-            ctx.moveTo(relativeX, 5 * (gridCanvas.height / 6));
-            ctx.lineTo(absoluteX, gridCanvas.height);
+            ctx.lineTo(relativeX, h / 6);
+            ctx.moveTo(relativeX, 5 * (h / 6));
+            ctx.lineTo(absoluteX, h);
             lastAbsX = absoluteX;
           }
         });
@@ -2038,20 +2260,22 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         ctx.beginPath();
         ctx.strokeStyle = "rgba(140, 90, 90, 0.3)";
         ctx.setLineDash([2, 1]);
-        lastAbsX = -999; // Reset for the second rendering pass
+        lastAbsX = -999;
         alignmentGrids[filename].forEach((gridPos, gridIx) => {
           const absoluteX =
-            (gridIx / alignmentGrids[filename].length) * gridCanvas.width;
-          const relativeX = (gridPos / dur) * gridCanvas.width;
+            (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
+          const relativeX = (gridPos / dur) * fullW - scrollLeft;
+
+          if (relativeX > viewW + 10 || relativeX < -10) return;
 
           if (absoluteX - lastAbsX >= minPixelStep) {
-            ctx.moveTo(relativeX, gridCanvas.height / 6);
-            ctx.lineTo(relativeX, 5 * (gridCanvas.height / 6));
+            ctx.moveTo(relativeX, h / 6);
+            ctx.lineTo(relativeX, 5 * (h / 6));
             lastAbsX = absoluteX;
           }
         });
         ctx.stroke();
-        ctx.setLineDash([]); // Reset line dash
+        ctx.setLineDash([]);
       }
 
       // Register this waveform's position-updater so it can be called
@@ -2066,17 +2290,48 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       corrCanvas.width = readyWfContainer.clientWidth;
       corrCanvas.height = WAVE_HEIGHT;
       const corrStyle = corrCanvas.style;
-      corrStyle.position = "absolute";
-      corrStyle.top = "0";
-      corrStyle.left = "0";
-      corrStyle.width = "100%";
-      corrStyle.height = WAVE_HEIGHT + "px";
-      corrStyle.zIndex = "4";
       corrStyle.pointerEvents = _alignCorrectionMode ? "auto" : "none";
-      readyWfContainer.appendChild(corrCanvas);
+      // Correction canvas goes on the wrapper (viewport-fixed)
+      ow.wrapper.insertBefore(corrCanvas, ow.inner);
 
       // Store reference for resize
       const _corrCanvasRef = corrCanvas;
+
+      // Wire scroll listener on WaveSurfer's shadow-DOM scroll container
+      const _wsScrollContainer = _getScrollContainer(filename);
+      let _scrollRedrawRaf = false;
+      if (_wsScrollContainer) {
+        _wsScrollContainer.addEventListener("scroll", () => {
+          _syncOverlayScroll(filename);
+          // Redraw viewport-based canvases (throttled)
+          if (!_scrollRedrawRaf) {
+            _scrollRedrawRaf = true;
+            requestAnimationFrame(() => {
+              _scrollRedrawRaf = false;
+              drawAlignmentGrid();
+              if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
+                _positionUpdaters[currentAudioIx]();
+              }
+              // Cross-waveform scroll sync
+              if (!_scrollSyncLock && _currentZoomLevel > 1) {
+                _scrollSyncLock = true;
+                _syncAllWaveformScrolls(filename);
+                requestAnimationFrame(() => { _scrollSyncLock = false; });
+              }
+            });
+          }
+        });
+      }
+
+      // Apply current zoom level if waveform loads after zoom has been set
+      if (_currentZoomLevel > 1) {
+        const containerWidth = readyWfContainer.clientWidth;
+        const duration = wavesurfers[filename].getDuration();
+        wavesurfers[filename].zoom(
+          (_currentZoomLevel * containerWidth) / duration,
+        );
+        _applyScrollMode(filename);
+      }
 
       // Initial draw
       drawAlignmentGrid();
@@ -2092,19 +2347,16 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       wavesurfers[filename].on("redrawcomplete", () => {
         // Resize our overlay canvases and repaint grid lines.
         drawAlignmentGrid();
-        // Resize correction overlay
+        // Resize correction overlay (viewport-sized)
         if (_corrCanvasRef && readyWfContainer.isConnected) {
           _corrCanvasRef.width = readyWfContainer.clientWidth;
           _corrCanvasRef.height = wavesurfers[filename].options.height || 128;
         }
+        // Sync overlay scroll position after redraw
+        _syncOverlayScroll(filename);
         // Restore markers (canvas has been redrawn, marker positions must refresh).
         _clearMarkers(filename);
-        _addMarker(filename, {
-          time: 0,
-          label: filename,
-          color: "black",
-          position: "top",
-        });
+        _ensureWfLabel(filename);
         markers.forEach((m, i) => {
           const t = getCorrespondingTime(filename, m);
           const color =
@@ -2164,8 +2416,6 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       if (filename !== currentAudioIx) swapCurrentAudio(filename);
     });
     wavesurfers[filename].on("audioprocess", () => {
-      // update position indicator during playback
-      updatePositionIndicator();
       // continually update timer region when opened but not yet closed
       if (timerFrom === timerTo && timerFrom > 0) {
         _timerRegions[filename].setOptions({
@@ -2173,6 +2423,21 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         });
         updateRenderTimer();
       }
+      // Zoom scroll: only act on the playing waveform.
+      // Use isPlaying() instead of filename===currentAudioIx to handle edge
+      // cases where currentAudioIx hasn't been set yet (e.g. first playback
+      // on the Score synth without switching waveforms first).
+      const isActive = wavesurfers[filename].isPlaying();
+      if (_currentZoomLevel > 1 && isActive && _scrollMode === "page") {
+        _pageScrollIfNeeded(filename);
+      }
+      // Cross-waveform scroll sync during playback — BEFORE position indicator
+      // so that non-active waveforms have correct scroll positions for drawing.
+      if (_currentZoomLevel > 1 && isActive) {
+        _syncAllWaveformScrolls(filename);
+      }
+      // Update position indicator AFTER scroll sync
+      updatePositionIndicator();
     });
 
     // render anno regions
@@ -3435,12 +3700,13 @@ document.addEventListener("DOMContentLoaded", () => {
     const { filename, markerArrayIx, startX, wfEl, fixMode } = _markerDragState;
     const dur = wavesurfers[filename]?.getDuration() || 1;
     const rect = wfEl.getBoundingClientRect();
+    const _zoomedW = _getZoomedWidth(filename) || rect.width;
 
     if (fixMode) {
       // Fix alignment mode: morph the grid
       _markerDragState.sigma = _sigmaFromEvent(e);
       const sigma = _markerDragState.sigma;
-      const dtDrag = (e.clientX - startX) / (rect.width / dur);
+      const dtDrag = (e.clientX - startX) / (_zoomedW / dur);
       const morphed = _morphGrid(
         _markerDragState.origGrid,
         _markerDragState.jCenter,
@@ -3458,20 +3724,21 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       // Show the dragged marker at its morphed position
       const morphedTime = morphed[_markerDragState.jCenter];
-      const pct =
-        dur > 0 ? Math.max(0, Math.min(100, (morphedTime / dur) * 100)) : 0;
+      const _fullW = _getZoomedWidth(filename);
+      const leftPx =
+        dur > 0 ? Math.max(0, Math.min(_fullW, (morphedTime / dur) * _fullW)) : 0;
       const markerEl = wfEl.querySelector(
         `.ws-marker[data-align-ix="${markers[markerArrayIx]}"]`,
       );
-      if (markerEl) markerEl.style.left = `${pct}%`;
+      if (markerEl) markerEl.style.left = `${leftPx}px`;
       // Update all other markers on this waveform to their morphed positions
       wfEl.querySelectorAll(".ws-marker[data-align-ix]").forEach((el) => {
         if (el === markerEl) return;
         const aIx = parseInt(el.dataset.alignIx);
         if (aIx >= 0 && aIx < morphed.length) {
           const t = morphed[aIx];
-          const p = dur > 0 ? Math.max(0, Math.min(100, (t / dur) * 100)) : 0;
-          el.style.left = `${p}%`;
+          const p = dur > 0 ? Math.max(0, Math.min(_fullW, (t / dur) * _fullW)) : 0;
+          el.style.left = `${p}px`;
         }
       });
       // Global preview on other waveforms
@@ -3506,7 +3773,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } else {
       // Move marker mode: show cursor at new position
       const pxDelta = e.clientX - startX;
-      const timeDelta = (pxDelta / rect.width) * dur;
+      const timeDelta = (pxDelta / _zoomedW) * dur;
       const origTime = getCorrespondingTime(
         filename,
         _markerDragState.startAlignIx,
@@ -3526,9 +3793,10 @@ document.addEventListener("DOMContentLoaded", () => {
       _markerDragState;
     const dur = wavesurfers[filename]?.getDuration() || 1;
     const rect = wfEl.getBoundingClientRect();
+    const _zoomedW = _getZoomedWidth(filename) || rect.width;
 
     if (fixMode) {
-      const dtDrag = (e.clientX - startX) / (rect.width / dur);
+      const dtDrag = (e.clientX - startX) / (_zoomedW / dur);
       if (Math.abs(dtDrag) < 1e-4) {
         // No meaningful drag — pop the undo entries
         if (_markerDragState.isGlobal) {
@@ -3590,7 +3858,7 @@ document.addEventListener("DOMContentLoaded", () => {
     } else {
       // Move marker mode: commit the new position
       const pxDelta = e.clientX - startX;
-      const timeDelta = (pxDelta / rect.width) * dur;
+      const timeDelta = (pxDelta / _zoomedW) * dur;
       const origTime = getCorrespondingTime(filename, startAlignIx);
       const newTime = Math.max(0, Math.min(dur, origTime + timeDelta));
       const newAlignIx = getClosestAlignmentIx(newTime, filename);
@@ -3643,13 +3911,16 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function _drawInfluenceZone(canvas, filename, mouseX, sigma) {
     const ctx = canvas.getContext("2d");
-    const w = canvas.width;
+    const viewW = canvas.width;
     const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
+    ctx.clearRect(0, 0, viewW, h);
     const grid = alignmentGrids[filename];
     if (!grid || grid.length === 0) return;
     const dur = wavesurfers[filename]?.getDuration() || 1;
-    const mouseTime = (mouseX / w) * dur;
+    const fullW = _getZoomedWidth(filename) || viewW;
+    const scrollLeft = wavesurfers[filename]?.getScroll() || 0;
+    // mouseX is viewport-relative; convert to full-width coordinate for time lookup
+    const mouseTime = ((mouseX + scrollLeft) / fullW) * dur;
     let jCenter = 0;
     let bestDist = Infinity;
     for (let j = 0; j < grid.length; j++) {
@@ -3664,10 +3935,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const cutoff = Math.ceil(sigma * 3);
     const jMin = Math.max(0, jCenter - cutoff);
     const jMax = Math.min(grid.length - 1, jCenter + cutoff);
-    const xMin = (grid[jMin] / dur) * w;
-    const xMax = (grid[jMax] / dur) * w;
+    const xMin = (grid[jMin] / dur) * fullW - scrollLeft;
+    const xMax = (grid[jMax] / dur) * fullW - scrollLeft;
     ctx.fillRect(xMin, 0, xMax - xMin, h);
-    const xCenter = (grid[jCenter] / dur) * w;
+    const xCenter = (grid[jCenter] / dur) * fullW - scrollLeft;
     ctx.strokeStyle = "rgba(70, 130, 230, 0.5)";
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -3678,10 +3949,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function _drawMorphPreview(canvas, filename, morphedGrid, origGrid) {
     const ctx = canvas.getContext("2d");
-    const w = canvas.width;
+    const viewW = canvas.width;
     const h = canvas.height;
-    ctx.clearRect(0, 0, w, h);
+    ctx.clearRect(0, 0, viewW, h);
     const dur = wavesurfers[filename]?.getDuration() || 1;
+    const fullW = _getZoomedWidth(filename) || viewW;
+    const scrollLeft = wavesurfers[filename]?.getScroll() || 0;
     // Dynamic extent band: highlight all entries with displacement > 0.5% of peak
     if (_markerDragState && _markerDragState.fixMode && origGrid) {
       let peakDisp = 0;
@@ -3699,8 +3972,8 @@ document.addEventListener("DOMContentLoaded", () => {
           }
         }
         if (jMin <= jMax) {
-          const xMin = (morphedGrid[jMin] / dur) * w;
-          const xMax = (morphedGrid[jMax] / dur) * w;
+          const xMin = (morphedGrid[jMin] / dur) * fullW - scrollLeft;
+          const xMax = (morphedGrid[jMax] / dur) * fullW - scrollLeft;
           ctx.fillStyle = "rgba(70, 130, 230, 0.08)";
           ctx.fillRect(xMin, 0, xMax - xMin, h);
         }
@@ -3713,8 +3986,11 @@ document.addEventListener("DOMContentLoaded", () => {
     const minPixelStep = 4;
     let lastAbsX = -999;
     for (let j = 0; j < n; j++) {
-      const absoluteX = (j / n) * w;
-      const relativeX = (morphedGrid[j] / dur) * w;
+      const absoluteX = (j / n) * fullW - scrollLeft;
+      const relativeX = (morphedGrid[j] / dur) * fullW - scrollLeft;
+      // Skip lines outside viewport
+      if (absoluteX > viewW + 10 && relativeX > viewW + 10) continue;
+      if (absoluteX < -10 && relativeX < -10) continue;
       if (absoluteX - lastAbsX >= minPixelStep) {
         ctx.moveTo(absoluteX, 0);
         ctx.lineTo(relativeX, h / 6);
@@ -3856,6 +4132,32 @@ document.addEventListener("DOMContentLoaded", () => {
     Array.from(document.querySelectorAll(".alignment-grid")).forEach(
       (e) => (e.style.display = display),
     );
+  });
+
+  // Zoom slider
+  const zoomSlider = document.getElementById("zoom-slider");
+  if (zoomSlider) {
+    zoomSlider.addEventListener("input", (e) => {
+      applyZoom(ZOOM_LEVELS[parseInt(e.target.value)]);
+    });
+    // Restore zoom state from browser form restoration (slider may be non-zero)
+    const restoredIdx = parseInt(zoomSlider.value);
+    if (restoredIdx > 0) {
+      const restoredLevel = ZOOM_LEVELS[restoredIdx] || 1;
+      _currentZoomLevel = restoredLevel;
+      const label = document.getElementById("zoom-label");
+      if (label) label.textContent = restoredLevel + "x";
+      const scrollControls = document.getElementById("scroll-mode-controls");
+      if (scrollControls) scrollControls.style.display = restoredLevel > 1 ? "" : "none";
+    }
+  }
+
+  // Scroll mode radios
+  document.querySelectorAll('input[name="scroll-mode"]').forEach((radio) => {
+    radio.addEventListener("change", (e) => {
+      _scrollMode = e.target.value;
+      Object.keys(wavesurfers).forEach((fn) => _applyScrollMode(fn));
+    });
   });
 
   // show the Solid drawer button so users can open the linked-data panel

@@ -499,6 +499,44 @@ function hideWaveformOverlay(wfEl) {
 
 // --- Custom marker system (replaces WaveSurfer v4 markers plugin) ---
 
+/** Delete the currently active marker (close-listening mode). */
+function _deleteActiveMarker() {
+  if (!closeListeningMode || activeMarkerIx == null) return;
+  const deletedAlignIx = markers[activeMarkerIx];
+  const deletedArrayIx = activeMarkerIx;
+  markers.splice(activeMarkerIx, 1);
+  if (storage) {
+    storage.setItem("markers_" + workId, JSON.stringify(markers));
+  }
+  _pushUndo(
+    {
+      type: "marker-delete",
+      alignIx: deletedAlignIx,
+      markerArrayIx: deletedArrayIx,
+    },
+    true,
+  );
+  if (markers.length === 0) {
+    exitCloseListeningMode();
+  } else {
+    // Select the marker closest in time to the deleted one,
+    // preferring the one just before it
+    let bestIx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < markers.length; i++) {
+      const dist = markers[i] - deletedAlignIx;
+      const absDist = Math.abs(dist);
+      if (absDist < bestDist || (absDist === bestDist && dist < 0)) {
+        bestDist = absDist;
+        bestIx = i;
+      }
+    }
+    activeMarkerIx = bestIx;
+    redrawAllMarkers();
+    seekToActiveMarker();
+  }
+}
+
 function _clearMarkers(filename) {
   const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
   if (!wfEl) return;
@@ -617,11 +655,13 @@ function enterCloseListeningMode(markerArrayIndex) {
   redrawAllMarkers();
   seekToActiveMarker();
   updateCloseListeningBadge();
+  _updateMarkBtnTooltip();
 }
 
 function exitCloseListeningMode() {
   closeListeningMode = false;
   activeMarkerIx = null;
+  _updateMarkBtnTooltip();
   // Reset clip-path on the active waveform so the waveform isn't clipped
   // from a prior seekToActiveMarker() call (score-only page bug).
   if (currentAudioIx && wavesurfers[currentAudioIx]) {
@@ -652,6 +692,7 @@ function seekToActiveMarker() {
       _syncAllWaveformScrolls(currentAudioIx);
     }
   }
+  _updateMarkBtnTooltip();
 }
 
 function findClosestMarkerIndex() {
@@ -1486,7 +1527,40 @@ function _updateGroupCounts() {
 
 function _markJsonDirty() {
   const dlBtn = document.getElementById("download-json-btn");
-  if (dlBtn) dlBtn.classList.add("json-dirty");
+  if (dlBtn) {
+    dlBtn.classList.add("json-dirty");
+    dlBtn.title = "Download alignment data (You have unsaved changes!)";
+  }
+  const ctrl = document.getElementById("nav-middle-toggle");
+  if (ctrl) {
+    ctrl.classList.add("json-dirty");
+    ctrl.title = "Collapse / expand controls (You have unsaved changes!)";
+  }
+}
+
+/**
+ * Update the Mark button tooltip: "Remove marker" when paused at a marker,
+ * "Place marker" otherwise.
+ */
+function _updateMarkBtnTooltip() {
+  const btn = document.getElementById("mark");
+  if (!btn) return;
+  let atMarker = false;
+  const ws = currentAudioIx && wavesurfers[currentAudioIx]
+    ? wavesurfers[currentAudioIx] : null;
+  const isPlaying = ws ? ws.isPlaying() : false;
+  if (closeListeningMode && activeMarkerIx != null && !isPlaying && ws) {
+    // Check whether playback position is actually at the active marker
+    const markerTime = getCorrespondingTime(currentAudioIx, markers[activeMarkerIx]);
+    const currentTime = ws.getCurrentTime();
+    atMarker = Math.abs(currentTime - markerTime) < 0.05;
+  } else if (closeListeningMode && activeMarkerIx != null && !isPlaying && !ws) {
+    // Before first playback — no waveform active, trust close-listening state
+    atMarker = true;
+  }
+  const label = atMarker ? "Remove marker" : "Place marker";
+  btn.title = atMarker ? "Remove the currently-active marker" : "Place a marker at the current playback position";
+  btn.textContent = label;
 }
 
 /** Persist the current group ordering into loadedAlignmentJSON.header.fileGroups */
@@ -2471,6 +2545,9 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     wavesurfers[filename].on("interaction", () => {
       if (filename !== currentAudioIx) swapCurrentAudio(filename);
     });
+    wavesurfers[filename].on("seeking", () => {
+      _updateMarkBtnTooltip();
+    });
     wavesurfers[filename].on("audioprocess", () => {
       // continually update timer region when opened but not yet closed
       if (timerFrom === timerTo && timerFrom > 0) {
@@ -2494,6 +2571,12 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       }
       // Update position indicator AFTER scroll sync
       updatePositionIndicator();
+      // Reset mark button while playing (position is moving)
+      const markBtn = document.getElementById("mark");
+      if (markBtn && markBtn.textContent !== "Place marker") {
+        markBtn.title = "Place a marker at the current playback position";
+        markBtn.textContent = "Place marker";
+      }
     });
 
     // render anno regions
@@ -4204,8 +4287,14 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("playpause").addEventListener("click", function (e) {
     playpause();
   });
-  // mark button
+  // mark button — places a new marker, or removes the active marker when
+  // paused at one in close-listening mode
   document.getElementById("mark").addEventListener("click", function (e) {
+    if (this.title === "Remove marker") {
+      _deleteActiveMarker();
+      _updateMarkBtnTooltip();
+      return;
+    }
     let toMark = getClosestAlignmentIx();
     const arrIx = markers.length;
     markers.push(toMark);
@@ -4219,7 +4308,6 @@ document.addEventListener("DOMContentLoaded", () => {
     );
     Object.keys(wavesurfers).forEach((ws) => {
       const t = getCorrespondingTime(ws, toMark);
-      console.log("got corresponding time: ", t);
       _addMarker(ws, { time: t, color: "red", alignIx: toMark });
     });
   });
@@ -4555,42 +4643,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       case "Delete":
       case "Backspace": {
-        // Delete active marker (close-listening mode only)
-        if (closeListeningMode && activeMarkerIx != null) {
-          const deletedAlignIx = markers[activeMarkerIx];
-          const deletedArrayIx = activeMarkerIx;
-          markers.splice(activeMarkerIx, 1);
-          if (storage) {
-            storage.setItem("markers_" + workId, JSON.stringify(markers));
-          }
-          _pushUndo(
-            {
-              type: "marker-delete",
-              alignIx: deletedAlignIx,
-              markerArrayIx: deletedArrayIx,
-            },
-            true,
-          );
-          if (markers.length === 0) {
-            exitCloseListeningMode();
-          } else {
-            // Select the marker closest in time to the deleted one,
-            // preferring the one just before it
-            let bestIx = 0;
-            let bestDist = Infinity;
-            for (let i = 0; i < markers.length; i++) {
-              const dist = markers[i] - deletedAlignIx;
-              const absDist = Math.abs(dist);
-              if (absDist < bestDist || (absDist === bestDist && dist < 0)) {
-                bestDist = absDist;
-                bestIx = i;
-              }
-            }
-            activeMarkerIx = bestIx;
-            redrawAllMarkers();
-            seekToActiveMarker();
-          }
-        }
+        _deleteActiveMarker();
         break;
       }
       case "KeyC": {
@@ -4814,6 +4867,7 @@ function playpause() {
       wavesurfers[currentAudioIx].play();
     }
   }
+  _updateMarkBtnTooltip();
 }
 
 function updateRenderTimer() {

@@ -278,13 +278,13 @@
                 <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" alt="Listen Here!">
             </a>
             <button id="playpause">Play/Pause</button>
-            <button id="mark">Mark</button>
+            <button id="mark" title="Place a marker at the current playback position">Place marker</button>
         </div>
 
         <!-- Middle: Functional Controls (Collapsible Region) -->
         <div class="nav-region" id="region-controls">
           <div class="nav-card">
-            <div id="nav-middle-toggle" class="nav-section-header" title="Collapse / expand controls (No unsaved changes)">
+            <div id="nav-middle-toggle" class="nav-section-header" title="Collapse / expand controls">
               Controls <span id="middle-collapse-arrow" class="collapse-arrow">&#9662;</span>
             </div>
             <div id="nav-middle" class="nav-section-body grow">
@@ -306,16 +306,16 @@
                 <div class="fieldset-body">
                   <hr class="tools-divider"/>
                   <span>
-                    <input type="checkbox" id="normalize" title="Normalize audio levels for better visibility"/>
-                    <label for="normalize" title="Normalize audio levels for better visibility">Normalize audio</label>
+                    <input type="checkbox" id="normalize" title="Normalize audio levels (boosts quiet recordings)"/>
+                    <label for="normalize" title="Normalize audio levels (boosts quiet recordings)">Normalize audio</label>
                   </span>
                   <span>
-                    <input type="checkbox" id="visalign" title="Show alignment markers on the waveforms"/>
-                    <label for="visalign" title="Show alignment markers on the waveforms">Visualise alignments</label>
+                    <input type="checkbox" id="visalign" title="Show alignment sync-lines (matched to reference)"/>
+                    <label for="visalign" title="Show alignment sync-lines (matched to reference)">Visualise alignments</label>
                   </span>
                   <span>
-                    <input type="checkbox" id="visrelalign" title="Show markers relative to the global timeline"/>
-                    <label for="visrelalign" title="Show markers relative to the global timeline">Show relative position</label>
+                    <input type="checkbox" id="visrelalign" title="Show corresponding playback positions"/>
+                    <label for="visrelalign" title="Show corresponding playback positions">Show relative position</label>
                   </span>
                 </div>
               </fieldset>
@@ -324,12 +324,12 @@
               <fieldset id="files-panel" class="collapsible-fieldset">
                 <legend title="Collapse / expand file management">Files <span class="collapse-arrow">&#9662;</span></legend>
                 <span class="tools-row" id="files-always">
-                  <button id="download-json-btn" title="Save the current alignment and markers to a JSON file (No unsaved changes)">Save data</button>
+                  <button id="download-json-btn" title="Download alignment data">Save data</button>
                 </span>
                 <div class="fieldset-body">
                   <hr class="tools-divider"/>
-                  <button id="manage-files-btn" title="Add or remove audio files from the session">Manage files</button>
-                  <button id="group-files-btn" title="Group multiple recordings together for synchronized view">Group files</button>
+                  <button id="manage-files-btn" title="Load files and configure Linked Data URIs">Manage files</button>
+                  <button id="group-files-btn" title="Specify grouping of waveforms">Group files</button>
                 </div>
               </fieldset>
 
@@ -339,8 +339,8 @@
                 <div id="tools-body" class="fieldset-body">
                   <div class="tools-row" id="tools-always">
                     <span>
-                      <input type="checkbox" id="close-listening-cb" title="Toggle Close-Listening focus mode"/>
-                      <label for="close-listening-cb" title="Toggle Close-Listening focus mode">Close Listening</label>
+                      <input type="checkbox" id="close-listening-cb" title="Close-listening mode (restarts playback from currently active marker)"/>
+                      <label for="close-listening-cb" title="Close-listening mode (restarts playback from currently active marker)">Close Listening</label>
                     </span>
                   </div>
                   <hr class="tools-divider"/>
@@ -348,21 +348,21 @@
                     <legend title="Collapse / expand marker adjustment settings">Drag Markers <span class="collapse-arrow">&#9662;</span></legend>
                     <div class="fieldset-body">
                       <span>
-                        <input type="checkbox" id="drag-markers-cb" title="Enable manual adjustment of alignment markers by dragging"/>
-                        <label for="drag-markers-cb" title="Enable manual adjustment of alignment markers by dragging">Enable dragging</label>
+                        <input type="checkbox" id="drag-markers-cb" title="Enable marker dragging"/>
+                        <label for="drag-markers-cb" title="Enable marker dragging">Enable dragging</label>
                       </span>
                       <div class="tools-row">
                         <span>
-                          <input type="radio" name="drag-mode" id="drag-mode-move" value="move" checked title="Adjust a marker by moving its point"/>
-                          <label for="drag-mode-move" title="Adjust a marker by moving its point">Move marker</label>
+                          <input type="radio" name="drag-mode" id="drag-mode-move" value="move" checked title="Drag marker to reposition it in time"/>
+                          <label for="drag-mode-move" title="Drag marker to reposition it in time">Move marker</label>
                         </span>
                         <span>
-                          <input type="radio" name="drag-mode" id="drag-mode-fix" value="fix" title="Fix alignment by dragging the background grid"/>
-                          <label for="drag-mode-fix" title="Fix alignment by dragging the background grid">Fix alignment</label>
+                          <input type="radio" name="drag-mode" id="drag-mode-fix" value="fix" title="Drag marker to adjust the alignment grid"/>
+                          <label for="drag-mode-fix" title="Drag marker to adjust the alignment grid">Fix alignment</label>
                         </span>
                       </div>
                       <fieldset id="radius-fieldset" disabled>
-                        <legend title="Controls the width of the area affected by alignment grid edits (radius of Gaussian kernel)">Fix alignment: Range</legend>
+                        <legend title="Controls the width of the affected area of alignment grid edits (radius of Gaussian kernel)">Fix alignment: Range</legend>
                         <div class="tools-row">
                           <span>
                             <input type="radio" name="radius" id="radius-narrow" value="50" title="Adjustment influence: 50ms (Narrow radius)"/>
@@ -381,9 +381,9 @@
                     </div>
                   </fieldset>
                   <hr class="tools-divider"/>
-                  <button id="undo-btn" disabled title="Undo (Cmd+Z)">Undo</button>
-                  <button id="redo-btn" disabled title="Redo (Cmd+Shift+Z)">Redo</button>
-                  <button id="revert-all-btn" disabled title="Revert all alignment corrections to original">Revert alignment edits</button>
+                  <button id="undo-btn" disabled title="Undo last action (Ctrl+Z)">Undo</button>
+                  <button id="redo-btn" disabled title="Redo last action (Ctrl+Shift+Z)">Redo</button>
+                  <button id="revert-all-btn" disabled title="Revert all manual edits to the original alignment">Revert alignment edits</button>
                 </div>
               </fieldset>
             </div>

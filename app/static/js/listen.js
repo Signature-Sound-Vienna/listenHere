@@ -499,44 +499,6 @@ function hideWaveformOverlay(wfEl) {
 
 // --- Custom marker system (replaces WaveSurfer v4 markers plugin) ---
 
-/** Delete the currently active marker (close-listening mode). */
-function _deleteActiveMarker() {
-  if (!closeListeningMode || activeMarkerIx == null) return;
-  const deletedAlignIx = markers[activeMarkerIx];
-  const deletedArrayIx = activeMarkerIx;
-  markers.splice(activeMarkerIx, 1);
-  if (storage) {
-    storage.setItem("markers_" + workId, JSON.stringify(markers));
-  }
-  _pushUndo(
-    {
-      type: "marker-delete",
-      alignIx: deletedAlignIx,
-      markerArrayIx: deletedArrayIx,
-    },
-    true,
-  );
-  if (markers.length === 0) {
-    exitCloseListeningMode();
-  } else {
-    // Select the marker closest in time to the deleted one,
-    // preferring the one just before it
-    let bestIx = 0;
-    let bestDist = Infinity;
-    for (let i = 0; i < markers.length; i++) {
-      const dist = markers[i] - deletedAlignIx;
-      const absDist = Math.abs(dist);
-      if (absDist < bestDist || (absDist === bestDist && dist < 0)) {
-        bestDist = absDist;
-        bestIx = i;
-      }
-    }
-    activeMarkerIx = bestIx;
-    redrawAllMarkers();
-    seekToActiveMarker();
-  }
-}
-
 function _clearMarkers(filename) {
   const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
   if (!wfEl) return;
@@ -1538,6 +1500,14 @@ function _markJsonDirty() {
   }
 }
 
+/** Persist markers into the alignment JSON and mark dirty. */
+function _persistMarkers() {
+  if (!loadedAlignmentJSON) return;
+  if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+  loadedAlignmentJSON.header.markers = [...markers];
+  _markJsonDirty();
+}
+
 /**
  * Update the Mark button tooltip: "Remove marker" when paused at a marker,
  * "Place marker" otherwise.
@@ -2533,13 +2503,14 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           wavesurfers[currentAudioIx].pause();
         }
       }
-      // restore marks from storage if they exist
-      if (storage) {
-        let markersString = storage.getItem("markers_" + workId);
-        if (markersString) {
-          markers = JSON.parse(markersString);
-          // markers are rendered by the "redrawcomplete" handler
-        }
+      // restore markers from alignment JSON if they exist
+      if (
+        loadedAlignmentJSON &&
+        loadedAlignmentJSON.header &&
+        Array.isArray(loadedAlignmentJSON.header.markers)
+      ) {
+        markers = [...loadedAlignmentJSON.header.markers];
+        // markers are rendered by the "redrawcomplete" handler
       }
     });
     wavesurfers[filename].on("interaction", () => {
@@ -3370,8 +3341,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const radiusNarrow = document.getElementById("radius-narrow");
   const radiusMedium = document.getElementById("radius-medium");
   const radiusWide = document.getElementById("radius-wide");
-  const undoBtn = document.getElementById("tools-undo-btn");
-  const redoBtn = document.getElementById("tools-redo-btn");
+  const undoBtn = document.getElementById("undo-btn");
+  const redoBtn = document.getElementById("redo-btn");
   const revertBtn = document.getElementById("revert-all-btn");
 
   // Tools panel collapse is handled by the generic .collapsible-fieldset
@@ -3456,6 +3427,40 @@ document.addEventListener("DOMContentLoaded", () => {
     _updateUndoRedoState();
   }
 
+  /** Delete the currently active marker (close-listening mode). */
+  function _deleteActiveMarker() {
+    if (!closeListeningMode || activeMarkerIx == null) return;
+    const deletedAlignIx = markers[activeMarkerIx];
+    const deletedArrayIx = activeMarkerIx;
+    markers.splice(activeMarkerIx, 1);
+    _persistMarkers();
+    _pushUndo(
+      {
+        type: "marker-delete",
+        alignIx: deletedAlignIx,
+        markerArrayIx: deletedArrayIx,
+      },
+      true,
+    );
+    if (markers.length === 0) {
+      exitCloseListeningMode();
+    } else {
+      let bestIx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < markers.length; i++) {
+        const dist = markers[i] - deletedAlignIx;
+        const absDist = Math.abs(dist);
+        if (absDist < bestDist || (absDist === bestDist && dist < 0)) {
+          bestDist = absDist;
+          bestIx = i;
+        }
+      }
+      activeMarkerIx = bestIx;
+      redrawAllMarkers();
+      seekToActiveMarker();
+    }
+  }
+
   function _undoOne() {
     if (_undoStack.length === 0) return;
     const entry = _undoStack.pop();
@@ -3476,8 +3481,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const ix = markers.indexOf(entry.alignIx);
         if (ix > -1) {
           markers.splice(ix, 1);
-          if (storage)
-            storage.setItem("markers_" + workId, JSON.stringify(markers));
+          _persistMarkers();
           _redoStack.push({
             type: "marker-add",
             alignIx: entry.alignIx,
@@ -3501,8 +3505,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Undo delete = re-insert the marker
         const insertIx = Math.min(entry.markerArrayIx, markers.length);
         markers.splice(insertIx, 0, entry.alignIx);
-        if (storage)
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _persistMarkers();
         _redoStack.push({
           type: "marker-delete",
           alignIx: entry.alignIx,
@@ -3517,8 +3520,7 @@ document.addEventListener("DOMContentLoaded", () => {
       case "marker-move": {
         // Undo move = restore old position
         markers[entry.markerArrayIx] = entry.oldAlignIx;
-        if (storage)
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _persistMarkers();
         _redoStack.push({
           type: "marker-move",
           markerArrayIx: entry.markerArrayIx,
@@ -3552,8 +3554,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Redo add = re-insert
         const insertIx = Math.min(entry.markerArrayIx, markers.length);
         markers.splice(insertIx, 0, entry.alignIx);
-        if (storage)
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _persistMarkers();
         _undoStack.push({
           type: "marker-add",
           alignIx: entry.alignIx,
@@ -3567,8 +3568,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const ix = markers.indexOf(entry.alignIx);
         if (ix > -1) {
           markers.splice(ix, 1);
-          if (storage)
-            storage.setItem("markers_" + workId, JSON.stringify(markers));
+          _persistMarkers();
           _undoStack.push({
             type: "marker-delete",
             alignIx: entry.alignIx,
@@ -3590,8 +3590,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       case "marker-move": {
         markers[entry.markerArrayIx] = entry.newAlignIx;
-        if (storage)
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _persistMarkers();
         _undoStack.push({
           type: "marker-move",
           markerArrayIx: entry.markerArrayIx,
@@ -4056,8 +4055,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const newAlignIx = getClosestAlignmentIx(newTime, filename);
       if (newAlignIx !== startAlignIx) {
         markers[markerArrayIx] = newAlignIx;
-        if (storage)
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _persistMarkers();
         _pushUndo(
           {
             type: "marker-move",
@@ -4290,18 +4288,16 @@ document.addEventListener("DOMContentLoaded", () => {
   // mark button — places a new marker, or removes the active marker when
   // paused at one in close-listening mode
   document.getElementById("mark").addEventListener("click", function (e) {
-    if (this.title === "Remove marker") {
+    if (this.textContent === "Remove marker") {
       _deleteActiveMarker();
       _updateMarkBtnTooltip();
       return;
     }
+    if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
     let toMark = getClosestAlignmentIx();
     const arrIx = markers.length;
     markers.push(toMark);
-    // update markers in storage, if possible
-    if (storage) {
-      storage.setItem("markers_" + workId, JSON.stringify(markers));
-    }
+    _persistMarkers();
     _pushUndo(
       { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
       true,
@@ -4443,8 +4439,7 @@ document.addEventListener("DOMContentLoaded", () => {
               if (newIx !== markers[activeMarkerIx]) {
                 const oldIx = markers[activeMarkerIx];
                 markers[activeMarkerIx] = newIx;
-                if (storage)
-                  storage.setItem("markers_" + workId, JSON.stringify(markers));
+                _persistMarkers();
                 _pushUndo(
                   {
                     type: "marker-move",
@@ -4513,8 +4508,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (newIx !== markers[activeMarkerIx] && newIx < gridLength) {
               const oldIx = markers[activeMarkerIx];
               markers[activeMarkerIx] = newIx;
-              if (storage)
-                storage.setItem("markers_" + workId, JSON.stringify(markers));
+              _persistMarkers();
               _pushUndo(
                 {
                   type: "marker-move",
@@ -4621,9 +4615,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const toMark = getClosestAlignmentIx();
         const arrIx = markers.length;
         markers.push(toMark);
-        if (storage) {
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
-        }
+        _persistMarkers();
         _pushUndo(
           { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
           true,

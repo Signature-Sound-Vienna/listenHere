@@ -404,6 +404,10 @@ let _alignCorrectionMode = false;
 //   { type:'marker-move', markerArrayIx, oldAlignIx, newAlignIx }
 const _undoStack = [];
 const _redoStack = [];
+// Dirty-state tracking: counter incremented on commit, decremented on undo,
+// incremented on redo. Dirty = _changeCounter !== _savedAtCounter.
+let _changeCounter = 0;
+let _savedAtCounter = 0;
 // Revert: original grids captured when alignment first loads
 const _alignOriginalGrids = {};
 // Radius presets (in alignment indices)
@@ -1199,7 +1203,8 @@ function _syncGroupsFromNav() {
   });
 
   loadedAlignmentJSON.header.fileGroups = groups;
-  _markJsonDirty();
+  _changeCounter++;
+  _updateDirtyState();
   _applyNavOrderToContentPanel();
 }
 
@@ -1494,25 +1499,30 @@ function _updateGroupCounts() {
   });
 }
 
-function _markJsonDirty() {
+function _updateDirtyState() {
+  const isDirty = _changeCounter !== _savedAtCounter;
   const dlBtn = document.getElementById("download-json-btn");
   if (dlBtn) {
-    dlBtn.classList.add("json-dirty");
-    dlBtn.title = "Download alignment data (You have unsaved changes!)";
+    dlBtn.classList.toggle("json-dirty", isDirty);
+    dlBtn.title = isDirty
+      ? "Download alignment data (You have unsaved changes!)"
+      : "Download alignment data";
   }
   const ctrl = document.getElementById("nav-middle-toggle");
   if (ctrl) {
-    ctrl.classList.add("json-dirty");
-    ctrl.title = "Collapse / expand controls (You have unsaved changes!)";
+    ctrl.classList.toggle("json-dirty", isDirty);
+    ctrl.title = isDirty
+      ? "Collapse / expand controls (You have unsaved changes!)"
+      : "Collapse / expand controls";
   }
 }
+
 
 /** Persist markers into the alignment JSON and mark dirty. */
 function _persistMarkers() {
   if (!loadedAlignmentJSON) return;
   if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
   loadedAlignmentJSON.header.markers = [...markers];
-  _markJsonDirty();
 }
 
 /**
@@ -1557,7 +1567,8 @@ function _persistGroupOrder() {
     groups.push({ name: gname, files });
   });
   loadedAlignmentJSON.header.fileGroups = groups;
-  _markJsonDirty();
+  _changeCounter++;
+  _updateDirtyState();
 }
 
 function _wireListSelectors() {
@@ -1669,7 +1680,8 @@ function _openGroupModal() {
     if (!loadedAlignmentJSON) loadedAlignmentJSON = {};
     if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
     loadedAlignmentJSON.header.fileGroups = groups;
-    _markJsonDirty();
+    _changeCounter++;
+    _updateDirtyState();
     backdrop.remove();
     // Re-render sidebar
     const fns = Object.keys(alignmentGrids)
@@ -3326,6 +3338,8 @@ document.addEventListener("DOMContentLoaded", () => {
       a.download = "alignment.json";
       a.click();
       URL.revokeObjectURL(url);
+      _savedAtCounter = _changeCounter;
+      _updateDirtyState();
     });
     if (alignmentData === "session") dlBtn.style.display = ""; // legacy fallback
   }
@@ -3430,7 +3444,10 @@ document.addEventListener("DOMContentLoaded", () => {
   /** Push an entry onto the undo stack. Clears redo on commit=true. */
   function _pushUndo(entry, commit = false) {
     _undoStack.push(entry);
-    if (commit) _redoStack.length = 0;
+    if (commit) {
+      _changeCounter++;
+      _redoStack.length = 0;
+    }
     _updateUndoRedoState();
   }
 
@@ -3470,6 +3487,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function _undoOne() {
     if (_undoStack.length === 0) return;
+    _changeCounter--;
     const entry = _undoStack.pop();
     switch (entry.type) {
       case "align-fix": {
@@ -3544,6 +3562,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function _redoOne() {
     if (_redoStack.length === 0) return;
+    _changeCounter++;
     const entry = _redoStack.pop();
     switch (entry.type) {
       case "align-fix": {
@@ -3618,8 +3637,16 @@ document.addEventListener("DOMContentLoaded", () => {
       _syncGridToJSON(filename);
       if (_gridRedrawers[filename]) _gridRedrawers[filename]();
     }
+    // Also restore markers to saved state
+    if (loadedAlignmentJSON?.header?.markers) {
+      markers = [...loadedAlignmentJSON.header.markers];
+    } else {
+      markers.length = 0;
+    }
+    redrawAllMarkers();
     _undoStack.length = 0;
     _redoStack.length = 0;
+    _changeCounter = _savedAtCounter;
     _updateUndoRedoState();
   }
 
@@ -3673,6 +3700,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       revertBtn.disabled = !hasChanges;
     }
+    _updateDirtyState();
   }
 
   function _syncGridToJSON(filename) {
@@ -3694,6 +3722,8 @@ document.addEventListener("DOMContentLoaded", () => {
         _revertAll();
     });
   }
+  // Ensure buttons reflect initial state (all disabled, clean)
+  _updateUndoRedoState();
 
   // Ctrl+Z / Ctrl+Shift+Z keyboard shortcuts for undo / redo
   document.addEventListener("keydown", (e) => {

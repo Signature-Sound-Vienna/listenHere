@@ -4379,6 +4379,12 @@ document.addEventListener("DOMContentLoaded", () => {
       (e) => (e.style.display = display),
     );
   });
+  // show relative position checkbox — redraw immediately when toggled while paused
+  document.getElementById("visrelalign").addEventListener("click", () => {
+    if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
+      _positionUpdaters[currentAudioIx]();
+    }
+  });
 
   // Zoom slider
   const zoomSlider = document.getElementById("zoom-slider");

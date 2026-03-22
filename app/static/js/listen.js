@@ -4169,27 +4169,43 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
     }
-    ctx.strokeStyle = "rgba(40, 160, 40, 0.7)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
+    // Compute peak displacement for colour interpolation
     const n = morphedGrid.length;
+    let peakDispAll = 0;
+    if (origGrid) {
+      for (let j = 0; j < n; j++) {
+        peakDispAll = Math.max(peakDispAll, Math.abs(morphedGrid[j] - origGrid[j]));
+      }
+    }
+    // Colour endpoints: grid base → bright red, by displacement ratio
+    const r0 = 140, g0 = 90, b0 = 90, a0 = 0.55;  // grid base
+    const r1 = 220, g1 = 40, b1 = 40, a1 = 0.9;    // max displacement
     const minPixelStep = 4;
     let lastAbsX = -999;
+    ctx.lineWidth = 1;
     for (let j = 0; j < n; j++) {
       const absoluteX = (j / n) * fullW - scrollLeft;
       const relativeX = (morphedGrid[j] / dur) * fullW - scrollLeft;
-      // Skip lines outside viewport
       if (absoluteX > viewW + 10 && relativeX > viewW + 10) continue;
       if (absoluteX < -10 && relativeX < -10) continue;
-      if (absoluteX - lastAbsX >= minPixelStep) {
-        ctx.moveTo(absoluteX, 0);
-        ctx.lineTo(relativeX, h / 6);
-        ctx.moveTo(relativeX, 5 * (h / 6));
-        ctx.lineTo(absoluteX, h);
-        lastAbsX = absoluteX;
-      }
+      if (absoluteX - lastAbsX < minPixelStep) continue;
+      lastAbsX = absoluteX;
+      const disp = origGrid ? Math.abs(morphedGrid[j] - origGrid[j]) : 0;
+      // Skip lines with negligible displacement
+      if (peakDispAll > 1e-6 && disp / peakDispAll < 0.005) continue;
+      const t = peakDispAll > 1e-6 ? disp / peakDispAll : 0;
+      const r = Math.round(r0 + (r1 - r0) * t);
+      const g = Math.round(g0 + (g1 - g0) * t);
+      const b = Math.round(b0 + (b1 - b0) * t);
+      const a = (a0 + (a1 - a0) * t).toFixed(2);
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
+      ctx.beginPath();
+      ctx.moveTo(absoluteX, 0);
+      ctx.lineTo(relativeX, h / 6);
+      ctx.moveTo(relativeX, 5 * (h / 6));
+      ctx.lineTo(absoluteX, h);
+      ctx.stroke();
     }
-    ctx.stroke();
   }
 
   // Hover: show influence zone near active marker in fix mode

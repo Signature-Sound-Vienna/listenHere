@@ -1442,20 +1442,6 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
   // Wire All/None buttons on content-pane group headers.
   // Use the nav sidebar checkboxes (always present) rather than content-pane
   // .waveform elements (only present after loading).
-  function _getNavCheckboxesForGroup(fg) {
-    const groupName = fg.dataset.group;
-    if (!groupName) return [];
-    // Find corresponding sidebar nav group by matching the ID convention
-    const navId = "audio-group-" + groupName.toLowerCase().replace(/\s+/g, "-");
-    const navGroup = document.getElementById(navId);
-    if (navGroup) return [...navGroup.querySelectorAll("input[type='checkbox']")];
-    // Fallback for ungrouped: try sidebar groups with "ungrouped" or "all" in name
-    for (const id of ["audio-group-ungrouped-recordings", "audio-group-all-recordings"]) {
-      const el = document.getElementById(id);
-      if (el) return [...el.querySelectorAll("input[type='checkbox']")];
-    }
-    return [];
-  }
   waveformsRoot.querySelectorAll(".group-all").forEach((btn) => {
     btn.addEventListener("click", () => {
       const fg = btn.closest(".file-group");
@@ -1470,6 +1456,24 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
       _getNavCheckboxesForGroup(fg).forEach((cb) => { if (cb.checked) cb.click(); });
     });
   });
+
+  // Show initial (0/x) counts
+  _updateGroupCounts();
+}
+
+/** Find nav sidebar checkboxes corresponding to a content-pane file-group. */
+function _getNavCheckboxesForGroup(fg) {
+  const groupName = fg.dataset.group;
+  if (!groupName) return [];
+  const navId = "audio-group-" + groupName.toLowerCase().replace(/\s+/g, "-");
+  const navGroup = document.getElementById(navId);
+  if (navGroup) return [...navGroup.querySelectorAll("input[type='checkbox']")];
+  // Fallback for ungrouped
+  for (const id of ["audio-group-ungrouped-recordings", "audio-group-all-recordings"]) {
+    const el = document.getElementById(id);
+    if (el) return [...el.querySelectorAll("input[type='checkbox']")];
+  }
+  return [];
 }
 
 /** Update (x/y) loaded-count badges on content-pane file-group headers. */
@@ -1477,11 +1481,14 @@ function _updateGroupCounts() {
   const waveformsRoot = document.getElementById("waveforms");
   if (!waveformsRoot) return;
   waveformsRoot.querySelectorAll(".file-group").forEach((fg) => {
-    const list = fg.querySelector(".group-list");
+    if (fg.classList.contains("file-group-score")) return;
     const badge = fg.querySelector(".group-count");
-    if (!list || !badge) return;
-    const wfs = list.querySelectorAll(".waveform");
-    const total = wfs.length;
+    if (!badge) return;
+    // Total from nav sidebar (always present), visible from content-pane waveforms
+    const navCbs = _getNavCheckboxesForGroup(fg);
+    const total = navCbs.length;
+    const list = fg.querySelector(".group-list");
+    const wfs = list ? list.querySelectorAll(".waveform") : [];
     const vis = Array.from(wfs).filter((w) => w.style.display !== "none").length;
     badge.textContent = total > 0 ? `(${vis}/${total})` : "";
   });

@@ -614,12 +614,15 @@ window.addEventListener("resize", () => {
 // --- Close-listening mode ---
 
 function enterCloseListeningMode(markerArrayIndex) {
-  if (markers.length === 0) return;
   closeListeningMode = true;
-  activeMarkerIx =
-    markerArrayIndex != null ? markerArrayIndex : findClosestMarkerIndex();
+  if (markers.length > 0) {
+    activeMarkerIx =
+      markerArrayIndex != null ? markerArrayIndex : findClosestMarkerIndex();
+    seekToActiveMarker();
+  } else {
+    activeMarkerIx = null;
+  }
   redrawAllMarkers();
-  seekToActiveMarker();
   updateCloseListeningBadge();
   _updateMarkBtnTooltip();
 }
@@ -954,6 +957,32 @@ function generateCheckboxList(list, isDraggable = false) {
 // ---------------------------------------------------------------------------
 const _GROUPS_STORAGE_PREFIX = "listenTool_fileGroups_";
 
+/** Predefined pastel palette for group colours (similar saturation, subtle). */
+const _GROUP_PALETTE = [
+  "#dbeafe", // soft blue
+  "#dcfce7", // soft green
+  "#fce7f3", // soft pink
+  "#ede9fe", // soft lavender
+  "#ffedd5", // soft peach
+  "#ccfbf1", // soft teal
+  "#fef9c3", // soft yellow
+  "#ffe4e6", // soft rose
+  "#e0e7ff", // soft indigo
+  "#d1fae5", // soft mint
+  "#fde68a", // soft amber
+  "#e9d5ff", // soft purple
+];
+
+/** Return the next palette colour not yet used by any group. */
+function _nextGroupColour(groups) {
+  const used = new Set((groups || []).map((g) => g.color).filter(Boolean));
+  for (const c of _GROUP_PALETTE) {
+    if (!used.has(c)) return c;
+  }
+  // All used — cycle back
+  return _GROUP_PALETTE[(groups || []).length % _GROUP_PALETTE.length];
+}
+
 /** Returns the localStorage key for the current context. */
 function _groupsStorageKey() {
   return _GROUPS_STORAGE_PREFIX + (window.location.pathname || "default");
@@ -1037,7 +1066,7 @@ function _renderSidebarFileList(filenames) {
   const ungrouped = filenames.filter((f) => !grouped.has(f)).sort();
 
   /** Helper: create a <fieldset class="audio-group collapsible-fieldset"> */
-  function _makeGroupFieldset(label, filesArray, isDraggable) {
+  function _makeGroupFieldset(label, filesArray, isDraggable, isGroupDraggable) {
     const fs = document.createElement("fieldset");
     fs.className = "audio-group collapsible-fieldset";
     fs.id = "audio-group-" + label.toLowerCase().replace(/\s+/g, "-");
@@ -1049,6 +1078,41 @@ function _renderSidebarFileList(filenames) {
     arrow.className = "collapse-arrow";
     arrow.innerHTML = "&#9662;";
     legend.appendChild(arrow);
+
+    // Group-level drag handle (for reordering groups in the sidebar)
+    if (isGroupDraggable) {
+      const groupHandle = document.createElement("span");
+      groupHandle.className = "nav-group-drag-handle";
+      groupHandle.setAttribute("aria-hidden", "true");
+      groupHandle.textContent = "\u2630"; // hamburger ☰
+      groupHandle.title = "Drag to reorder group";
+      legend.appendChild(groupHandle);
+
+      let _fromGroupHandle = false;
+      groupHandle.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        _fromGroupHandle = true;
+        fs.draggable = true; // only make fieldset draggable while handle is held
+      });
+      groupHandle.addEventListener("click", (e) => e.stopPropagation());
+      fs.addEventListener("pointerup", () => { _fromGroupHandle = false; });
+      fs.addEventListener("dragstart", (ev) => {
+        if (!_fromGroupHandle) {
+          fs.draggable = false;
+          return; // let file-level drags pass through
+        }
+        _fromGroupHandle = false;
+        ev.dataTransfer.setData("nav-group", label);
+        ev.dataTransfer.effectAllowed = "move";
+        fs.classList.add("nav-group-dragging");
+      });
+      fs.addEventListener("dragend", () => {
+        _fromGroupHandle = false;
+        fs.draggable = false;
+        fs.classList.remove("nav-group-dragging");
+      });
+    }
+
     fs.appendChild(legend);
 
     const body = document.createElement("div");
@@ -1075,31 +1139,65 @@ function _renderSidebarFileList(filenames) {
     return fs;
   }
 
-  // --- Render order: Score first, then groups, then ungrouped ---
+  // --- Build all fieldsets, then append in saved order ---
 
-  // 1. Score fieldset (first, if present)
+  // Create fieldsets keyed by group name
+  const fieldsetsByName = {};
+
+  // Score fieldset
   if (SYNTH_MEI_KEY in alignmentGrids) {
-    audiosElement.appendChild(
-      _makeGroupFieldset("Score", [SYNTH_MEI_KEY], false),
-    );
+    fieldsetsByName["Score"] = _makeGroupFieldset("Score", [SYNTH_MEI_KEY], false, true);
   }
 
-  // 2. Render each group as a collapsible fieldset
+  // Named group fieldsets
   groups.forEach((g, i) => {
     const members = groupMembers[i];
     if (members.length === 0) return;
-    const fs = _makeGroupFieldset(g.name, members, true);
-    audiosElement.appendChild(fs);
+    const fs = _makeGroupFieldset(g.name, members, true, true);
     _wireNavGroupDrop(fs);
+    fieldsetsByName[g.name] = fs;
   });
 
-  // 3. Ungrouped recordings (last)
+  // Ungrouped fieldset
+  const ungroupedLabel = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
   if (ungrouped.length > 0) {
-    const label = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
-    const fs = _makeGroupFieldset(label, ungrouped, true);
-    audiosElement.appendChild(fs);
+    const fs = _makeGroupFieldset(ungroupedLabel, ungrouped, true, true);
     _wireNavGroupDrop(fs);
+    fieldsetsByName["Ungrouped"] = fs;
   }
+
+  // Append in saved groupOrder (uses normalized names), then any remaining
+  const savedOrder =
+    loadedAlignmentJSON &&
+    loadedAlignmentJSON.header &&
+    Array.isArray(loadedAlignmentJSON.header.groupOrder)
+      ? loadedAlignmentJSON.header.groupOrder
+      : null;
+
+  const appended = new Set();
+  if (savedOrder) {
+    savedOrder.forEach((name) => {
+      if (fieldsetsByName[name] && !appended.has(name)) {
+        audiosElement.appendChild(fieldsetsByName[name]);
+        appended.add(name);
+      }
+    });
+  }
+  // Default order for any not in savedOrder: Score, named groups, Ungrouped
+  const defaultOrder = [
+    "Score",
+    ...groups.map((g) => g.name),
+    "Ungrouped",
+  ];
+  defaultOrder.forEach((name) => {
+    if (fieldsetsByName[name] && !appended.has(name)) {
+      audiosElement.appendChild(fieldsetsByName[name]);
+      appended.add(name);
+    }
+  });
+
+  // Wire up group-level drag-and-drop reordering on the sidebar
+  _wireNavGroupReorder(audiosElement);
 
   // Wire up list selectors (All / None)
   _wireListSelectors();
@@ -1174,6 +1272,63 @@ function _wireNavGroupDrop(groupEl) {
 }
 
 /**
+ * Wire up group-level drag-and-drop reordering in the sidebar.
+ * Groups can be dragged above/below each other; Score stays first,
+ * Ungrouped stays last.
+ */
+let _navGroupDragRafPending = false;
+
+function _wireNavGroupReorder(audiosElement) {
+  /** Live-move draggedFs to the position closest to clientY among siblings. */
+  function _moveGroupToPosition(draggedFs, clientY) {
+    const siblings = Array.from(
+      audiosElement.querySelectorAll("fieldset.audio-group"),
+    ).filter((fs) => fs !== draggedFs);
+
+    const insertBefore = siblings.find((fs) => {
+      const r = fs.getBoundingClientRect();
+      return clientY < r.top + r.height / 2;
+    });
+
+    if (insertBefore) {
+      audiosElement.insertBefore(draggedFs, insertBefore);
+    } else {
+      audiosElement.appendChild(draggedFs);
+    }
+  }
+
+  audiosElement.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer.types.includes("nav-group")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+
+    const draggedFs = audiosElement.querySelector("fieldset.nav-group-dragging");
+    if (!draggedFs) return;
+
+    // Live-move the fieldset in the sidebar
+    _moveGroupToPosition(draggedFs, e.clientY);
+
+    // Throttled content-panel sync (no animation during drag for performance)
+    if (!_navGroupDragRafPending) {
+      _navGroupDragRafPending = true;
+      requestAnimationFrame(() => {
+        _navGroupDragRafPending = false;
+        _applyNavOrderToContentPanel(false);
+      });
+    }
+  });
+
+  audiosElement.addEventListener("drop", (e) => {
+    if (!e.dataTransfer.types.includes("nav-group")) return;
+    e.preventDefault();
+    const draggedFs = audiosElement.querySelector("fieldset.nav-group-dragging");
+    if (draggedFs) draggedFs.classList.remove("nav-group-dragging");
+    // Final sync + persist
+    _syncGroupsFromNav();
+  });
+}
+
+/**
  * Read the current sidebar DOM order and persist it to
  * loadedAlignmentJSON.header.fileGroups, then sync the content panel.
  */
@@ -1181,14 +1336,16 @@ function _syncGroupsFromNav() {
   if (!loadedAlignmentJSON) return;
   if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
 
+  // Build lookup of existing group properties (pattern, color) by name
+  const oldGroups = loadedAlignmentJSON.header.fileGroups || [];
+  const oldByName = {};
+  oldGroups.forEach((g) => { oldByName[g.name] = g; });
+
   const audios = document.getElementById("audios");
   const groups = [];
 
   audios.querySelectorAll("fieldset.audio-group").forEach((fs) => {
-    const legend = fs.querySelector("legend");
-    const groupName = legend
-      ? legend.textContent.replace(/\s*▾\s*$/, "").trim()
-      : "";
+    const groupName = _getGroupNameFromFieldset(fs);
     if (groupName === "Score") return; // Score group is immutable
 
     const files = Array.from(fs.querySelectorAll("li.renditionName"))
@@ -1199,62 +1356,100 @@ function _syncGroupsFromNav() {
     if (groupName === "Ungrouped recordings" || groupName === "All recordings")
       return;
 
-    groups.push({ name: groupName, files });
+    // Preserve pattern and color from existing group definition
+    const old = oldByName[groupName] || {};
+    const entry = { name: groupName, files };
+    if (old.pattern) entry.pattern = old.pattern;
+    if (old.color) entry.color = old.color;
+    groups.push(entry);
   });
 
   loadedAlignmentJSON.header.fileGroups = groups;
+
+  // Persist full group display order using normalized names (matching data-group)
+  const groupOrder = [];
+  audios.querySelectorAll("fieldset.audio-group").forEach((fs) => {
+    const name = _getGroupNameFromFieldset(fs);
+    if (name === "Ungrouped recordings" || name === "All recordings") {
+      groupOrder.push("Ungrouped");
+    } else {
+      groupOrder.push(name);
+    }
+  });
+  loadedAlignmentJSON.header.groupOrder = groupOrder;
+
   _changeCounter++;
   _updateDirtyState();
   _applyNavOrderToContentPanel();
 }
 
+/** Extract the group name from a sidebar fieldset legend, stripping UI elements. */
+function _getGroupNameFromFieldset(fs) {
+  const legend = fs.querySelector("legend");
+  if (!legend) return "";
+  // Clone legend and remove child elements (collapse arrow, drag handle)
+  // to get just the text content of the legend itself
+  const clone = legend.cloneNode(true);
+  clone.querySelectorAll(".collapse-arrow, .nav-group-drag-handle").forEach(
+    (el) => el.remove(),
+  );
+  return clone.textContent.trim();
+}
+
 /**
- * Reorder waveform elements in the content panel to match the nav sidebar order,
- * using a FLIP animation (First → Last → Invert → Play).
+ * Reorder waveform elements in the content panel to match the nav sidebar order.
+ * @param {boolean} animate - If true, use FLIP animation. If false, just reorder DOM.
  */
-function _applyNavOrderToContentPanel() {
+function _applyNavOrderToContentPanel(animate = true) {
   const waveformsRoot = document.getElementById("waveforms");
   if (!waveformsRoot) return;
 
-  // FIRST: snapshot positions of all non-Score waveforms
+  // FIRST: snapshot positions (only needed for animation)
   const allWaveforms = Array.from(
-    waveformsRoot.querySelectorAll(
-      ".file-group:not(.file-group-score) .waveform",
-    ),
+    waveformsRoot.querySelectorAll(".file-group .waveform"),
   );
   const firstRects = new Map();
-  allWaveforms.forEach((wf) => {
-    firstRects.set(wf, wf.getBoundingClientRect());
-  });
+  if (animate) {
+    allWaveforms.forEach((wf) => {
+      firstRects.set(wf, wf.getBoundingClientRect());
+    });
+  }
 
   // Build desired order from the nav
   const audios = document.getElementById("audios");
+
+  /** Find the content-pane file-group matching a sidebar group name. */
+  function _findContentGroup(groupName) {
+    if (groupName === "Score") {
+      return waveformsRoot.querySelector(".file-group-score");
+    }
+    if (groupName === "Ungrouped recordings" || groupName === "All recordings") {
+      return waveformsRoot.querySelector(".file-group-ungrouped");
+    }
+    return waveformsRoot.querySelector(
+      `.file-group[data-group='${CSS.escape(groupName)}']`,
+    );
+  }
+
+  // Reorder file-group containers in content pane to match sidebar order
   audios.querySelectorAll("fieldset.audio-group").forEach((fs) => {
-    const legend = fs.querySelector("legend");
-    const groupName = legend
-      ? legend.textContent.replace(/\s*▾\s*$/, "").trim()
-      : "";
-    if (groupName === "Score") return;
+    const groupName = _getGroupNameFromFieldset(fs);
+    const fg = _findContentGroup(groupName);
+    if (fg) {
+      waveformsRoot.appendChild(fg);
+    }
+  });
+
+  // Reorder waveforms within each group to match nav order
+  audios.querySelectorAll("fieldset.audio-group").forEach((fs) => {
+    const groupName = _getGroupNameFromFieldset(fs);
 
     const filenames = Array.from(fs.querySelectorAll("li.renditionName"))
       .map((li) => li.id)
       .filter(Boolean);
 
-    // Find the corresponding content-panel group-list
-    let groupList = null;
-    if (
-      groupName === "Ungrouped recordings" ||
-      groupName === "All recordings"
-    ) {
-      groupList = waveformsRoot.querySelector(
-        ".file-group-ungrouped .group-list",
-      );
-    } else {
-      const fg = waveformsRoot.querySelector(
-        `.file-group[data-group='${CSS.escape(groupName)}']`,
-      );
-      groupList = fg ? fg.querySelector(".group-list") : null;
-    }
+    const fg = _findContentGroup(groupName);
+    const groupList = fg ? fg.querySelector(".group-list") : null;
     if (!groupList) return;
 
     // Move any cross-group waveforms into this group-list first
@@ -1279,6 +1474,22 @@ function _applyNavOrderToContentPanel() {
     });
   });
 
+  function _onAllTransitionsDone() {
+    // After DOM reorder + animation, WaveSurfer containers may need a
+    // re-render (especially when zoomed — shadow DOM can go blank).
+    Object.keys(wavesurfers).forEach((fn) => {
+      if (!loaded.has(fn)) return;
+      _syncOverlayScroll(fn);
+      if (_gridRedrawers[fn]) _gridRedrawers[fn]();
+    });
+    redrawAllMarkers();
+  }
+
+  if (!animate) {
+    _onAllTransitionsDone();
+    return;
+  }
+
   // INVERT: shift elements back to where they visually were
   allWaveforms.forEach((wf) => {
     const first = firstRects.get(wf);
@@ -1297,16 +1508,6 @@ function _applyNavOrderToContentPanel() {
 
   // PLAY: animate to final positions
   let _pendingTransitions = 0;
-  function _onAllTransitionsDone() {
-    // After DOM reorder + animation, WaveSurfer containers may need a
-    // re-render (especially when zoomed — shadow DOM can go blank).
-    Object.keys(wavesurfers).forEach((fn) => {
-      if (!loaded.has(fn)) return;
-      _syncOverlayScroll(fn);
-      if (_gridRedrawers[fn]) _gridRedrawers[fn]();
-    });
-    redrawAllMarkers();
-  }
   requestAnimationFrame(() => {
     allWaveforms.forEach((wf) => {
       if (wf.style.transform) {
@@ -1383,16 +1584,19 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
 
   const ungrouped = filenames.filter((f) => !grouped.has(f)).sort();
 
+  // Build all containers keyed by group name, then append in saved order
+  const contentByName = {};
+
   // Score container (if present)
   if (SYNTH_MEI_KEY in alignmentGrids) {
-    const g = document.createElement("div");
-    g.className = "file-group file-group-score";
-    g.dataset.group = "Score";
-    g.innerHTML = `<div class="group-title">Score <span class="group-count"></span></div><div class="group-list"></div>`;
-    waveformsRoot.appendChild(g);
+    const el = document.createElement("div");
+    el.className = "file-group file-group-score";
+    el.dataset.group = "Score";
+    el.innerHTML = `<div class="group-title">Score <span class="group-count"></span></div><div class="group-list"></div>`;
+    contentByName["Score"] = el;
   }
 
-  // Create containers for each named group
+  // Named group containers
   groups.forEach((g, i) => {
     const members = groupMembers[i];
     if (members.length === 0) return;
@@ -1400,18 +1604,50 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     container.className = "file-group";
     container.dataset.group = g.name;
     container.innerHTML = `<div class="group-title">${g.name} <span class="group-count"></span><span class="group-actions"><span class="group-all">All</span><span class="group-none">None</span></span></div><div class="group-list"></div>`;
-    waveformsRoot.appendChild(container);
+    if (g.color) {
+      container.style.backgroundColor = g.color;
+    }
+    contentByName[g.name] = container;
   });
 
   // Ungrouped container
+  const ungroupedLabel = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
   if (ungrouped.length > 0) {
     const uc = document.createElement("div");
     uc.className = "file-group file-group-ungrouped";
     uc.dataset.group = "Ungrouped";
-    const ungroupedLabel = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
     uc.innerHTML = `<div class="group-title">${ungroupedLabel} <span class="group-count"></span><span class="group-actions"><span class="group-all">All</span><span class="group-none">None</span></span></div><div class="group-list"></div>`;
-    waveformsRoot.appendChild(uc);
+    contentByName["Ungrouped"] = uc;
   }
+
+  // Append in saved groupOrder (uses data-group values), then any remaining
+  const savedOrder =
+    loadedAlignmentJSON &&
+    loadedAlignmentJSON.header &&
+    Array.isArray(loadedAlignmentJSON.header.groupOrder)
+      ? loadedAlignmentJSON.header.groupOrder
+      : null;
+
+  const contentAppended = new Set();
+  if (savedOrder) {
+    savedOrder.forEach((name) => {
+      if (contentByName[name] && !contentAppended.has(name)) {
+        waveformsRoot.appendChild(contentByName[name]);
+        contentAppended.add(name);
+      }
+    });
+  }
+  const defaultContentOrder = [
+    "Score",
+    ...groups.map((g) => g.name),
+    "Ungrouped",
+  ];
+  defaultContentOrder.forEach((name) => {
+    if (contentByName[name] && !contentAppended.has(name)) {
+      waveformsRoot.appendChild(contentByName[name]);
+      contentAppended.add(name);
+    }
+  });
 
   // Make non-Score group-lists droppable for reordering
   waveformsRoot.querySelectorAll(".group-list").forEach((list) => {
@@ -1554,19 +1790,34 @@ function _updateMarkBtnTooltip() {
 function _persistGroupOrder() {
   if (!loadedAlignmentJSON) return;
   if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+
+  // Preserve existing group properties (pattern, color) by name
+  const oldGroups = loadedAlignmentJSON.header.fileGroups || [];
+  const oldByName = {};
+  oldGroups.forEach((g) => { oldByName[g.name] = g; });
+
   const waveformsRoot = document.getElementById("waveforms");
   const groups = [];
-  // Iterate existing file-group containers (skip Score)
   Array.from(waveformsRoot.querySelectorAll(".file-group")).forEach((fg) => {
     const gname = fg.dataset.group || "Ungrouped";
-    if (gname === "Score") return; // do not include score
+    if (gname === "Score") return;
     const list = fg.querySelector(".group-list");
     const files = Array.from(list.querySelectorAll(".waveform"))
       .map((w) => w.dataset.ix)
       .filter(Boolean);
-    groups.push({ name: gname, files });
+    const old = oldByName[gname] || {};
+    const entry = { name: gname, files };
+    if (old.pattern) entry.pattern = old.pattern;
+    if (old.color) entry.color = old.color;
+    groups.push(entry);
   });
   loadedAlignmentJSON.header.fileGroups = groups;
+
+  // Persist full group display order using data-group values
+  const groupOrder = Array.from(waveformsRoot.querySelectorAll(".file-group"))
+    .map((fg) => fg.dataset.group || "Ungrouped");
+  loadedAlignmentJSON.header.groupOrder = groupOrder;
+
   _changeCounter++;
   _updateDirtyState();
 }
@@ -1651,7 +1902,7 @@ function _openGroupModal() {
   addGroupBtn.className = "gm-add-group";
   addGroupBtn.textContent = "+ New Group";
   addGroupBtn.addEventListener("click", () => {
-    groups.push({ name: "New Group", pattern: "", files: [] });
+    groups.push({ name: "New Group", pattern: "", files: [], color: _nextGroupColour(groups) });
     renderGroups();
   });
   rightHeader.appendChild(addGroupBtn);
@@ -1829,6 +2080,56 @@ function _openGroupModal() {
       patRow.appendChild(patLabel);
       patRow.appendChild(patInput);
       card.appendChild(patRow);
+
+      // Colour picker row
+      const colourRow = document.createElement("div");
+      colourRow.className = "gm-colour-row";
+      const colourLabel = document.createElement("label");
+      colourLabel.textContent = "Colour:";
+      // Palette swatches
+      const swatchContainer = document.createElement("span");
+      swatchContainer.className = "gm-swatch-container";
+      _GROUP_PALETTE.forEach((c) => {
+        const swatch = document.createElement("span");
+        swatch.className = "gm-swatch";
+        if (g.color === c) swatch.classList.add("gm-swatch-selected");
+        swatch.style.backgroundColor = c;
+        swatch.title = c;
+        swatch.addEventListener("click", () => {
+          g.color = c;
+          renderGroups();
+        });
+        swatchContainer.appendChild(swatch);
+      });
+      // Custom colour input
+      const colourInput = document.createElement("input");
+      colourInput.type = "color";
+      colourInput.className = "gm-colour-input";
+      colourInput.value = g.color || _nextGroupColour(groups);
+      colourInput.title = "Choose a custom colour";
+      colourInput.addEventListener("input", (e) => {
+        g.color = e.target.value;
+        renderGroups();
+      });
+      // Clear button
+      const clearBtn = document.createElement("button");
+      clearBtn.className = "gm-icon-btn gm-colour-clear";
+      clearBtn.title = "Remove colour";
+      clearBtn.textContent = "\u2715";
+      clearBtn.addEventListener("click", () => {
+        g.color = "";
+        renderGroups();
+      });
+      colourRow.appendChild(colourLabel);
+      colourRow.appendChild(swatchContainer);
+      colourRow.appendChild(colourInput);
+      colourRow.appendChild(clearBtn);
+      card.appendChild(colourRow);
+
+      // Apply colour preview to card
+      if (g.color) {
+        card.style.backgroundColor = g.color;
+      }
 
       // File list (explicit + regex-matched)
       const fileUl = document.createElement("ul");
@@ -3385,11 +3686,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (closeListeningCb) {
     closeListeningCb.addEventListener("change", () => {
       if (closeListeningCb.checked) {
-        if (markers.length > 0) {
-          enterCloseListeningMode(findClosestMarkerIndex());
-        } else {
-          closeListeningCb.checked = false; // can't enter without markers
-        }
+        enterCloseListeningMode(markers.length > 0 ? findClosestMarkerIndex() : null);
       } else {
         exitCloseListeningMode();
       }

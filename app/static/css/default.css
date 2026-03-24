@@ -805,6 +805,13 @@ details {
 .wf-overlays-inner .ws-marker { pointer-events: auto; }
 /* correction overlay pointer-events managed via inline style in listen.js */
 
+/* During draw mode, suppress native browser drag on waveform content
+   so pointer events flow to the WaveSurfer regions plugin instead. */
+#waveforms.draw-mode-active,
+#waveforms.draw-mode-active * {
+  -webkit-user-drag: none;
+}
+
 /* Solid Drawer Button Handle */
 #solid-drawer-btn {
   position: fixed;

@@ -740,6 +740,11 @@ function _applyCorrectionOverlayPointerEvents() {
 export function setDrawModeActive(active) {
   _drawModeActive = active;
   _applyCorrectionOverlayPointerEvents();
+  // Toggle a class so CSS can suppress native drag on waveform elements
+  document.getElementById("waveforms")?.classList.toggle(
+    "draw-mode-active",
+    active,
+  );
 }
 
 /** Toggle .draggable class on all marker elements. */
@@ -4152,6 +4157,13 @@ document.addEventListener("DOMContentLoaded", () => {
       setTimeout(() => tip.remove(), 2500);
     }
   }
+
+  // Prevent native browser drag on waveforms during draw-region mode.
+  // Without this, the browser initiates a native HTML drag (ghost image)
+  // instead of letting the WaveSurfer regions plugin handle pointer events.
+  document.getElementById("waveforms").addEventListener("dragstart", (e) => {
+    if (_drawModeActive) e.preventDefault();
+  });
 
   // Mousedown on waveforms: handle marker drag start
   document.getElementById("waveforms").addEventListener("mousedown", (e) => {

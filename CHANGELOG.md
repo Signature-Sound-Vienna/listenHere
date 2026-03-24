@@ -1,5 +1,19 @@
 # Listen Here! CHANGELOG.md
 
+### 0.16.0
+* Global waveform zoom (1x–50x) with alignment-aware cross-waveform scroll sync
+* Three playback scroll modes: Page (jump at edge), Follow (auto-centre), Manual
+* Add count indicators and Add/Remove all to file-groups in content pane
+
+### 0.15.0
+* Reflect waveform groupings into content pane
+* Make waveforms reorderable through click-and-drag in nav bar
+
+### 0.14.0
+* Improve styling of navigation menu
+* Implement 'drag marker' modes for marker movement and alignment correction
+* Expand header of alignment JSON to save file groups, marker placements, URI prefix configs
+
 ### 0.13.0
 * Popup-based Solid authentication: log in without losing loaded audio, waveforms, or draft state
 * Falls back to redirect-based login if the popup is blocked

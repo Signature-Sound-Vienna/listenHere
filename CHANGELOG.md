@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.17.0
+* Allow styling and reordering of file groups, persist group-order in alignment JSON
+* Persist markers in alignment JSON
+* Styling improvements for fix-alignments
+
 ### 0.16.0
 * Global waveform zoom (1x–50x) with alignment-aware cross-waveform scroll sync
 * Three playback scroll modes: Page (jump at edge), Follow (auto-centre), Manual

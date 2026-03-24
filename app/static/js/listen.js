@@ -816,6 +816,7 @@ function onClickRenditionCheckbox(e) {
   let checked = checkbox.checked;
   let label = checkbox.parentElement.querySelector("label");
   let waveform = document.getElementById("waveform-" + e.target.value + "-wav");
+  if (!waveform) return; // element may not be in DOM during tab switch
   if (!checked) {
     e.stopPropagation(); // hide from other handler
     waveform.style.display = "none";
@@ -860,7 +861,7 @@ export function swapCurrentAudio(newAudio) {
         : getClosestAlignmentIx();
     document
       .getElementById(`waveform-${currentAudioIx}` + "-wav")
-      .classList.remove("active");
+      ?.classList.remove("active");
     // Reset the demoted waveform's canvas clip-path to 0 (WaveSurfer v7 uses
     // a clip-path on the canvases div to show only the unplayed region; the
     // CSS ::part(progress) hides the progress overlay on inactive waveforms,
@@ -1024,12 +1025,59 @@ function _loadGroups() {
   return [];
 }
 
-function _saveGroups(groups) {
-  try {
-    localStorage.setItem(_groupsStorageKey(), JSON.stringify(groups));
-  } catch (e) {
-    console.warn("Could not save file groups to localStorage:", e);
+// ---------------------------------------------------------------------------
+// Grouping Tabs – migration and accessors
+// ---------------------------------------------------------------------------
+
+/**
+ * Migrate legacy flat fileGroups/groupOrder into the new groupingTabs format.
+ * Call once after alignment JSON is loaded.
+ */
+function _migrateToGroupingTabs() {
+  if (!loadedAlignmentJSON) return;
+  if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+  const h = loadedAlignmentJSON.header;
+
+  if (Array.isArray(h.groupingTabs) && h.groupingTabs.length > 0) return;
+
+  // Wrap existing flat groups (or localStorage fallback) into a "Default" tab
+  const groups = Array.isArray(h.fileGroups) ? h.fileGroups : _loadGroups();
+  const order = Array.isArray(h.groupOrder) ? h.groupOrder : [];
+  h.groupingTabs = [{ name: "Default", fileGroups: groups, groupOrder: order }];
+  h.activeTab = "Default";
+
+  // Remove legacy flat properties now that they are nested inside the tab
+  delete h.fileGroups;
+  delete h.groupOrder;
+}
+
+/** Return the active tab object (falls back to index 0). */
+function _getActiveTab() {
+  const h = loadedAlignmentJSON?.header;
+  if (!h || !Array.isArray(h.groupingTabs) || h.groupingTabs.length === 0) {
+    return { name: "Default", fileGroups: [], groupOrder: [] };
   }
+  return (
+    h.groupingTabs.find((t) => t.name === h.activeTab) || h.groupingTabs[0]
+  );
+}
+
+function _getActiveFileGroups() {
+  return _getActiveTab().fileGroups || [];
+}
+
+function _getActiveGroupOrder() {
+  return _getActiveTab().groupOrder || [];
+}
+
+function _setActiveFileGroups(groups) {
+  const tab = _getActiveTab();
+  tab.fileGroups = groups;
+}
+
+function _setActiveGroupOrder(order) {
+  const tab = _getActiveTab();
+  tab.groupOrder = order;
 }
 
 /**
@@ -1043,14 +1091,8 @@ function _renderSidebarFileList(filenames) {
     .querySelectorAll("fieldset.audio-group, ul.ungrouped-files")
     .forEach((el) => el.remove());
 
-  // Prefer groups stored in the alignment JSON header if present,
-  // otherwise fall back to localStorage groups.
-  const groups =
-    loadedAlignmentJSON &&
-    loadedAlignmentJSON.header &&
-    Array.isArray(loadedAlignmentJSON.header.fileGroups)
-      ? loadedAlignmentJSON.header.fileGroups
-      : _loadGroups();
+  // Use active tab's groups (migrated on load)
+  const groups = loadedAlignmentJSON ? _getActiveFileGroups() : [];
 
   // Determine which files belong to groups
   const grouped = new Set();
@@ -1189,12 +1231,8 @@ function _renderSidebarFileList(filenames) {
   }
 
   // Append in saved groupOrder (uses normalized names), then any remaining
-  const savedOrder =
-    loadedAlignmentJSON &&
-    loadedAlignmentJSON.header &&
-    Array.isArray(loadedAlignmentJSON.header.groupOrder)
-      ? loadedAlignmentJSON.header.groupOrder
-      : null;
+  const activeOrder = loadedAlignmentJSON ? _getActiveGroupOrder() : [];
+  const savedOrder = activeOrder.length > 0 ? activeOrder : null;
 
   const appended = new Set();
   if (savedOrder) {
@@ -1359,7 +1397,7 @@ function _syncGroupsFromNav() {
   if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
 
   // Build lookup of existing group properties (pattern, color) by name
-  const oldGroups = loadedAlignmentJSON.header.fileGroups || [];
+  const oldGroups = _getActiveFileGroups();
   const oldByName = {};
   oldGroups.forEach((g) => { oldByName[g.name] = g; });
 
@@ -1386,7 +1424,7 @@ function _syncGroupsFromNav() {
     groups.push(entry);
   });
 
-  loadedAlignmentJSON.header.fileGroups = groups;
+  _setActiveFileGroups(groups);
 
   // Persist full group display order using normalized names (matching data-group)
   const groupOrder = [];
@@ -1398,7 +1436,7 @@ function _syncGroupsFromNav() {
       groupOrder.push(name);
     }
   });
-  loadedAlignmentJSON.header.groupOrder = groupOrder;
+  _setActiveGroupOrder(groupOrder);
 
   _changeCounter++;
   _updateDirtyState();
@@ -1560,6 +1598,13 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
   const waveformsRoot = document.getElementById("waveforms");
 
   if (forceRebuild) {
+    // Detach waveform elements before removing group containers so they
+    // stay in the DOM and can be re-placed into new containers below.
+    const detached = [];
+    waveformsRoot.querySelectorAll(".file-group .waveform").forEach((wf) => {
+      detached.push(wf);
+      waveformsRoot.appendChild(wf); // park on root temporarily
+    });
     Array.from(waveformsRoot.querySelectorAll(".file-group")).forEach((el) =>
       el.remove(),
     );
@@ -1568,12 +1613,7 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
   // If containers already exist, nothing to do
   if (waveformsRoot.querySelector(".file-group")) return;
 
-  const groups =
-    loadedAlignmentJSON &&
-    loadedAlignmentJSON.header &&
-    Array.isArray(loadedAlignmentJSON.header.fileGroups)
-      ? loadedAlignmentJSON.header.fileGroups
-      : _loadGroups();
+  const groups = loadedAlignmentJSON ? _getActiveFileGroups() : [];
 
   // Determine membership similar to sidebar: support explicit files + pattern
   const grouped = new Set();
@@ -1643,12 +1683,8 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
   }
 
   // Append in saved groupOrder (uses data-group values), then any remaining
-  const savedOrder =
-    loadedAlignmentJSON &&
-    loadedAlignmentJSON.header &&
-    Array.isArray(loadedAlignmentJSON.header.groupOrder)
-      ? loadedAlignmentJSON.header.groupOrder
-      : null;
+  const activeOrder = loadedAlignmentJSON ? _getActiveGroupOrder() : [];
+  const savedOrder = activeOrder.length > 0 ? activeOrder : null;
 
   const contentAppended = new Set();
   if (savedOrder) {
@@ -1722,6 +1758,134 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
 
   // Show initial (0/x) counts
   _updateGroupCounts();
+}
+
+// ---------------------------------------------------------------------------
+// Grouping Tab Pills (content pane) and tab switching
+// ---------------------------------------------------------------------------
+
+/**
+ * Render the pill selector at the top of the content pane.
+ * Only shown when there are 2+ tabs.
+ */
+function _renderGroupingTabPills() {
+  let pillRow = document.getElementById("grouping-tab-pills");
+  const tabs = loadedAlignmentJSON?.header?.groupingTabs;
+  if (!tabs || tabs.length < 2) {
+    if (pillRow) pillRow.remove();
+    return;
+  }
+  const activeTabName = loadedAlignmentJSON.header.activeTab || tabs[0].name;
+  const contentEl = document.getElementById("content");
+  const waveformsEl = document.getElementById("waveforms");
+  if (!pillRow) {
+    pillRow = document.createElement("div");
+    pillRow.id = "grouping-tab-pills";
+    contentEl.insertBefore(pillRow, waveformsEl);
+  }
+  pillRow.innerHTML = "";
+  tabs.forEach((tab) => {
+    const pill = document.createElement("span");
+    pill.className = "gt-pill" + (tab.name === activeTabName ? " active" : "");
+    pill.textContent = tab.name;
+    pill.addEventListener("click", () => {
+      if (tab.name === activeTabName) return;
+      _switchActiveTab(tab.name);
+    });
+    pillRow.appendChild(pill);
+  });
+}
+
+/**
+ * Switch the active grouping tab — re-renders sidebar and content pane.
+ */
+function _switchActiveTab(tabName) {
+  if (!loadedAlignmentJSON?.header) return;
+  loadedAlignmentJSON.header.activeTab = tabName;
+
+  const filenames = Object.keys(alignmentGrids)
+    .filter((n) => n !== SYNTH_MEI_KEY)
+    .sort();
+
+  // Snapshot waveform positions for FLIP animation
+  const waveformEls = document.querySelectorAll("#waveforms .waveform");
+  const firstRects = new Map();
+  waveformEls.forEach((el) => {
+    firstRects.set(el, el.getBoundingClientRect());
+  });
+
+  // Re-render sidebar with new tab's groups
+  _renderSidebarFileList(filenames);
+
+  // Rebuild content pane group containers
+  _ensureWaveformGroupContainers(filenames.concat(
+    SYNTH_MEI_KEY in alignmentGrids ? [SYNTH_MEI_KEY] : [],
+  ), true /* forceRebuild */);
+
+  // Move existing waveform elements into their new group containers
+  const waveformsRoot = document.getElementById("waveforms");
+  const groups = _getActiveFileGroups();
+  const groupMap = new Map(); // filename -> group name
+  groups.forEach((g) => {
+    const members = new Set(g.files || []);
+    if (g.pattern) {
+      try {
+        const re = new RegExp(g.pattern);
+        filenames.forEach((f) => {
+          const short = f.substring(f.lastIndexOf("/") + 1);
+          if (re.test(short) || re.test(f)) members.add(f);
+        });
+      } catch (_) {}
+    }
+    members.forEach((f) => groupMap.set(f, g.name));
+  });
+
+  // Place each existing waveform into the correct group-list
+  Object.keys(wavesurfers).forEach((fname) => {
+    const wfEl = waveformsRoot.querySelector(`.waveform[data-ix='${CSS.escape(fname)}']`);
+    if (!wfEl) return;
+    let targetList;
+    if (fname === SYNTH_MEI_KEY) {
+      targetList = waveformsRoot.querySelector(".file-group-score .group-list");
+    } else if (groupMap.has(fname)) {
+      const fg = waveformsRoot.querySelector(`.file-group[data-group='${CSS.escape(groupMap.get(fname))}']`);
+      targetList = fg?.querySelector(".group-list");
+    }
+    if (!targetList) {
+      targetList = waveformsRoot.querySelector(".file-group-ungrouped .group-list");
+    }
+    if (targetList && wfEl.parentElement !== targetList) {
+      targetList.appendChild(wfEl);
+    }
+  });
+
+  _updateGroupCounts();
+
+  // FLIP animation
+  waveformEls.forEach((el) => {
+    const first = firstRects.get(el);
+    if (!first) return;
+    const last = el.getBoundingClientRect();
+    const dx = first.left - last.left;
+    const dy = first.top - last.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+    el.style.transition = "none";
+    requestAnimationFrame(() => {
+      el.style.transition = "transform 0.3s ease";
+      el.style.transform = "";
+      el.addEventListener("transitionend", function handler() {
+        el.style.transition = "";
+        el.removeEventListener("transitionend", handler);
+      });
+    });
+  });
+
+  // Update pills
+  _renderGroupingTabPills();
+
+  _changeCounter++;
+  _updateDirtyState();
 }
 
 /** Find nav sidebar checkboxes corresponding to a content-pane file-group. */
@@ -1814,7 +1978,7 @@ function _persistGroupOrder() {
   if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
 
   // Preserve existing group properties (pattern, color) by name
-  const oldGroups = loadedAlignmentJSON.header.fileGroups || [];
+  const oldGroups = _getActiveFileGroups();
   const oldByName = {};
   oldGroups.forEach((g) => { oldByName[g.name] = g; });
 
@@ -1833,12 +1997,12 @@ function _persistGroupOrder() {
     if (old.color) entry.color = old.color;
     groups.push(entry);
   });
-  loadedAlignmentJSON.header.fileGroups = groups;
+  _setActiveFileGroups(groups);
 
   // Persist full group display order using data-group values
   const groupOrder = Array.from(waveformsRoot.querySelectorAll(".file-group"))
     .map((fg) => fg.dataset.group || "Ungrouped");
-  loadedAlignmentJSON.header.groupOrder = groupOrder;
+  _setActiveGroupOrder(groupOrder);
 
   _changeCounter++;
   _updateDirtyState();
@@ -1879,7 +2043,15 @@ function _openGroupModal() {
   const filenames = Object.keys(alignmentGrids)
     .filter((n) => n !== SYNTH_MEI_KEY)
     .sort();
-  let groups = _loadGroups();
+
+  // Deep-clone all tabs for editing; modal edits this clone until Apply
+  _migrateToGroupingTabs();
+  const h = loadedAlignmentJSON?.header || {};
+  let modalTabs = JSON.parse(JSON.stringify(h.groupingTabs || [{ name: "Default", fileGroups: [], groupOrder: [] }]));
+  let modalActiveIdx = Math.max(0, modalTabs.findIndex((t) => t.name === (h.activeTab || "Default")));
+
+  /** Convenience: current modal tab's groups array */
+  function groups() { return modalTabs[modalActiveIdx].fileGroups; }
 
   // --- Build modal DOM ---
   const backdrop = document.createElement("div");
@@ -1899,6 +2071,11 @@ function _openGroupModal() {
   closeBtn.addEventListener("click", () => backdrop.remove());
   header.appendChild(closeBtn);
   modal.appendChild(header);
+
+  // --- Tab bar ---
+  const tabBar = document.createElement("div");
+  tabBar.className = "gm-tab-bar";
+  modal.appendChild(tabBar);
 
   // Body: two panes
   const body = document.createElement("div");
@@ -1924,7 +2101,7 @@ function _openGroupModal() {
   addGroupBtn.className = "gm-add-group";
   addGroupBtn.textContent = "+ New Group";
   addGroupBtn.addEventListener("click", () => {
-    groups.push({ name: "New Group", pattern: "", files: [], color: _nextGroupColour(groups) });
+    groups().push({ name: "New Group", pattern: "", files: [], color: _nextGroupColour(groups()) });
     renderGroups();
   });
   rightHeader.appendChild(addGroupBtn);
@@ -1948,19 +2125,25 @@ function _openGroupModal() {
   applyBtn.className = "gm-apply";
   applyBtn.textContent = "Apply";
   applyBtn.addEventListener("click", () => {
-    // Persist groups both to localStorage (legacy) and into the alignment JSON header
-    _saveGroups(groups);
+    // Write all tabs back to the alignment JSON header
     if (!loadedAlignmentJSON) loadedAlignmentJSON = {};
     if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
-    loadedAlignmentJSON.header.fileGroups = groups;
+    loadedAlignmentJSON.header.groupingTabs = modalTabs;
+    // Keep activeTab unchanged (modal does not switch content pane live)
+    // But ensure activeTab name still exists; if it was renamed/deleted, fall back
+    const tabNames = new Set(modalTabs.map((t) => t.name));
+    if (!tabNames.has(loadedAlignmentJSON.header.activeTab)) {
+      loadedAlignmentJSON.header.activeTab = modalTabs[0].name;
+    }
     _changeCounter++;
     _updateDirtyState();
     backdrop.remove();
-    // Re-render sidebar
+    // Re-render sidebar + content pane + pills
     const fns = Object.keys(alignmentGrids)
       .filter((n) => n !== SYNTH_MEI_KEY)
       .sort();
     _renderSidebarFileList(fns);
+    _renderGroupingTabPills();
     reloadWaveforms();
   });
   footer.appendChild(cancelBtn);
@@ -1975,6 +2158,93 @@ function _openGroupModal() {
     if (e.target === backdrop) backdrop.remove();
   });
 
+  // --- Tab bar rendering ---
+  function renderTabBar() {
+    tabBar.innerHTML = "";
+    modalTabs.forEach((tab, idx) => {
+      const tabEl = document.createElement("span");
+      tabEl.className = "gm-tab" + (idx === modalActiveIdx ? " active" : "");
+
+      const label = document.createElement("span");
+      label.className = "gm-tab-label";
+      label.textContent = tab.name;
+      tabEl.appendChild(label);
+
+      // Click to switch (skip re-render if already active, so dblclick can fire)
+      tabEl.addEventListener("click", (e) => {
+        if (e.target.classList.contains("gm-tab-close")) return;
+        if (idx === modalActiveIdx) return;
+        modalActiveIdx = idx;
+        renderTabBar();
+        renderAll();
+      });
+
+      // Double-click to rename (inline edit)
+      label.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "gm-tab-rename";
+        input.value = tab.name;
+        input.style.width = Math.max(60, label.offsetWidth + 10) + "px";
+        label.replaceWith(input);
+        input.focus();
+        input.select();
+        const commit = () => {
+          const newName = input.value.trim();
+          if (newName && newName !== tab.name) {
+            tab.name = newName;
+          }
+          renderTabBar();
+          renderAll();
+        };
+        input.addEventListener("blur", commit);
+        input.addEventListener("keydown", (ke) => {
+          if (ke.key === "Enter") { ke.preventDefault(); input.blur(); }
+          if (ke.key === "Escape") { input.value = tab.name; input.blur(); }
+        });
+      });
+
+      // Delete button (not on the first tab)
+      if (modalTabs.length > 1) {
+        const del = document.createElement("span");
+        del.className = "gm-tab-close";
+        del.textContent = "\u2715";
+        del.title = "Delete tab";
+        del.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const hasGroups = tab.fileGroups && tab.fileGroups.length > 0;
+          if (hasGroups && !confirm(`Delete tab "${tab.name}" and its ${tab.fileGroups.length} group(s)?`)) return;
+          if (!hasGroups && !confirm(`Delete tab "${tab.name}"?`)) return;
+          modalTabs.splice(idx, 1);
+          if (modalActiveIdx >= modalTabs.length) modalActiveIdx = modalTabs.length - 1;
+          if (modalActiveIdx < 0) modalActiveIdx = 0;
+          renderTabBar();
+          renderAll();
+        });
+        tabEl.appendChild(del);
+      }
+
+      tabBar.appendChild(tabEl);
+    });
+
+    // "+" add tab button
+    const addTab = document.createElement("span");
+    addTab.className = "gm-tab gm-tab-add";
+    addTab.textContent = "+";
+    addTab.title = "Add new tab";
+    addTab.addEventListener("click", () => {
+      let n = modalTabs.length + 1;
+      let name = `Tab ${n}`;
+      while (modalTabs.some((t) => t.name === name)) { n++; name = `Tab ${n}`; }
+      modalTabs.push({ name, fileGroups: [], groupOrder: [] });
+      modalActiveIdx = modalTabs.length - 1;
+      renderTabBar();
+      renderAll();
+    });
+    tabBar.appendChild(addTab);
+  }
+
   // --- Internal helpers to render the modal contents ---
   function shortName(f) {
     return f.substring(f.lastIndexOf("/") + 1);
@@ -1983,7 +2253,7 @@ function _openGroupModal() {
   /** Compute which files are claimed by any group (explicit + pattern). */
   function getGroupedSet() {
     const s = new Set();
-    groups.forEach((g) => {
+    groups().forEach((g) => {
       (g.files || []).forEach((f) => s.add(f));
       if (g.pattern) {
         try {
@@ -2024,7 +2294,8 @@ function _openGroupModal() {
 
   function renderGroups() {
     groupsContainer.innerHTML = "";
-    groups.forEach((g, i) => {
+    const grps = groups();
+    grps.forEach((g, i) => {
       const card = document.createElement("div");
       card.className = "gm-group-card";
 
@@ -2048,19 +2319,19 @@ function _openGroupModal() {
         upBtn.title = "Move up";
         upBtn.textContent = "\u25B2";
         upBtn.addEventListener("click", () => {
-          [groups[i - 1], groups[i]] = [groups[i], groups[i - 1]];
+          [grps[i - 1], grps[i]] = [grps[i], grps[i - 1]];
           renderAll();
         });
         gh.appendChild(upBtn);
       }
       // Move down
-      if (i < groups.length - 1) {
+      if (i < grps.length - 1) {
         const downBtn = document.createElement("button");
         downBtn.className = "gm-icon-btn";
         downBtn.title = "Move down";
         downBtn.textContent = "\u25BC";
         downBtn.addEventListener("click", () => {
-          [groups[i], groups[i + 1]] = [groups[i + 1], groups[i]];
+          [grps[i], grps[i + 1]] = [grps[i + 1], grps[i]];
           renderAll();
         });
         gh.appendChild(downBtn);
@@ -2071,7 +2342,7 @@ function _openGroupModal() {
       delBtn.title = "Delete group";
       delBtn.textContent = "\u2715";
       delBtn.addEventListener("click", () => {
-        groups.splice(i, 1);
+        grps.splice(i, 1);
         renderAll();
       });
       gh.appendChild(delBtn);
@@ -2127,7 +2398,7 @@ function _openGroupModal() {
       const colourInput = document.createElement("input");
       colourInput.type = "color";
       colourInput.className = "gm-colour-input";
-      colourInput.value = g.color || _nextGroupColour(groups);
+      colourInput.value = g.color || _nextGroupColour(grps);
       colourInput.title = "Choose a custom colour";
       colourInput.addEventListener("input", (e) => {
         g.color = e.target.value;
@@ -2217,7 +2488,7 @@ function _openGroupModal() {
         const file = e.dataTransfer.getData("text/plain");
         if (file && filenames.includes(file)) {
           // Remove from any other group's explicit list
-          groups.forEach((og) => {
+          grps.forEach((og) => {
             og.files = (og.files || []).filter((x) => x !== file);
           });
           if (!g.files) g.files = [];
@@ -2230,7 +2501,7 @@ function _openGroupModal() {
       groupsContainer.appendChild(card);
     });
 
-    if (groups.length === 0) {
+    if (grps.length === 0) {
       groupsContainer.innerHTML = `<p class="gm-empty">No groups yet. Click <strong>+ New Group</strong> to create one.</p>`;
     }
   }
@@ -2240,6 +2511,7 @@ function _openGroupModal() {
     renderGroups();
   }
 
+  renderTabBar();
   renderAll();
 }
 
@@ -2399,12 +2671,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         ".file-group-ungrouped .group-list",
       );
     }
-    const groups =
-      loadedAlignmentJSON &&
-      loadedAlignmentJSON.header &&
-      Array.isArray(loadedAlignmentJSON.header.fileGroups)
-        ? loadedAlignmentJSON.header.fileGroups
-        : _loadGroups();
+    const groups = loadedAlignmentJSON ? _getActiveFileGroups() : [];
     for (const g of groups) {
       const members = new Set(g.files || []);
       if (members.has(filename)) {
@@ -3358,12 +3625,15 @@ async function setGrids(grids) {
   }
 
   /* ---- Dynamic file grouping ---- */
+  _migrateToGroupingTabs();
+
   let filenames = Object.keys(alignmentGrids).filter(
     (n) => n !== SYNTH_MEI_KEY,
   );
   filenames.sort();
 
   _renderSidebarFileList(filenames);
+  _renderGroupingTabPills();
 
   // Show the "Group files" button
   const groupBtn = document.getElementById("group-files-btn");

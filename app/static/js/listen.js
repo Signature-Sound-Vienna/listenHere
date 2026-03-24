@@ -716,13 +716,30 @@ function _updateDragFieldsetState() {
   const corrActive = _dragMarkersEnabled && _dragMode === "fix";
   if (corrActive !== _alignCorrectionMode) {
     _alignCorrectionMode = corrActive;
-    document.querySelectorAll(".align-correction-overlay").forEach((c) => {
-      c.style.pointerEvents = corrActive ? "auto" : "none";
-      // Cursor is set dynamically in hover handler (grab near marker)
-      if (!corrActive) c.style.cursor = "";
-    });
-    document.body.classList.toggle("align-correction-active", corrActive);
+    _applyCorrectionOverlayPointerEvents();
   }
+}
+
+/** Apply the effective pointer-events state to correction overlay canvases.
+ *  Correction overlays are interactive only when fix-alignment mode is active
+ *  AND draw-region mode is not active (draw mode needs events to pass through
+ *  to the WaveSurfer wrapper for the regions plugin). */
+let _drawModeActive = false;
+function _applyCorrectionOverlayPointerEvents() {
+  const effective = _alignCorrectionMode && !_drawModeActive;
+  document.querySelectorAll(".align-correction-overlay").forEach((c) => {
+    c.style.pointerEvents = effective ? "auto" : "none";
+    if (!effective) c.style.cursor = "";
+  });
+  document.body.classList.toggle("align-correction-active", effective);
+}
+
+/** Called by annotation.js when entering/exiting draw-region mode.
+ *  Suppresses correction overlay pointer-events so drag-selection
+ *  events reach the WaveSurfer wrapper. */
+export function setDrawModeActive(active) {
+  _drawModeActive = active;
+  _applyCorrectionOverlayPointerEvents();
 }
 
 /** Toggle .draggable class on all marker elements. */
@@ -2709,8 +2726,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       corrCanvas.classList.add("align-correction-overlay");
       corrCanvas.width = readyWfContainer.clientWidth;
       corrCanvas.height = WAVE_HEIGHT;
+      corrCanvas.draggable = false; // prevent native browser drag
       const corrStyle = corrCanvas.style;
-      corrStyle.pointerEvents = _alignCorrectionMode ? "auto" : "none";
+      corrStyle.pointerEvents =
+        _alignCorrectionMode && !_drawModeActive ? "auto" : "none";
       // Correction canvas goes on the wrapper (viewport-fixed)
       ow.wrapper.insertBefore(corrCanvas, ow.inner);
 

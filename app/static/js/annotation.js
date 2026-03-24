@@ -15,6 +15,7 @@ import {
   updateRenderAnnoRegions,
   wavesurfers,
   _regionsPlugins,
+  setDrawModeActive,
 } from "./listen.js";
 import {
   addMultipleMAOSelectionsToExtract,
@@ -1305,6 +1306,8 @@ function _enterDrawMode(draftId) {
     _exitDrawMode();
   }
   _activeDraftId = draftId;
+  // Suppress correction overlay so pointer events reach WaveSurfer wrapper
+  setDrawModeActive(true);
   // Enable region creation on all loaded waveforms
   _dragSelectionCleanups = [];
   Object.values(_regionsPlugins).forEach((rp) => {
@@ -1319,6 +1322,8 @@ function _enterDrawMode(draftId) {
 
 function _exitDrawMode() {
   _activeDraftId = null;
+  // Restore correction overlay pointer-events
+  setDrawModeActive(false);
   // Call all cleanup functions to disable drag selection
   _dragSelectionCleanups.forEach((fn) => {
     try {

@@ -796,13 +796,14 @@ details {
   top: 0;
   left: 0;
   width: 100%;
+  -webkit-user-drag: none; /* prevent native canvas drag ghost */
 }
 .wf-overlays-inner {
   position: relative;
   height: 100%;
 }
 .wf-overlays-inner .ws-marker { pointer-events: auto; }
-.wf-overlays .align-correction-overlay { pointer-events: auto; }
+/* correction overlay pointer-events managed via inline style in listen.js */
 
 /* Solid Drawer Button Handle */
 #solid-drawer-btn {

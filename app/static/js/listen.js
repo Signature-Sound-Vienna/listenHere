@@ -225,7 +225,84 @@ const ZOOM_LEVELS = [1, 2, 5, 10, 20, 50];
 let _currentZoomLevel = 1; // multiplier (1 = no zoom)
 let _scrollMode = "page"; // "follow" | "page" | "manual"
 let _scrollSyncLock = false; // prevents infinite loop in cross-waveform scroll sync
+let _sharedTimeAxis = false; // when true, all waveforms use same px/sec
 const _overlayWrappers = {}; // filename → { wrapper, inner }
+
+// ---------------------------------------------------------------------------
+// Time-axis tick marks
+// ---------------------------------------------------------------------------
+
+const _NICE_INTERVALS = [
+  0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 3600,
+];
+
+/** Format seconds for tick labels. */
+function _formatTickTime(t) {
+  if (t < 60) {
+    // Show sub-second decimals only for small intervals
+    return t % 1 === 0 ? t + "s" : t.toFixed(1) + "s";
+  }
+  const m = Math.floor(t / 60);
+  const s = Math.round(t % 60);
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+/**
+ * Draw subtle time ticks at the top edge of a waveform overlay canvas.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} viewW  visible viewport width in px
+ * @param {number} h      canvas height
+ * @param {number} fullW  full zoomed width of the waveform in px
+ * @param {number} dur    duration in seconds
+ * @param {number} scrollLeft  current scroll offset in px
+ */
+function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft) {
+  if (dur <= 0 || fullW <= 0) return;
+  const pxPerSec = fullW / dur;
+  const visibleSec = viewW / pxPerSec;
+
+  // Choose a "nice" interval so we get roughly 60 ticks in the viewport
+  const rawInterval = visibleSec / 60;
+  const interval =
+    _NICE_INTERVALS.find((n) => n >= rawInterval) ||
+    _NICE_INTERVALS[_NICE_INTERVALS.length - 1];
+
+  // Label every 2nd tick
+  const labelEvery = 2;
+
+  const startTime = (scrollLeft / fullW) * dur;
+  const endTime = ((scrollLeft + viewW) / fullW) * dur;
+  const firstTick = Math.ceil(startTime / interval) * interval;
+
+  ctx.save();
+  ctx.lineWidth = 1;
+
+  for (let t = firstTick; t <= endTime + interval * 0.01; t += interval) {
+    const x = Math.round((t / dur) * fullW - scrollLeft) + 0.5;
+    if (x < -1 || x > viewW + 1) continue;
+
+    // Label every 2nd tick
+    const tickIndex = Math.round(t / interval);
+    const isLabelled = tickIndex % labelEvery === 0;
+    const tickH = isLabelled ? 7 : 4;
+
+    ctx.strokeStyle = isLabelled
+      ? "rgba(80, 80, 80, 0.5)"
+      : "rgba(120, 120, 120, 0.3)";
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, tickH);
+    ctx.stroke();
+
+    if (isLabelled) {
+      ctx.fillStyle = "rgba(60, 60, 60, 0.7)";
+      ctx.font = "9px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(_formatTickTime(t), x, tickH + 9);
+    }
+  }
+  ctx.restore();
+}
 
 /** Get the shadow-DOM scroll container for a WaveSurfer instance. */
 function _getScrollContainer(filename) {
@@ -314,18 +391,47 @@ function applyZoom(level) {
   const scrollControls = document.getElementById("scroll-mode-controls");
   if (scrollControls) scrollControls.style.display = level > 1 ? "" : "none";
 
+  // For shared time axis, compute a common pxPerSec from the longest duration
+  let sharedPxPerSec = null;
+  let maxDuration = 0;
+  if (_sharedTimeAxis) {
+    Object.keys(wavesurfers).forEach((fn) => {
+      if (!loaded.has(fn)) return;
+      const d = wavesurfers[fn].getDuration();
+      if (d > maxDuration) maxDuration = d;
+    });
+  }
+
   Object.keys(wavesurfers).forEach((filename) => {
     if (!loaded.has(filename)) return;
     const ws = wavesurfers[filename];
     const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
     if (!ws || !wfEl) return;
-    const containerWidth = wfEl.clientWidth;
     const duration = ws.getDuration();
 
-    if (level <= 1) {
-      ws.zoom(0); // reset to fillParent
+    if (_sharedTimeAxis && maxDuration > 0) {
+      const fraction = duration / maxDuration;
+      if (level <= 1) {
+        // Shorter recordings get narrower containers
+        wfEl.style.width = (fraction * 100) + "%";
+        ws.zoom(0); // fillParent within narrower container
+      } else {
+        wfEl.style.width = ""; // let zoom handle the width
+        // Use the longest recording's container to compute shared pxPerSec
+        const refWidth = wfEl.parentElement?.clientWidth || wfEl.clientWidth;
+        if (!sharedPxPerSec) {
+          sharedPxPerSec = (level * refWidth) / maxDuration;
+        }
+        ws.zoom(sharedPxPerSec);
+      }
     } else {
-      ws.zoom((level * containerWidth) / duration);
+      wfEl.style.width = ""; // reset any shared-axis narrowing
+      const containerWidth = wfEl.clientWidth;
+      if (level <= 1) {
+        ws.zoom(0); // reset to fillParent
+      } else {
+        ws.zoom((level * containerWidth) / duration);
+      }
     }
     _applyScrollMode(filename);
     // redrawcomplete will fire and handle overlay resize + marker redraw
@@ -364,6 +470,23 @@ function _syncAllWaveformScrolls(sourceFilename) {
   const sourceTotalWidth = sourceWrapper.clientWidth;
   const sourceScroll = sourceWs.getScroll();
   const sourceDuration = sourceWs.getDuration();
+
+  if (_sharedTimeAxis) {
+    // Shared time axis: all waveforms share the same pxPerSec, so same
+    // scrollLeft aligns to the same absolute time.
+    Object.keys(wavesurfers).forEach((targetFilename) => {
+      if (targetFilename === sourceFilename) return;
+      if (!loaded.has(targetFilename)) return;
+      const targetWs = wavesurfers[targetFilename];
+      if (!targetWs) return;
+      targetWs.setScroll(sourceScroll);
+      _syncOverlayScroll(targetFilename);
+      if (_gridRedrawers[targetFilename]) _gridRedrawers[targetFilename]();
+    });
+    return;
+  }
+
+  // Alignment-based sync: map through alignment grid
   // Time at center of source viewport
   const centerFraction =
     (sourceScroll + sourceVisibleWidth / 2) / sourceTotalWidth;
@@ -2849,27 +2972,41 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           || c.closest(".waveform")?.dataset["ix"];
         if (!file || !wavesurfers[file]) return;
         const ctx = c.getContext("2d");
-        const correspondingSeconds = alignmentGrids[file][currentGridIx];
         const duration = wavesurfers[file].getDuration();
-        // Viewport-based drawing: compute positions in full zoomed width, offset by scroll
         const fullW = _getZoomedWidth(file);
         const scrollLeft = wavesurfers[file].getScroll();
-        const absoluteX = (currentTime / playingDuration) * fullW - scrollLeft;
-        const relativeX = (correspondingSeconds / duration) * fullW - scrollLeft;
-        const diffMapped = Math.floor((255 * (absoluteX - relativeX)) / 100);
         ctx.clearRect(0, 0, c.width, c.height);
-        if (document.getElementById("visrelalign").checked) {
-          ctx.beginPath();
-          ctx.lineWidth = 2;
-          ctx.moveTo(absoluteX, 0);
-          ctx.lineTo(relativeX, c.height / 6);
-          ctx.lineTo(relativeX, 5 * (c.height / 6));
-          ctx.lineTo(absoluteX, c.height);
-          ctx.strokeStyle =
-            diffMapped < 0
-              ? `rgb(${-1 * diffMapped} 100 100)`
-              : `rgb(100 100 ${diffMapped})`;
-          ctx.stroke();
+
+        if (_sharedTimeAxis) {
+          // Shared time axis: draw indicator at the same absolute time
+          if (document.getElementById("visrelalign").checked) {
+            const x = (currentTime / duration) * fullW - scrollLeft;
+            ctx.beginPath();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = "rgba(100, 100, 200, 0.7)";
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, c.height);
+            ctx.stroke();
+          }
+        } else {
+          // Alignment-based: map through grid
+          const correspondingSeconds = alignmentGrids[file][currentGridIx];
+          const absoluteX = (currentTime / playingDuration) * fullW - scrollLeft;
+          const relativeX = (correspondingSeconds / duration) * fullW - scrollLeft;
+          const diffMapped = Math.floor((255 * (absoluteX - relativeX)) / 100);
+          if (document.getElementById("visrelalign").checked) {
+            ctx.beginPath();
+            ctx.lineWidth = 2;
+            ctx.moveTo(absoluteX, 0);
+            ctx.lineTo(relativeX, c.height / 6);
+            ctx.lineTo(relativeX, 5 * (c.height / 6));
+            ctx.lineTo(absoluteX, c.height);
+            ctx.strokeStyle =
+              diffMapped < 0
+                ? `rgb(${-1 * diffMapped} 100 100)`
+                : `rgb(100 100 ${diffMapped})`;
+            ctx.stroke();
+          }
         }
       });
     }
@@ -2905,9 +3042,6 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       gridCanvas.width = readyWfContainer.clientWidth;
       gridCanvas.height = WAVE_HEIGHT;
       gridStyle.pointerEvents = "none";
-      gridStyle.display = document.getElementById("visalign").checked
-        ? "unset"
-        : "none";
       positionIndicatorCanvas.classList.add("position-indicator");
       positionIndicatorCanvas.width = readyWfContainer.clientWidth;
       positionIndicatorCanvas.height = WAVE_HEIGHT;
@@ -2916,7 +3050,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       ow.wrapper.insertBefore(positionIndicatorCanvas, ow.inner);
       ow.wrapper.insertBefore(gridCanvas, positionIndicatorCanvas);
 
-      // Function to draw (or redraw) the alignment grid.
+      // Function to draw (or redraw) the alignment grid and time ticks.
       // At zoom, draws only the visible viewport portion offset by scroll.
       function drawAlignmentGrid() {
         if (!readyWfContainer || !readyWfContainer.isConnected) return;
@@ -2932,59 +3066,64 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         const fullW = _getZoomedWidth(filename);
         ow.inner.style.width = fullW + "px";
 
-        // Redraw grid lines (viewport-based at zoom)
         const ctx = gridCanvas.getContext("2d");
         ctx.clearRect(0, 0, viewW, h);
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = "rgba(140, 90, 90, 0.55)";
         const dur = wavesurfers[filename].getDuration();
-        const minPixelStep = 4;
         const scrollLeft = wavesurfers[filename].getScroll();
 
-        // Draw solid lines for the top and bottom sections
-        ctx.beginPath();
-        ctx.setLineDash([]);
-        let lastAbsX = -999;
-        alignmentGrids[filename].forEach((gridPos, gridIx) => {
-          // Positions in the full zoomed width, offset to viewport
-          const absoluteX =
-            (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
-          const relativeX = (gridPos / dur) * fullW - scrollLeft;
+        // Always draw time ticks
+        _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft);
 
-          // Skip lines outside the visible viewport
-          if (absoluteX > viewW + 10 && relativeX > viewW + 10) return;
-          if (absoluteX < -10 && relativeX < -10) return;
+        // Draw alignment grid lines only if "Visualise alignments" is checked
+        const visalignEl = document.getElementById("visalign");
+        if (visalignEl && visalignEl.checked) {
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = "rgba(140, 90, 90, 0.55)";
+          const minPixelStep = 4;
 
-          if (absoluteX - lastAbsX >= minPixelStep) {
-            ctx.moveTo(absoluteX, 0);
-            ctx.lineTo(relativeX, h / 6);
-            ctx.moveTo(relativeX, 5 * (h / 6));
-            ctx.lineTo(absoluteX, h);
-            lastAbsX = absoluteX;
-          }
-        });
-        ctx.stroke();
+          // Draw solid lines for the top and bottom sections
+          ctx.beginPath();
+          ctx.setLineDash([]);
+          let lastAbsX = -999;
+          alignmentGrids[filename].forEach((gridPos, gridIx) => {
+            const absoluteX =
+              (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
+            const relativeX = (gridPos / dur) * fullW - scrollLeft;
 
-        // Draw sparsely dotted lines over the waveform section
-        ctx.beginPath();
-        ctx.strokeStyle = "rgba(140, 90, 90, 0.3)";
-        ctx.setLineDash([2, 1]);
-        lastAbsX = -999;
-        alignmentGrids[filename].forEach((gridPos, gridIx) => {
-          const absoluteX =
-            (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
-          const relativeX = (gridPos / dur) * fullW - scrollLeft;
+            if (absoluteX > viewW + 10 && relativeX > viewW + 10) return;
+            if (absoluteX < -10 && relativeX < -10) return;
 
-          if (relativeX > viewW + 10 || relativeX < -10) return;
+            if (absoluteX - lastAbsX >= minPixelStep) {
+              ctx.moveTo(absoluteX, 0);
+              ctx.lineTo(relativeX, h / 6);
+              ctx.moveTo(relativeX, 5 * (h / 6));
+              ctx.lineTo(absoluteX, h);
+              lastAbsX = absoluteX;
+            }
+          });
+          ctx.stroke();
 
-          if (absoluteX - lastAbsX >= minPixelStep) {
-            ctx.moveTo(relativeX, h / 6);
-            ctx.lineTo(relativeX, 5 * (h / 6));
-            lastAbsX = absoluteX;
-          }
-        });
-        ctx.stroke();
-        ctx.setLineDash([]);
+          // Draw sparsely dotted lines over the waveform section
+          ctx.beginPath();
+          ctx.strokeStyle = "rgba(140, 90, 90, 0.3)";
+          ctx.setLineDash([2, 1]);
+          lastAbsX = -999;
+          alignmentGrids[filename].forEach((gridPos, gridIx) => {
+            const absoluteX =
+              (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
+            const relativeX = (gridPos / dur) * fullW - scrollLeft;
+
+            if (relativeX > viewW + 10 || relativeX < -10) return;
+
+            if (absoluteX - lastAbsX >= minPixelStep) {
+              ctx.moveTo(relativeX, h / 6);
+              ctx.lineTo(relativeX, 5 * (h / 6));
+              lastAbsX = absoluteX;
+            }
+          });
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
       }
 
       // Register this waveform's position-updater so it can be called
@@ -4969,19 +5108,21 @@ document.addEventListener("DOMContentLoaded", () => {
     // Audio: adjust GainNode so quieter recordings play at equal volume
     _applyNormGain(norm);
   });
-  // visualize alignment checkbox
+  // visualize alignment checkbox — redraw grids to show/hide alignment lines
   document.getElementById("visalign").checked = false;
-  document.getElementById("visalign").addEventListener("click", (e) => {
-    let display = e.target.checked ? "unset" : "none";
-    Array.from(document.querySelectorAll(".alignment-grid")).forEach(
-      (e) => (e.style.display = display),
-    );
+  document.getElementById("visalign").addEventListener("click", () => {
+    Object.values(_gridRedrawers).forEach((fn) => fn());
   });
   // show relative position checkbox — redraw immediately when toggled while paused
   document.getElementById("visrelalign").addEventListener("click", () => {
     if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
       _positionUpdaters[currentAudioIx]();
     }
+  });
+  // Shared time axis checkbox
+  document.getElementById("shared-time-axis").addEventListener("change", (e) => {
+    _sharedTimeAxis = e.target.checked;
+    applyZoom(_currentZoomLevel);
   });
 
   // Zoom slider

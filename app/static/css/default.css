@@ -221,6 +221,21 @@ canvas {
   /* background & border handled by #region-waveforms */
 }
 
+#nav-footer {
+  flex: 0 0 auto;
+  font-size: 0.65em;
+  color: #94a3b8;
+  text-align: center;
+}
+#nav-footer a {
+  color: #94a3b8;
+  text-decoration: none;
+}
+#nav-footer a:hover {
+  color: #64748b;
+  text-decoration: underline;
+}
+
 #audios {
   flex: 1;
   overflow: hidden;
@@ -773,16 +788,13 @@ details {
 /* Sticky waveform filename label (stays at left edge on zoom scroll) */
 .wf-label {
   position: absolute;
-  top: 2px;
+  bottom: 2px;
   left: 3px;
   font-size: 9px;
   white-space: nowrap;
-  pointer-events: none;
-  user-select: none;
   background-color: rgba(255, 255, 255, 0.7);
   padding: 1px 4px;
   border-radius: 4px;
-  color: black;
   z-index: 4;
 }
 
@@ -2193,6 +2205,21 @@ body.marker-dragging * {
   justify-content: space-between;
   padding: 0.8em 2.5em 1.2em;
   border-top: 1px solid #e2e8f0;
+}
+
+.align-footer {
+  padding: 6px 0 10px;
+  font-size: 0.7em;
+  color: #94a3b8;
+  text-align: center;
+}
+.align-footer a {
+  color: #94a3b8;
+  text-decoration: none;
+}
+.align-footer a:hover {
+  color: #64748b;
+  text-decoration: underline;
 }
 
 .align-nav-btn {

@@ -240,7 +240,7 @@ const _NICE_INTERVALS = [
 function _formatTickTime(t) {
   if (t < 60) {
     // Show sub-second decimals only for small intervals
-    return t % 1 === 0 ? t + "s" : t.toFixed(1) + "s";
+    return t % 1 === 0 ? String(t) : t.toFixed(1);
   }
   const m = Math.floor(t / 60);
   const s = Math.round(t % 60);
@@ -256,7 +256,7 @@ function _formatTickTime(t) {
  * @param {number} dur    duration in seconds
  * @param {number} scrollLeft  current scroll offset in px
  */
-function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft) {
+function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor) {
   if (dur <= 0 || fullW <= 0) return;
   const pxPerSec = fullW / dur;
   const visibleSec = viewW / pxPerSec;
@@ -295,10 +295,15 @@ function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft) {
     ctx.stroke();
 
     if (isLabelled) {
-      ctx.fillStyle = "rgba(60, 60, 60, 0.7)";
       ctx.font = "9px sans-serif";
       ctx.textAlign = "center";
-      ctx.fillText(_formatTickTime(t), x, tickH + 9);
+      const text = _formatTickTime(t);
+      const tw = ctx.measureText(text).width;
+      const pad = 1;
+      ctx.fillStyle = bgColor || "rgba(255, 255, 255, 0.7)";
+      ctx.fillRect(x - tw / 2 - pad, tickH, tw + pad * 2, 10);
+      ctx.fillStyle = "rgba(60, 60, 60, 0.7)";
+      ctx.fillText(text, x, tickH + 9);
     }
   }
   ctx.restore();
@@ -351,6 +356,15 @@ function _ensureWfLabel(filename) {
   lbl.className = "wf-label";
   lbl.textContent = filename;
   parent.appendChild(lbl);
+  // Match background to the waveform's effective background colour
+  for (let el = wfEl; el && el !== document.body; el = el.parentElement) {
+    const bg = getComputedStyle(el).backgroundColor;
+    if (bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent") {
+      const m = bg.match(/[\d.]+/g);
+      if (m && m.length >= 3) lbl.style.backgroundColor = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
+      break;
+    }
+  }
 }
 
 /** Sync overlay scroll transform to match WaveSurfer's scroll position. */
@@ -1123,6 +1137,7 @@ export function swapCurrentAudio(newAudio) {
     document
       .getElementById(`waveform-${currentAudioIx}` + "-wav")
       ?.classList.remove("active");
+    var prevAudio = currentAudioIx;
     // Reset the demoted waveform's canvas clip-path to 0 (WaveSurfer v7 uses
     // a clip-path on the canvases div to show only the unplayed region; the
     // CSS ::part(progress) hides the progress overlay on inactive waveforms,
@@ -1167,6 +1182,9 @@ export function swapCurrentAudio(newAudio) {
       newActiveWaveform.classList.add("active");
     }
   }
+  // Redraw grids for old and new waveforms so tick backgrounds reflect active state
+  if (_gridRedrawers[prevAudio]) _gridRedrawers[prevAudio]();
+  if (_gridRedrawers[currentAudioIx]) _gridRedrawers[currentAudioIx]();
   // If an annotation loop is active, continue it on the newly-active waveform
   continueAnnotationLoopOnWaveform(currentAudioIx);
 }
@@ -3214,10 +3232,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         const dur = wavesurfers[filename].getDuration();
         const scrollLeft = wavesurfers[filename].getScroll();
 
-        // Always draw time ticks
-        _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft);
-
-        // Draw alignment grid lines only if "Visualise alignments" is checked
+        // Draw alignment grid lines first (so time ticks render on top)
         const visalignEl = document.getElementById("visalign");
         if (visalignEl && visalignEl.checked) {
           ctx.lineWidth = 1;
@@ -3267,6 +3282,24 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           ctx.stroke();
           ctx.setLineDash([]);
         }
+
+        // Draw time ticks on top of alignment lines
+        // Walk up from the waveform element to find the effective background colour
+        const wfEl = document.querySelector(`.waveform[data-ix='${CSS.escape(filename)}']`);
+        let tickBg = "rgba(255, 255, 255, 0.85)";
+        for (let el = wfEl; el && el !== document.body; el = el.parentElement) {
+          const bg = getComputedStyle(el).backgroundColor;
+          if (bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent") {
+            const m = bg.match(/[\d.]+/g);
+            if (m && m.length >= 3) tickBg = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
+            break;
+          }
+        }
+        _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg);
+
+        // Sync waveform filename label background to match
+        const wfLabel = wfEl && wfEl.querySelector(".wf-label");
+        if (wfLabel) wfLabel.style.backgroundColor = tickBg;
       }
 
       // Register this waveform's position-updater so it can be called
@@ -5285,6 +5318,19 @@ document.addEventListener("DOMContentLoaded", () => {
       if (scrollControls) scrollControls.style.display = restoredLevel > 1 ? "" : "none";
     }
   }
+
+  // Mousewheel zoom when hovering over a waveform
+  document.getElementById("waveforms").addEventListener("wheel", (e) => {
+    if (!e.ctrlKey && !e.metaKey) return; // plain scroll = normal scroll
+    e.preventDefault();
+    const currentIdx = ZOOM_LEVELS.indexOf(_currentZoomLevel);
+    const newIdx = e.deltaY < 0
+      ? Math.min(currentIdx + 1, ZOOM_LEVELS.length - 1)
+      : Math.max(currentIdx - 1, 0);
+    if (newIdx === currentIdx) return;
+    applyZoom(ZOOM_LEVELS[newIdx]);
+    if (zoomSlider) zoomSlider.value = newIdx;
+  }, { passive: false });
 
   // Scroll mode radios
   document.querySelectorAll('input[name="scroll-mode"]').forEach((radio) => {

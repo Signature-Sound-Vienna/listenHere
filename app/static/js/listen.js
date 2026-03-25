@@ -361,7 +361,8 @@ function _ensureWfLabel(filename) {
     const bg = getComputedStyle(el).backgroundColor;
     if (bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent") {
       const m = bg.match(/[\d.]+/g);
-      if (m && m.length >= 3) lbl.style.backgroundColor = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
+      if (m && m.length >= 3)
+        lbl.style.backgroundColor = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
       break;
     }
   }
@@ -371,7 +372,9 @@ function _ensureWfLabel(filename) {
 function _syncOverlayScroll(filename) {
   const ow = _overlayWrappers[filename];
   if (!ow) return;
-  const scrollLeft = wavesurfers[filename] ? wavesurfers[filename].getScroll() : 0;
+  const scrollLeft = wavesurfers[filename]
+    ? wavesurfers[filename].getScroll()
+    : 0;
   ow.inner.style.transform = `translateX(${-scrollLeft}px)`;
 }
 
@@ -572,7 +575,8 @@ function _formatDuration(seconds) {
 function _showMarkerDurations() {
   if (markers.length < 2) return;
   // Sort markers by alignment index to get consecutive pairs
-  const sorted = markers.map((alignIx, i) => ({ alignIx, i }))
+  const sorted = markers
+    .map((alignIx, i) => ({ alignIx, i }))
     .sort((a, b) => a.alignIx - b.alignIx);
 
   Object.keys(wavesurfers).forEach((filename) => {
@@ -616,8 +620,10 @@ function _showMarkerDurations() {
 function _drawMeasureSpan(startAlignIx, endAlignIx) {
   // Clear previous span elements (keep marker duration labels)
   _measureElements.forEach((el) => {
-    if (el.classList.contains("measure-drag-span") ||
-        el.classList.contains("measure-drag-label")) {
+    if (
+      el.classList.contains("measure-drag-span") ||
+      el.classList.contains("measure-drag-label")
+    ) {
       el.remove();
     }
   });
@@ -654,7 +660,7 @@ function _drawMeasureSpan(startAlignIx, endAlignIx) {
     const label = document.createElement("div");
     label.className = "measure-drag-label";
     label.textContent = _formatDuration(Math.abs(t2 - t1));
-    label.style.left = ((x1 + x2) / 2) + "px";
+    label.style.left = (x1 + x2) / 2 + "px";
     ow.inner.appendChild(label);
     _measureElements.push(label);
   });
@@ -795,7 +801,8 @@ function _addMarker(
   if (!wfEl) return null;
   // Use pixel positioning on the full-width overlay inner div
   const fullW = _getZoomedWidth(filename);
-  const leftPx = duration > 0 ? Math.max(0, Math.min(fullW, (time / duration) * fullW)) : 0;
+  const leftPx =
+    duration > 0 ? Math.max(0, Math.min(fullW, (time / duration) * fullW)) : 0;
   const marker = document.createElement("div");
   marker.className = "ws-marker";
   marker.dataset.time = time;
@@ -1016,10 +1023,9 @@ export function setDrawModeActive(active) {
   _drawModeActive = active;
   _applyCorrectionOverlayPointerEvents();
   // Toggle a class so CSS can suppress native drag on waveform elements
-  document.getElementById("waveforms")?.classList.toggle(
-    "draw-mode-active",
-    active,
-  );
+  document
+    .getElementById("waveforms")
+    ?.classList.toggle("draw-mode-active", active);
 }
 
 /** Toggle .draggable class on all marker elements. */
@@ -1409,7 +1415,12 @@ function _renderSidebarFileList(filenames) {
   const ungrouped = filenames.filter((f) => !grouped.has(f)).sort();
 
   /** Helper: create a <fieldset class="audio-group collapsible-fieldset"> */
-  function _makeGroupFieldset(label, filesArray, isDraggable, isGroupDraggable) {
+  function _makeGroupFieldset(
+    label,
+    filesArray,
+    isDraggable,
+    isGroupDraggable,
+  ) {
     const fs = document.createElement("fieldset");
     fs.className = "audio-group collapsible-fieldset";
     fs.id = "audio-group-" + label.toLowerCase().replace(/\s+/g, "-");
@@ -1438,7 +1449,9 @@ function _renderSidebarFileList(filenames) {
         fs.draggable = true; // only make fieldset draggable while handle is held
       });
       groupHandle.addEventListener("click", (e) => e.stopPropagation());
-      fs.addEventListener("pointerup", () => { _fromGroupHandle = false; });
+      fs.addEventListener("pointerup", () => {
+        _fromGroupHandle = false;
+      });
       fs.addEventListener("dragstart", (ev) => {
         if (!_fromGroupHandle) {
           fs.draggable = false;
@@ -1489,7 +1502,12 @@ function _renderSidebarFileList(filenames) {
 
   // Score fieldset
   if (SYNTH_MEI_KEY in alignmentGrids) {
-    fieldsetsByName["Score"] = _makeGroupFieldset("Score", [SYNTH_MEI_KEY], false, true);
+    fieldsetsByName["Score"] = _makeGroupFieldset(
+      "Score",
+      [SYNTH_MEI_KEY],
+      false,
+      true,
+    );
   }
 
   // Named group fieldsets
@@ -1502,7 +1520,8 @@ function _renderSidebarFileList(filenames) {
   });
 
   // Ungrouped fieldset
-  const ungroupedLabel = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
+  const ungroupedLabel =
+    groups.length > 0 ? "Ungrouped recordings" : "All recordings";
   if (ungrouped.length > 0) {
     const fs = _makeGroupFieldset(ungroupedLabel, ungrouped, true, true);
     _wireNavGroupDrop(fs);
@@ -1523,11 +1542,7 @@ function _renderSidebarFileList(filenames) {
     });
   }
   // Default order for any not in savedOrder: Score, named groups, Ungrouped
-  const defaultOrder = [
-    "Score",
-    ...groups.map((g) => g.name),
-    "Ungrouped",
-  ];
+  const defaultOrder = ["Score", ...groups.map((g) => g.name), "Ungrouped"];
   defaultOrder.forEach((name) => {
     if (fieldsetsByName[name] && !appended.has(name)) {
       audiosElement.appendChild(fieldsetsByName[name]);
@@ -1641,7 +1656,9 @@ function _wireNavGroupReorder(audiosElement) {
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
 
-    const draggedFs = audiosElement.querySelector("fieldset.nav-group-dragging");
+    const draggedFs = audiosElement.querySelector(
+      "fieldset.nav-group-dragging",
+    );
     if (!draggedFs) return;
 
     // Live-move the fieldset in the sidebar
@@ -1660,7 +1677,9 @@ function _wireNavGroupReorder(audiosElement) {
   audiosElement.addEventListener("drop", (e) => {
     if (!e.dataTransfer.types.includes("nav-group")) return;
     e.preventDefault();
-    const draggedFs = audiosElement.querySelector("fieldset.nav-group-dragging");
+    const draggedFs = audiosElement.querySelector(
+      "fieldset.nav-group-dragging",
+    );
     if (draggedFs) draggedFs.classList.remove("nav-group-dragging");
     // Final sync + persist
     _syncGroupsFromNav();
@@ -1678,7 +1697,9 @@ function _syncGroupsFromNav() {
   // Build lookup of existing group properties (pattern, color) by name
   const oldGroups = _getActiveFileGroups();
   const oldByName = {};
-  oldGroups.forEach((g) => { oldByName[g.name] = g; });
+  oldGroups.forEach((g) => {
+    oldByName[g.name] = g;
+  });
 
   const audios = document.getElementById("audios");
   const groups = [];
@@ -1729,9 +1750,9 @@ function _getGroupNameFromFieldset(fs) {
   // Clone legend and remove child elements (collapse arrow, drag handle)
   // to get just the text content of the legend itself
   const clone = legend.cloneNode(true);
-  clone.querySelectorAll(".collapse-arrow, .nav-group-drag-handle").forEach(
-    (el) => el.remove(),
-  );
+  clone
+    .querySelectorAll(".collapse-arrow, .nav-group-drag-handle")
+    .forEach((el) => el.remove());
   return clone.textContent.trim();
 }
 
@@ -1762,7 +1783,10 @@ function _applyNavOrderToContentPanel(animate = true) {
     if (groupName === "Score") {
       return waveformsRoot.querySelector(".file-group-score");
     }
-    if (groupName === "Ungrouped recordings" || groupName === "All recordings") {
+    if (
+      groupName === "Ungrouped recordings" ||
+      groupName === "All recordings"
+    ) {
       return waveformsRoot.querySelector(".file-group-ungrouped");
     }
     return waveformsRoot.querySelector(
@@ -1952,7 +1976,8 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
   });
 
   // Ungrouped container
-  const ungroupedLabel = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
+  const ungroupedLabel =
+    groups.length > 0 ? "Ungrouped recordings" : "All recordings";
   if (ungrouped.length > 0) {
     const uc = document.createElement("div");
     uc.className = "file-group file-group-ungrouped";
@@ -2024,14 +2049,18 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     btn.addEventListener("click", () => {
       const fg = btn.closest(".file-group");
       if (!fg) return;
-      _getNavCheckboxesForGroup(fg).forEach((cb) => { if (!cb.checked) cb.click(); });
+      _getNavCheckboxesForGroup(fg).forEach((cb) => {
+        if (!cb.checked) cb.click();
+      });
     });
   });
   waveformsRoot.querySelectorAll(".group-none").forEach((btn) => {
     btn.addEventListener("click", () => {
       const fg = btn.closest(".file-group");
       if (!fg) return;
-      _getNavCheckboxesForGroup(fg).forEach((cb) => { if (cb.checked) cb.click(); });
+      _getNavCheckboxesForGroup(fg).forEach((cb) => {
+        if (cb.checked) cb.click();
+      });
     });
   });
 
@@ -2097,9 +2126,10 @@ function _switchActiveTab(tabName) {
   _renderSidebarFileList(filenames);
 
   // Rebuild content pane group containers
-  _ensureWaveformGroupContainers(filenames.concat(
-    SYNTH_MEI_KEY in alignmentGrids ? [SYNTH_MEI_KEY] : [],
-  ), true /* forceRebuild */);
+  _ensureWaveformGroupContainers(
+    filenames.concat(SYNTH_MEI_KEY in alignmentGrids ? [SYNTH_MEI_KEY] : []),
+    true /* forceRebuild */,
+  );
 
   // Move existing waveform elements into their new group containers
   const waveformsRoot = document.getElementById("waveforms");
@@ -2121,17 +2151,23 @@ function _switchActiveTab(tabName) {
 
   // Place each existing waveform into the correct group-list
   Object.keys(wavesurfers).forEach((fname) => {
-    const wfEl = waveformsRoot.querySelector(`.waveform[data-ix='${CSS.escape(fname)}']`);
+    const wfEl = waveformsRoot.querySelector(
+      `.waveform[data-ix='${CSS.escape(fname)}']`,
+    );
     if (!wfEl) return;
     let targetList;
     if (fname === SYNTH_MEI_KEY) {
       targetList = waveformsRoot.querySelector(".file-group-score .group-list");
     } else if (groupMap.has(fname)) {
-      const fg = waveformsRoot.querySelector(`.file-group[data-group='${CSS.escape(groupMap.get(fname))}']`);
+      const fg = waveformsRoot.querySelector(
+        `.file-group[data-group='${CSS.escape(groupMap.get(fname))}']`,
+      );
       targetList = fg?.querySelector(".group-list");
     }
     if (!targetList) {
-      targetList = waveformsRoot.querySelector(".file-group-ungrouped .group-list");
+      targetList = waveformsRoot.querySelector(
+        ".file-group-ungrouped .group-list",
+      );
     }
     if (targetList && wfEl.parentElement !== targetList) {
       targetList.appendChild(wfEl);
@@ -2175,7 +2211,10 @@ function _getNavCheckboxesForGroup(fg) {
   const navGroup = document.getElementById(navId);
   if (navGroup) return [...navGroup.querySelectorAll("input[type='checkbox']")];
   // Fallback for ungrouped
-  for (const id of ["audio-group-ungrouped-recordings", "audio-group-all-recordings"]) {
+  for (const id of [
+    "audio-group-ungrouped-recordings",
+    "audio-group-all-recordings",
+  ]) {
     const el = document.getElementById(id);
     if (el) return [...el.querySelectorAll("input[type='checkbox']")];
   }
@@ -2195,7 +2234,9 @@ function _updateGroupCounts() {
     const total = navCbs.length;
     const list = fg.querySelector(".group-list");
     const wfs = list ? list.querySelectorAll(".waveform") : [];
-    const vis = Array.from(wfs).filter((w) => w.style.display !== "none").length;
+    const vis = Array.from(wfs).filter(
+      (w) => w.style.display !== "none",
+    ).length;
     badge.textContent = total > 0 ? `(${vis}/${total})` : "";
   });
 }
@@ -2218,7 +2259,6 @@ function _updateDirtyState() {
   }
 }
 
-
 /** Persist markers into the alignment JSON and mark dirty. */
 function _persistMarkers() {
   if (!loadedAlignmentJSON) return;
@@ -2234,20 +2274,32 @@ function _updateMarkBtnTooltip() {
   const btn = document.getElementById("mark");
   if (!btn) return;
   let atMarker = false;
-  const ws = currentAudioIx && wavesurfers[currentAudioIx]
-    ? wavesurfers[currentAudioIx] : null;
+  const ws =
+    currentAudioIx && wavesurfers[currentAudioIx]
+      ? wavesurfers[currentAudioIx]
+      : null;
   const isPlaying = ws ? ws.isPlaying() : false;
   if (closeListeningMode && activeMarkerIx != null && !isPlaying && ws) {
     // Check whether playback position is actually at the active marker
-    const markerTime = getCorrespondingTime(currentAudioIx, markers[activeMarkerIx]);
+    const markerTime = getCorrespondingTime(
+      currentAudioIx,
+      markers[activeMarkerIx],
+    );
     const currentTime = ws.getCurrentTime();
     atMarker = Math.abs(currentTime - markerTime) < 0.05;
-  } else if (closeListeningMode && activeMarkerIx != null && !isPlaying && !ws) {
+  } else if (
+    closeListeningMode &&
+    activeMarkerIx != null &&
+    !isPlaying &&
+    !ws
+  ) {
     // Before first playback — no waveform active, trust close-listening state
     atMarker = true;
   }
   const label = atMarker ? "Remove marker" : "Place marker";
-  btn.title = atMarker ? "Remove the currently-active marker" : "Place a marker at the current playback position";
+  btn.title = atMarker
+    ? "Remove the currently-active marker"
+    : "Place a marker at the current playback position";
   btn.textContent = label;
 }
 
@@ -2259,7 +2311,9 @@ function _persistGroupOrder() {
   // Preserve existing group properties (pattern, color) by name
   const oldGroups = _getActiveFileGroups();
   const oldByName = {};
-  oldGroups.forEach((g) => { oldByName[g.name] = g; });
+  oldGroups.forEach((g) => {
+    oldByName[g.name] = g;
+  });
 
   const waveformsRoot = document.getElementById("waveforms");
   const groups = [];
@@ -2279,8 +2333,9 @@ function _persistGroupOrder() {
   _setActiveFileGroups(groups);
 
   // Persist full group display order using data-group values
-  const groupOrder = Array.from(waveformsRoot.querySelectorAll(".file-group"))
-    .map((fg) => fg.dataset.group || "Ungrouped");
+  const groupOrder = Array.from(
+    waveformsRoot.querySelectorAll(".file-group"),
+  ).map((fg) => fg.dataset.group || "Ungrouped");
   _setActiveGroupOrder(groupOrder);
 
   _changeCounter++;
@@ -2326,11 +2381,20 @@ function _openGroupModal() {
   // Deep-clone all tabs for editing; modal edits this clone until Apply
   _migrateToGroupingTabs();
   const h = loadedAlignmentJSON?.header || {};
-  let modalTabs = JSON.parse(JSON.stringify(h.groupingTabs || [{ name: "Default", fileGroups: [], groupOrder: [] }]));
-  let modalActiveIdx = Math.max(0, modalTabs.findIndex((t) => t.name === (h.activeTab || "Default")));
+  let modalTabs = JSON.parse(
+    JSON.stringify(
+      h.groupingTabs || [{ name: "Default", fileGroups: [], groupOrder: [] }],
+    ),
+  );
+  let modalActiveIdx = Math.max(
+    0,
+    modalTabs.findIndex((t) => t.name === (h.activeTab || "Default")),
+  );
 
   /** Convenience: current modal tab's groups array */
-  function groups() { return modalTabs[modalActiveIdx].fileGroups; }
+  function groups() {
+    return modalTabs[modalActiveIdx].fileGroups;
+  }
 
   // --- Build modal DOM ---
   const backdrop = document.createElement("div");
@@ -2380,7 +2444,12 @@ function _openGroupModal() {
   addGroupBtn.className = "gm-add-group";
   addGroupBtn.textContent = "+ New Group";
   addGroupBtn.addEventListener("click", () => {
-    groups().push({ name: "New Group", pattern: "", files: [], color: _nextGroupColour(groups()) });
+    groups().push({
+      name: "New Group",
+      pattern: "",
+      files: [],
+      color: _nextGroupColour(groups()),
+    });
     renderGroups();
   });
   rightHeader.appendChild(addGroupBtn);
@@ -2447,6 +2516,7 @@ function _openGroupModal() {
       const label = document.createElement("span");
       label.className = "gm-tab-label";
       label.textContent = tab.name;
+      label.title = "Click to switch, double-click to rename";
       tabEl.appendChild(label);
 
       // Click to switch (skip re-render if already active, so dblclick can fire)
@@ -2479,8 +2549,14 @@ function _openGroupModal() {
         };
         input.addEventListener("blur", commit);
         input.addEventListener("keydown", (ke) => {
-          if (ke.key === "Enter") { ke.preventDefault(); input.blur(); }
-          if (ke.key === "Escape") { input.value = tab.name; input.blur(); }
+          if (ke.key === "Enter") {
+            ke.preventDefault();
+            input.blur();
+          }
+          if (ke.key === "Escape") {
+            input.value = tab.name;
+            input.blur();
+          }
         });
       });
 
@@ -2493,10 +2569,17 @@ function _openGroupModal() {
         del.addEventListener("click", (e) => {
           e.stopPropagation();
           const hasGroups = tab.fileGroups && tab.fileGroups.length > 0;
-          if (hasGroups && !confirm(`Delete tab "${tab.name}" and its ${tab.fileGroups.length} group(s)?`)) return;
+          if (
+            hasGroups &&
+            !confirm(
+              `Delete tab "${tab.name}" and its ${tab.fileGroups.length} group(s)?`,
+            )
+          )
+            return;
           if (!hasGroups && !confirm(`Delete tab "${tab.name}"?`)) return;
           modalTabs.splice(idx, 1);
-          if (modalActiveIdx >= modalTabs.length) modalActiveIdx = modalTabs.length - 1;
+          if (modalActiveIdx >= modalTabs.length)
+            modalActiveIdx = modalTabs.length - 1;
           if (modalActiveIdx < 0) modalActiveIdx = 0;
           renderTabBar();
           renderAll();
@@ -2515,7 +2598,10 @@ function _openGroupModal() {
     addTab.addEventListener("click", () => {
       let n = modalTabs.length + 1;
       let name = `Tab ${n}`;
-      while (modalTabs.some((t) => t.name === name)) { n++; name = `Tab ${n}`; }
+      while (modalTabs.some((t) => t.name === name)) {
+        n++;
+        name = `Tab ${n}`;
+      }
       modalTabs.push({ name, fileGroups: [], groupOrder: [] });
       modalActiveIdx = modalTabs.length - 1;
       renderTabBar();
@@ -3129,8 +3215,9 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       const canvases = document.getElementsByClassName("position-indicator");
       const playingDuration = wavesurfers[filename].getDuration();
       Array.from(canvases).forEach((c) => {
-        const file = c.closest(".wf-overlays")?.parentElement?.dataset["ix"]
-          || c.closest(".waveform")?.dataset["ix"];
+        const file =
+          c.closest(".wf-overlays")?.parentElement?.dataset["ix"] ||
+          c.closest(".waveform")?.dataset["ix"];
         if (!file || !wavesurfers[file]) return;
         const ctx = c.getContext("2d");
         const duration = wavesurfers[file].getDuration();
@@ -3152,8 +3239,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         } else {
           // Alignment-based: map through grid
           const correspondingSeconds = alignmentGrids[file][currentGridIx];
-          const absoluteX = (currentTime / playingDuration) * fullW - scrollLeft;
-          const relativeX = (correspondingSeconds / duration) * fullW - scrollLeft;
+          const absoluteX =
+            (currentTime / playingDuration) * fullW - scrollLeft;
+          const relativeX =
+            (correspondingSeconds / duration) * fullW - scrollLeft;
           const diffMapped = Math.floor((255 * (absoluteX - relativeX)) / 100);
           if (document.getElementById("visrelalign").checked) {
             ctx.beginPath();
@@ -3285,13 +3374,16 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
         // Draw time ticks on top of alignment lines
         // Walk up from the waveform element to find the effective background colour
-        const wfEl = document.querySelector(`.waveform[data-ix='${CSS.escape(filename)}']`);
+        const wfEl = document.querySelector(
+          `.waveform[data-ix='${CSS.escape(filename)}']`,
+        );
         let tickBg = "rgba(255, 255, 255, 0.85)";
         for (let el = wfEl; el && el !== document.body; el = el.parentElement) {
           const bg = getComputedStyle(el).backgroundColor;
           if (bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent") {
             const m = bg.match(/[\d.]+/g);
-            if (m && m.length >= 3) tickBg = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
+            if (m && m.length >= 3)
+              tickBg = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
             break;
           }
         }
@@ -3342,7 +3434,9 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
               if (!_scrollSyncLock && _currentZoomLevel > 1) {
                 _scrollSyncLock = true;
                 _syncAllWaveformScrolls(filename);
-                requestAnimationFrame(() => { _scrollSyncLock = false; });
+                requestAnimationFrame(() => {
+                  _scrollSyncLock = false;
+                });
               }
             });
           }
@@ -4295,7 +4389,9 @@ document.addEventListener("DOMContentLoaded", () => {
   if (closeListeningCb) {
     closeListeningCb.addEventListener("change", () => {
       if (closeListeningCb.checked) {
-        enterCloseListeningMode(markers.length > 0 ? findClosestMarkerIndex() : null);
+        enterCloseListeningMode(
+          markers.length > 0 ? findClosestMarkerIndex() : null,
+        );
       } else {
         exitCloseListeningMode();
       }
@@ -4675,18 +4771,27 @@ document.addEventListener("DOMContentLoaded", () => {
       const card = navMiddleToggle.closest(".nav-card");
       if (card && card.classList.contains("collapsed")) {
         card.classList.remove("collapsed");
-        try { localStorage.setItem("nav-middle-collapsed", "false"); } catch (_) {}
+        try {
+          localStorage.setItem("nav-middle-collapsed", "false");
+        } catch (_) {}
       }
     }
     const toolsPanel = document.getElementById("tools-panel");
     if (toolsPanel && toolsPanel.classList.contains("collapsed")) {
       toolsPanel.classList.remove("collapsed");
-      try { localStorage.setItem("fieldset-collapsed-tools-panel", "false"); } catch (_) {}
+      try {
+        localStorage.setItem("fieldset-collapsed-tools-panel", "false");
+      } catch (_) {}
     }
     const dragFieldset = document.getElementById("drag-marker-fieldset");
     if (dragFieldset && dragFieldset.classList.contains("collapsed")) {
       dragFieldset.classList.remove("collapsed");
-      try { localStorage.setItem("fieldset-collapsed-drag-marker-fieldset", "false"); } catch (_) {}
+      try {
+        localStorage.setItem(
+          "fieldset-collapsed-drag-marker-fieldset",
+          "false",
+        );
+      } catch (_) {}
     }
   }
 
@@ -4867,7 +4972,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const morphedTime = morphed[_markerDragState.jCenter];
       const _fullW = _getZoomedWidth(filename);
       const leftPx =
-        dur > 0 ? Math.max(0, Math.min(_fullW, (morphedTime / dur) * _fullW)) : 0;
+        dur > 0
+          ? Math.max(0, Math.min(_fullW, (morphedTime / dur) * _fullW))
+          : 0;
       const markerEl = wfEl.querySelector(
         `.ws-marker[data-align-ix="${markers[markerArrayIx]}"]`,
       );
@@ -4878,7 +4985,8 @@ document.addEventListener("DOMContentLoaded", () => {
         const aIx = parseInt(el.dataset.alignIx);
         if (aIx >= 0 && aIx < morphed.length) {
           const t = morphed[aIx];
-          const p = dur > 0 ? Math.max(0, Math.min(_fullW, (t / dur) * _fullW)) : 0;
+          const p =
+            dur > 0 ? Math.max(0, Math.min(_fullW, (t / dur) * _fullW)) : 0;
           el.style.left = `${p}px`;
         }
       });
@@ -5124,12 +5232,21 @@ document.addEventListener("DOMContentLoaded", () => {
     let peakDispAll = 0;
     if (origGrid) {
       for (let j = 0; j < n; j++) {
-        peakDispAll = Math.max(peakDispAll, Math.abs(morphedGrid[j] - origGrid[j]));
+        peakDispAll = Math.max(
+          peakDispAll,
+          Math.abs(morphedGrid[j] - origGrid[j]),
+        );
       }
     }
     // Colour endpoints: grid base → bright red, by displacement ratio
-    const r0 = 140, g0 = 90, b0 = 90, a0 = 0.55;  // grid base
-    const r1 = 220, g1 = 40, b1 = 40, a1 = 0.9;    // max displacement
+    const r0 = 140,
+      g0 = 90,
+      b0 = 90,
+      a0 = 0.55; // grid base
+    const r1 = 220,
+      g1 = 40,
+      b1 = 40,
+      a1 = 0.9; // max displacement
     const minPixelStep = 4;
     let lastAbsX = -999;
     ctx.lineWidth = 1;
@@ -5296,10 +5413,12 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
   // Shared time axis checkbox
-  document.getElementById("shared-time-axis").addEventListener("change", (e) => {
-    _sharedTimeAxis = e.target.checked;
-    applyZoom(_currentZoomLevel);
-  });
+  document
+    .getElementById("shared-time-axis")
+    .addEventListener("change", (e) => {
+      _sharedTimeAxis = e.target.checked;
+      applyZoom(_currentZoomLevel);
+    });
 
   // Zoom slider
   const zoomSlider = document.getElementById("zoom-slider");
@@ -5315,22 +5434,28 @@ document.addEventListener("DOMContentLoaded", () => {
       const label = document.getElementById("zoom-label");
       if (label) label.textContent = restoredLevel + "x";
       const scrollControls = document.getElementById("scroll-mode-controls");
-      if (scrollControls) scrollControls.style.display = restoredLevel > 1 ? "" : "none";
+      if (scrollControls)
+        scrollControls.style.display = restoredLevel > 1 ? "" : "none";
     }
   }
 
   // Mousewheel zoom when hovering over a waveform
-  document.getElementById("waveforms").addEventListener("wheel", (e) => {
-    if (!e.ctrlKey && !e.metaKey) return; // plain scroll = normal scroll
-    e.preventDefault();
-    const currentIdx = ZOOM_LEVELS.indexOf(_currentZoomLevel);
-    const newIdx = e.deltaY < 0
-      ? Math.min(currentIdx + 1, ZOOM_LEVELS.length - 1)
-      : Math.max(currentIdx - 1, 0);
-    if (newIdx === currentIdx) return;
-    applyZoom(ZOOM_LEVELS[newIdx]);
-    if (zoomSlider) zoomSlider.value = newIdx;
-  }, { passive: false });
+  document.getElementById("waveforms").addEventListener(
+    "wheel",
+    (e) => {
+      if (!e.ctrlKey && !e.metaKey) return; // plain scroll = normal scroll
+      e.preventDefault();
+      const currentIdx = ZOOM_LEVELS.indexOf(_currentZoomLevel);
+      const newIdx =
+        e.deltaY < 0
+          ? Math.min(currentIdx + 1, ZOOM_LEVELS.length - 1)
+          : Math.max(currentIdx - 1, 0);
+      if (newIdx === currentIdx) return;
+      applyZoom(ZOOM_LEVELS[newIdx]);
+      if (zoomSlider) zoomSlider.value = newIdx;
+    },
+    { passive: false },
+  );
 
   // Scroll mode radios
   document.querySelectorAll('input[name="scroll-mode"]').forEach((radio) => {
@@ -5750,7 +5875,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const hit = _measureHitTest(e);
     if (!hit) return;
     _measureDragState.endAlignIx = hit.alignIx;
-    _drawMeasureSpan(_measureDragState.startAlignIx, _measureDragState.endAlignIx);
+    _drawMeasureSpan(
+      _measureDragState.startAlignIx,
+      _measureDragState.endAlignIx,
+    );
   });
 
   // mouseup does NOT clear — visuals persist until Shift is released

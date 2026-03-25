@@ -1474,7 +1474,13 @@ export function swapCurrentAudio(newAudio) {
     // a clip-path on the canvases div to show only the unplayed region; the
     // CSS ::part(progress) hides the progress overlay on inactive waveforms,
     // but the clip-path persists and makes the beginning appear blank).
+    // Save & restore scroll position so the seekTo(0) doesn't visibly jump.
+    const oldScrollEl = _getScrollContainer(currentAudioIx);
+    const savedScroll = oldScrollEl ? oldScrollEl.scrollLeft : 0;
+    _scrollSyncLock = true;
     wavesurfers[currentAudioIx].seekTo(0);
+    if (oldScrollEl) oldScrollEl.scrollLeft = savedScroll;
+    _scrollSyncLock = false;
     // swap to new audio and alignment grid
     currentAudioIx = newAudio;
     console.log("new audio ix: ", currentAudioIx);
@@ -3548,7 +3554,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       }
       // iterate through all positionIndicatorCanvases, drawing in current ix position
       const canvases = document.getElementsByClassName("position-indicator");
-      const playingDuration = wavesurfers[filename].getDuration();
+      const visrelalign = document.getElementById("visrelalign").checked;
       Array.from(canvases).forEach((c) => {
         const file =
           c.closest(".wf-overlays")?.parentElement?.dataset["ix"] ||
@@ -3559,39 +3565,41 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         const fullW = _getZoomedWidth(file);
         const scrollLeft = wavesurfers[file].getScroll();
         ctx.clearRect(0, 0, c.width, c.height);
+        if (!visrelalign) return;
 
-        if (_sharedTimeAxis) {
-          // Shared time axis: draw indicator at the same absolute time
-          if (document.getElementById("visrelalign").checked) {
-            const x = (currentTime / duration) * fullW - scrollLeft;
-            ctx.beginPath();
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = "rgba(100, 100, 200, 0.7)";
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, c.height);
-            ctx.stroke();
-          }
+        if (file === filename) {
+          // Playing waveform: simple vertical line at current playback position
+          const x = (currentTime / duration) * fullW - scrollLeft;
+          ctx.beginPath();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = "rgba(100, 100, 200, 0.7)";
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, c.height);
+          ctx.stroke();
         } else {
-          // Alignment-based: map through grid
+          // Non-playing waveform: vertical section at the corresponding
+          // aligned position, with slanted top/bottom pointing toward
+          // the playing waveform's indicator position (so all slant tips
+          // form a continuous vertical line across stacked waveforms).
           const correspondingSeconds = alignmentGrids[file][currentGridIx];
-          const absoluteX =
-            (currentTime / playingDuration) * fullW - scrollLeft;
-          const relativeX =
+          const alignedX =
             (correspondingSeconds / duration) * fullW - scrollLeft;
-          const diffMapped = Math.floor((255 * (absoluteX - relativeX)) / 100);
-          if (document.getElementById("visrelalign").checked) {
-            ctx.beginPath();
-            ctx.lineWidth = 2;
-            ctx.moveTo(absoluteX, 0);
-            ctx.lineTo(relativeX, c.height / 6);
-            ctx.lineTo(relativeX, 5 * (c.height / 6));
-            ctx.lineTo(absoluteX, c.height);
-            ctx.strokeStyle =
-              diffMapped < 0
-                ? `rgb(${-1 * diffMapped} 100 100)`
-                : `rgb(100 100 ${diffMapped})`;
-            ctx.stroke();
-          }
+          // playingX: project the playing file's absolute time onto this
+          // file's time axis, so the slant shows the temporal offset
+          // between the playing file's clock time and the aligned position.
+          const playingX = (currentTime / duration) * fullW - scrollLeft;
+          const diffMapped = Math.floor((255 * (playingX - alignedX)) / 100);
+          ctx.beginPath();
+          ctx.lineWidth = 2;
+          ctx.moveTo(playingX, 0);
+          ctx.lineTo(alignedX, c.height / 6);
+          ctx.lineTo(alignedX, 5 * (c.height / 6));
+          ctx.lineTo(playingX, c.height);
+          ctx.strokeStyle =
+            diffMapped < 0
+              ? `rgb(${-1 * diffMapped} 100 100)`
+              : `rgb(100 100 ${diffMapped})`;
+          ctx.stroke();
         }
       });
     }
@@ -3990,7 +3998,12 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         // playback position; the ::part(progress) CSS hides the progress bar
         // but does not clear the clip-path, leaving the beginning blank.
         if (filename !== currentAudioIx) {
+          const sc = _getScrollContainer(filename);
+          const savedSL = sc ? sc.scrollLeft : 0;
+          _scrollSyncLock = true;
           wavesurfers[filename].seekTo(0);
+          if (sc) sc.scrollLeft = savedSL;
+          _scrollSyncLock = false;
         }
         if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
           _positionUpdaters[currentAudioIx]();

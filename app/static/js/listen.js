@@ -402,36 +402,59 @@ function applyZoom(level) {
     });
   }
 
+  // When toggling shared time axis, first reset all widths synchronously so
+  // layout settles before we call ws.zoom(). This avoids WaveSurfer's
+  // ResizeObserver racing with our zoom calls.
+  if (_sharedTimeAxis && maxDuration > 0 && level <= 1) {
+    Object.keys(wavesurfers).forEach((filename) => {
+      if (!loaded.has(filename)) return;
+      const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+      if (!wfEl) return;
+      const fraction = wavesurfers[filename].getDuration() / maxDuration;
+      wfEl.style.width = Math.max(fraction * 100, 5) + "%"; // min 5% to avoid collapse
+    });
+  } else if (!_sharedTimeAxis) {
+    Object.keys(wavesurfers).forEach((filename) => {
+      const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+      if (wfEl) wfEl.style.width = "";
+    });
+  }
+
+  // Compute shared pxPerSec once from a reference container (after widths settle)
+  if (_sharedTimeAxis && maxDuration > 0 && level > 1) {
+    // Reset widths first, then compute from parent container
+    Object.keys(wavesurfers).forEach((filename) => {
+      const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+      if (wfEl) wfEl.style.width = "";
+    });
+    const refEl = document.querySelector("#waveforms .waveform");
+    const refWidth = refEl ? refEl.clientWidth : 800;
+    sharedPxPerSec = (level * refWidth) / maxDuration;
+  }
+
   Object.keys(wavesurfers).forEach((filename) => {
     if (!loaded.has(filename)) return;
     const ws = wavesurfers[filename];
     const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
     if (!ws || !wfEl) return;
-    const duration = ws.getDuration();
 
-    if (_sharedTimeAxis && maxDuration > 0) {
-      const fraction = duration / maxDuration;
-      if (level <= 1) {
-        // Shorter recordings get narrower containers
-        wfEl.style.width = (fraction * 100) + "%";
-        ws.zoom(0); // fillParent within narrower container
-      } else {
-        wfEl.style.width = ""; // let zoom handle the width
-        // Use the longest recording's container to compute shared pxPerSec
-        const refWidth = wfEl.parentElement?.clientWidth || wfEl.clientWidth;
-        if (!sharedPxPerSec) {
-          sharedPxPerSec = (level * refWidth) / maxDuration;
+    try {
+      if (_sharedTimeAxis && maxDuration > 0) {
+        if (level <= 1) {
+          ws.zoom(0); // fillParent within narrower container
+        } else {
+          ws.zoom(sharedPxPerSec);
         }
-        ws.zoom(sharedPxPerSec);
-      }
-    } else {
-      wfEl.style.width = ""; // reset any shared-axis narrowing
-      const containerWidth = wfEl.clientWidth;
-      if (level <= 1) {
-        ws.zoom(0); // reset to fillParent
       } else {
-        ws.zoom((level * containerWidth) / duration);
+        const containerWidth = wfEl.clientWidth;
+        if (level <= 1) {
+          ws.zoom(0); // reset to fillParent
+        } else {
+          ws.zoom((level * containerWidth) / ws.getDuration());
+        }
       }
+    } catch (e) {
+      console.warn("Zoom error for", filename, e);
     }
     _applyScrollMode(filename);
     // redrawcomplete will fire and handle overlay resize + marker redraw
@@ -513,6 +536,121 @@ function _syncAllWaveformScrolls(sourceFilename) {
     // Redraw viewport-based canvases for this target
     if (_gridRedrawers[targetFilename]) _gridRedrawers[targetFilename]();
   });
+}
+
+// ---------------------------------------------------------------------------
+// Time measurement (Shift-hold for marker durations, Shift+drag for spans)
+// ---------------------------------------------------------------------------
+let _measureShiftHeld = false;
+let _measureDragState = null; // { filename, startAlignIx, endAlignIx }
+const _measureElements = []; // DOM elements to clean up on Shift-up
+
+/** Format a duration in seconds for measurement labels. */
+function _formatDuration(seconds) {
+  const abs = Math.abs(seconds);
+  if (abs < 60) return abs.toFixed(2) + "s";
+  const m = Math.floor(abs / 60);
+  const s = (abs % 60).toFixed(1);
+  return m + ":" + String(s).padStart(4, "0");
+}
+
+/** Show duration labels between consecutive markers on all waveforms. */
+function _showMarkerDurations() {
+  if (markers.length < 2) return;
+  // Sort markers by alignment index to get consecutive pairs
+  const sorted = markers.map((alignIx, i) => ({ alignIx, i }))
+    .sort((a, b) => a.alignIx - b.alignIx);
+
+  Object.keys(wavesurfers).forEach((filename) => {
+    if (!loaded.has(filename)) return;
+    const ws = wavesurfers[filename];
+    const ow = _overlayWrappers[filename];
+    if (!ws || !ow) return;
+    const dur = ws.getDuration();
+    const fullW = _getZoomedWidth(filename);
+
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const t1 = getCorrespondingTime(filename, sorted[i].alignIx);
+      const t2 = getCorrespondingTime(filename, sorted[i + 1].alignIx);
+      const x1 = (t1 / dur) * fullW;
+      const x2 = (t2 / dur) * fullW;
+      const midX = (x1 + x2) / 2;
+      const spanW = Math.abs(x2 - x1);
+
+      // Duration label
+      const label = document.createElement("div");
+      label.className = "measure-label";
+      label.textContent = _formatDuration(Math.abs(t2 - t1));
+      label.style.left = midX + "px";
+      ow.inner.appendChild(label);
+      _measureElements.push(label);
+
+      // Subtle span highlight
+      const span = document.createElement("div");
+      span.className = "measure-span";
+      span.style.left = Math.min(x1, x2) + "px";
+      span.style.width = spanW + "px";
+      ow.inner.appendChild(span);
+      _measureElements.push(span);
+    }
+  });
+}
+
+/**
+ * Draw a measurement span from startAlignIx to endAlignIx across all waveforms.
+ */
+function _drawMeasureSpan(startAlignIx, endAlignIx) {
+  // Clear previous span elements (keep marker duration labels)
+  _measureElements.forEach((el) => {
+    if (el.classList.contains("measure-drag-span") ||
+        el.classList.contains("measure-drag-label")) {
+      el.remove();
+    }
+  });
+  // Filter out removed elements
+  for (let i = _measureElements.length - 1; i >= 0; i--) {
+    if (!_measureElements[i].isConnected) _measureElements.splice(i, 1);
+  }
+
+  const ix1 = Math.min(startAlignIx, endAlignIx);
+  const ix2 = Math.max(startAlignIx, endAlignIx);
+
+  Object.keys(wavesurfers).forEach((filename) => {
+    if (!loaded.has(filename)) return;
+    const ws = wavesurfers[filename];
+    const ow = _overlayWrappers[filename];
+    if (!ws || !ow) return;
+    const dur = ws.getDuration();
+    const fullW = _getZoomedWidth(filename);
+    const t1 = getCorrespondingTime(filename, ix1);
+    const t2 = getCorrespondingTime(filename, ix2);
+    const x1 = (t1 / dur) * fullW;
+    const x2 = (t2 / dur) * fullW;
+    const spanW = Math.abs(x2 - x1);
+
+    // Highlight span
+    const span = document.createElement("div");
+    span.className = "measure-drag-span";
+    span.style.left = Math.min(x1, x2) + "px";
+    span.style.width = spanW + "px";
+    ow.inner.appendChild(span);
+    _measureElements.push(span);
+
+    // Duration label
+    const label = document.createElement("div");
+    label.className = "measure-drag-label";
+    label.textContent = _formatDuration(Math.abs(t2 - t1));
+    label.style.left = ((x1 + x2) / 2) + "px";
+    ow.inner.appendChild(label);
+    _measureElements.push(label);
+  });
+}
+
+/** Remove all measurement visuals. */
+function _clearMeasureVisuals() {
+  _measureElements.forEach((el) => el.remove());
+  _measureElements.length = 0;
+  _measureDragState = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -5501,6 +5639,74 @@ document.addEventListener("DOMContentLoaded", () => {
       _jumpToTargetActive = false;
       _hideAltNumbers();
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Time measurement: Shift-hold shows marker durations, Shift+drag measures
+  // ---------------------------------------------------------------------------
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Shift" || e.repeat) return;
+    if (_alignCorrectionMode) return; // Shift is used for influence zone in fix mode
+    _measureShiftHeld = true;
+    _showMarkerDurations();
+  });
+
+  document.addEventListener("keyup", (e) => {
+    if (e.key !== "Shift") return;
+    if (!_measureShiftHeld) return;
+    _measureShiftHeld = false;
+    _clearMeasureVisuals();
+  });
+
+  // Shift+drag on waveforms for arbitrary measurement spans
+  const waveformsRoot = document.getElementById("waveforms");
+
+  /** Given a mouse event over #waveforms, find the waveform filename and time. */
+  function _measureHitTest(e) {
+    // Walk up from target to find the .waveform container
+    let wfEl = e.target.closest(".waveform[data-ix]");
+    if (!wfEl) return null;
+    const filename = wfEl.dataset.ix;
+    const ws = wavesurfers[filename];
+    if (!ws || !loaded.has(filename)) return null;
+    const dur = ws.getDuration();
+    const fullW = _getZoomedWidth(filename);
+    if (fullW <= 0 || dur <= 0) return null;
+    // Get x relative to the overlay inner (accounts for scroll)
+    const ow = _overlayWrappers[filename];
+    if (!ow) return null;
+    const rect = ow.inner.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const time = (x / fullW) * dur;
+    const alignIx = getClosestAlignmentIx(time, filename);
+    return { filename, time, alignIx };
+  }
+
+  waveformsRoot.addEventListener("mousedown", (e) => {
+    if (!_measureShiftHeld || e.button !== 0) return;
+    const hit = _measureHitTest(e);
+    if (!hit) return;
+    e.preventDefault();
+    _measureDragState = {
+      filename: hit.filename,
+      startAlignIx: hit.alignIx,
+      endAlignIx: hit.alignIx,
+    };
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!_measureDragState) return;
+    const hit = _measureHitTest(e);
+    if (!hit) return;
+    _measureDragState.endAlignIx = hit.alignIx;
+    _drawMeasureSpan(_measureDragState.startAlignIx, _measureDragState.endAlignIx);
+  });
+
+  // mouseup does NOT clear — visuals persist until Shift is released
+  document.addEventListener("mouseup", () => {
+    if (!_measureDragState) return;
+    // Finalize the drag state but keep visuals
+    _measureDragState = null;
   });
 });
 

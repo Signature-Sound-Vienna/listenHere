@@ -2896,6 +2896,60 @@ body.marker-dragging * {
 .gt-pill:hover { background: #cbd5e1; }
 .gt-pill.active { background: #2563eb; color: #fff; }
 
+/* Time measurement visuals (Shift-hold) */
+.measure-label {
+  position: absolute;
+  top: 2px;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-weight: 600;
+  color: #1e40af;
+  background: rgba(219, 234, 254, 0.85);
+  border: 1px solid rgba(96, 165, 250, 0.5);
+  border-radius: 3px;
+  padding: 0 3px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  line-height: 1.4;
+}
+.measure-span {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(96, 165, 250, 0.08);
+  border-left: 1px dashed rgba(96, 165, 250, 0.4);
+  border-right: 1px dashed rgba(96, 165, 250, 0.4);
+  pointer-events: none;
+  z-index: 4;
+}
+.measure-drag-span {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(245, 158, 11, 0.12);
+  border-left: 2px solid rgba(245, 158, 11, 0.6);
+  border-right: 2px solid rgba(245, 158, 11, 0.6);
+  pointer-events: none;
+  z-index: 4;
+}
+.measure-drag-label {
+  position: absolute;
+  top: 2px;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 700;
+  color: #92400e;
+  background: rgba(254, 243, 199, 0.9);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  line-height: 1.4;
+}
+
 .gm-body {
   display: flex;
   flex: 1 1 auto;

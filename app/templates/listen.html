@@ -344,6 +344,31 @@
                     <input type="checkbox" id="shared-time-axis" title="All waveforms use the same time scale (shorter recordings appear narrower)"/>
                     <label for="shared-time-axis" title="All waveforms use the same time scale (shorter recordings appear narrower)">Shared time axis</label>
                   </span>
+                  <hr class="tools-divider"/>
+                  <span>
+                    <input type="checkbox" id="show-tempo-curve" title="Overlay tempo curve on each waveform (requires score alignment)"/>
+                    <label for="show-tempo-curve" title="Overlay tempo curve on each waveform (requires score alignment)">Tempo curve</label>
+                  </span>
+                  <div id="tempo-curve-options" style="display:none">
+                    <div id="tempo-mode-controls">
+                      <input type="radio" name="tempo-mode" id="tempo-mode-absolute" value="absolute" checked/>
+                      <label for="tempo-mode-absolute" title="Quarter notes per minute">QPM</label>
+                      <input type="radio" name="tempo-mode" id="tempo-mode-relative" value="relative"/>
+                      <label for="tempo-mode-relative" title="Percentage deviation from corpus mean">Deviation</label>
+                    </div>
+                    <div id="tempo-smoothing-controls">
+                      <label for="tempo-smoothing" title="Smoothing window for tempo curve">Smooth</label>
+                      <input type="range" id="tempo-smoothing" min="0" max="10" step="1" value="0" title="Smoothing window (0 = none)"/>
+                    </div>
+                    <div id="tempo-scope-controls">
+                      <input type="radio" name="tempo-scope" id="tempo-scope-group" value="group"/>
+                      <label for="tempo-scope-group" title="Compute mean from current file group only">Group</label>
+                      <input type="radio" name="tempo-scope" id="tempo-scope-displayed" value="displayed" checked/>
+                      <label for="tempo-scope-displayed" title="Compute mean from files currently displayed">Displayed</label>
+                      <input type="radio" name="tempo-scope" id="tempo-scope-all" value="all"/>
+                      <label for="tempo-scope-all" title="Compute mean from all loaded files">All</label>
+                    </div>
+                  </div>
                 </div>
               </fieldset>
 

@@ -808,6 +808,38 @@ details {
   margin: 0 0.05em 0 0;
 }
 
+/* Tempo curve controls */
+#tempo-curve-options {
+  margin-top: 0.3em;
+  font-size: var(--font-size-small);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25em;
+}
+#tempo-mode-controls,
+#tempo-scope-controls {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+#tempo-mode-controls label,
+#tempo-scope-controls label {
+  margin-right: 0.5em;
+}
+#tempo-mode-controls input[type="radio"],
+#tempo-scope-controls input[type="radio"] {
+  margin: 0 0.05em 0 0;
+}
+#tempo-smoothing-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+}
+#tempo-smoothing {
+  flex: 1;
+  min-width: 40px;
+}
+
 /* Sticky waveform filename label (stays at left edge on zoom scroll) */
 .wf-label {
   position: absolute;

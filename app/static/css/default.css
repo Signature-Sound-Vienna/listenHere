@@ -339,6 +339,11 @@ canvas {
   display: none !important;
 }
 
+/* Position hover time label just below the time-axis ticks */
+#waveforms *::part(hover-label) {
+  margin-top: 18px;
+}
+
 /* Custom marker lines (replaces WaveSurfer v4 markers plugin) */
 .ws-marker {
   position: absolute;

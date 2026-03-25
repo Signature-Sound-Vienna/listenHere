@@ -3006,6 +3006,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       labelColor: "#fff",
       labelBackground: "#000",
       labelSize: "10px",
+      formatTimeCallback: (t) => {
+        const m = Math.floor(t / 60);
+        const s = (t % 60).toFixed(2);
+        return m + ":" + s.padStart(5, "0");
+      },
     });
     _regionsPlugins[filename] = _regPlugin;
     let regions = extractCurrentlyAnnotatedRegions(filename);

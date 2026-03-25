@@ -3667,64 +3667,61 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         // Draw alignment grid lines first (so time ticks render on top)
         const visalignEl = document.getElementById("visalign");
         if (visalignEl && visalignEl.checked) {
-          ctx.lineWidth = 1;
-          ctx.strokeStyle = "rgba(140, 90, 90, 0.55)";
-          const minPixelStep = 4;
+          const grid = alignmentGrids[filename];
+          const gridLen = grid.length;
+          if (gridLen > 0) {
+            ctx.lineWidth = 1;
+            const minPixelStep = 4;
+            const pxPerIdx = fullW / gridLen;
 
-          // Draw solid lines for the top and bottom sections
-          ctx.beginPath();
-          ctx.setLineDash([]);
-          let lastAbsX = -999;
-          alignmentGrids[filename].forEach((gridPos, gridIx) => {
-            const absoluteX =
-              (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
-            const relativeX = (gridPos / dur) * fullW - scrollLeft;
+            // Compute a deterministic stride so the same grid indices are
+            // selected on every frame regardless of scroll position.  This
+            // prevents flickering caused by different indices passing a
+            // distance filter as scrollLeft changes between frames.
+            const stride = Math.max(1, Math.round(minPixelStep / pxPerIdx));
 
-            if (absoluteX > viewW + 10 && relativeX > viewW + 10) return;
-            if (absoluteX < -10 && relativeX < -10) return;
+            // Visible range of grid indices (with margin for angled lines)
+            const margin = 10;
+            // Align loIdx to stride boundary so selection is scroll-independent
+            let loIdx = Math.max(0, Math.floor(((scrollLeft - margin) / fullW) * gridLen));
+            loIdx = loIdx - (loIdx % stride); // snap down to stride boundary
+            let hiIdx = Math.min(gridLen - 1, Math.ceil(((scrollLeft + viewW + margin) / fullW) * gridLen));
 
-            if (absoluteX - lastAbsX >= minPixelStep) {
+            // Draw solid lines for the top and bottom sections
+            ctx.beginPath();
+            ctx.setLineDash([]);
+            ctx.strokeStyle = "rgba(140, 90, 90, 0.55)";
+            for (let gridIx = loIdx; gridIx <= hiIdx; gridIx += stride) {
+              const absoluteX = gridIx * pxPerIdx - scrollLeft;
+              const relativeX = (grid[gridIx] / dur) * fullW - scrollLeft;
               ctx.moveTo(absoluteX, 0);
               ctx.lineTo(relativeX, h / 6);
               ctx.moveTo(relativeX, 5 * (h / 6));
               ctx.lineTo(absoluteX, h);
-              lastAbsX = absoluteX;
             }
-          });
-          ctx.stroke();
+            ctx.stroke();
 
-          // Draw sparsely dotted lines over the waveform section
-          ctx.beginPath();
-          ctx.strokeStyle = "rgba(140, 90, 90, 0.3)";
-          ctx.setLineDash([2, 1]);
-          lastAbsX = -999;
-          alignmentGrids[filename].forEach((gridPos, gridIx) => {
-            const absoluteX =
-              (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
-            const relativeX = (gridPos / dur) * fullW - scrollLeft;
-
-            if (relativeX > viewW + 10 || relativeX < -10) return;
-
-            if (absoluteX - lastAbsX >= minPixelStep) {
+            // Draw sparsely dotted lines over the waveform section
+            ctx.beginPath();
+            ctx.strokeStyle = "rgba(140, 90, 90, 0.3)";
+            ctx.setLineDash([2, 1]);
+            for (let gridIx = loIdx; gridIx <= hiIdx; gridIx += stride) {
+              const relativeX = (grid[gridIx] / dur) * fullW - scrollLeft;
+              if (relativeX > viewW + margin || relativeX < -margin) continue;
               ctx.moveTo(relativeX, h / 6);
               ctx.lineTo(relativeX, 5 * (h / 6));
-              lastAbsX = absoluteX;
             }
-          });
-          ctx.stroke();
-          ctx.setLineDash([]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
         }
 
-        // Draw time ticks — skip during active playback for performance,
-        // a debounced redraw catches up when scrolling settles.
-        const isPlaying = currentAudioIx && wavesurfers[currentAudioIx] && wavesurfers[currentAudioIx].isPlaying();
-        if (!isPlaying) {
-          const tickBg = _wfBgCache[filename] || _refreshWfBg(filename);
-          _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg);
-        }
+        // Draw time ticks
+        const tickBg = _wfBgCache[filename] || _refreshWfBg(filename);
+        _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg);
 
-        // Tempo curve — also skip during playback for performance
-        if (!isPlaying) drawTempoCurve();
+        // Draw tempo curve
+        drawTempoCurve();
       }
 
       // --- Tempo curve drawing ---
@@ -3946,8 +3943,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         wavesurfers[filename].zoom(
           (_currentZoomLevel * containerWidth) / duration,
         );
-        _applyScrollMode(filename);
       }
+      // Always sync scroll mode on ready — browser may have restored the
+      // "follow" radio before wavesurfers exist, so the pageshow handler
+      // couldn't apply it.  _applyScrollMode checks zoom level internally.
+      _applyScrollMode(filename);
 
       // Initial draw
       drawAlignmentGrid();

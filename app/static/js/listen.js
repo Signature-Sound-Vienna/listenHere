@@ -227,6 +227,36 @@ let _scrollMode = "page"; // "follow" | "page" | "manual"
 let _scrollSyncLock = false; // prevents infinite loop in cross-waveform scroll sync
 let _sharedTimeAxis = false; // when true, all waveforms use same px/sec
 const _overlayWrappers = {}; // filename → { wrapper, inner }
+const _wfBgCache = {}; // filename → cached tick background colour string
+
+/** Recompute the effective background colour for a waveform's tick labels. */
+function _refreshWfBg(filename) {
+  const wfEl = document.querySelector(`.waveform[data-ix='${CSS.escape(filename)}']`);
+  let bg = "rgba(255, 255, 255, 0.85)";
+  for (let el = wfEl; el && el !== document.body; el = el.parentElement) {
+    const raw = getComputedStyle(el).backgroundColor;
+    if (raw && raw !== "rgba(0, 0, 0, 0)" && raw !== "transparent") {
+      const m = raw.match(/[\d.]+/g);
+      if (m && m.length >= 3) bg = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
+      break;
+    }
+  }
+  _wfBgCache[filename] = bg;
+  // Also sync the wf-label
+  const lbl = wfEl && ((_overlayWrappers[filename] && _overlayWrappers[filename].wrapper) || wfEl).querySelector(".wf-label");
+  if (lbl) lbl.style.backgroundColor = bg;
+  return bg;
+}
+
+/** Toggle play/pause icons in the transport bar. */
+function _updateTransportIcons(playing) {
+  const pp = document.getElementById("playpause");
+  if (!pp) return;
+  const iconPlay = pp.querySelector(".icon-play");
+  const iconPause = pp.querySelector(".icon-pause");
+  if (iconPlay) iconPlay.style.display = playing ? "none" : "";
+  if (iconPause) iconPause.style.display = playing ? "" : "none";
+}
 
 // ---------------------------------------------------------------------------
 // Time-axis tick marks
@@ -357,15 +387,7 @@ function _ensureWfLabel(filename) {
   lbl.textContent = filename;
   parent.appendChild(lbl);
   // Match background to the waveform's effective background colour
-  for (let el = wfEl; el && el !== document.body; el = el.parentElement) {
-    const bg = getComputedStyle(el).backgroundColor;
-    if (bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent") {
-      const m = bg.match(/[\d.]+/g);
-      if (m && m.length >= 3)
-        lbl.style.backgroundColor = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
-      break;
-    }
-  }
+  lbl.style.backgroundColor = _wfBgCache[filename] || _refreshWfBg(filename);
 }
 
 /** Sync overlay scroll transform to match WaveSurfer's scroll position. */
@@ -1189,6 +1211,9 @@ export function swapCurrentAudio(newAudio) {
     }
   }
   // Redraw grids for old and new waveforms so tick backgrounds reflect active state
+  // Refresh cached backgrounds and redraw grids so tick colours match active state
+  _refreshWfBg(prevAudio);
+  _refreshWfBg(currentAudioIx);
   if (_gridRedrawers[prevAudio]) _gridRedrawers[prevAudio]();
   if (_gridRedrawers[currentAudioIx]) _gridRedrawers[currentAudioIx]();
   // If an annotation loop is active, continue it on the newly-active waveform
@@ -2296,11 +2321,14 @@ function _updateMarkBtnTooltip() {
     // Before first playback — no waveform active, trust close-listening state
     atMarker = true;
   }
-  const label = atMarker ? "Remove marker" : "Place marker";
   btn.title = atMarker
     ? "Remove the currently-active marker"
     : "Place a marker at the current playback position";
-  btn.textContent = label;
+  const iconMark = btn.querySelector(".icon-mark");
+  const iconMarkX = btn.querySelector(".icon-mark-x");
+  if (iconMark) iconMark.style.display = atMarker ? "none" : "";
+  if (iconMarkX) iconMarkX.style.display = atMarker ? "" : "none";
+  btn.dataset.mode = atMarker ? "remove" : "place";
 }
 
 /** Persist the current group ordering into loadedAlignmentJSON.header.fileGroups */
@@ -3372,26 +3400,13 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           ctx.setLineDash([]);
         }
 
-        // Draw time ticks on top of alignment lines
-        // Walk up from the waveform element to find the effective background colour
-        const wfEl = document.querySelector(
-          `.waveform[data-ix='${CSS.escape(filename)}']`,
-        );
-        let tickBg = "rgba(255, 255, 255, 0.85)";
-        for (let el = wfEl; el && el !== document.body; el = el.parentElement) {
-          const bg = getComputedStyle(el).backgroundColor;
-          if (bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent") {
-            const m = bg.match(/[\d.]+/g);
-            if (m && m.length >= 3)
-              tickBg = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
-            break;
-          }
+        // Draw time ticks — skip during active playback for performance,
+        // a debounced redraw catches up when scrolling settles.
+        const isPlaying = currentAudioIx && wavesurfers[currentAudioIx] && wavesurfers[currentAudioIx].isPlaying();
+        if (!isPlaying) {
+          const tickBg = _wfBgCache[filename] || _refreshWfBg(filename);
+          _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg);
         }
-        _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg);
-
-        // Sync waveform filename label background to match
-        const wfLabel = wfEl && wfEl.querySelector(".wf-label");
-        if (wfLabel) wfLabel.style.backgroundColor = tickBg;
       }
 
       // Register this waveform's position-updater so it can be called
@@ -3539,6 +3554,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     wavesurfers[filename].on("seeking", () => {
       _updateMarkBtnTooltip();
     });
+    wavesurfers[filename].on("play", () => _updateTransportIcons(true));
+    wavesurfers[filename].on("pause", () => _updateTransportIcons(false));
+    wavesurfers[filename].on("finish", () => _updateTransportIcons(false));
+
     wavesurfers[filename].on("audioprocess", () => {
       // continually update timer region when opened but not yet closed
       if (timerFrom === timerTo && timerFrom > 0) {
@@ -3564,9 +3583,13 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       updatePositionIndicator();
       // Reset mark button while playing (position is moving)
       const markBtn = document.getElementById("mark");
-      if (markBtn && markBtn.textContent !== "Place marker") {
+      if (markBtn && markBtn.dataset.mode !== "place") {
         markBtn.title = "Place a marker at the current playback position";
-        markBtn.textContent = "Place marker";
+        markBtn.dataset.mode = "place";
+        const im = markBtn.querySelector(".icon-mark");
+        const imx = markBtn.querySelector(".icon-mark-x");
+        if (im) im.style.display = "";
+        if (imx) imx.style.display = "none";
       }
     });
 
@@ -5364,14 +5387,48 @@ document.addEventListener("DOMContentLoaded", () => {
       colorMap = cM;
     })
     .catch((err) => console.warn("Couldn't load colormap:", err));
-  // play/pause button
-  document.getElementById("playpause").addEventListener("click", function (e) {
+  // --- Transport controls ---
+  function _seekBy(delta) {
+    if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
+    const ws = wavesurfers[currentAudioIx];
+    const dur = ws.getDuration();
+    if (dur > 0) {
+      const newTime = Math.max(0, Math.min(dur, ws.getCurrentTime() + delta));
+      ws.seekTo(newTime / dur);
+    }
+  }
+
+  // Play/pause
+  document.getElementById("playpause").addEventListener("click", function () {
     playpause();
   });
+
+  // Skip to start
+  document.getElementById("skip-back").addEventListener("click", function () {
+    if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
+    wavesurfers[currentAudioIx].seekTo(0);
+  });
+
+  // Rewind 10s
+  document.getElementById("seek-back").addEventListener("click", function () {
+    _seekBy(-10);
+  });
+
+  // Forward 10s
+  document.getElementById("seek-fwd").addEventListener("click", function () {
+    _seekBy(10);
+  });
+
+  // Skip to end
+  document.getElementById("skip-end").addEventListener("click", function () {
+    if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
+    wavesurfers[currentAudioIx].seekTo(1);
+  });
+
   // mark button — places a new marker, or removes the active marker when
   // paused at one in close-listening mode
   document.getElementById("mark").addEventListener("click", function (e) {
-    if (this.textContent === "Remove marker") {
+    if (this.dataset.mode === "remove") {
       _deleteActiveMarker();
       _updateMarkBtnTooltip();
       return;
@@ -5457,11 +5514,22 @@ document.addEventListener("DOMContentLoaded", () => {
     { passive: false },
   );
 
-  // Scroll mode radios
-  document.querySelectorAll('input[name="scroll-mode"]').forEach((radio) => {
+  // Scroll mode radios — sync variable from browser-restored state on load
+  const scrollRadios = document.querySelectorAll('input[name="scroll-mode"]');
+  scrollRadios.forEach((radio) => {
+    if (radio.checked) _scrollMode = radio.value;
     radio.addEventListener("change", (e) => {
       _scrollMode = e.target.value;
       Object.keys(wavesurfers).forEach((fn) => _applyScrollMode(fn));
+    });
+  });
+  // Belt-and-suspenders: some browsers restore form state after DOMContentLoaded
+  window.addEventListener("pageshow", () => {
+    scrollRadios.forEach((radio) => {
+      if (radio.checked && radio.value !== _scrollMode) {
+        _scrollMode = radio.value;
+        Object.keys(wavesurfers).forEach((fn) => _applyScrollMode(fn));
+      }
     });
   });
 

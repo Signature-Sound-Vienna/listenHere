@@ -586,27 +586,50 @@ details {
   filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
 }
 
-#playpause, #mark {
+#transport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
   width: 100%;
-  padding: 0.45em;
   background-color: #2563eb;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease, transform 0.1s;
+  border-radius: 20px;
   box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
-  margin-bottom: 0.2em;
 }
-
-#playpause:hover, #mark:hover {
-  background-color: #1d4ed8;
-  transform: translateY(-1px);
+.transport-btn {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
 }
-
-#playpause:active, #mark:active {
-  transform: translateY(0);
+.transport-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+}
+.transport-btn:active {
+  background: rgba(255, 255, 255, 0.3);
+}
+.transport-play {
+  color: white;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  padding: 4px;
+  margin: 0 2px;
+}
+.transport-play:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+#mark[data-mode="remove"] {
+  color: #fca5a5;
+}
+#mark[data-mode="remove"]:hover {
+  color: #fecaca;
 }
 
 .nav-fieldset, .collapsible-fieldset {
@@ -694,7 +717,7 @@ details {
 }
 
 .fieldset-body button {
-  font-size: var(--font-size-large);
+  font-size: var(--font-size-medium);
   font-family: inherit;
   width: 100%;
   margin-top: 0.2em;
@@ -1896,8 +1919,7 @@ nav input[type="checkbox"]:focus-visible {
 
 /* Close Listening checkbox */
 #close-listening-cb + label {
-  font-weight: 600;
-  font-size: 0.85em;
+  font-size: var(--font-size-medium);
   color: #334155;
   cursor: pointer;
 }
@@ -3181,7 +3203,7 @@ body.marker-dragging * {
 /* Save data (download JSON) button — unsaved-changes indicator */
 #download-json-btn {
   position: relative;
-  font-size: var(--font-size-large);
+  font-size: var(--font-size-medium);
   font-family: inherit;
   background-color: transparent;
   border: 1px solid #606c38;

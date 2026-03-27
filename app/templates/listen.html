@@ -19,6 +19,58 @@
     <!-- WaveSurfer v7 is imported as an ES module directly in listen.js -->
     <script src="{{ url_for('static', filename='vendor/solid-client-authn.bundle.js') }}"></script>
     <script src="{{ url_for('static', filename='vendor/jsonld.min.js') }}"></script>
+    <!-- Load Matomo@mdw.ac.at -->
+    <script type="text/javascript">
+      var _paq = (window._paq = window._paq || []);
+      /* tracker methods like "setCustomDimension" should be called before "trackPageView" */
+      _paq.push(["setDoNotTrack", true]);
+      _paq.push(["requireCookieConsent"]);
+      if (
+        (function () {
+          try {
+            return JSON.parse(
+              unescape(
+                ("; " + document.cookie)
+                  .split("; consent=")
+                  .pop()
+                  .split(";")
+                  .shift(),
+              ),
+            ).tracking;
+          } catch (e) {
+            return false;
+          }
+        })()
+      ) {
+        _paq.push(["setCookieConsentGiven"]);
+      } else {
+        _paq.push(["forgetCookieConsentGiven"]);
+      }
+      _paq.push(["trackPageView"]);
+      _paq.push(["enableLinkTracking"]);
+      (function () {
+        var u = "https://matomo.mdw.ac.at/";
+        _paq.push(["setTrackerUrl", u + "matomo.php"]);
+        _paq.push(["setSiteId", "1000144"]);
+        var d = document,
+          g = d.createElement("script"),
+          s = d.getElementsByTagName("script")[0];
+        g.type = "text/javascript";
+        g.async = true;
+        g.src = u + "matomo.js";
+        s.parentNode.insertBefore(g, s);
+      })();
+    </script>
+    <noscript>
+      <p>
+        <img
+          src="https://matomo.mdw.ac.at/matomo.php?idsite=1000144&amp;rec=1"
+          style="border: 0"
+          alt=""
+        />
+      </p>
+    </noscript>
+    <!-- End Matomo Code -->
   </head>
   <body>
     <!-- Align panel (shown when mode=align) -->
@@ -362,11 +414,12 @@
                     </div>
                     <div id="tempo-scope-controls">
                       <input type="radio" name="tempo-scope" id="tempo-scope-group" value="group"/>
-                      <label for="tempo-scope-group" title="Compute mean from current file group only">Group</label>
-                      <input type="radio" name="tempo-scope" id="tempo-scope-displayed" value="displayed" checked/>
-                      <label for="tempo-scope-displayed" title="Compute mean from files currently displayed">Displayed</label>
-                      <input type="radio" name="tempo-scope" id="tempo-scope-all" value="all"/>
-                      <label for="tempo-scope-all" title="Compute mean from all loaded files">All</label>
+                      <label for="tempo-scope-group" title="Compute reference from files within the same group">Within group</label>
+                      <input type="radio" name="tempo-scope" id="tempo-scope-all" value="all" checked/>
+                      <label for="tempo-scope-all" title="Compute reference from all files across groups">Across groups</label>
+                      <span class="scope-separator"></span>
+                      <input type="checkbox" id="tempo-scope-displayed" />
+                      <label for="tempo-scope-displayed" title="Restrict to currently displayed files only">Only visible</label>
                     </div>
                   </div>
                 </div>

@@ -11,6 +11,58 @@
       rel="stylesheet"
       href="{{ url_for('static', filename='css/default.css') }}"
     />
+    <!-- Load Matomo@mdw.ac.at -->
+    <script type="text/javascript">
+      var _paq = (window._paq = window._paq || []);
+      /* tracker methods like "setCustomDimension" should be called before "trackPageView" */
+      _paq.push(["setDoNotTrack", true]);
+      _paq.push(["requireCookieConsent"]);
+      if (
+        (function () {
+          try {
+            return JSON.parse(
+              unescape(
+                ("; " + document.cookie)
+                  .split("; consent=")
+                  .pop()
+                  .split(";")
+                  .shift(),
+              ),
+            ).tracking;
+          } catch (e) {
+            return false;
+          }
+        })()
+      ) {
+        _paq.push(["setCookieConsentGiven"]);
+      } else {
+        _paq.push(["forgetCookieConsentGiven"]);
+      }
+      _paq.push(["trackPageView"]);
+      _paq.push(["enableLinkTracking"]);
+      (function () {
+        var u = "https://matomo.mdw.ac.at/";
+        _paq.push(["setTrackerUrl", u + "matomo.php"]);
+        _paq.push(["setSiteId", "1000144"]);
+        var d = document,
+          g = d.createElement("script"),
+          s = d.getElementsByTagName("script")[0];
+        g.type = "text/javascript";
+        g.async = true;
+        g.src = u + "matomo.js";
+        s.parentNode.insertBefore(g, s);
+      })();
+    </script>
+    <noscript>
+      <p>
+        <img
+          src="https://matomo.mdw.ac.at/matomo.php?idsite=1000144&amp;rec=1"
+          style="border: 0"
+          alt=""
+        />
+      </p>
+    </noscript>
+    <!-- End Matomo Code -->
   </head>
   <body id="splash">
     <!-- Splash page for Listen Here! -->

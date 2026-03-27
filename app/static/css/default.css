@@ -830,6 +830,30 @@ details {
 #tempo-scope-controls input[type="radio"] {
   margin: 0 0.05em 0 0;
 }
+#tempo-scope-controls .scope-separator {
+  display: inline-block;
+  width: 1px;
+  height: 1em;
+  background: #999;
+  margin: 0 0.4em;
+  flex-shrink: 0;
+}
+#tempo-scope-controls input[type="checkbox"] {
+  -webkit-appearance: checkbox;
+  appearance: checkbox;
+  width: auto;
+  height: auto;
+  margin: 0 0.05em 0 0;
+  display: inline;
+  position: static;
+  border: initial;
+  background: initial;
+  outline: initial;
+  cursor: pointer;
+}
+#tempo-scope-controls input[type="checkbox"]::before {
+  content: none;
+}
 #tempo-smoothing-controls {
   display: flex;
   align-items: center;

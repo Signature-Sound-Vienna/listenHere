@@ -95,6 +95,7 @@ export function getAudioLinkedDataUri(filename) {
 
 // File picker: maps alignment audio keys to blob URLs from user-selected files
 let fileBlobUrls = new Map();
+let fileBlobs = new Map(); // alignment audio keys -> File/Blob objects
 let useFilesMode = false;
 let _fromAlignmentHandoff = false;
 
@@ -235,10 +236,19 @@ const _wfBgCache = {}; // filename → cached tick background colour string
 let _tempoCurveVisible = false;
 let _tempoCurveMode = "absolute"; // "absolute" | "relative"
 let _tempoCurveSmoothing = 0; // 0–10 window size for Gaussian smoothing
-let _tempoCurveScope = "displayed"; // "group" | "displayed" | "all"
+let _tempoScopeWithinGroup = false; // true = within group, false = across groups
+let _tempoScopeDisplayedOnly = false; // true = restrict to displayed files
 const _tempoRawCache = {}; // filename → [{time, tempo}] (unsmoothed)
 const _tempoCurveRedrawers = {}; // filename → redraw function
 let _tempoYRange = null; // {min, max} — uniform across waveforms, recomputed on scope/mode change
+
+// Outlier threshold: values deviating from the median by more than this
+// many scaled MADs are treated as outliers — both for Y-axis clipping
+// and for exclusion from the corpus reference in relative mode.
+// Scaled MAD ≈ 1.4826 × MAD approximates SD for normal data, so
+// TEMPO_OUTLIER_K = 2 corresponds to ≈ 2 standard deviations.
+const TEMPO_OUTLIER_K = 2;
+const _TEMPO_OUTLIER_SCALE = TEMPO_OUTLIER_K * 1.4826; // pre-computed
 
 /**
  * Compute raw (unsmoothed) tempo data points for a single audio file.
@@ -268,14 +278,19 @@ function _computeRawTempo(filename) {
 
   // Binary search: find the grid index whose value is closest to t
   function gridIxForTime(grid, t) {
-    let lo = 0, hi = grid.length - 1;
+    let lo = 0,
+      hi = grid.length - 1;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
       if (grid[mid] <= t) lo = mid + 1;
       else hi = mid;
     }
     const ix = Math.max(0, lo - 1);
-    if (ix < grid.length - 1 && Math.abs(grid[ix + 1] - t) < Math.abs(grid[ix] - t)) return ix + 1;
+    if (
+      ix < grid.length - 1 &&
+      Math.abs(grid[ix + 1] - t) < Math.abs(grid[ix] - t)
+    )
+      return ix + 1;
     return ix;
   }
 
@@ -283,8 +298,8 @@ function _computeRawTempo(filename) {
   // from the MEI) over MIDI-tick-derived score_onset.  The timemap tstamp
   // (MIDI ms) maps to synth-audio seconds, which feeds into the same
   // alignment-grid lookup as before.  Falls back to score_onset if no timemap.
-  let onsets;       // quarter-note positions
-  let synthTimes;   // corresponding synth-audio seconds (for grid mapping)
+  let onsets; // quarter-note positions
+  let synthTimes; // corresponding synth-audio seconds (for grid mapping)
   if (timemap && timemap.length > 1) {
     // Extract non-measure entries that carry note events
     const entries = timemap.filter((e) => "qstamp" in e && !("measureOn" in e));
@@ -295,7 +310,8 @@ function _computeRawTempo(filename) {
   }
   if (!onsets || onsets.length < 2) {
     // Fallback: use MIDI-tick-derived values from score alignment
-    if (!scoreAlignment.score_onset || scoreAlignment.score_onset.length < 2) return [];
+    if (!scoreAlignment.score_onset || scoreAlignment.score_onset.length < 2)
+      return [];
     onsets = scoreAlignment.score_onset;
     synthTimes = scoreAlignment.synth_onset || null;
   }
@@ -306,7 +322,8 @@ function _computeRawTempo(filename) {
   const synthGrid = alignmentGrids[SYNTH_MEI_KEY];
   const useSynthGrid = !!(synthTimes && synthGrid && synthGrid.length);
   const pairs = []; // [{s, t}]  s = score QN, t = audio seconds
-  let prevS = -Infinity, prevT = -Infinity;
+  let prevS = -Infinity,
+    prevT = -Infinity;
   for (let i = 0; i < onsets.length; i++) {
     const s = onsets[i];
     if (s <= prevS) continue; // skip duplicate / non-advancing score time
@@ -340,8 +357,9 @@ function _computeRawTempo(filename) {
   for (let sq = Math.ceil(sMin / step) * step; sq <= sMax; sq += step) {
     // Advance pairIdx so pairs[pairIdx].s <= sq < pairs[pairIdx+1].s
     while (pairIdx < pairs.length - 2 && pairs[pairIdx + 1].s <= sq) pairIdx++;
-    const p0 = pairs[pairIdx], p1 = pairs[pairIdx + 1];
-    const frac = (p1.s - p0.s) > 0 ? (sq - p0.s) / (p1.s - p0.s) : 0;
+    const p0 = pairs[pairIdx],
+      p1 = pairs[pairIdx + 1];
+    const frac = p1.s - p0.s > 0 ? (sq - p0.s) / (p1.s - p0.s) : 0;
     const tInterp = p0.t + frac * (p1.t - p0.t);
     samples.push({ s: sq, t: tInterp });
   }
@@ -364,7 +382,8 @@ function _computeRawTempo(filename) {
  * alignment grids change (caller must clear _tempoRawCache on grid reload).
  */
 function _getRawTempo(filename) {
-  if (!_tempoRawCache[filename]) _tempoRawCache[filename] = _computeRawTempo(filename);
+  if (!_tempoRawCache[filename])
+    _tempoRawCache[filename] = _computeRawTempo(filename);
   return _tempoRawCache[filename];
 }
 
@@ -376,64 +395,146 @@ function _smoothTempo(points, windowSize) {
   if (windowSize <= 0 || points.length <= 1) return points;
   const out = [];
   for (let i = 0; i < points.length; i++) {
-    let wSum = 0, wCount = 0;
-    for (let j = Math.max(0, i - windowSize); j <= Math.min(points.length - 1, i + windowSize); j++) {
+    let wSum = 0,
+      wCount = 0;
+    for (
+      let j = Math.max(0, i - windowSize);
+      j <= Math.min(points.length - 1, i + windowSize);
+      j++
+    ) {
       const d = (j - i) / windowSize;
       const w = Math.exp(-2 * d * d);
       wSum += points[j].tempo * w;
       wCount += w;
     }
-    out.push({ time: points[i].time, tempo: wSum / wCount });
+    out.push({
+      time: points[i].time,
+      scoreTime: points[i].scoreTime,
+      tempo: wSum / wCount,
+    });
   }
   return out;
 }
 
 /**
  * Get the set of filenames for the current tempo scope.
- * "group" = same file group as the file; "displayed" = on-screen; "all" = all loaded.
+ *
+ * Two independent dimensions:
+ *   _tempoScopeWithinGroup: true = same group as forFilename; false = all groups
+ *   _tempoScopeDisplayedOnly: true = restrict to currently displayed files
  */
 function _getTempoScopeFiles(forFilename) {
-  const allFiles = Object.keys(wavesurfers).filter(
-    (fn) => fn !== SYNTH_MEI_KEY && alignmentGrids[fn] && alignmentGrids[fn].length,
+  let files = Object.keys(wavesurfers).filter(
+    (fn) =>
+      fn !== SYNTH_MEI_KEY && alignmentGrids[fn] && alignmentGrids[fn].length,
   );
-  if (_tempoCurveScope === "all") return allFiles;
-  if (_tempoCurveScope === "displayed") {
-    // files currently shown in the content pane
+
+  if (_tempoScopeWithinGroup) {
+    // Restrict to files in the same group as forFilename
+    const groups = _getActiveFileGroups();
+    const grouped = new Set();
+    let myGroupFiles = null;
+    for (const g of groups) {
+      const members = new Set(g.files || []);
+      if (g.pattern) {
+        try {
+          const re = new RegExp(g.pattern);
+          files.forEach((f) => {
+            const short = f.substring(f.lastIndexOf("/") + 1);
+            if (re.test(short) || re.test(f)) members.add(f);
+          });
+        } catch (_) {}
+      }
+      members.forEach((f) => grouped.add(f));
+      if (members.has(forFilename)) {
+        myGroupFiles = files.filter((fn) => members.has(fn));
+      }
+    }
+    if (myGroupFiles) {
+      files = myGroupFiles;
+    } else {
+      // forFilename is ungrouped — use all ungrouped files as the group
+      files = files.filter((fn) => !grouped.has(fn));
+    }
+  }
+
+  if (_tempoScopeDisplayedOnly) {
     const displayed = new Set(
       Array.from(document.querySelectorAll("#waveforms .waveform"))
+        .filter((el) => el.style.display !== "none")
         .map((el) => el.dataset.ix)
         .filter((fn) => fn && wavesurfers[fn]),
     );
-    return allFiles.filter((fn) => displayed.has(fn));
+    files = files.filter((fn) => displayed.has(fn));
   }
-  // "group" — files sharing a file group with forFilename
-  const groups = _getActiveFileGroups();
-  for (const g of groups) {
-    if (g.files && g.files.includes(forFilename)) {
-      return allFiles.filter((fn) => g.files.includes(fn));
-    }
-  }
-  return allFiles; // fallback if not in any group
+
+  return files;
 }
 
 /**
- * Compute the corpus mean tempo at each resampled score position across
- * the given files.  Returns an array indexed the same as the raw tempo
- * arrays (all files share the same evenly-spaced score positions after
- * resampling, so index alignment is automatic).
+ * Compute the corpus reference tempo at each resampled score position
+ * across the given files.
+ *
+ * Per-file outlier exclusion: for each file, compute the median and
+ * scaled MAD of its own tempo values.  At each score position, exclude
+ * a file's value if it deviates from that file's own median by more
+ * than TEMPO_OUTLIER_K scaled MADs (≈ 2 standard deviations for normal
+ * data).  This catches structural-mismatch artefacts (e.g. a file that
+ * skips a repeat produces extreme QPM in the unmatched region) even when
+ * a large fraction of the corpus is affected, because the test is
+ * per-file rather than cross-corpus.
+ *
+ * The reference value at each position is the median of the remaining
+ * (non-excluded) values.
+ *
+ * Returns a Map<scoreTime, medianTempo> keyed by score position
+ * (multiples of TEMPO_RESAMPLE_QN).  This avoids index-alignment bugs:
+ * different files may have different-length arrays due to monotonicity
+ * filtering and dt <= 0 skips, so array-index matching is unreliable.
  */
-function _computeCorpusMeanTempo(files) {
-  const tempos = files.map((fn) => _getRawTempo(fn));
-  const maxLen = Math.max(0, ...tempos.map((t) => t.length));
-  const mean = [];
-  for (let i = 0; i < maxLen; i++) {
-    let sum = 0, count = 0;
-    for (const t of tempos) {
-      if (i < t.length) { sum += t[i].tempo; count++; }
+function _computeCorpusMeanTempo(files, smoothing) {
+  const sm = smoothing || 0;
+  const tempos = files.map((fn) => _smoothTempo(_getRawTempo(fn), sm));
+
+  // Pre-compute per-file median and outlier threshold (TEMPO_OUTLIER_K × scaled MAD).
+  const fileStats = tempos.map((pts) => {
+    if (!pts.length) return { med: 0, threshold: Infinity };
+    const sorted = pts.map((p) => p.tempo).sort((a, b) => a - b);
+    const med = _median(sorted);
+    const absDevs = sorted.map((v) => Math.abs(v - med)).sort((a, b) => a - b);
+    const mad = _median(absDevs);
+    const threshold = _TEMPO_OUTLIER_SCALE * mad;
+    return { med, threshold: Math.max(threshold, 1) }; // floor of 1 QPM to avoid zero-threshold
+  });
+
+  // Collect all score positions across all files, keyed by scoreTime
+  // (multiples of TEMPO_RESAMPLE_QN, so rounding removes float noise).
+  const posMap = new Map(); // scoreTime → [{tempo, fileIdx}]
+  for (let f = 0; f < tempos.length; f++) {
+    for (const pt of tempos[f]) {
+      const key = Math.round(pt.scoreTime * 1e6) / 1e6; // remove float noise
+      if (!posMap.has(key)) posMap.set(key, []);
+      posMap.get(key).push({ tempo: pt.tempo, fileIdx: f });
     }
-    mean.push(count > 0 ? sum / count : 0);
   }
-  return mean;
+
+  const result = new Map();
+  for (const [scoreTime, entries] of posMap) {
+    const vals = [];
+    for (const { tempo, fileIdx } of entries) {
+      const { med, threshold } = fileStats[fileIdx];
+      if (Math.abs(tempo - med) <= threshold) vals.push(tempo);
+    }
+    if (vals.length === 0) {
+      // All values excluded — fall back to unfiltered median
+      const fallback = entries.map((e) => e.tempo).sort((a, b) => a - b);
+      result.set(scoreTime, _median(fallback));
+      continue;
+    }
+    vals.sort((a, b) => a - b);
+    result.set(scoreTime, _median(vals));
+  }
+  return result;
 }
 
 /**
@@ -456,9 +557,13 @@ function _median(sorted) {
  */
 function _recomputeTempoYRange() {
   const allFiles = Object.keys(wavesurfers).filter(
-    (fn) => fn !== SYNTH_MEI_KEY && alignmentGrids[fn] && alignmentGrids[fn].length,
+    (fn) =>
+      fn !== SYNTH_MEI_KEY && alignmentGrids[fn] && alignmentGrids[fn].length,
   );
-  if (!allFiles.length || !scoreAlignment) { _tempoYRange = null; return; }
+  if (!allFiles.length || !scoreAlignment) {
+    _tempoYRange = null;
+    return;
+  }
 
   // Use smoothed data for range computation so the range matches what is
   // actually drawn, and isolated spikes dampened by smoothing don't widen it.
@@ -467,37 +572,48 @@ function _recomputeTempoYRange() {
   if (_tempoCurveMode === "absolute") {
     const allTempos = [];
     for (const fn of allFiles) {
-      for (const pt of _smoothTempo(_getRawTempo(fn), sm)) allTempos.push(pt.tempo);
+      for (const pt of _smoothTempo(_getRawTempo(fn), sm))
+        allTempos.push(pt.tempo);
     }
-    if (!allTempos.length) { _tempoYRange = null; return; }
+    if (!allTempos.length) {
+      _tempoYRange = null;
+      return;
+    }
     allTempos.sort((a, b) => a - b);
     const med = _median(allTempos);
     const absDevs = allTempos.map((t) => Math.abs(t - med));
     absDevs.sort((a, b) => a - b);
     const mad = _median(absDevs);
-    const robustSD = 1.4826 * mad;
     _tempoYRange = {
-      min: Math.max(0, med - 2 * robustSD),
-      max: med + 2 * robustSD,
+      min: Math.max(0, med - _TEMPO_OUTLIER_SCALE * mad),
+      max: med + _TEMPO_OUTLIER_SCALE * mad,
     };
   } else {
     // Relative deviation: robust range symmetric around 0
-    const corpusMean = _computeCorpusMeanTempo(allFiles);
+    const corpusMean = _computeCorpusMeanTempo(allFiles, sm);
     const devs = [];
     for (const fn of allFiles) {
       const smoothed = _smoothTempo(_getRawTempo(fn), sm);
-      for (let i = 0; i < smoothed.length && i < corpusMean.length; i++) {
-        if (corpusMean[i] > 0) devs.push(((smoothed[i].tempo - corpusMean[i]) / corpusMean[i]) * 100);
+      for (const pt of smoothed) {
+        const key = Math.round(pt.scoreTime * 1e6) / 1e6;
+        const ref = corpusMean.get(key);
+        if (ref && ref > 0) devs.push(((pt.tempo - ref) / ref) * 100);
       }
     }
-    if (!devs.length) { _tempoYRange = { min: -10, max: 10 }; return; }
+    if (!devs.length) {
+      _tempoYRange = { min: -10, max: 10 };
+      return;
+    }
     devs.sort((a, b) => a - b);
     const dMed = _median(devs);
     const dAbsDevs = devs.map((d) => Math.abs(d - dMed));
     dAbsDevs.sort((a, b) => a - b);
     const dMad = _median(dAbsDevs);
-    const dRobustSD = 1.4826 * dMad;
-    const extent = Math.max(10, Math.abs(dMed) + 2 * dRobustSD);
+    // Use a generous floor for deviation Y-range: real corpora routinely show
+    // ±75% deviations from legitimate tempo differences between recordings.
+    // Beyond the floor, use 3× scaled MAD to accommodate the data if needed.
+    const DEV_Y_SCALE = 3 * 1.4826;
+    const extent = Math.max(75, Math.abs(dMed) + DEV_Y_SCALE * dMad);
     _tempoYRange = { min: -extent, max: extent };
   }
 }
@@ -523,9 +639,14 @@ function _getTempoAtTime(filename, time) {
 
   if (_tempoCurveMode === "relative") {
     const scopeFiles = _getTempoScopeFiles(filename);
-    const corpusMean = _computeCorpusMeanTempo(scopeFiles);
-    if (idx < corpusMean.length && corpusMean[idx] > 0) {
-      const dev = ((tempo - corpusMean[idx]) / corpusMean[idx]) * 100;
+    const corpusMean = _computeCorpusMeanTempo(
+      scopeFiles,
+      _tempoCurveSmoothing,
+    );
+    const key = Math.round(smoothed[idx].scoreTime * 1e6) / 1e6;
+    const ref = corpusMean.get(key);
+    if (ref && ref > 0) {
+      const dev = ((tempo - ref) / ref) * 100;
       const sign = dev >= 0 ? "+" : "";
       return { tempo, label: sign + dev.toFixed(0) + "% avg." };
     }
@@ -535,7 +656,9 @@ function _getTempoAtTime(filename, time) {
 
 /** Recompute the effective background colour for a waveform's tick labels. */
 function _refreshWfBg(filename) {
-  const wfEl = document.querySelector(`.waveform[data-ix='${CSS.escape(filename)}']`);
+  const wfEl = document.querySelector(
+    `.waveform[data-ix='${CSS.escape(filename)}']`,
+  );
   let bg = "rgba(255, 255, 255, 0.85)";
   for (let el = wfEl; el && el !== document.body; el = el.parentElement) {
     const raw = getComputedStyle(el).backgroundColor;
@@ -547,7 +670,12 @@ function _refreshWfBg(filename) {
   }
   _wfBgCache[filename] = bg;
   // Also sync the wf-label
-  const lbl = wfEl && ((_overlayWrappers[filename] && _overlayWrappers[filename].wrapper) || wfEl).querySelector(".wf-label");
+  const lbl =
+    wfEl &&
+    (
+      (_overlayWrappers[filename] && _overlayWrappers[filename].wrapper) ||
+      wfEl
+    ).querySelector(".wf-label");
   if (lbl) lbl.style.backgroundColor = bg;
   return bg;
 }
@@ -1442,6 +1570,11 @@ function onClickRenditionCheckbox(e) {
     checkbox.checked = false;
   }
   _updateGroupCounts();
+  // Redraw tempo curves if scope depends on displayed files
+  if (_tempoScopeDisplayedOnly && _tempoCurveVisible) {
+    _tempoYRange = null;
+    Object.values(_gridRedrawers).forEach((fn) => fn());
+  }
 }
 
 export function swapCurrentAudio(newAudio) {
@@ -2534,6 +2667,12 @@ function _switchActiveTab(tabName) {
   // Update pills
   _renderGroupingTabPills();
 
+  // Redraw tempo curves — group membership may have changed
+  if (_tempoScopeWithinGroup && _tempoCurveVisible) {
+    _tempoYRange = null;
+    Object.values(_gridRedrawers).forEach((fn) => fn());
+  }
+
   _changeCounter++;
   _updateDirtyState();
 }
@@ -3502,11 +3641,20 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     // Start loading (deferred for synth entries until the blob URL is available)
     const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
     const _audioUrl = resolveAudioUrl(filename);
-    if (_audioUrl) {
+    // Prefer passing the Blob directly to WaveSurfer to avoid cross-origin
+    // issues that some browsers (Firefox) have with blob: URLs via fetch().
+    const _audioBlob = fileBlobs.get(filename);
+    if (_audioBlob || _audioUrl) {
       // If pre-computed peaks are available, pass them to load() so WaveSurfer
       // can render the waveform shape immediately (before full audio decode).
       const _peakInfo = _waveformPeaks[filename];
-      if (_peakInfo && _peakInfo.peaks && _peakInfo.duration) {
+      if (_audioBlob) {
+        wavesurfers[filename].loadBlob(
+          _audioBlob,
+          _peakInfo?.peaks ? [_peakInfo.peaks] : undefined,
+          _peakInfo?.duration,
+        );
+      } else if (_peakInfo && _peakInfo.peaks && _peakInfo.duration) {
         wavesurfers[filename].load(
           _audioUrl,
           [_peakInfo.peaks],
@@ -3691,9 +3839,15 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
             // Visible range of grid indices (with margin for angled lines)
             const margin = 10;
             // Align loIdx to stride boundary so selection is scroll-independent
-            let loIdx = Math.max(0, Math.floor(((scrollLeft - margin) / fullW) * gridLen));
+            let loIdx = Math.max(
+              0,
+              Math.floor(((scrollLeft - margin) / fullW) * gridLen),
+            );
             loIdx = loIdx - (loIdx % stride); // snap down to stride boundary
-            let hiIdx = Math.min(gridLen - 1, Math.ceil(((scrollLeft + viewW + margin) / fullW) * gridLen));
+            let hiIdx = Math.min(
+              gridLen - 1,
+              Math.ceil(((scrollLeft + viewW + margin) / fullW) * gridLen),
+            );
 
             // Draw solid lines for the top and bottom sections
             ctx.beginPath();
@@ -3758,7 +3912,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         let corpusMean = null;
         if (_tempoCurveMode === "relative") {
           const scopeFiles = _getTempoScopeFiles(filename);
-          corpusMean = _computeCorpusMeanTempo(scopeFiles);
+          corpusMean = _computeCorpusMeanTempo(
+            scopeFiles,
+            _tempoCurveSmoothing,
+          );
         }
 
         // Map tempo value to Y coordinate (top = high, bottom = low)
@@ -3777,8 +3934,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         for (let i = 0; i < smoothed.length; i++) {
           const x = (smoothed[i].time / dur) * fullW - scrollLeft;
           let val = smoothed[i].tempo;
-          if (_tempoCurveMode === "relative" && corpusMean && i < corpusMean.length && corpusMean[i] > 0) {
-            val = ((smoothed[i].tempo - corpusMean[i]) / corpusMean[i]) * 100;
+          if (_tempoCurveMode === "relative" && corpusMean) {
+            const key = Math.round(smoothed[i].scoreTime * 1e6) / 1e6;
+            const ref = corpusMean.get(key);
+            val = ref && ref > 0 ? ((smoothed[i].tempo - ref) / ref) * 100 : 0;
           }
           // Track clipping direction: -1 = below, +1 = above, 0 = within range
           let clipped = 0;
@@ -3789,8 +3948,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         }
 
         // Cull to viewport with one-point margin on each side
-        let startIdx = 0, endIdx = pts.length - 1;
-        while (startIdx < pts.length - 1 && pts[startIdx + 1].x < -10) startIdx++;
+        let startIdx = 0,
+          endIdx = pts.length - 1;
+        while (startIdx < pts.length - 1 && pts[startIdx + 1].x < -10)
+          startIdx++;
         while (endIdx > 0 && pts[endIdx - 1].x > viewW + 10) endIdx--;
         if (startIdx > 0) startIdx--;
         if (endIdx < pts.length - 1) endIdx++;
@@ -3804,15 +3965,17 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         for (let i = startIdx; i <= endIdx; i++) ctx.lineTo(pts[i].x, pts[i].y);
         ctx.lineTo(pts[endIdx].x, zeroY);
         ctx.closePath();
-        ctx.fillStyle = _tempoCurveMode === "relative"
-          ? "rgba(70, 130, 180, 0.12)"
-          : "rgba(70, 130, 180, 0.15)";
+        ctx.fillStyle =
+          _tempoCurveMode === "relative"
+            ? "rgba(70, 130, 180, 0.12)"
+            : "rgba(70, 130, 180, 0.15)";
         ctx.fill();
 
         // Draw the curve line
         ctx.beginPath();
         ctx.moveTo(pts[startIdx].x, pts[startIdx].y);
-        for (let i = startIdx + 1; i <= endIdx; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        for (let i = startIdx + 1; i <= endIdx; i++)
+          ctx.lineTo(pts[i].x, pts[i].y);
         ctx.strokeStyle = "rgba(30, 80, 140, 0.7)";
         ctx.lineWidth = 1.5;
         ctx.stroke();
@@ -3830,14 +3993,18 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         }
 
         // --- Y-axis labels ---
-        const yAxisNiceSteps = _tempoCurveMode === "relative"
-          ? [1, 2, 5, 10, 20, 25, 50, 100]
-          : [5, 10, 20, 25, 50, 100, 200, 500];
+        const yAxisNiceSteps =
+          _tempoCurveMode === "relative"
+            ? [1, 2, 5, 10, 20, 25, 50, 100]
+            : [5, 10, 20, 25, 50, 100, 200, 500];
         const targetTicks = 4;
         const rawStep = yRange / targetTicks;
         let yStep = yAxisNiceSteps[yAxisNiceSteps.length - 1];
         for (const s of yAxisNiceSteps) {
-          if (s >= rawStep) { yStep = s; break; }
+          if (s >= rawStep) {
+            yStep = s;
+            break;
+          }
         }
         ctx.font = "9px sans-serif";
         ctx.textBaseline = "middle";
@@ -3868,11 +4035,16 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         ctx.fillStyle = "rgba(30, 80, 140, 0.5)";
         ctx.font = "8px sans-serif";
         ctx.textBaseline = "bottom";
-        ctx.fillText(_tempoCurveMode === "relative" ? "% avg." : "QPM", 5, yTop - 1);
+        ctx.fillText(
+          _tempoCurveMode === "relative" ? "% avg." : "QPM",
+          5,
+          yTop - 1,
+        );
 
         // --- Clipped-value indicators (small triangles at top/bottom edge) ---
         ctx.fillStyle = "rgba(180, 60, 60, 0.6)";
-        const triH = 5, triW = 4;
+        const triH = 5,
+          triW = 4;
         for (let i = startIdx; i <= endIdx; i++) {
           if (!pts[i].clipped) continue;
           const px = pts[i].x;
@@ -4473,7 +4645,7 @@ async function _buildAndPrepareSynthWaveform(
     const ws = wavesurfers[synthKey];
     if (ws) {
       updateWaveformOverlayStatus(getWfEl(), "Loading audio\u2026");
-      ws.load(blobUrl);
+      ws.loadBlob(wavBlob);
     }
   } catch (err) {
     console.error("MEI waveform synthesis failed:", err);
@@ -4518,7 +4690,8 @@ async function setGrids(grids) {
               tk.loadData(mei, {});
               timemap = tk.renderToTimemap({ includeMeasures: true });
               // Invalidate tempo cache so it picks up timemap qstamp values
-              for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
+              for (const k of Object.keys(_tempoRawCache))
+                delete _tempoRawCache[k];
               _tempoYRange = null;
               console.log("timemap set!", timemap, mei);
             })
@@ -4615,8 +4788,11 @@ async function setGrids(grids) {
 // Called by align.js when alignment completes (no page reload needed).
 // ---------------------------------------------------------------------------
 function onAlignmentComplete(alignmentResult, files) {
-  // Create blob URLs for each audio file so WaveSurfer can load them
-  files.forEach((f) => fileBlobUrls.set(f.name, URL.createObjectURL(f)));
+  // Store each audio file so WaveSurfer can load them directly
+  files.forEach((f) => {
+    fileBlobUrls.set(f.name, URL.createObjectURL(f));
+    fileBlobs.set(f.name, f);
+  });
   useFilesMode = true;
   _fromAlignmentHandoff = true;
   loadedAlignmentJSON = alignmentResult;
@@ -5987,7 +6163,8 @@ document.addEventListener("DOMContentLoaded", () => {
   if (tempoCheckbox) {
     tempoCheckbox.addEventListener("change", (e) => {
       _tempoCurveVisible = e.target.checked;
-      if (tempoOptions) tempoOptions.style.display = _tempoCurveVisible ? "" : "none";
+      if (tempoOptions)
+        tempoOptions.style.display = _tempoCurveVisible ? "" : "none";
       // Recompute Y range when toggling on
       if (_tempoCurveVisible) {
         for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
@@ -5996,10 +6173,16 @@ document.addEventListener("DOMContentLoaded", () => {
       _redrawAllTempoCurves();
     });
   }
+  const scopeControls = document.getElementById("tempo-scope-controls");
+  function _updateScopeVisibility() {
+    if (scopeControls)
+      scopeControls.style.display = _tempoCurveMode === "relative" ? "" : "none";
+  }
   document.querySelectorAll('input[name="tempo-mode"]').forEach((radio) => {
     radio.addEventListener("change", (e) => {
       _tempoCurveMode = e.target.value;
       _tempoYRange = null; // recompute for new mode
+      _updateScopeVisibility();
       _redrawAllTempoCurves();
     });
   });
@@ -6013,11 +6196,39 @@ document.addEventListener("DOMContentLoaded", () => {
   }
   document.querySelectorAll('input[name="tempo-scope"]').forEach((radio) => {
     radio.addEventListener("change", (e) => {
-      _tempoCurveScope = e.target.value;
-      _tempoYRange = null; // scope affects relative deviation mean
+      _tempoScopeWithinGroup = e.target.value === "group";
+      _tempoYRange = null;
       _redrawAllTempoCurves();
     });
   });
+  const displayedOnlyCb = document.getElementById("tempo-scope-displayed");
+  if (displayedOnlyCb) {
+    displayedOnlyCb.addEventListener("change", (e) => {
+      _tempoScopeDisplayedOnly = e.target.checked;
+      _tempoYRange = null;
+      _redrawAllTempoCurves();
+    });
+  }
+
+  // Restore state from browser form restoration (controls may retain values
+  // across page reloads but the JS variables default to initial values).
+  if (tempoCheckbox?.checked) {
+    _tempoCurveVisible = true;
+    if (tempoOptions) tempoOptions.style.display = "";
+  }
+  const restoredMode = document.querySelector(
+    'input[name="tempo-mode"]:checked',
+  );
+  if (restoredMode) _tempoCurveMode = restoredMode.value;
+  const restoredScope = document.querySelector(
+    'input[name="tempo-scope"]:checked',
+  );
+  if (restoredScope) _tempoScopeWithinGroup = restoredScope.value === "group";
+  if (displayedOnlyCb) _tempoScopeDisplayedOnly = displayedOnlyCb.checked;
+  if (tempoSmoothingSlider)
+    _tempoCurveSmoothing = parseInt(tempoSmoothingSlider.value);
+  _updateScopeVisibility();
+  if (_tempoCurveVisible) _redrawAllTempoCurves();
 
   // Zoom slider
   const zoomSlider = document.getElementById("zoom-slider");
@@ -6841,8 +7052,9 @@ function initFilePicker() {
         // Validate basic structure
         if (data.body && data.body.audio && data.header && data.header.ref) {
           alignmentLoadedFromFile = true;
-          // Clear old blob URLs and audio keys
+          // Clear old blob URLs/objects and audio keys
           fileBlobUrls.clear();
+          fileBlobs.clear();
           expectedAudioKeys = Object.keys(data.body.audio).filter(
             (k) => k !== SYNTH_MEI_KEY,
           );
@@ -6880,6 +7092,7 @@ function initFilePicker() {
       if (filesByName.has(expectedName)) {
         const file = filesByName.get(expectedName);
         fileBlobUrls.set(key, URL.createObjectURL(file));
+        fileBlobs.set(key, file);
       }
     }
     renderFileList();

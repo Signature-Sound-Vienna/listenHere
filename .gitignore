@@ -3,3 +3,8 @@ app/static/npm/node_modules
 app/__pycache__
 venv
 .DS_STORE
+tests/.env
+node_modules/
+tests/report/
+playwright-report/
+test-results/

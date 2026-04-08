@@ -1,7 +1,8 @@
-from flask import url_for, render_template, redirect, request
+from flask import url_for, render_template, redirect, request, send_from_directory
 from markupsafe import escape
 from app import app
 import json
+import os
 import urllib.request
 import urllib.error
 
@@ -113,6 +114,16 @@ def index():
 @app.route("/solid-popup-callback")
 def solid_popup_callback():
     return render_template('solid-popup-callback.html')
+
+
+# ---------------------------------------------------------------------------
+# Test fixtures (development only — serves tests/fixtures/ as /static/test/)
+# ---------------------------------------------------------------------------
+
+@app.route("/static/test/<path:filename>")
+def test_fixtures(filename):
+    fixtures_dir = os.path.join(os.path.dirname(app.root_path), 'tests', 'fixtures')
+    return send_from_directory(fixtures_dir, filename)
 
 
 SSV_AUDIO = "https://w3id.org/ssv/audio/"

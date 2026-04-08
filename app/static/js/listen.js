@@ -7413,3 +7413,6 @@ function initGlobalJsonDrop() {
 
 // Initialize global JSON drop handler
 initGlobalJsonDrop();
+
+// Expose internals for E2E testing (Playwright)
+window._listenTest = { get wavesurfers() { return wavesurfers; }, get currentAudioIx() { return currentAudioIx; } };

@@ -36,8 +36,8 @@ test.describe('9. File Groups', () => {
   });
 
   // 9.8 Group All/None buttons
-  test('9.8 group All/None buttons show and hide waveforms', async ({ listenPage: page }) => {
-    // Click "All" in the content pane group header
+  test('9.8 group All/None buttons show and hide waveforms', async ({ loadedPage: page }) => {
+    // Click "All" in the content pane group header — use loadedPage so group containers exist
     const allBtn = page.locator('#waveforms .group-all').first();
     await allBtn.click();
     await page.waitForTimeout(1000);

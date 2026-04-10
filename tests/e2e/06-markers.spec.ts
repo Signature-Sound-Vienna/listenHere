@@ -1,4 +1,5 @@
-import { test, expect, AUDIO_A, AUDIO_B } from '../support/fixtures';
+import * as fs from 'fs';
+import { test, expect } from '../support/fixtures';
 import { play, pause } from '../support/helpers';
 
 // ---------------------------------------------------------------------------
@@ -65,6 +66,31 @@ test.describe('6. Markers', () => {
     const markerCount = await page.locator('.ws-marker').count();
     // Each waveform gets one marker per placement; at least 3 waveforms visible × 3 placements = 9
     expect(markerCount).toBeGreaterThanOrEqual(6); // at least 2 waveforms × 3 markers
+  });
+
+  // 6.6 Marker persisted in saved JSON
+  test('6.6 markers appear in downloaded alignment JSON', async ({ loadedPage: page }) => {
+    await play(page);
+    await page.waitForTimeout(800);
+    await pause(page);
+    await page.keyboard.press('m');
+    await page.waitForTimeout(300);
+
+    // Intercept the download triggered by clicking Save data
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.evaluate(() => (document.getElementById('download-json-btn') as HTMLElement).click()),
+    ]);
+
+    const filePath = await download.path();
+    const json = JSON.parse(fs.readFileSync(filePath!, 'utf8'));
+
+    // The saved JSON must have at least one marker in header.markers
+    expect(json.header).toBeDefined();
+    expect(Array.isArray(json.header.markers)).toBe(true);
+    expect(json.header.markers.length).toBeGreaterThanOrEqual(1);
+    // Markers are stored as alignment indices (numbers)
+    expect(typeof json.header.markers[0]).toBe('number');
   });
 
   // 6.5 Markers survive waveform switch

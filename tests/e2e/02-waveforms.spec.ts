@@ -41,8 +41,8 @@ test.describe('2. Waveform Display & Loading', () => {
   });
 
   // 2.3 All / None buttons
-  test('2.3 All then None buttons show/hide all waveforms in group', async ({ listenPage: page }) => {
-    // Click All
+  test('2.3 All then None buttons show/hide all waveforms in group', async ({ loadedPage: page }) => {
+    // Click All — use loadedPage to ensure group containers exist (they're created on waveform load)
     const allBtn = page.locator('#waveforms .group-all').first();
     await allBtn.click();
     // Wait for at least 2 waveforms to be visible

@@ -43,7 +43,7 @@ export default defineConfig({
     },
     {
       name: 'functional-firefox',
-      testMatch: /(?!.*\.(perf|solid)\.spec\.).*\.spec\.ts/,
+      testMatch: /^(?!.*\.(perf|solid)\.spec\.).*\.spec\.ts$/,
       use: { ...devices['Desktop Firefox'] },
     },
     {

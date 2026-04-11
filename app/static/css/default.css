@@ -48,10 +48,130 @@
   src: url('../fonts/lora-bold.woff2') format('woff2');
 }
 
+/* ============================================================
+   CSS Custom Properties — Light theme (default)
+   ============================================================ */
 :root {
   --font-size-large: 14px;
   --font-size-medium: 13px;
   --font-size-small: 12.5px;
+
+  /* Surface hierarchy */
+  --color-bg:           #f1f5f9;   /* page / app background        */
+  --color-surface:      #f8fafc;   /* panels, drawers, cards       */
+  --color-surface-alt:  #e2e8f0;   /* hover states, dividers       */
+
+  /* Borders */
+  --color-border:       #cbd5e1;   /* main borders                 */
+  --color-border-light: #e2e8f0;   /* subtle dividers              */
+
+  /* Text */
+  --color-text:         #1e293b;   /* primary body text            */
+  --color-text-secondary: #475569; /* secondary / label text       */
+  --color-text-muted:   #64748b;   /* muted / placeholder          */
+  --color-text-subtle:  #94a3b8;   /* very muted                   */
+
+  /* Accent (olive/moss — primary interactive) */
+  --color-accent:       #606c38;
+  --color-accent-hover: #4c562d;
+  --color-accent-light: #f0f4e3;   /* tinted background            */
+
+  /* Link / focus blue */
+  --color-link:         #2563eb;
+  --color-link-hover:   #1e40af;
+  --color-focus-ring:   #2563eb;
+
+  /* Semantic */
+  --color-success:      #16a34a;
+  --color-success-light:#dcfce7;
+  --color-danger:       #dc2626;
+  --color-danger-light: #fee2e2;
+  --color-warning:      #f59e0b;
+
+  /* Nav sidebar */
+  --color-nav-bg:       #f0f4e3;   /* olive-tinted sidebar         */
+  --color-nav-border:   #d4d9c0;
+
+  /* Drawer-pull buttons */
+  --color-drawer-btn-bg:    #f8fafc;
+  --color-drawer-btn-hover: #e2e8f0;
+  --color-drawer-btn-border:#cbd5e1;
+}
+
+/* ============================================================
+   Dark theme
+   ============================================================ */
+[data-theme="dark"] {
+  --color-bg:           #0f172a;
+  --color-surface:      #1e293b;
+  --color-surface-alt:  #334155;
+
+  --color-border:       #334155;
+  --color-border-light: #1e293b;
+
+  --color-text:         #f1f5f9;
+  --color-text-secondary: #cbd5e1;
+  --color-text-muted:   #94a3b8;
+  --color-text-subtle:  #64748b;
+
+  --color-accent:       #8a9a56;
+  --color-accent-hover: #a3b567;
+  --color-accent-light: #1e2a10;
+
+  --color-link:         #60a5fa;
+  --color-link-hover:   #93c5fd;
+  --color-focus-ring:   #60a5fa;
+
+  --color-success:      #4ade80;
+  --color-success-light:#14532d;
+  --color-danger:       #f87171;
+  --color-danger-light: #450a0a;
+  --color-warning:      #fbbf24;
+
+  --color-nav-bg:       #1a2310;
+  --color-nav-border:   #2d3a1a;
+
+  --color-drawer-btn-bg:    #1e293b;
+  --color-drawer-btn-hover: #334155;
+  --color-drawer-btn-border:#475569;
+}
+
+/* ============================================================
+   Solarized theme (light base, solarized palette)
+   ============================================================ */
+[data-theme="solarized"] {
+  --color-bg:           #fdf6e3;
+  --color-surface:      #eee8d5;
+  --color-surface-alt:  #e3dcc8;
+
+  --color-border:       #cdc9b8;
+  --color-border-light: #e3dcc8;
+
+  --color-text:         #073642;
+  --color-text-secondary: #586e75;
+  --color-text-muted:   #657b83;
+  --color-text-subtle:  #839496;
+
+  --color-accent:       #2aa198;   /* solarized cyan               */
+  --color-accent-hover: #1a7a72;
+  --color-accent-light: #d4efed;
+
+  --color-link:         #268bd2;   /* solarized blue               */
+  --color-link-hover:   #1a6ea8;
+  --color-focus-ring:   #268bd2;
+
+  --color-success:      #859900;
+  --color-success-light:#f0f4cc;
+  --color-danger:       #dc322f;
+  --color-danger-light: #fce4e4;
+  --color-warning:      #b58900;
+
+  --color-nav-bg:       #eee8d5;
+  --color-nav-border:   #cdc9b8;
+
+  --color-drawer-btn-bg:    #eee8d5;
+  --color-drawer-btn-hover: #e3dcc8;
+  --color-drawer-btn-border:#cdc9b8;
 }
 
 html, body {
@@ -798,7 +918,7 @@ details {
   font-size: var(--font-size-small);
 }
 /* Breathing space between zoom controls and the fieldset-body HR */
-#settings-panel > #scroll-mode-controls + .fieldset-body {
+#playback-panel > #scroll-mode-controls + .fieldset-body {
   margin-top: 0.25em;
 }
 #scroll-mode-controls label {
@@ -908,27 +1028,58 @@ details {
   -webkit-user-drag: none;
 }
 
-/* Solid Drawer Button Handle */
-#solid-drawer-btn {
+/* ============================================================
+   Drawer-pull button container (Settings above RDF)
+   ============================================================ */
+.drawer-btns {
   position: fixed;
   right: 0;
   top: 50%;
   transform: translateY(-50%);
-  background-color: #f8fafc;
-  border: 1px solid #cbd5e1;
+  display: none; /* shown by JS once app initialises */
+  flex-direction: column;
+  z-index: 1001;
+  transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Push the whole stack when either drawer is open */
+body:has(#solid-drawer:not(.closed)) .drawer-btns,
+body:has(#settings-drawer:not(.closed)) .drawer-btns {
+  right: 340px;
+}
+
+.drawer-btns > button {
+  background-color: var(--color-drawer-btn-bg);
+  border: 1px solid var(--color-drawer-btn-border);
   border-right: none;
-  border-radius: 8px 0 0 8px;
   padding: 0.8em 0.5em 0.8em 0.8em;
   box-shadow: -4px 0 12px rgba(0,0,0,0.1);
   cursor: pointer;
-  z-index: 1001;
-  transition: background-color 0.2s, right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transition: background-color 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
 }
 
-#solid-drawer-btn:hover {
-  background-color: #e2e8f0;
+.drawer-btns > button:first-child {
+  border-radius: 8px 0 0 0;
+  border-bottom: none;
 }
 
+.drawer-btns > button:last-child {
+  border-radius: 0 0 0 8px;
+}
+
+.drawer-btns > button:only-child {
+  border-radius: 8px 0 0 8px;
+}
+
+.drawer-btns > button:hover {
+  background-color: var(--color-drawer-btn-hover);
+}
+
+/* Solid drawer button specifics */
 #solid-drawer-btn img {
   opacity: 0.6;
   filter: grayscale(100%);
@@ -941,6 +1092,17 @@ details {
   filter: none;
 }
 
+/* Settings drawer button — cog icon colour */
+#settings-drawer-btn svg {
+  stroke: var(--color-text-muted);
+  transition: stroke 0.2s;
+}
+
+#settings-drawer-btn:hover svg,
+#settings-drawer-btn.active svg {
+  stroke: var(--color-accent);
+}
+
 .solid-status-dot {
   position: absolute;
   top: 4px;
@@ -949,7 +1111,7 @@ details {
   height: 10px;
   border-radius: 50%;
   background-color: #22c55e; /* green */
-  border: 2px solid #f8fafc; /* match button background */
+  border: 2px solid var(--color-drawer-btn-bg);
   display: none;
   box-shadow: 0 0 6px rgba(34, 197, 94, 0.4);
   transition: background-color 0.3s, box-shadow 0.3s;
@@ -959,20 +1121,17 @@ details {
   display: block;
 }
 
-/* Push the button out when the drawer opens so it stays attached */
-#solid-drawer:not(.closed) ~ #solid-drawer-btn,
-body:has(#solid-drawer:not(.closed)) #solid-drawer-btn {
-  right: 340px; /* matches drawer width */
-}
-
-/* Solid Drawer */
-#solid-drawer {
+/* ============================================================
+   Shared drawer styles
+   ============================================================ */
+#solid-drawer,
+#settings-drawer {
   position: fixed;
   top: 0;
   right: 0;
   width: 340px;
   height: 100vh;
-  background: #f8fafc;
+  background: var(--color-surface);
   box-shadow: -4px 0 24px rgba(0,0,0,0.1);
   z-index: 1000;
   transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -982,7 +1141,8 @@ body:has(#solid-drawer:not(.closed)) #solid-drawer-btn {
   box-sizing: border-box;
 }
 
-#solid-drawer.closed {
+#solid-drawer.closed,
+#settings-drawer.closed {
   transform: translateX(100%);
 }
 
@@ -992,38 +1152,252 @@ body:has(#solid-drawer:not(.closed)) #solid-drawer-btn {
   align-items: center;
   margin-bottom: 2em;
   padding-bottom: 1em;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--color-border-light);
+  flex-shrink: 0;
 }
 
 .drawer-header h2 {
   margin: 0;
   font-size: 1.25em;
-  color: #1e293b;
+  color: var(--color-text);
 }
 
-#close-solid-drawer {
+#close-solid-drawer,
+#close-settings-drawer {
   background: none;
   border: none;
   font-size: 1.5em;
   cursor: pointer;
-  color: #64748b;
+  color: var(--color-text-muted);
   padding: 0 0.2em;
+  line-height: 1;
 }
 
-#close-solid-drawer:hover {
-  color: #0f172a;
+#close-solid-drawer:hover,
+#close-settings-drawer:hover {
+  color: var(--color-text);
 }
 
 #solidTab {
   display: flex;
   flex-direction: column;
   gap: 1.5em;
+  overflow-y: auto;
+  flex: 1 1 auto;
 }
 
 #solidTab a {
-  color: #3b82f6;
+  color: var(--color-link);
   cursor: pointer;
   text-decoration: underline;
+}
+
+/* ============================================================
+   Settings drawer content
+   ============================================================ */
+#settings-drawer-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5em;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75em;
+}
+
+.settings-section-title {
+  margin: 0;
+  font-size: 0.85em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+/* Theme swatches */
+.settings-theme-options {
+  display: flex;
+  gap: 0.75em;
+  flex-wrap: wrap;
+}
+
+.settings-theme-option {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.35em;
+  cursor: pointer;
+  font-size: 0.85em;
+  color: var(--color-text-secondary);
+}
+
+.settings-theme-option input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.settings-theme-swatch {
+  width: 48px;
+  height: 32px;
+  border-radius: 6px;
+  border: 2px solid var(--color-border);
+  display: block;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.settings-theme-option:has(input:checked) .settings-theme-swatch {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-light);
+}
+
+.settings-theme-option:has(input:checked) {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* Swatch colours */
+.theme-swatch-light {
+  background: linear-gradient(135deg, #f8fafc 60%, #f0f4e3 100%);
+}
+
+.theme-swatch-dark {
+  background: linear-gradient(135deg, #1e293b 60%, #1a2310 100%);
+}
+
+.theme-swatch-solarized {
+  background: linear-gradient(135deg, #fdf6e3 60%, #eee8d5 100%);
+}
+
+/* Language select */
+#settings-language {
+  padding: 0.4em 0.6em;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: var(--font-size-medium);
+  cursor: pointer;
+  width: 100%;
+}
+
+#settings-language:focus {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 1px;
+}
+
+.settings-hint {
+  margin: 0;
+  font-size: var(--font-size-small);
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* ============================================================
+   Theme overrides — apply CSS vars to structural elements
+   ============================================================ */
+
+/* Apply to all non-light themes */
+[data-theme="dark"],
+[data-theme="solarized"] {
+
+  /* Page shell */
+  body,
+  html { background-color: var(--color-bg); }
+
+  /* Nav sidebar */
+  #wrapper nav {
+    background-color: var(--color-surface);
+    border-right-color: var(--color-border);
+  }
+
+  .nav-card {
+    background-color: var(--color-surface);
+    border-color: var(--color-border);
+  }
+
+  .nav-card:hover {
+    background-color: var(--color-surface-alt);
+  }
+
+  #region-controls .nav-card,
+  #region-waveforms .nav-card {
+    background-color: var(--color-nav-bg);
+    border-color: var(--color-nav-border);
+  }
+
+  #region-controls .nav-card:hover,
+  #region-waveforms .nav-card:hover {
+    background-color: var(--color-surface-alt);
+  }
+
+  /* Nav section headers */
+  .nav-section-header {
+    color: var(--color-text);
+    background-color: var(--color-surface);
+    border-bottom-color: var(--color-border);
+  }
+
+  .nav-section-header:hover {
+    background-color: var(--color-surface-alt);
+  }
+
+  /* Fieldsets */
+  .collapsible-fieldset {
+    border-color: var(--color-border);
+  }
+
+  .collapsible-fieldset > legend {
+    color: var(--color-text-secondary);
+  }
+
+  .collapsible-fieldset > legend:hover {
+    color: var(--color-text);
+  }
+
+  .fieldset-body {
+    background: transparent;
+  }
+
+  /* Labels, checkboxes */
+  label {
+    color: var(--color-text-secondary);
+  }
+
+  /* Buttons */
+  button:not(.drawer-btns button):not(#close-solid-drawer):not(#close-settings-drawer) {
+    background-color: var(--color-surface-alt);
+    color: var(--color-text);
+    border-color: var(--color-border);
+  }
+
+  /* Content area */
+  #content-wrapper,
+  #content {
+    background-color: var(--color-bg);
+  }
+
+  /* File group headers in content pane */
+  .group-title {
+    color: var(--color-text-muted);
+    border-bottom-color: var(--color-border);
+  }
+
+  /* Footer / nav-footer */
+  #nav-footer {
+    color: var(--color-text-muted);
+    border-top-color: var(--color-border);
+  }
+
+  /* Logo invert for dark theme */
+  .nav-logo-img {
+    filter: brightness(0.9);
+  }
 }
 
 /* --- Custom Checkboxes (Alignment Theme) --- */
@@ -1870,13 +2244,13 @@ nav input[type="checkbox"]:focus-visible {
   padding: 0.3em 0.45em;
 }
 
-/* Settings can scroll only when truly necessary (e.g. if Controls grows in the future).
+/* Playback panel can scroll only when truly necessary (e.g. if Controls grows in the future).
    In normal cases there should be enough space so it won't overflow or show a scrollbar. */
-#settings-panel {
+#playback-panel {
   min-height: 0;
 }
 
-#settings-panel .fieldset-body {
+#playback-panel .fieldset-body {
   /* Don't force a reduced flex height (which can create an always-on
      scrollbar). Let it size to content, but cap by the available height. */
   flex: 0 0 auto;
@@ -1885,13 +2259,13 @@ nav input[type="checkbox"]:focus-visible {
   overflow-y: hidden; /* JS will enable scrolling only if content overflows */
 }
 
-#settings-panel .fieldset-body.settings-scroll {
+#playback-panel .fieldset-body.playback-scroll {
   overflow-y: auto;
 }
 
 /* The compact nav layout uses negative top margins to pull content up
    near the legend; add a tiny padding to prevent clipping/overlap. */
-#settings-panel .fieldset-body {
+#playback-panel .fieldset-body {
   padding-top: 0.12em;
   padding-bottom: 0.25em;
 }

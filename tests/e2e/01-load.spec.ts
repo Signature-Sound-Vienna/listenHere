@@ -65,12 +65,12 @@ test.describe('1. Application Load & Initialisation', () => {
   test('1.8 fieldset collapse state persists across reload', async ({ page }) => {
     await page.goto(`/?align=http://localhost:5001/static/test/${ALIGNMENT_JSON}`);
     // Collapse the Settings fieldset
-    await page.locator('#settings-panel legend').click();
-    await expect(page.locator('#settings-panel')).toHaveClass(/collapsed/);
+    await page.locator('#playback-panel legend').click();
+    await expect(page.locator('#playback-panel')).toHaveClass(/collapsed/);
     // Reload
     await page.reload();
     await page.waitForLoadState('domcontentloaded');
-    await expect(page.locator('#settings-panel')).toHaveClass(/collapsed/);
+    await expect(page.locator('#playback-panel')).toHaveClass(/collapsed/);
   });
 
   // 1.9 Malformed alignment JSON

@@ -4942,6 +4942,84 @@ function onRegionUpdated(filename, region) {
 }
 
 // ----------------------------------------------------------------------------
+// Settings Drawer — theme & i18n
+// ----------------------------------------------------------------------------
+
+const _THEME_KEY = "listenTool_theme";
+const _LANG_KEY  = "listenTool_language";
+
+/** Apply a theme by setting data-theme on <html>. Persists to localStorage. */
+function _applyTheme(theme) {
+  if (theme === "light") {
+    document.documentElement.removeAttribute("data-theme");
+  } else {
+    document.documentElement.setAttribute("data-theme", theme);
+  }
+  try { localStorage.setItem(_THEME_KEY, theme); } catch (_) {}
+}
+
+/** Apply a language preference. Persists to localStorage.
+ *  Full i18n support is a future feature; this stores the preference for later. */
+function _applyLanguage(lang) {
+  document.documentElement.setAttribute("lang", lang);
+  try { localStorage.setItem(_LANG_KEY, lang); } catch (_) {}
+}
+
+/** Restore persisted theme and language on page load (call before DOMContentLoaded). */
+function _restoreSettings() {
+  try {
+    const theme = localStorage.getItem(_THEME_KEY);
+    if (theme) _applyTheme(theme);
+    const lang = localStorage.getItem(_LANG_KEY);
+    if (lang) _applyLanguage(lang);
+  } catch (_) {}
+}
+
+/** Wire up the Settings drawer UI. Called from DOMContentLoaded. */
+function _initSettingsDrawer() {
+  const drawer = document.getElementById("settings-drawer");
+  const openBtn = document.getElementById("settings-drawer-btn");
+  const closeBtn = document.getElementById("close-settings-drawer");
+
+  openBtn.addEventListener("click", () => {
+    drawer.classList.toggle("closed");
+    // Close Solid drawer if open
+    document.getElementById("solid-drawer").classList.add("closed");
+    // Highlight the button when drawer is open
+    openBtn.classList.toggle("active", !drawer.classList.contains("closed"));
+  });
+
+  closeBtn.addEventListener("click", () => {
+    drawer.classList.add("closed");
+    openBtn.classList.remove("active");
+  });
+
+  // Theme radio buttons — reflect persisted state, then wire change handler
+  const savedTheme = (() => {
+    try { return localStorage.getItem(_THEME_KEY) || "light"; } catch (_) { return "light"; }
+  })();
+  document.querySelectorAll('input[name="app-theme"]').forEach((radio) => {
+    if (radio.value === savedTheme) radio.checked = true;
+    radio.addEventListener("change", () => {
+      if (radio.checked) _applyTheme(radio.value);
+    });
+  });
+
+  // Language select — reflect persisted state, then wire change handler
+  const savedLang = (() => {
+    try { return localStorage.getItem(_LANG_KEY) || "en"; } catch (_) { return "en"; }
+  })();
+  const langSelect = document.getElementById("settings-language");
+  if (langSelect) {
+    langSelect.value = savedLang;
+    langSelect.addEventListener("change", () => _applyLanguage(langSelect.value));
+  }
+}
+
+// Restore theme immediately (before paint) to avoid flash of unstyled content
+_restoreSettings();
+
+// ----------------------------------------------------------------------------
 // Document Ready Hook
 // ----------------------------------------------------------------------------
 
@@ -6286,19 +6364,23 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // show the Solid drawer button so users can open the linked-data panel
-  document.getElementById("solid-drawer-btn").style.display = "";
+  // Show the drawer-pull button stack
+  document.querySelector(".drawer-btns").style.display = "flex";
 
   // Solid Drawer toggle logic
   const solidDrawer = document.getElementById("solid-drawer");
   document.getElementById("solid-drawer-btn").addEventListener("click", () => {
     solidDrawer.classList.toggle("closed");
+    document.getElementById("settings-drawer").classList.add("closed");
   });
   document
     .getElementById("close-solid-drawer")
     .addEventListener("click", () => {
       solidDrawer.classList.add("closed");
     });
+
+  // Settings Drawer toggle + theme/i18n wiring
+  _initSettingsDrawer();
 
   // Keep focus available for keyboard shortcuts after clicks on nav/sidebar controls.
   // Blur the focused element after mouseup unless the user clicked into a text input,
@@ -6314,7 +6396,7 @@ document.addEventListener("DOMContentLoaded", () => {
       active.type !== "radio"
     )
       return;
-    if (active.closest(".gm-modal, #solid-drawer, #file-picker-overlay"))
+    if (active.closest(".gm-modal, #solid-drawer, #settings-drawer, #file-picker-overlay"))
       return;
     active.blur();
   });
@@ -6325,7 +6407,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Don't intercept when a modal or the Solid drawer has focus
     if (
       e.target.closest &&
-      e.target.closest(".gm-modal, #solid-drawer, #file-picker-overlay")
+      e.target.closest(".gm-modal, #solid-drawer, #settings-drawer, #file-picker-overlay")
     )
       return;
     console.log("KEYDOWN: ", e);

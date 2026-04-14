@@ -1,5 +1,17 @@
 # Listen Here! CHANGELOG.md
 
+### 0.18.0
+* Time-axis ticks along the top of each waveform with adaptive density and smart labelling
+* Shared time axis mode: all waveforms use the same time scale, with shorter recordings displayed proportionally narrower
+* Shift-hold to reveal durations between consecutive markers; Shift+drag to measure arbitrary time spans projected across all aligned waveforms
+* Ctrl/Cmd+scroll to zoom in and out over waveforms
+* Waveform labels and time-axis tick backgrounds now match their waveform's background colour
+
+### 0.17.0
+* Allow styling and reordering of file groups, implement tab groups, persist in alignment JSON
+* Persist markers in alignment JSON
+* Styling improvements for fix-alignments
+
 ### 0.16.0
 * Global waveform zoom (1x–50x) with alignment-aware cross-waveform scroll sync
 * Three playback scroll modes: Page (jump at edge), Follow (auto-centre), Manual

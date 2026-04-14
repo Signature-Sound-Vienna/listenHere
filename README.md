@@ -112,6 +112,18 @@ The zoom slider in the Settings panel lets you magnify all waveforms simultaneou
   - **Follow** — the playhead stays centred during playback.
   - **Manual** — no automatic scrolling; scroll freely by hand.
 - The **alignment grid** ("Visualise alignments") scales with zoom: more grid lines become visible at higher magnification, up to the grid's native resolution (at 20 ms in the reference audio).
+- You can also zoom using **Ctrl+scroll** (Cmd+scroll on Mac) while hovering over any waveform.
+
+### Time Axis and Measurement
+
+Each waveform displays **time-axis ticks** along its top edge. Tick density adapts automatically to the zoom level.
+
+The **Shared time axis** checkbox (in Settings) places all waveforms on the same time scale. Shorter recordings appear proportionally narrower, and scroll sync becomes absolute (1:1) rather than alignment-based.
+
+Hold **Shift** to enter time-measurement mode:
+- **Duration labels** appear between consecutive markers, showing the elapsed time in each recording.
+- **Shift+drag** on any waveform to measure an arbitrary time span. The span is projected across all waveforms via the alignment grid, so you can see how the same musical passage differs in duration across recordings.
+- All measurement visuals disappear when you release Shift.
 
 ### File Grouping
 
@@ -122,8 +134,21 @@ When many recordings are loaded, you can organise them into named groups for eas
 - Click **+ New Group** to create a group. Give it a name and optionally a substring or regex pattern to auto-match filenames.
 - **Drag and drop** files from the ungrouped list into a group, or use the remove button (✕) to move them back.
 - Groups can be **reordered** (▲/▼), **renamed**, or **deleted**.
-- Click **Apply** to save. Groups are persisted in your browser's localStorage and restored automatically on future visits.
-- The sidebar displays groups in order: Score (if present), then your groups, then any ungrouped recordings.
+- Each group can be assigned a **colour** — choose from the built-in pastel palette or pick a custom colour. Group colours are shown as background tints in both the sidebar and the content pane.
+- In the sidebar, groups can also be **reordered by dragging** the ☰ handle on each group header (including Score and Ungrouped). The content pane updates live during the drag.
+- Click **Apply** to save. All group configuration is persisted in the alignment JSON file.
+
+#### Grouping Tabs
+
+You can maintain **multiple independent groupings** of the same recordings — for example, one grouped by year of recording and another by orchestra.
+
+- In the Group Files modal, a **tab bar** appears above the groups area. The first tab is called "Default".
+- Click **+** to add a new tab with its own independent set of groups.
+- **Double-click** a tab name to rename it.
+- Click **✕** on a tab to delete it (with confirmation). There must always be at least one tab.
+- Each tab has its own groups, group order, and group colours.
+- In the **content pane**, a row of pill-shaped buttons appears when you have two or more tabs, letting you switch between groupings. The sidebar updates to match.
+- Switching tabs in the modal does not affect the content pane until you click **Apply**.
 
 ### Annotations (Linked Data)
 
@@ -269,6 +294,8 @@ When **peaks** are included (the default), each audio entry becomes an object in
 | `createdBy`           | no                  | Tool name and version that generated the file. Added automatically by Listen Here!                                                                                                      |
 | `createdAt`           | no                  | ISO 8601 timestamp of when the alignment was created.                                                                                                                                   |
 | `alignmentParams`     | no                  | The DTW parameter values used to produce the alignment (see [Alignment parameters](#alignment-parameters)). Included when the "Include alignment settings in output" option is enabled. |
+| `groupingTabs`        | no                  | Array of grouping tab objects, each with `name`, `fileGroups` (array of `{name, files, pattern?, color?}`), and `groupOrder`. Supports multiple independent file groupings.             |
+| `activeTab`           | no                  | Name of the currently selected grouping tab.                                                                                                                                            |
 
 #### Body fields
 

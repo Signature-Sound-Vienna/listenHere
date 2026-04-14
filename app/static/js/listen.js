@@ -225,7 +225,119 @@ const ZOOM_LEVELS = [1, 2, 5, 10, 20, 50];
 let _currentZoomLevel = 1; // multiplier (1 = no zoom)
 let _scrollMode = "page"; // "follow" | "page" | "manual"
 let _scrollSyncLock = false; // prevents infinite loop in cross-waveform scroll sync
+let _sharedTimeAxis = false; // when true, all waveforms use same px/sec
 const _overlayWrappers = {}; // filename → { wrapper, inner }
+const _wfBgCache = {}; // filename → cached tick background colour string
+
+/** Recompute the effective background colour for a waveform's tick labels. */
+function _refreshWfBg(filename) {
+  const wfEl = document.querySelector(`.waveform[data-ix='${CSS.escape(filename)}']`);
+  let bg = "rgba(255, 255, 255, 0.85)";
+  for (let el = wfEl; el && el !== document.body; el = el.parentElement) {
+    const raw = getComputedStyle(el).backgroundColor;
+    if (raw && raw !== "rgba(0, 0, 0, 0)" && raw !== "transparent") {
+      const m = raw.match(/[\d.]+/g);
+      if (m && m.length >= 3) bg = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
+      break;
+    }
+  }
+  _wfBgCache[filename] = bg;
+  // Also sync the wf-label
+  const lbl = wfEl && ((_overlayWrappers[filename] && _overlayWrappers[filename].wrapper) || wfEl).querySelector(".wf-label");
+  if (lbl) lbl.style.backgroundColor = bg;
+  return bg;
+}
+
+/** Toggle play/pause icons in the transport bar. */
+function _updateTransportIcons(playing) {
+  const pp = document.getElementById("playpause");
+  if (!pp) return;
+  const iconPlay = pp.querySelector(".icon-play");
+  const iconPause = pp.querySelector(".icon-pause");
+  if (iconPlay) iconPlay.style.display = playing ? "none" : "";
+  if (iconPause) iconPause.style.display = playing ? "" : "none";
+}
+
+// ---------------------------------------------------------------------------
+// Time-axis tick marks
+// ---------------------------------------------------------------------------
+
+const _NICE_INTERVALS = [
+  0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 3600,
+];
+
+/** Format seconds for tick labels. */
+function _formatTickTime(t) {
+  if (t < 60) {
+    // Show sub-second decimals only for small intervals
+    return t % 1 === 0 ? String(t) : t.toFixed(1);
+  }
+  const m = Math.floor(t / 60);
+  const s = Math.round(t % 60);
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+/**
+ * Draw subtle time ticks at the top edge of a waveform overlay canvas.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {number} viewW  visible viewport width in px
+ * @param {number} h      canvas height
+ * @param {number} fullW  full zoomed width of the waveform in px
+ * @param {number} dur    duration in seconds
+ * @param {number} scrollLeft  current scroll offset in px
+ */
+function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor) {
+  if (dur <= 0 || fullW <= 0) return;
+  const pxPerSec = fullW / dur;
+  const visibleSec = viewW / pxPerSec;
+
+  // Choose a "nice" interval so we get roughly 60 ticks in the viewport
+  const rawInterval = visibleSec / 60;
+  const interval =
+    _NICE_INTERVALS.find((n) => n >= rawInterval) ||
+    _NICE_INTERVALS[_NICE_INTERVALS.length - 1];
+
+  // Label every 2nd tick
+  const labelEvery = 2;
+
+  const startTime = (scrollLeft / fullW) * dur;
+  const endTime = ((scrollLeft + viewW) / fullW) * dur;
+  const firstTick = Math.ceil(startTime / interval) * interval;
+
+  ctx.save();
+  ctx.lineWidth = 1;
+
+  for (let t = firstTick; t <= endTime + interval * 0.01; t += interval) {
+    const x = Math.round((t / dur) * fullW - scrollLeft) + 0.5;
+    if (x < -1 || x > viewW + 1) continue;
+
+    // Label every 2nd tick
+    const tickIndex = Math.round(t / interval);
+    const isLabelled = tickIndex % labelEvery === 0;
+    const tickH = isLabelled ? 7 : 4;
+
+    ctx.strokeStyle = isLabelled
+      ? "rgba(80, 80, 80, 0.5)"
+      : "rgba(120, 120, 120, 0.3)";
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, tickH);
+    ctx.stroke();
+
+    if (isLabelled) {
+      ctx.font = "9px sans-serif";
+      ctx.textAlign = "center";
+      const text = _formatTickTime(t);
+      const tw = ctx.measureText(text).width;
+      const pad = 1;
+      ctx.fillStyle = bgColor || "rgba(255, 255, 255, 0.7)";
+      ctx.fillRect(x - tw / 2 - pad, tickH, tw + pad * 2, 10);
+      ctx.fillStyle = "rgba(60, 60, 60, 0.7)";
+      ctx.fillText(text, x, tickH + 9);
+    }
+  }
+  ctx.restore();
+}
 
 /** Get the shadow-DOM scroll container for a WaveSurfer instance. */
 function _getScrollContainer(filename) {
@@ -274,13 +386,17 @@ function _ensureWfLabel(filename) {
   lbl.className = "wf-label";
   lbl.textContent = filename;
   parent.appendChild(lbl);
+  // Match background to the waveform's effective background colour
+  lbl.style.backgroundColor = _wfBgCache[filename] || _refreshWfBg(filename);
 }
 
 /** Sync overlay scroll transform to match WaveSurfer's scroll position. */
 function _syncOverlayScroll(filename) {
   const ow = _overlayWrappers[filename];
   if (!ow) return;
-  const scrollLeft = wavesurfers[filename] ? wavesurfers[filename].getScroll() : 0;
+  const scrollLeft = wavesurfers[filename]
+    ? wavesurfers[filename].getScroll()
+    : 0;
   ow.inner.style.transform = `translateX(${-scrollLeft}px)`;
 }
 
@@ -314,18 +430,70 @@ function applyZoom(level) {
   const scrollControls = document.getElementById("scroll-mode-controls");
   if (scrollControls) scrollControls.style.display = level > 1 ? "" : "none";
 
+  // For shared time axis, compute a common pxPerSec from the longest duration
+  let sharedPxPerSec = null;
+  let maxDuration = 0;
+  if (_sharedTimeAxis) {
+    Object.keys(wavesurfers).forEach((fn) => {
+      if (!loaded.has(fn)) return;
+      const d = wavesurfers[fn].getDuration();
+      if (d > maxDuration) maxDuration = d;
+    });
+  }
+
+  // When toggling shared time axis, first reset all widths synchronously so
+  // layout settles before we call ws.zoom(). This avoids WaveSurfer's
+  // ResizeObserver racing with our zoom calls.
+  if (_sharedTimeAxis && maxDuration > 0 && level <= 1) {
+    Object.keys(wavesurfers).forEach((filename) => {
+      if (!loaded.has(filename)) return;
+      const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+      if (!wfEl) return;
+      const fraction = wavesurfers[filename].getDuration() / maxDuration;
+      wfEl.style.width = Math.max(fraction * 100, 5) + "%"; // min 5% to avoid collapse
+    });
+  } else if (!_sharedTimeAxis) {
+    Object.keys(wavesurfers).forEach((filename) => {
+      const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+      if (wfEl) wfEl.style.width = "";
+    });
+  }
+
+  // Compute shared pxPerSec once from a reference container (after widths settle)
+  if (_sharedTimeAxis && maxDuration > 0 && level > 1) {
+    // Reset widths first, then compute from parent container
+    Object.keys(wavesurfers).forEach((filename) => {
+      const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+      if (wfEl) wfEl.style.width = "";
+    });
+    const refEl = document.querySelector("#waveforms .waveform");
+    const refWidth = refEl ? refEl.clientWidth : 800;
+    sharedPxPerSec = (level * refWidth) / maxDuration;
+  }
+
   Object.keys(wavesurfers).forEach((filename) => {
     if (!loaded.has(filename)) return;
     const ws = wavesurfers[filename];
     const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
     if (!ws || !wfEl) return;
-    const containerWidth = wfEl.clientWidth;
-    const duration = ws.getDuration();
 
-    if (level <= 1) {
-      ws.zoom(0); // reset to fillParent
-    } else {
-      ws.zoom((level * containerWidth) / duration);
+    try {
+      if (_sharedTimeAxis && maxDuration > 0) {
+        if (level <= 1) {
+          ws.zoom(0); // fillParent within narrower container
+        } else {
+          ws.zoom(sharedPxPerSec);
+        }
+      } else {
+        const containerWidth = wfEl.clientWidth;
+        if (level <= 1) {
+          ws.zoom(0); // reset to fillParent
+        } else {
+          ws.zoom((level * containerWidth) / ws.getDuration());
+        }
+      }
+    } catch (e) {
+      console.warn("Zoom error for", filename, e);
     }
     _applyScrollMode(filename);
     // redrawcomplete will fire and handle overlay resize + marker redraw
@@ -364,6 +532,23 @@ function _syncAllWaveformScrolls(sourceFilename) {
   const sourceTotalWidth = sourceWrapper.clientWidth;
   const sourceScroll = sourceWs.getScroll();
   const sourceDuration = sourceWs.getDuration();
+
+  if (_sharedTimeAxis) {
+    // Shared time axis: all waveforms share the same pxPerSec, so same
+    // scrollLeft aligns to the same absolute time.
+    Object.keys(wavesurfers).forEach((targetFilename) => {
+      if (targetFilename === sourceFilename) return;
+      if (!loaded.has(targetFilename)) return;
+      const targetWs = wavesurfers[targetFilename];
+      if (!targetWs) return;
+      targetWs.setScroll(sourceScroll);
+      _syncOverlayScroll(targetFilename);
+      if (_gridRedrawers[targetFilename]) _gridRedrawers[targetFilename]();
+    });
+    return;
+  }
+
+  // Alignment-based sync: map through alignment grid
   // Time at center of source viewport
   const centerFraction =
     (sourceScroll + sourceVisibleWidth / 2) / sourceTotalWidth;
@@ -393,6 +578,124 @@ function _syncAllWaveformScrolls(sourceFilename) {
 }
 
 // ---------------------------------------------------------------------------
+// Time measurement (Shift-hold for marker durations, Shift+drag for spans)
+// ---------------------------------------------------------------------------
+let _measureShiftHeld = false;
+let _measureDragState = null; // { filename, startAlignIx, endAlignIx }
+const _measureElements = []; // DOM elements to clean up on Shift-up
+
+/** Format a duration in seconds for measurement labels. */
+function _formatDuration(seconds) {
+  const abs = Math.abs(seconds);
+  if (abs < 60) return abs.toFixed(2) + "s";
+  const m = Math.floor(abs / 60);
+  const s = (abs % 60).toFixed(1);
+  return m + ":" + String(s).padStart(4, "0");
+}
+
+/** Show duration labels between consecutive markers on all waveforms. */
+function _showMarkerDurations() {
+  if (markers.length < 2) return;
+  // Sort markers by alignment index to get consecutive pairs
+  const sorted = markers
+    .map((alignIx, i) => ({ alignIx, i }))
+    .sort((a, b) => a.alignIx - b.alignIx);
+
+  Object.keys(wavesurfers).forEach((filename) => {
+    if (!loaded.has(filename)) return;
+    const ws = wavesurfers[filename];
+    const ow = _overlayWrappers[filename];
+    if (!ws || !ow) return;
+    const dur = ws.getDuration();
+    const fullW = _getZoomedWidth(filename);
+
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const t1 = getCorrespondingTime(filename, sorted[i].alignIx);
+      const t2 = getCorrespondingTime(filename, sorted[i + 1].alignIx);
+      const x1 = (t1 / dur) * fullW;
+      const x2 = (t2 / dur) * fullW;
+      const midX = (x1 + x2) / 2;
+      const spanW = Math.abs(x2 - x1);
+
+      // Duration label
+      const label = document.createElement("div");
+      label.className = "measure-label";
+      label.textContent = _formatDuration(Math.abs(t2 - t1));
+      label.style.left = midX + "px";
+      ow.inner.appendChild(label);
+      _measureElements.push(label);
+
+      // Subtle span highlight
+      const span = document.createElement("div");
+      span.className = "measure-span";
+      span.style.left = Math.min(x1, x2) + "px";
+      span.style.width = spanW + "px";
+      ow.inner.appendChild(span);
+      _measureElements.push(span);
+    }
+  });
+}
+
+/**
+ * Draw a measurement span from startAlignIx to endAlignIx across all waveforms.
+ */
+function _drawMeasureSpan(startAlignIx, endAlignIx) {
+  // Clear previous span elements (keep marker duration labels)
+  _measureElements.forEach((el) => {
+    if (
+      el.classList.contains("measure-drag-span") ||
+      el.classList.contains("measure-drag-label")
+    ) {
+      el.remove();
+    }
+  });
+  // Filter out removed elements
+  for (let i = _measureElements.length - 1; i >= 0; i--) {
+    if (!_measureElements[i].isConnected) _measureElements.splice(i, 1);
+  }
+
+  const ix1 = Math.min(startAlignIx, endAlignIx);
+  const ix2 = Math.max(startAlignIx, endAlignIx);
+
+  Object.keys(wavesurfers).forEach((filename) => {
+    if (!loaded.has(filename)) return;
+    const ws = wavesurfers[filename];
+    const ow = _overlayWrappers[filename];
+    if (!ws || !ow) return;
+    const dur = ws.getDuration();
+    const fullW = _getZoomedWidth(filename);
+    const t1 = getCorrespondingTime(filename, ix1);
+    const t2 = getCorrespondingTime(filename, ix2);
+    const x1 = (t1 / dur) * fullW;
+    const x2 = (t2 / dur) * fullW;
+    const spanW = Math.abs(x2 - x1);
+
+    // Highlight span
+    const span = document.createElement("div");
+    span.className = "measure-drag-span";
+    span.style.left = Math.min(x1, x2) + "px";
+    span.style.width = spanW + "px";
+    ow.inner.appendChild(span);
+    _measureElements.push(span);
+
+    // Duration label
+    const label = document.createElement("div");
+    label.className = "measure-drag-label";
+    label.textContent = _formatDuration(Math.abs(t2 - t1));
+    label.style.left = (x1 + x2) / 2 + "px";
+    ow.inner.appendChild(label);
+    _measureElements.push(label);
+  });
+}
+
+/** Remove all measurement visuals. */
+function _clearMeasureVisuals() {
+  _measureElements.forEach((el) => el.remove());
+  _measureElements.length = 0;
+  _measureDragState = null;
+}
+
+// ---------------------------------------------------------------------------
 // Alignment correction (drag-to-morph)
 // ---------------------------------------------------------------------------
 let _alignCorrectionMode = false;
@@ -404,6 +707,10 @@ let _alignCorrectionMode = false;
 //   { type:'marker-move', markerArrayIx, oldAlignIx, newAlignIx }
 const _undoStack = [];
 const _redoStack = [];
+// Dirty-state tracking: counter incremented on commit, decremented on undo,
+// incremented on redo. Dirty = _changeCounter !== _savedAtCounter.
+let _changeCounter = 0;
+let _savedAtCounter = 0;
 // Revert: original grids captured when alignment first loads
 const _alignOriginalGrids = {};
 // Radius presets (in alignment indices)
@@ -499,44 +806,6 @@ function hideWaveformOverlay(wfEl) {
 
 // --- Custom marker system (replaces WaveSurfer v4 markers plugin) ---
 
-/** Delete the currently active marker (close-listening mode). */
-function _deleteActiveMarker() {
-  if (!closeListeningMode || activeMarkerIx == null) return;
-  const deletedAlignIx = markers[activeMarkerIx];
-  const deletedArrayIx = activeMarkerIx;
-  markers.splice(activeMarkerIx, 1);
-  if (storage) {
-    storage.setItem("markers_" + workId, JSON.stringify(markers));
-  }
-  _pushUndo(
-    {
-      type: "marker-delete",
-      alignIx: deletedAlignIx,
-      markerArrayIx: deletedArrayIx,
-    },
-    true,
-  );
-  if (markers.length === 0) {
-    exitCloseListeningMode();
-  } else {
-    // Select the marker closest in time to the deleted one,
-    // preferring the one just before it
-    let bestIx = 0;
-    let bestDist = Infinity;
-    for (let i = 0; i < markers.length; i++) {
-      const dist = markers[i] - deletedAlignIx;
-      const absDist = Math.abs(dist);
-      if (absDist < bestDist || (absDist === bestDist && dist < 0)) {
-        bestDist = absDist;
-        bestIx = i;
-      }
-    }
-    activeMarkerIx = bestIx;
-    redrawAllMarkers();
-    seekToActiveMarker();
-  }
-}
-
 function _clearMarkers(filename) {
   const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
   if (!wfEl) return;
@@ -554,7 +823,8 @@ function _addMarker(
   if (!wfEl) return null;
   // Use pixel positioning on the full-width overlay inner div
   const fullW = _getZoomedWidth(filename);
-  const leftPx = duration > 0 ? Math.max(0, Math.min(fullW, (time / duration) * fullW)) : 0;
+  const leftPx =
+    duration > 0 ? Math.max(0, Math.min(fullW, (time / duration) * fullW)) : 0;
   const marker = document.createElement("div");
   marker.className = "ws-marker";
   marker.dataset.time = time;
@@ -648,12 +918,15 @@ window.addEventListener("resize", () => {
 // --- Close-listening mode ---
 
 function enterCloseListeningMode(markerArrayIndex) {
-  if (markers.length === 0) return;
   closeListeningMode = true;
-  activeMarkerIx =
-    markerArrayIndex != null ? markerArrayIndex : findClosestMarkerIndex();
+  if (markers.length > 0) {
+    activeMarkerIx =
+      markerArrayIndex != null ? markerArrayIndex : findClosestMarkerIndex();
+    seekToActiveMarker();
+  } else {
+    activeMarkerIx = null;
+  }
   redrawAllMarkers();
-  seekToActiveMarker();
   updateCloseListeningBadge();
   _updateMarkBtnTooltip();
 }
@@ -747,13 +1020,34 @@ function _updateDragFieldsetState() {
   const corrActive = _dragMarkersEnabled && _dragMode === "fix";
   if (corrActive !== _alignCorrectionMode) {
     _alignCorrectionMode = corrActive;
-    document.querySelectorAll(".align-correction-overlay").forEach((c) => {
-      c.style.pointerEvents = corrActive ? "auto" : "none";
-      // Cursor is set dynamically in hover handler (grab near marker)
-      if (!corrActive) c.style.cursor = "";
-    });
-    document.body.classList.toggle("align-correction-active", corrActive);
+    _applyCorrectionOverlayPointerEvents();
   }
+}
+
+/** Apply the effective pointer-events state to correction overlay canvases.
+ *  Correction overlays are interactive only when fix-alignment mode is active
+ *  AND draw-region mode is not active (draw mode needs events to pass through
+ *  to the WaveSurfer wrapper for the regions plugin). */
+let _drawModeActive = false;
+function _applyCorrectionOverlayPointerEvents() {
+  const effective = _alignCorrectionMode && !_drawModeActive;
+  document.querySelectorAll(".align-correction-overlay").forEach((c) => {
+    c.style.pointerEvents = effective ? "auto" : "none";
+    if (!effective) c.style.cursor = "";
+  });
+  document.body.classList.toggle("align-correction-active", effective);
+}
+
+/** Called by annotation.js when entering/exiting draw-region mode.
+ *  Suppresses correction overlay pointer-events so drag-selection
+ *  events reach the WaveSurfer wrapper. */
+export function setDrawModeActive(active) {
+  _drawModeActive = active;
+  _applyCorrectionOverlayPointerEvents();
+  // Toggle a class so CSS can suppress native drag on waveform elements
+  document
+    .getElementById("waveforms")
+    ?.classList.toggle("draw-mode-active", active);
 }
 
 /** Toggle .draggable class on all marker elements. */
@@ -825,6 +1119,7 @@ function onClickRenditionCheckbox(e) {
   let checked = checkbox.checked;
   let label = checkbox.parentElement.querySelector("label");
   let waveform = document.getElementById("waveform-" + e.target.value + "-wav");
+  if (!waveform) return; // element may not be in DOM during tab switch
   if (!checked) {
     e.stopPropagation(); // hide from other handler
     waveform.style.display = "none";
@@ -869,7 +1164,8 @@ export function swapCurrentAudio(newAudio) {
         : getClosestAlignmentIx();
     document
       .getElementById(`waveform-${currentAudioIx}` + "-wav")
-      .classList.remove("active");
+      ?.classList.remove("active");
+    var prevAudio = currentAudioIx;
     // Reset the demoted waveform's canvas clip-path to 0 (WaveSurfer v7 uses
     // a clip-path on the canvases div to show only the unplayed region; the
     // CSS ::part(progress) hides the progress overlay on inactive waveforms,
@@ -914,6 +1210,12 @@ export function swapCurrentAudio(newAudio) {
       newActiveWaveform.classList.add("active");
     }
   }
+  // Redraw grids for old and new waveforms so tick backgrounds reflect active state
+  // Refresh cached backgrounds and redraw grids so tick colours match active state
+  _refreshWfBg(prevAudio);
+  _refreshWfBg(currentAudioIx);
+  if (_gridRedrawers[prevAudio]) _gridRedrawers[prevAudio]();
+  if (_gridRedrawers[currentAudioIx]) _gridRedrawers[currentAudioIx]();
   // If an annotation loop is active, continue it on the newly-active waveform
   continueAnnotationLoopOnWaveform(currentAudioIx);
 }
@@ -988,6 +1290,32 @@ function generateCheckboxList(list, isDraggable = false) {
 // ---------------------------------------------------------------------------
 const _GROUPS_STORAGE_PREFIX = "listenTool_fileGroups_";
 
+/** Predefined pastel palette for group colours (similar saturation, subtle). */
+const _GROUP_PALETTE = [
+  "#dbeafe", // soft blue
+  "#dcfce7", // soft green
+  "#fce7f3", // soft pink
+  "#ede9fe", // soft lavender
+  "#ffedd5", // soft peach
+  "#ccfbf1", // soft teal
+  "#fef9c3", // soft yellow
+  "#ffe4e6", // soft rose
+  "#e0e7ff", // soft indigo
+  "#d1fae5", // soft mint
+  "#fde68a", // soft amber
+  "#e9d5ff", // soft purple
+];
+
+/** Return the next palette colour not yet used by any group. */
+function _nextGroupColour(groups) {
+  const used = new Set((groups || []).map((g) => g.color).filter(Boolean));
+  for (const c of _GROUP_PALETTE) {
+    if (!used.has(c)) return c;
+  }
+  // All used — cycle back
+  return _GROUP_PALETTE[(groups || []).length % _GROUP_PALETTE.length];
+}
+
 /** Returns the localStorage key for the current context. */
 function _groupsStorageKey() {
   return _GROUPS_STORAGE_PREFIX + (window.location.pathname || "default");
@@ -1007,12 +1335,59 @@ function _loadGroups() {
   return [];
 }
 
-function _saveGroups(groups) {
-  try {
-    localStorage.setItem(_groupsStorageKey(), JSON.stringify(groups));
-  } catch (e) {
-    console.warn("Could not save file groups to localStorage:", e);
+// ---------------------------------------------------------------------------
+// Grouping Tabs – migration and accessors
+// ---------------------------------------------------------------------------
+
+/**
+ * Migrate legacy flat fileGroups/groupOrder into the new groupingTabs format.
+ * Call once after alignment JSON is loaded.
+ */
+function _migrateToGroupingTabs() {
+  if (!loadedAlignmentJSON) return;
+  if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+  const h = loadedAlignmentJSON.header;
+
+  if (Array.isArray(h.groupingTabs) && h.groupingTabs.length > 0) return;
+
+  // Wrap existing flat groups (or localStorage fallback) into a "Default" tab
+  const groups = Array.isArray(h.fileGroups) ? h.fileGroups : _loadGroups();
+  const order = Array.isArray(h.groupOrder) ? h.groupOrder : [];
+  h.groupingTabs = [{ name: "Default", fileGroups: groups, groupOrder: order }];
+  h.activeTab = "Default";
+
+  // Remove legacy flat properties now that they are nested inside the tab
+  delete h.fileGroups;
+  delete h.groupOrder;
+}
+
+/** Return the active tab object (falls back to index 0). */
+function _getActiveTab() {
+  const h = loadedAlignmentJSON?.header;
+  if (!h || !Array.isArray(h.groupingTabs) || h.groupingTabs.length === 0) {
+    return { name: "Default", fileGroups: [], groupOrder: [] };
   }
+  return (
+    h.groupingTabs.find((t) => t.name === h.activeTab) || h.groupingTabs[0]
+  );
+}
+
+function _getActiveFileGroups() {
+  return _getActiveTab().fileGroups || [];
+}
+
+function _getActiveGroupOrder() {
+  return _getActiveTab().groupOrder || [];
+}
+
+function _setActiveFileGroups(groups) {
+  const tab = _getActiveTab();
+  tab.fileGroups = groups;
+}
+
+function _setActiveGroupOrder(order) {
+  const tab = _getActiveTab();
+  tab.groupOrder = order;
 }
 
 /**
@@ -1026,14 +1401,8 @@ function _renderSidebarFileList(filenames) {
     .querySelectorAll("fieldset.audio-group, ul.ungrouped-files")
     .forEach((el) => el.remove());
 
-  // Prefer groups stored in the alignment JSON header if present,
-  // otherwise fall back to localStorage groups.
-  const groups =
-    loadedAlignmentJSON &&
-    loadedAlignmentJSON.header &&
-    Array.isArray(loadedAlignmentJSON.header.fileGroups)
-      ? loadedAlignmentJSON.header.fileGroups
-      : _loadGroups();
+  // Use active tab's groups (migrated on load)
+  const groups = loadedAlignmentJSON ? _getActiveFileGroups() : [];
 
   // Determine which files belong to groups
   const grouped = new Set();
@@ -1071,7 +1440,12 @@ function _renderSidebarFileList(filenames) {
   const ungrouped = filenames.filter((f) => !grouped.has(f)).sort();
 
   /** Helper: create a <fieldset class="audio-group collapsible-fieldset"> */
-  function _makeGroupFieldset(label, filesArray, isDraggable) {
+  function _makeGroupFieldset(
+    label,
+    filesArray,
+    isDraggable,
+    isGroupDraggable,
+  ) {
     const fs = document.createElement("fieldset");
     fs.className = "audio-group collapsible-fieldset";
     fs.id = "audio-group-" + label.toLowerCase().replace(/\s+/g, "-");
@@ -1083,6 +1457,43 @@ function _renderSidebarFileList(filenames) {
     arrow.className = "collapse-arrow";
     arrow.innerHTML = "&#9662;";
     legend.appendChild(arrow);
+
+    // Group-level drag handle (for reordering groups in the sidebar)
+    if (isGroupDraggable) {
+      const groupHandle = document.createElement("span");
+      groupHandle.className = "nav-group-drag-handle";
+      groupHandle.setAttribute("aria-hidden", "true");
+      groupHandle.textContent = "\u2630"; // hamburger ☰
+      groupHandle.title = "Drag to reorder group";
+      legend.appendChild(groupHandle);
+
+      let _fromGroupHandle = false;
+      groupHandle.addEventListener("pointerdown", (e) => {
+        e.stopPropagation();
+        _fromGroupHandle = true;
+        fs.draggable = true; // only make fieldset draggable while handle is held
+      });
+      groupHandle.addEventListener("click", (e) => e.stopPropagation());
+      fs.addEventListener("pointerup", () => {
+        _fromGroupHandle = false;
+      });
+      fs.addEventListener("dragstart", (ev) => {
+        if (!_fromGroupHandle) {
+          fs.draggable = false;
+          return; // let file-level drags pass through
+        }
+        _fromGroupHandle = false;
+        ev.dataTransfer.setData("nav-group", label);
+        ev.dataTransfer.effectAllowed = "move";
+        fs.classList.add("nav-group-dragging");
+      });
+      fs.addEventListener("dragend", () => {
+        _fromGroupHandle = false;
+        fs.draggable = false;
+        fs.classList.remove("nav-group-dragging");
+      });
+    }
+
     fs.appendChild(legend);
 
     const body = document.createElement("div");
@@ -1109,31 +1520,63 @@ function _renderSidebarFileList(filenames) {
     return fs;
   }
 
-  // --- Render order: Score first, then groups, then ungrouped ---
+  // --- Build all fieldsets, then append in saved order ---
 
-  // 1. Score fieldset (first, if present)
+  // Create fieldsets keyed by group name
+  const fieldsetsByName = {};
+
+  // Score fieldset
   if (SYNTH_MEI_KEY in alignmentGrids) {
-    audiosElement.appendChild(
-      _makeGroupFieldset("Score", [SYNTH_MEI_KEY], false),
+    fieldsetsByName["Score"] = _makeGroupFieldset(
+      "Score",
+      [SYNTH_MEI_KEY],
+      false,
+      true,
     );
   }
 
-  // 2. Render each group as a collapsible fieldset
+  // Named group fieldsets
   groups.forEach((g, i) => {
     const members = groupMembers[i];
     if (members.length === 0) return;
-    const fs = _makeGroupFieldset(g.name, members, true);
-    audiosElement.appendChild(fs);
+    const fs = _makeGroupFieldset(g.name, members, true, true);
     _wireNavGroupDrop(fs);
+    fieldsetsByName[g.name] = fs;
   });
 
-  // 3. Ungrouped recordings (last)
+  // Ungrouped fieldset
+  const ungroupedLabel =
+    groups.length > 0 ? "Ungrouped recordings" : "All recordings";
   if (ungrouped.length > 0) {
-    const label = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
-    const fs = _makeGroupFieldset(label, ungrouped, true);
-    audiosElement.appendChild(fs);
+    const fs = _makeGroupFieldset(ungroupedLabel, ungrouped, true, true);
     _wireNavGroupDrop(fs);
+    fieldsetsByName["Ungrouped"] = fs;
   }
+
+  // Append in saved groupOrder (uses normalized names), then any remaining
+  const activeOrder = loadedAlignmentJSON ? _getActiveGroupOrder() : [];
+  const savedOrder = activeOrder.length > 0 ? activeOrder : null;
+
+  const appended = new Set();
+  if (savedOrder) {
+    savedOrder.forEach((name) => {
+      if (fieldsetsByName[name] && !appended.has(name)) {
+        audiosElement.appendChild(fieldsetsByName[name]);
+        appended.add(name);
+      }
+    });
+  }
+  // Default order for any not in savedOrder: Score, named groups, Ungrouped
+  const defaultOrder = ["Score", ...groups.map((g) => g.name), "Ungrouped"];
+  defaultOrder.forEach((name) => {
+    if (fieldsetsByName[name] && !appended.has(name)) {
+      audiosElement.appendChild(fieldsetsByName[name]);
+      appended.add(name);
+    }
+  });
+
+  // Wire up group-level drag-and-drop reordering on the sidebar
+  _wireNavGroupReorder(audiosElement);
 
   // Wire up list selectors (All / None)
   _wireListSelectors();
@@ -1208,6 +1651,67 @@ function _wireNavGroupDrop(groupEl) {
 }
 
 /**
+ * Wire up group-level drag-and-drop reordering in the sidebar.
+ * Groups can be dragged above/below each other; Score stays first,
+ * Ungrouped stays last.
+ */
+let _navGroupDragRafPending = false;
+
+function _wireNavGroupReorder(audiosElement) {
+  /** Live-move draggedFs to the position closest to clientY among siblings. */
+  function _moveGroupToPosition(draggedFs, clientY) {
+    const siblings = Array.from(
+      audiosElement.querySelectorAll("fieldset.audio-group"),
+    ).filter((fs) => fs !== draggedFs);
+
+    const insertBefore = siblings.find((fs) => {
+      const r = fs.getBoundingClientRect();
+      return clientY < r.top + r.height / 2;
+    });
+
+    if (insertBefore) {
+      audiosElement.insertBefore(draggedFs, insertBefore);
+    } else {
+      audiosElement.appendChild(draggedFs);
+    }
+  }
+
+  audiosElement.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer.types.includes("nav-group")) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+
+    const draggedFs = audiosElement.querySelector(
+      "fieldset.nav-group-dragging",
+    );
+    if (!draggedFs) return;
+
+    // Live-move the fieldset in the sidebar
+    _moveGroupToPosition(draggedFs, e.clientY);
+
+    // Throttled content-panel sync (no animation during drag for performance)
+    if (!_navGroupDragRafPending) {
+      _navGroupDragRafPending = true;
+      requestAnimationFrame(() => {
+        _navGroupDragRafPending = false;
+        _applyNavOrderToContentPanel(false);
+      });
+    }
+  });
+
+  audiosElement.addEventListener("drop", (e) => {
+    if (!e.dataTransfer.types.includes("nav-group")) return;
+    e.preventDefault();
+    const draggedFs = audiosElement.querySelector(
+      "fieldset.nav-group-dragging",
+    );
+    if (draggedFs) draggedFs.classList.remove("nav-group-dragging");
+    // Final sync + persist
+    _syncGroupsFromNav();
+  });
+}
+
+/**
  * Read the current sidebar DOM order and persist it to
  * loadedAlignmentJSON.header.fileGroups, then sync the content panel.
  */
@@ -1215,14 +1719,18 @@ function _syncGroupsFromNav() {
   if (!loadedAlignmentJSON) return;
   if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
 
+  // Build lookup of existing group properties (pattern, color) by name
+  const oldGroups = _getActiveFileGroups();
+  const oldByName = {};
+  oldGroups.forEach((g) => {
+    oldByName[g.name] = g;
+  });
+
   const audios = document.getElementById("audios");
   const groups = [];
 
   audios.querySelectorAll("fieldset.audio-group").forEach((fs) => {
-    const legend = fs.querySelector("legend");
-    const groupName = legend
-      ? legend.textContent.replace(/\s*▾\s*$/, "").trim()
-      : "";
+    const groupName = _getGroupNameFromFieldset(fs);
     if (groupName === "Score") return; // Score group is immutable
 
     const files = Array.from(fs.querySelectorAll("li.renditionName"))
@@ -1233,61 +1741,103 @@ function _syncGroupsFromNav() {
     if (groupName === "Ungrouped recordings" || groupName === "All recordings")
       return;
 
-    groups.push({ name: groupName, files });
+    // Preserve pattern and color from existing group definition
+    const old = oldByName[groupName] || {};
+    const entry = { name: groupName, files };
+    if (old.pattern) entry.pattern = old.pattern;
+    if (old.color) entry.color = old.color;
+    groups.push(entry);
   });
 
-  loadedAlignmentJSON.header.fileGroups = groups;
-  _markJsonDirty();
+  _setActiveFileGroups(groups);
+
+  // Persist full group display order using normalized names (matching data-group)
+  const groupOrder = [];
+  audios.querySelectorAll("fieldset.audio-group").forEach((fs) => {
+    const name = _getGroupNameFromFieldset(fs);
+    if (name === "Ungrouped recordings" || name === "All recordings") {
+      groupOrder.push("Ungrouped");
+    } else {
+      groupOrder.push(name);
+    }
+  });
+  _setActiveGroupOrder(groupOrder);
+
+  _changeCounter++;
+  _updateDirtyState();
   _applyNavOrderToContentPanel();
 }
 
+/** Extract the group name from a sidebar fieldset legend, stripping UI elements. */
+function _getGroupNameFromFieldset(fs) {
+  const legend = fs.querySelector("legend");
+  if (!legend) return "";
+  // Clone legend and remove child elements (collapse arrow, drag handle)
+  // to get just the text content of the legend itself
+  const clone = legend.cloneNode(true);
+  clone
+    .querySelectorAll(".collapse-arrow, .nav-group-drag-handle")
+    .forEach((el) => el.remove());
+  return clone.textContent.trim();
+}
+
 /**
- * Reorder waveform elements in the content panel to match the nav sidebar order,
- * using a FLIP animation (First → Last → Invert → Play).
+ * Reorder waveform elements in the content panel to match the nav sidebar order.
+ * @param {boolean} animate - If true, use FLIP animation. If false, just reorder DOM.
  */
-function _applyNavOrderToContentPanel() {
+function _applyNavOrderToContentPanel(animate = true) {
   const waveformsRoot = document.getElementById("waveforms");
   if (!waveformsRoot) return;
 
-  // FIRST: snapshot positions of all non-Score waveforms
+  // FIRST: snapshot positions (only needed for animation)
   const allWaveforms = Array.from(
-    waveformsRoot.querySelectorAll(
-      ".file-group:not(.file-group-score) .waveform",
-    ),
+    waveformsRoot.querySelectorAll(".file-group .waveform"),
   );
   const firstRects = new Map();
-  allWaveforms.forEach((wf) => {
-    firstRects.set(wf, wf.getBoundingClientRect());
-  });
+  if (animate) {
+    allWaveforms.forEach((wf) => {
+      firstRects.set(wf, wf.getBoundingClientRect());
+    });
+  }
 
   // Build desired order from the nav
   const audios = document.getElementById("audios");
+
+  /** Find the content-pane file-group matching a sidebar group name. */
+  function _findContentGroup(groupName) {
+    if (groupName === "Score") {
+      return waveformsRoot.querySelector(".file-group-score");
+    }
+    if (
+      groupName === "Ungrouped recordings" ||
+      groupName === "All recordings"
+    ) {
+      return waveformsRoot.querySelector(".file-group-ungrouped");
+    }
+    return waveformsRoot.querySelector(
+      `.file-group[data-group='${CSS.escape(groupName)}']`,
+    );
+  }
+
+  // Reorder file-group containers in content pane to match sidebar order
   audios.querySelectorAll("fieldset.audio-group").forEach((fs) => {
-    const legend = fs.querySelector("legend");
-    const groupName = legend
-      ? legend.textContent.replace(/\s*▾\s*$/, "").trim()
-      : "";
-    if (groupName === "Score") return;
+    const groupName = _getGroupNameFromFieldset(fs);
+    const fg = _findContentGroup(groupName);
+    if (fg) {
+      waveformsRoot.appendChild(fg);
+    }
+  });
+
+  // Reorder waveforms within each group to match nav order
+  audios.querySelectorAll("fieldset.audio-group").forEach((fs) => {
+    const groupName = _getGroupNameFromFieldset(fs);
 
     const filenames = Array.from(fs.querySelectorAll("li.renditionName"))
       .map((li) => li.id)
       .filter(Boolean);
 
-    // Find the corresponding content-panel group-list
-    let groupList = null;
-    if (
-      groupName === "Ungrouped recordings" ||
-      groupName === "All recordings"
-    ) {
-      groupList = waveformsRoot.querySelector(
-        ".file-group-ungrouped .group-list",
-      );
-    } else {
-      const fg = waveformsRoot.querySelector(
-        `.file-group[data-group='${CSS.escape(groupName)}']`,
-      );
-      groupList = fg ? fg.querySelector(".group-list") : null;
-    }
+    const fg = _findContentGroup(groupName);
+    const groupList = fg ? fg.querySelector(".group-list") : null;
     if (!groupList) return;
 
     // Move any cross-group waveforms into this group-list first
@@ -1312,6 +1862,22 @@ function _applyNavOrderToContentPanel() {
     });
   });
 
+  function _onAllTransitionsDone() {
+    // After DOM reorder + animation, WaveSurfer containers may need a
+    // re-render (especially when zoomed — shadow DOM can go blank).
+    Object.keys(wavesurfers).forEach((fn) => {
+      if (!loaded.has(fn)) return;
+      _syncOverlayScroll(fn);
+      if (_gridRedrawers[fn]) _gridRedrawers[fn]();
+    });
+    redrawAllMarkers();
+  }
+
+  if (!animate) {
+    _onAllTransitionsDone();
+    return;
+  }
+
   // INVERT: shift elements back to where they visually were
   allWaveforms.forEach((wf) => {
     const first = firstRects.get(wf);
@@ -1330,16 +1896,6 @@ function _applyNavOrderToContentPanel() {
 
   // PLAY: animate to final positions
   let _pendingTransitions = 0;
-  function _onAllTransitionsDone() {
-    // After DOM reorder + animation, WaveSurfer containers may need a
-    // re-render (especially when zoomed — shadow DOM can go blank).
-    Object.keys(wavesurfers).forEach((fn) => {
-      if (!loaded.has(fn)) return;
-      _syncOverlayScroll(fn);
-      if (_gridRedrawers[fn]) _gridRedrawers[fn]();
-    });
-    redrawAllMarkers();
-  }
   requestAnimationFrame(() => {
     allWaveforms.forEach((wf) => {
       if (wf.style.transform) {
@@ -1370,6 +1926,13 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
   const waveformsRoot = document.getElementById("waveforms");
 
   if (forceRebuild) {
+    // Detach waveform elements before removing group containers so they
+    // stay in the DOM and can be re-placed into new containers below.
+    const detached = [];
+    waveformsRoot.querySelectorAll(".file-group .waveform").forEach((wf) => {
+      detached.push(wf);
+      waveformsRoot.appendChild(wf); // park on root temporarily
+    });
     Array.from(waveformsRoot.querySelectorAll(".file-group")).forEach((el) =>
       el.remove(),
     );
@@ -1378,12 +1941,7 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
   // If containers already exist, nothing to do
   if (waveformsRoot.querySelector(".file-group")) return;
 
-  const groups =
-    loadedAlignmentJSON &&
-    loadedAlignmentJSON.header &&
-    Array.isArray(loadedAlignmentJSON.header.fileGroups)
-      ? loadedAlignmentJSON.header.fileGroups
-      : _loadGroups();
+  const groups = loadedAlignmentJSON ? _getActiveFileGroups() : [];
 
   // Determine membership similar to sidebar: support explicit files + pattern
   const grouped = new Set();
@@ -1416,16 +1974,19 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
 
   const ungrouped = filenames.filter((f) => !grouped.has(f)).sort();
 
+  // Build all containers keyed by group name, then append in saved order
+  const contentByName = {};
+
   // Score container (if present)
   if (SYNTH_MEI_KEY in alignmentGrids) {
-    const g = document.createElement("div");
-    g.className = "file-group file-group-score";
-    g.dataset.group = "Score";
-    g.innerHTML = `<div class="group-title">Score <span class="group-count"></span></div><div class="group-list"></div>`;
-    waveformsRoot.appendChild(g);
+    const el = document.createElement("div");
+    el.className = "file-group file-group-score";
+    el.dataset.group = "Score";
+    el.innerHTML = `<div class="group-title">Score <span class="group-count"></span></div><div class="group-list"></div>`;
+    contentByName["Score"] = el;
   }
 
-  // Create containers for each named group
+  // Named group containers
   groups.forEach((g, i) => {
     const members = groupMembers[i];
     if (members.length === 0) return;
@@ -1433,18 +1994,47 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     container.className = "file-group";
     container.dataset.group = g.name;
     container.innerHTML = `<div class="group-title">${g.name} <span class="group-count"></span><span class="group-actions"><span class="group-all">All</span><span class="group-none">None</span></span></div><div class="group-list"></div>`;
-    waveformsRoot.appendChild(container);
+    if (g.color) {
+      container.style.backgroundColor = g.color;
+    }
+    contentByName[g.name] = container;
   });
 
   // Ungrouped container
+  const ungroupedLabel =
+    groups.length > 0 ? "Ungrouped recordings" : "All recordings";
   if (ungrouped.length > 0) {
     const uc = document.createElement("div");
     uc.className = "file-group file-group-ungrouped";
     uc.dataset.group = "Ungrouped";
-    const ungroupedLabel = groups.length > 0 ? "Ungrouped recordings" : "All recordings";
     uc.innerHTML = `<div class="group-title">${ungroupedLabel} <span class="group-count"></span><span class="group-actions"><span class="group-all">All</span><span class="group-none">None</span></span></div><div class="group-list"></div>`;
-    waveformsRoot.appendChild(uc);
+    contentByName["Ungrouped"] = uc;
   }
+
+  // Append in saved groupOrder (uses data-group values), then any remaining
+  const activeOrder = loadedAlignmentJSON ? _getActiveGroupOrder() : [];
+  const savedOrder = activeOrder.length > 0 ? activeOrder : null;
+
+  const contentAppended = new Set();
+  if (savedOrder) {
+    savedOrder.forEach((name) => {
+      if (contentByName[name] && !contentAppended.has(name)) {
+        waveformsRoot.appendChild(contentByName[name]);
+        contentAppended.add(name);
+      }
+    });
+  }
+  const defaultContentOrder = [
+    "Score",
+    ...groups.map((g) => g.name),
+    "Ungrouped",
+  ];
+  defaultContentOrder.forEach((name) => {
+    if (contentByName[name] && !contentAppended.has(name)) {
+      waveformsRoot.appendChild(contentByName[name]);
+      contentAppended.add(name);
+    }
+  });
 
   // Make non-Score group-lists droppable for reordering
   waveformsRoot.querySelectorAll(".group-list").forEach((list) => {
@@ -1480,34 +2070,180 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
   // Wire All/None buttons on content-pane group headers.
   // Use the nav sidebar checkboxes (always present) rather than content-pane
   // .waveform elements (only present after loading).
-  function _getNavCheckboxesForGroup(fg) {
-    const groupName = fg.dataset.group;
-    if (!groupName) return [];
-    // Find corresponding sidebar nav group by matching the ID convention
-    const navId = "audio-group-" + groupName.toLowerCase().replace(/\s+/g, "-");
-    const navGroup = document.getElementById(navId);
-    if (navGroup) return [...navGroup.querySelectorAll("input[type='checkbox']")];
-    // Fallback for ungrouped: try sidebar groups with "ungrouped" or "all" in name
-    for (const id of ["audio-group-ungrouped-recordings", "audio-group-all-recordings"]) {
-      const el = document.getElementById(id);
-      if (el) return [...el.querySelectorAll("input[type='checkbox']")];
-    }
-    return [];
-  }
   waveformsRoot.querySelectorAll(".group-all").forEach((btn) => {
     btn.addEventListener("click", () => {
       const fg = btn.closest(".file-group");
       if (!fg) return;
-      _getNavCheckboxesForGroup(fg).forEach((cb) => { if (!cb.checked) cb.click(); });
+      _getNavCheckboxesForGroup(fg).forEach((cb) => {
+        if (!cb.checked) cb.click();
+      });
     });
   });
   waveformsRoot.querySelectorAll(".group-none").forEach((btn) => {
     btn.addEventListener("click", () => {
       const fg = btn.closest(".file-group");
       if (!fg) return;
-      _getNavCheckboxesForGroup(fg).forEach((cb) => { if (cb.checked) cb.click(); });
+      _getNavCheckboxesForGroup(fg).forEach((cb) => {
+        if (cb.checked) cb.click();
+      });
     });
   });
+
+  // Show initial (0/x) counts
+  _updateGroupCounts();
+}
+
+// ---------------------------------------------------------------------------
+// Grouping Tab Pills (content pane) and tab switching
+// ---------------------------------------------------------------------------
+
+/**
+ * Render the pill selector at the top of the content pane.
+ * Only shown when there are 2+ tabs.
+ */
+function _renderGroupingTabPills() {
+  let pillRow = document.getElementById("grouping-tab-pills");
+  const tabs = loadedAlignmentJSON?.header?.groupingTabs;
+  if (!tabs || tabs.length < 2) {
+    if (pillRow) pillRow.remove();
+    return;
+  }
+  const activeTabName = loadedAlignmentJSON.header.activeTab || tabs[0].name;
+  const contentEl = document.getElementById("content");
+  const waveformsEl = document.getElementById("waveforms");
+  if (!pillRow) {
+    pillRow = document.createElement("div");
+    pillRow.id = "grouping-tab-pills";
+    contentEl.insertBefore(pillRow, waveformsEl);
+  }
+  pillRow.innerHTML = "";
+  tabs.forEach((tab) => {
+    const pill = document.createElement("span");
+    pill.className = "gt-pill" + (tab.name === activeTabName ? " active" : "");
+    pill.textContent = tab.name;
+    pill.addEventListener("click", () => {
+      if (tab.name === activeTabName) return;
+      _switchActiveTab(tab.name);
+    });
+    pillRow.appendChild(pill);
+  });
+}
+
+/**
+ * Switch the active grouping tab — re-renders sidebar and content pane.
+ */
+function _switchActiveTab(tabName) {
+  if (!loadedAlignmentJSON?.header) return;
+  loadedAlignmentJSON.header.activeTab = tabName;
+
+  const filenames = Object.keys(alignmentGrids)
+    .filter((n) => n !== SYNTH_MEI_KEY)
+    .sort();
+
+  // Snapshot waveform positions for FLIP animation
+  const waveformEls = document.querySelectorAll("#waveforms .waveform");
+  const firstRects = new Map();
+  waveformEls.forEach((el) => {
+    firstRects.set(el, el.getBoundingClientRect());
+  });
+
+  // Re-render sidebar with new tab's groups
+  _renderSidebarFileList(filenames);
+
+  // Rebuild content pane group containers
+  _ensureWaveformGroupContainers(
+    filenames.concat(SYNTH_MEI_KEY in alignmentGrids ? [SYNTH_MEI_KEY] : []),
+    true /* forceRebuild */,
+  );
+
+  // Move existing waveform elements into their new group containers
+  const waveformsRoot = document.getElementById("waveforms");
+  const groups = _getActiveFileGroups();
+  const groupMap = new Map(); // filename -> group name
+  groups.forEach((g) => {
+    const members = new Set(g.files || []);
+    if (g.pattern) {
+      try {
+        const re = new RegExp(g.pattern);
+        filenames.forEach((f) => {
+          const short = f.substring(f.lastIndexOf("/") + 1);
+          if (re.test(short) || re.test(f)) members.add(f);
+        });
+      } catch (_) {}
+    }
+    members.forEach((f) => groupMap.set(f, g.name));
+  });
+
+  // Place each existing waveform into the correct group-list
+  Object.keys(wavesurfers).forEach((fname) => {
+    const wfEl = waveformsRoot.querySelector(
+      `.waveform[data-ix='${CSS.escape(fname)}']`,
+    );
+    if (!wfEl) return;
+    let targetList;
+    if (fname === SYNTH_MEI_KEY) {
+      targetList = waveformsRoot.querySelector(".file-group-score .group-list");
+    } else if (groupMap.has(fname)) {
+      const fg = waveformsRoot.querySelector(
+        `.file-group[data-group='${CSS.escape(groupMap.get(fname))}']`,
+      );
+      targetList = fg?.querySelector(".group-list");
+    }
+    if (!targetList) {
+      targetList = waveformsRoot.querySelector(
+        ".file-group-ungrouped .group-list",
+      );
+    }
+    if (targetList && wfEl.parentElement !== targetList) {
+      targetList.appendChild(wfEl);
+    }
+  });
+
+  _updateGroupCounts();
+
+  // FLIP animation
+  waveformEls.forEach((el) => {
+    const first = firstRects.get(el);
+    if (!first) return;
+    const last = el.getBoundingClientRect();
+    const dx = first.left - last.left;
+    const dy = first.top - last.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+    el.style.transition = "none";
+    requestAnimationFrame(() => {
+      el.style.transition = "transform 0.3s ease";
+      el.style.transform = "";
+      el.addEventListener("transitionend", function handler() {
+        el.style.transition = "";
+        el.removeEventListener("transitionend", handler);
+      });
+    });
+  });
+
+  // Update pills
+  _renderGroupingTabPills();
+
+  _changeCounter++;
+  _updateDirtyState();
+}
+
+/** Find nav sidebar checkboxes corresponding to a content-pane file-group. */
+function _getNavCheckboxesForGroup(fg) {
+  const groupName = fg.dataset.group;
+  if (!groupName) return [];
+  const navId = "audio-group-" + groupName.toLowerCase().replace(/\s+/g, "-");
+  const navGroup = document.getElementById(navId);
+  if (navGroup) return [...navGroup.querySelectorAll("input[type='checkbox']")];
+  // Fallback for ungrouped
+  for (const id of [
+    "audio-group-ungrouped-recordings",
+    "audio-group-all-recordings",
+  ]) {
+    const el = document.getElementById(id);
+    if (el) return [...el.querySelectorAll("input[type='checkbox']")];
+  }
+  return [];
 }
 
 /** Update (x/y) loaded-count badges on content-pane file-group headers. */
@@ -1515,27 +2251,44 @@ function _updateGroupCounts() {
   const waveformsRoot = document.getElementById("waveforms");
   if (!waveformsRoot) return;
   waveformsRoot.querySelectorAll(".file-group").forEach((fg) => {
-    const list = fg.querySelector(".group-list");
+    if (fg.classList.contains("file-group-score")) return;
     const badge = fg.querySelector(".group-count");
-    if (!list || !badge) return;
-    const wfs = list.querySelectorAll(".waveform");
-    const total = wfs.length;
-    const vis = Array.from(wfs).filter((w) => w.style.display !== "none").length;
+    if (!badge) return;
+    // Total from nav sidebar (always present), visible from content-pane waveforms
+    const navCbs = _getNavCheckboxesForGroup(fg);
+    const total = navCbs.length;
+    const list = fg.querySelector(".group-list");
+    const wfs = list ? list.querySelectorAll(".waveform") : [];
+    const vis = Array.from(wfs).filter(
+      (w) => w.style.display !== "none",
+    ).length;
     badge.textContent = total > 0 ? `(${vis}/${total})` : "";
   });
 }
 
-function _markJsonDirty() {
+function _updateDirtyState() {
+  const isDirty = _changeCounter !== _savedAtCounter;
   const dlBtn = document.getElementById("download-json-btn");
   if (dlBtn) {
-    dlBtn.classList.add("json-dirty");
-    dlBtn.title = "Download alignment data (You have unsaved changes!)";
+    dlBtn.classList.toggle("json-dirty", isDirty);
+    dlBtn.title = isDirty
+      ? "Download alignment data (You have unsaved changes!)"
+      : "Download alignment data";
   }
   const ctrl = document.getElementById("nav-middle-toggle");
   if (ctrl) {
-    ctrl.classList.add("json-dirty");
-    ctrl.title = "Collapse / expand controls (You have unsaved changes!)";
+    ctrl.classList.toggle("json-dirty", isDirty);
+    ctrl.title = isDirty
+      ? "Collapse / expand controls (You have unsaved changes!)"
+      : "Collapse / expand controls";
   }
+}
+
+/** Persist markers into the alignment JSON and mark dirty. */
+function _persistMarkers() {
+  if (!loadedAlignmentJSON) return;
+  if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+  loadedAlignmentJSON.header.markers = [...markers];
 }
 
 /**
@@ -1546,41 +2299,75 @@ function _updateMarkBtnTooltip() {
   const btn = document.getElementById("mark");
   if (!btn) return;
   let atMarker = false;
-  const ws = currentAudioIx && wavesurfers[currentAudioIx]
-    ? wavesurfers[currentAudioIx] : null;
+  const ws =
+    currentAudioIx && wavesurfers[currentAudioIx]
+      ? wavesurfers[currentAudioIx]
+      : null;
   const isPlaying = ws ? ws.isPlaying() : false;
   if (closeListeningMode && activeMarkerIx != null && !isPlaying && ws) {
     // Check whether playback position is actually at the active marker
-    const markerTime = getCorrespondingTime(currentAudioIx, markers[activeMarkerIx]);
+    const markerTime = getCorrespondingTime(
+      currentAudioIx,
+      markers[activeMarkerIx],
+    );
     const currentTime = ws.getCurrentTime();
     atMarker = Math.abs(currentTime - markerTime) < 0.05;
-  } else if (closeListeningMode && activeMarkerIx != null && !isPlaying && !ws) {
+  } else if (
+    closeListeningMode &&
+    activeMarkerIx != null &&
+    !isPlaying &&
+    !ws
+  ) {
     // Before first playback — no waveform active, trust close-listening state
     atMarker = true;
   }
-  const label = atMarker ? "Remove marker" : "Place marker";
-  btn.title = atMarker ? "Remove the currently-active marker" : "Place a marker at the current playback position";
-  btn.textContent = label;
+  btn.title = atMarker
+    ? "Remove the currently-active marker"
+    : "Place a marker at the current playback position";
+  const iconMark = btn.querySelector(".icon-mark");
+  const iconMarkX = btn.querySelector(".icon-mark-x");
+  if (iconMark) iconMark.style.display = atMarker ? "none" : "";
+  if (iconMarkX) iconMarkX.style.display = atMarker ? "" : "none";
+  btn.dataset.mode = atMarker ? "remove" : "place";
 }
 
 /** Persist the current group ordering into loadedAlignmentJSON.header.fileGroups */
 function _persistGroupOrder() {
   if (!loadedAlignmentJSON) return;
   if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+
+  // Preserve existing group properties (pattern, color) by name
+  const oldGroups = _getActiveFileGroups();
+  const oldByName = {};
+  oldGroups.forEach((g) => {
+    oldByName[g.name] = g;
+  });
+
   const waveformsRoot = document.getElementById("waveforms");
   const groups = [];
-  // Iterate existing file-group containers (skip Score)
   Array.from(waveformsRoot.querySelectorAll(".file-group")).forEach((fg) => {
     const gname = fg.dataset.group || "Ungrouped";
-    if (gname === "Score") return; // do not include score
+    if (gname === "Score") return;
     const list = fg.querySelector(".group-list");
     const files = Array.from(list.querySelectorAll(".waveform"))
       .map((w) => w.dataset.ix)
       .filter(Boolean);
-    groups.push({ name: gname, files });
+    const old = oldByName[gname] || {};
+    const entry = { name: gname, files };
+    if (old.pattern) entry.pattern = old.pattern;
+    if (old.color) entry.color = old.color;
+    groups.push(entry);
   });
-  loadedAlignmentJSON.header.fileGroups = groups;
-  _markJsonDirty();
+  _setActiveFileGroups(groups);
+
+  // Persist full group display order using data-group values
+  const groupOrder = Array.from(
+    waveformsRoot.querySelectorAll(".file-group"),
+  ).map((fg) => fg.dataset.group || "Ungrouped");
+  _setActiveGroupOrder(groupOrder);
+
+  _changeCounter++;
+  _updateDirtyState();
 }
 
 function _wireListSelectors() {
@@ -1618,7 +2405,24 @@ function _openGroupModal() {
   const filenames = Object.keys(alignmentGrids)
     .filter((n) => n !== SYNTH_MEI_KEY)
     .sort();
-  let groups = _loadGroups();
+
+  // Deep-clone all tabs for editing; modal edits this clone until Apply
+  _migrateToGroupingTabs();
+  const h = loadedAlignmentJSON?.header || {};
+  let modalTabs = JSON.parse(
+    JSON.stringify(
+      h.groupingTabs || [{ name: "Default", fileGroups: [], groupOrder: [] }],
+    ),
+  );
+  let modalActiveIdx = Math.max(
+    0,
+    modalTabs.findIndex((t) => t.name === (h.activeTab || "Default")),
+  );
+
+  /** Convenience: current modal tab's groups array */
+  function groups() {
+    return modalTabs[modalActiveIdx].fileGroups;
+  }
 
   // --- Build modal DOM ---
   const backdrop = document.createElement("div");
@@ -1638,6 +2442,11 @@ function _openGroupModal() {
   closeBtn.addEventListener("click", () => backdrop.remove());
   header.appendChild(closeBtn);
   modal.appendChild(header);
+
+  // --- Tab bar ---
+  const tabBar = document.createElement("div");
+  tabBar.className = "gm-tab-bar";
+  modal.appendChild(tabBar);
 
   // Body: two panes
   const body = document.createElement("div");
@@ -1663,7 +2472,12 @@ function _openGroupModal() {
   addGroupBtn.className = "gm-add-group";
   addGroupBtn.textContent = "+ New Group";
   addGroupBtn.addEventListener("click", () => {
-    groups.push({ name: "New Group", pattern: "", files: [] });
+    groups().push({
+      name: "New Group",
+      pattern: "",
+      files: [],
+      color: _nextGroupColour(groups()),
+    });
     renderGroups();
   });
   rightHeader.appendChild(addGroupBtn);
@@ -1687,18 +2501,25 @@ function _openGroupModal() {
   applyBtn.className = "gm-apply";
   applyBtn.textContent = "Apply";
   applyBtn.addEventListener("click", () => {
-    // Persist groups both to localStorage (legacy) and into the alignment JSON header
-    _saveGroups(groups);
+    // Write all tabs back to the alignment JSON header
     if (!loadedAlignmentJSON) loadedAlignmentJSON = {};
     if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
-    loadedAlignmentJSON.header.fileGroups = groups;
-    _markJsonDirty();
+    loadedAlignmentJSON.header.groupingTabs = modalTabs;
+    // Keep activeTab unchanged (modal does not switch content pane live)
+    // But ensure activeTab name still exists; if it was renamed/deleted, fall back
+    const tabNames = new Set(modalTabs.map((t) => t.name));
+    if (!tabNames.has(loadedAlignmentJSON.header.activeTab)) {
+      loadedAlignmentJSON.header.activeTab = modalTabs[0].name;
+    }
+    _changeCounter++;
+    _updateDirtyState();
     backdrop.remove();
-    // Re-render sidebar
+    // Re-render sidebar + content pane + pills
     const fns = Object.keys(alignmentGrids)
       .filter((n) => n !== SYNTH_MEI_KEY)
       .sort();
     _renderSidebarFileList(fns);
+    _renderGroupingTabPills();
     reloadWaveforms();
   });
   footer.appendChild(cancelBtn);
@@ -1713,6 +2534,110 @@ function _openGroupModal() {
     if (e.target === backdrop) backdrop.remove();
   });
 
+  // --- Tab bar rendering ---
+  function renderTabBar() {
+    tabBar.innerHTML = "";
+    modalTabs.forEach((tab, idx) => {
+      const tabEl = document.createElement("span");
+      tabEl.className = "gm-tab" + (idx === modalActiveIdx ? " active" : "");
+
+      const label = document.createElement("span");
+      label.className = "gm-tab-label";
+      label.textContent = tab.name;
+      label.title = "Click to switch, double-click to rename";
+      tabEl.appendChild(label);
+
+      // Click to switch (skip re-render if already active, so dblclick can fire)
+      tabEl.addEventListener("click", (e) => {
+        if (e.target.classList.contains("gm-tab-close")) return;
+        if (idx === modalActiveIdx) return;
+        modalActiveIdx = idx;
+        renderTabBar();
+        renderAll();
+      });
+
+      // Double-click to rename (inline edit)
+      label.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "gm-tab-rename";
+        input.value = tab.name;
+        input.style.width = Math.max(60, label.offsetWidth + 10) + "px";
+        label.replaceWith(input);
+        input.focus();
+        input.select();
+        const commit = () => {
+          const newName = input.value.trim();
+          if (newName && newName !== tab.name) {
+            tab.name = newName;
+          }
+          renderTabBar();
+          renderAll();
+        };
+        input.addEventListener("blur", commit);
+        input.addEventListener("keydown", (ke) => {
+          if (ke.key === "Enter") {
+            ke.preventDefault();
+            input.blur();
+          }
+          if (ke.key === "Escape") {
+            input.value = tab.name;
+            input.blur();
+          }
+        });
+      });
+
+      // Delete button (not on the first tab)
+      if (modalTabs.length > 1) {
+        const del = document.createElement("span");
+        del.className = "gm-tab-close";
+        del.textContent = "\u2715";
+        del.title = "Delete tab";
+        del.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const hasGroups = tab.fileGroups && tab.fileGroups.length > 0;
+          if (
+            hasGroups &&
+            !confirm(
+              `Delete tab "${tab.name}" and its ${tab.fileGroups.length} group(s)?`,
+            )
+          )
+            return;
+          if (!hasGroups && !confirm(`Delete tab "${tab.name}"?`)) return;
+          modalTabs.splice(idx, 1);
+          if (modalActiveIdx >= modalTabs.length)
+            modalActiveIdx = modalTabs.length - 1;
+          if (modalActiveIdx < 0) modalActiveIdx = 0;
+          renderTabBar();
+          renderAll();
+        });
+        tabEl.appendChild(del);
+      }
+
+      tabBar.appendChild(tabEl);
+    });
+
+    // "+" add tab button
+    const addTab = document.createElement("span");
+    addTab.className = "gm-tab gm-tab-add";
+    addTab.textContent = "+";
+    addTab.title = "Add new tab";
+    addTab.addEventListener("click", () => {
+      let n = modalTabs.length + 1;
+      let name = `Tab ${n}`;
+      while (modalTabs.some((t) => t.name === name)) {
+        n++;
+        name = `Tab ${n}`;
+      }
+      modalTabs.push({ name, fileGroups: [], groupOrder: [] });
+      modalActiveIdx = modalTabs.length - 1;
+      renderTabBar();
+      renderAll();
+    });
+    tabBar.appendChild(addTab);
+  }
+
   // --- Internal helpers to render the modal contents ---
   function shortName(f) {
     return f.substring(f.lastIndexOf("/") + 1);
@@ -1721,7 +2646,7 @@ function _openGroupModal() {
   /** Compute which files are claimed by any group (explicit + pattern). */
   function getGroupedSet() {
     const s = new Set();
-    groups.forEach((g) => {
+    groups().forEach((g) => {
       (g.files || []).forEach((f) => s.add(f));
       if (g.pattern) {
         try {
@@ -1762,7 +2687,8 @@ function _openGroupModal() {
 
   function renderGroups() {
     groupsContainer.innerHTML = "";
-    groups.forEach((g, i) => {
+    const grps = groups();
+    grps.forEach((g, i) => {
       const card = document.createElement("div");
       card.className = "gm-group-card";
 
@@ -1786,19 +2712,19 @@ function _openGroupModal() {
         upBtn.title = "Move up";
         upBtn.textContent = "\u25B2";
         upBtn.addEventListener("click", () => {
-          [groups[i - 1], groups[i]] = [groups[i], groups[i - 1]];
+          [grps[i - 1], grps[i]] = [grps[i], grps[i - 1]];
           renderAll();
         });
         gh.appendChild(upBtn);
       }
       // Move down
-      if (i < groups.length - 1) {
+      if (i < grps.length - 1) {
         const downBtn = document.createElement("button");
         downBtn.className = "gm-icon-btn";
         downBtn.title = "Move down";
         downBtn.textContent = "\u25BC";
         downBtn.addEventListener("click", () => {
-          [groups[i], groups[i + 1]] = [groups[i + 1], groups[i]];
+          [grps[i], grps[i + 1]] = [grps[i + 1], grps[i]];
           renderAll();
         });
         gh.appendChild(downBtn);
@@ -1809,7 +2735,7 @@ function _openGroupModal() {
       delBtn.title = "Delete group";
       delBtn.textContent = "\u2715";
       delBtn.addEventListener("click", () => {
-        groups.splice(i, 1);
+        grps.splice(i, 1);
         renderAll();
       });
       gh.appendChild(delBtn);
@@ -1840,6 +2766,56 @@ function _openGroupModal() {
       patRow.appendChild(patLabel);
       patRow.appendChild(patInput);
       card.appendChild(patRow);
+
+      // Colour picker row
+      const colourRow = document.createElement("div");
+      colourRow.className = "gm-colour-row";
+      const colourLabel = document.createElement("label");
+      colourLabel.textContent = "Colour:";
+      // Palette swatches
+      const swatchContainer = document.createElement("span");
+      swatchContainer.className = "gm-swatch-container";
+      _GROUP_PALETTE.forEach((c) => {
+        const swatch = document.createElement("span");
+        swatch.className = "gm-swatch";
+        if (g.color === c) swatch.classList.add("gm-swatch-selected");
+        swatch.style.backgroundColor = c;
+        swatch.title = c;
+        swatch.addEventListener("click", () => {
+          g.color = c;
+          renderGroups();
+        });
+        swatchContainer.appendChild(swatch);
+      });
+      // Custom colour input
+      const colourInput = document.createElement("input");
+      colourInput.type = "color";
+      colourInput.className = "gm-colour-input";
+      colourInput.value = g.color || _nextGroupColour(grps);
+      colourInput.title = "Choose a custom colour";
+      colourInput.addEventListener("input", (e) => {
+        g.color = e.target.value;
+        renderGroups();
+      });
+      // Clear button
+      const clearBtn = document.createElement("button");
+      clearBtn.className = "gm-icon-btn gm-colour-clear";
+      clearBtn.title = "Remove colour";
+      clearBtn.textContent = "\u2715";
+      clearBtn.addEventListener("click", () => {
+        g.color = "";
+        renderGroups();
+      });
+      colourRow.appendChild(colourLabel);
+      colourRow.appendChild(swatchContainer);
+      colourRow.appendChild(colourInput);
+      colourRow.appendChild(clearBtn);
+      card.appendChild(colourRow);
+
+      // Apply colour preview to card
+      if (g.color) {
+        card.style.backgroundColor = g.color;
+      }
 
       // File list (explicit + regex-matched)
       const fileUl = document.createElement("ul");
@@ -1905,7 +2881,7 @@ function _openGroupModal() {
         const file = e.dataTransfer.getData("text/plain");
         if (file && filenames.includes(file)) {
           // Remove from any other group's explicit list
-          groups.forEach((og) => {
+          grps.forEach((og) => {
             og.files = (og.files || []).filter((x) => x !== file);
           });
           if (!g.files) g.files = [];
@@ -1918,7 +2894,7 @@ function _openGroupModal() {
       groupsContainer.appendChild(card);
     });
 
-    if (groups.length === 0) {
+    if (grps.length === 0) {
       groupsContainer.innerHTML = `<p class="gm-empty">No groups yet. Click <strong>+ New Group</strong> to create one.</p>`;
     }
   }
@@ -1928,6 +2904,7 @@ function _openGroupModal() {
     renderGroups();
   }
 
+  renderTabBar();
   renderAll();
 }
 
@@ -2087,12 +3064,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         ".file-group-ungrouped .group-list",
       );
     }
-    const groups =
-      loadedAlignmentJSON &&
-      loadedAlignmentJSON.header &&
-      Array.isArray(loadedAlignmentJSON.header.fileGroups)
-        ? loadedAlignmentJSON.header.fileGroups
-        : _loadGroups();
+    const groups = loadedAlignmentJSON ? _getActiveFileGroups() : [];
     for (const g of groups) {
       const members = new Set(g.files || []);
       if (members.has(filename)) {
@@ -2166,6 +3138,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       labelColor: "#fff",
       labelBackground: "#000",
       labelSize: "10px",
+      formatTimeCallback: (t) => {
+        const m = Math.floor(t / 60);
+        const s = (t % 60).toFixed(2);
+        return m + ":" + s.padStart(5, "0");
+      },
     });
     _regionsPlugins[filename] = _regPlugin;
     let regions = extractCurrentlyAnnotatedRegions(filename);
@@ -2266,31 +3243,48 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       const canvases = document.getElementsByClassName("position-indicator");
       const playingDuration = wavesurfers[filename].getDuration();
       Array.from(canvases).forEach((c) => {
-        const file = c.closest(".wf-overlays")?.parentElement?.dataset["ix"]
-          || c.closest(".waveform")?.dataset["ix"];
+        const file =
+          c.closest(".wf-overlays")?.parentElement?.dataset["ix"] ||
+          c.closest(".waveform")?.dataset["ix"];
         if (!file || !wavesurfers[file]) return;
         const ctx = c.getContext("2d");
-        const correspondingSeconds = alignmentGrids[file][currentGridIx];
         const duration = wavesurfers[file].getDuration();
-        // Viewport-based drawing: compute positions in full zoomed width, offset by scroll
         const fullW = _getZoomedWidth(file);
         const scrollLeft = wavesurfers[file].getScroll();
-        const absoluteX = (currentTime / playingDuration) * fullW - scrollLeft;
-        const relativeX = (correspondingSeconds / duration) * fullW - scrollLeft;
-        const diffMapped = Math.floor((255 * (absoluteX - relativeX)) / 100);
         ctx.clearRect(0, 0, c.width, c.height);
-        if (document.getElementById("visrelalign").checked) {
-          ctx.beginPath();
-          ctx.lineWidth = 2;
-          ctx.moveTo(absoluteX, 0);
-          ctx.lineTo(relativeX, c.height / 6);
-          ctx.lineTo(relativeX, 5 * (c.height / 6));
-          ctx.lineTo(absoluteX, c.height);
-          ctx.strokeStyle =
-            diffMapped < 0
-              ? `rgb(${-1 * diffMapped} 100 100)`
-              : `rgb(100 100 ${diffMapped})`;
-          ctx.stroke();
+
+        if (_sharedTimeAxis) {
+          // Shared time axis: draw indicator at the same absolute time
+          if (document.getElementById("visrelalign").checked) {
+            const x = (currentTime / duration) * fullW - scrollLeft;
+            ctx.beginPath();
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = "rgba(100, 100, 200, 0.7)";
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, c.height);
+            ctx.stroke();
+          }
+        } else {
+          // Alignment-based: map through grid
+          const correspondingSeconds = alignmentGrids[file][currentGridIx];
+          const absoluteX =
+            (currentTime / playingDuration) * fullW - scrollLeft;
+          const relativeX =
+            (correspondingSeconds / duration) * fullW - scrollLeft;
+          const diffMapped = Math.floor((255 * (absoluteX - relativeX)) / 100);
+          if (document.getElementById("visrelalign").checked) {
+            ctx.beginPath();
+            ctx.lineWidth = 2;
+            ctx.moveTo(absoluteX, 0);
+            ctx.lineTo(relativeX, c.height / 6);
+            ctx.lineTo(relativeX, 5 * (c.height / 6));
+            ctx.lineTo(absoluteX, c.height);
+            ctx.strokeStyle =
+              diffMapped < 0
+                ? `rgb(${-1 * diffMapped} 100 100)`
+                : `rgb(100 100 ${diffMapped})`;
+            ctx.stroke();
+          }
         }
       });
     }
@@ -2326,9 +3320,6 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       gridCanvas.width = readyWfContainer.clientWidth;
       gridCanvas.height = WAVE_HEIGHT;
       gridStyle.pointerEvents = "none";
-      gridStyle.display = document.getElementById("visalign").checked
-        ? "unset"
-        : "none";
       positionIndicatorCanvas.classList.add("position-indicator");
       positionIndicatorCanvas.width = readyWfContainer.clientWidth;
       positionIndicatorCanvas.height = WAVE_HEIGHT;
@@ -2337,7 +3328,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       ow.wrapper.insertBefore(positionIndicatorCanvas, ow.inner);
       ow.wrapper.insertBefore(gridCanvas, positionIndicatorCanvas);
 
-      // Function to draw (or redraw) the alignment grid.
+      // Function to draw (or redraw) the alignment grid and time ticks.
       // At zoom, draws only the visible viewport portion offset by scroll.
       function drawAlignmentGrid() {
         if (!readyWfContainer || !readyWfContainer.isConnected) return;
@@ -2353,59 +3344,69 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         const fullW = _getZoomedWidth(filename);
         ow.inner.style.width = fullW + "px";
 
-        // Redraw grid lines (viewport-based at zoom)
         const ctx = gridCanvas.getContext("2d");
         ctx.clearRect(0, 0, viewW, h);
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = "rgba(140, 90, 90, 0.55)";
         const dur = wavesurfers[filename].getDuration();
-        const minPixelStep = 4;
         const scrollLeft = wavesurfers[filename].getScroll();
 
-        // Draw solid lines for the top and bottom sections
-        ctx.beginPath();
-        ctx.setLineDash([]);
-        let lastAbsX = -999;
-        alignmentGrids[filename].forEach((gridPos, gridIx) => {
-          // Positions in the full zoomed width, offset to viewport
-          const absoluteX =
-            (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
-          const relativeX = (gridPos / dur) * fullW - scrollLeft;
+        // Draw alignment grid lines first (so time ticks render on top)
+        const visalignEl = document.getElementById("visalign");
+        if (visalignEl && visalignEl.checked) {
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = "rgba(140, 90, 90, 0.55)";
+          const minPixelStep = 4;
 
-          // Skip lines outside the visible viewport
-          if (absoluteX > viewW + 10 && relativeX > viewW + 10) return;
-          if (absoluteX < -10 && relativeX < -10) return;
+          // Draw solid lines for the top and bottom sections
+          ctx.beginPath();
+          ctx.setLineDash([]);
+          let lastAbsX = -999;
+          alignmentGrids[filename].forEach((gridPos, gridIx) => {
+            const absoluteX =
+              (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
+            const relativeX = (gridPos / dur) * fullW - scrollLeft;
 
-          if (absoluteX - lastAbsX >= minPixelStep) {
-            ctx.moveTo(absoluteX, 0);
-            ctx.lineTo(relativeX, h / 6);
-            ctx.moveTo(relativeX, 5 * (h / 6));
-            ctx.lineTo(absoluteX, h);
-            lastAbsX = absoluteX;
-          }
-        });
-        ctx.stroke();
+            if (absoluteX > viewW + 10 && relativeX > viewW + 10) return;
+            if (absoluteX < -10 && relativeX < -10) return;
 
-        // Draw sparsely dotted lines over the waveform section
-        ctx.beginPath();
-        ctx.strokeStyle = "rgba(140, 90, 90, 0.3)";
-        ctx.setLineDash([2, 1]);
-        lastAbsX = -999;
-        alignmentGrids[filename].forEach((gridPos, gridIx) => {
-          const absoluteX =
-            (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
-          const relativeX = (gridPos / dur) * fullW - scrollLeft;
+            if (absoluteX - lastAbsX >= minPixelStep) {
+              ctx.moveTo(absoluteX, 0);
+              ctx.lineTo(relativeX, h / 6);
+              ctx.moveTo(relativeX, 5 * (h / 6));
+              ctx.lineTo(absoluteX, h);
+              lastAbsX = absoluteX;
+            }
+          });
+          ctx.stroke();
 
-          if (relativeX > viewW + 10 || relativeX < -10) return;
+          // Draw sparsely dotted lines over the waveform section
+          ctx.beginPath();
+          ctx.strokeStyle = "rgba(140, 90, 90, 0.3)";
+          ctx.setLineDash([2, 1]);
+          lastAbsX = -999;
+          alignmentGrids[filename].forEach((gridPos, gridIx) => {
+            const absoluteX =
+              (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
+            const relativeX = (gridPos / dur) * fullW - scrollLeft;
 
-          if (absoluteX - lastAbsX >= minPixelStep) {
-            ctx.moveTo(relativeX, h / 6);
-            ctx.lineTo(relativeX, 5 * (h / 6));
-            lastAbsX = absoluteX;
-          }
-        });
-        ctx.stroke();
-        ctx.setLineDash([]);
+            if (relativeX > viewW + 10 || relativeX < -10) return;
+
+            if (absoluteX - lastAbsX >= minPixelStep) {
+              ctx.moveTo(relativeX, h / 6);
+              ctx.lineTo(relativeX, 5 * (h / 6));
+              lastAbsX = absoluteX;
+            }
+          });
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        // Draw time ticks — skip during active playback for performance,
+        // a debounced redraw catches up when scrolling settles.
+        const isPlaying = currentAudioIx && wavesurfers[currentAudioIx] && wavesurfers[currentAudioIx].isPlaying();
+        if (!isPlaying) {
+          const tickBg = _wfBgCache[filename] || _refreshWfBg(filename);
+          _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg);
+        }
       }
 
       // Register this waveform's position-updater so it can be called
@@ -2419,8 +3420,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       corrCanvas.classList.add("align-correction-overlay");
       corrCanvas.width = readyWfContainer.clientWidth;
       corrCanvas.height = WAVE_HEIGHT;
+      corrCanvas.draggable = false; // prevent native browser drag
       const corrStyle = corrCanvas.style;
-      corrStyle.pointerEvents = _alignCorrectionMode ? "auto" : "none";
+      corrStyle.pointerEvents =
+        _alignCorrectionMode && !_drawModeActive ? "auto" : "none";
       // Correction canvas goes on the wrapper (viewport-fixed)
       ow.wrapper.insertBefore(corrCanvas, ow.inner);
 
@@ -2446,7 +3449,9 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
               if (!_scrollSyncLock && _currentZoomLevel > 1) {
                 _scrollSyncLock = true;
                 _syncAllWaveformScrolls(filename);
-                requestAnimationFrame(() => { _scrollSyncLock = false; });
+                requestAnimationFrame(() => {
+                  _scrollSyncLock = false;
+                });
               }
             });
           }
@@ -2533,13 +3538,14 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           wavesurfers[currentAudioIx].pause();
         }
       }
-      // restore marks from storage if they exist
-      if (storage) {
-        let markersString = storage.getItem("markers_" + workId);
-        if (markersString) {
-          markers = JSON.parse(markersString);
-          // markers are rendered by the "redrawcomplete" handler
-        }
+      // restore markers from alignment JSON if they exist
+      if (
+        loadedAlignmentJSON &&
+        loadedAlignmentJSON.header &&
+        Array.isArray(loadedAlignmentJSON.header.markers)
+      ) {
+        markers = [...loadedAlignmentJSON.header.markers];
+        // markers are rendered by the "redrawcomplete" handler
       }
     });
     wavesurfers[filename].on("interaction", () => {
@@ -2548,6 +3554,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     wavesurfers[filename].on("seeking", () => {
       _updateMarkBtnTooltip();
     });
+    wavesurfers[filename].on("play", () => _updateTransportIcons(true));
+    wavesurfers[filename].on("pause", () => _updateTransportIcons(false));
+    wavesurfers[filename].on("finish", () => _updateTransportIcons(false));
+
     wavesurfers[filename].on("audioprocess", () => {
       // continually update timer region when opened but not yet closed
       if (timerFrom === timerTo && timerFrom > 0) {
@@ -2573,9 +3583,13 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       updatePositionIndicator();
       // Reset mark button while playing (position is moving)
       const markBtn = document.getElementById("mark");
-      if (markBtn && markBtn.textContent !== "Place marker") {
+      if (markBtn && markBtn.dataset.mode !== "place") {
         markBtn.title = "Place a marker at the current playback position";
-        markBtn.textContent = "Place marker";
+        markBtn.dataset.mode = "place";
+        const im = markBtn.querySelector(".icon-mark");
+        const imx = markBtn.querySelector(".icon-mark-x");
+        if (im) im.style.display = "";
+        if (imx) imx.style.display = "none";
       }
     });
 
@@ -3043,12 +4057,15 @@ async function setGrids(grids) {
   }
 
   /* ---- Dynamic file grouping ---- */
+  _migrateToGroupingTabs();
+
   let filenames = Object.keys(alignmentGrids).filter(
     (n) => n !== SYNTH_MEI_KEY,
   );
   filenames.sort();
 
   _renderSidebarFileList(filenames);
+  _renderGroupingTabPills();
 
   // Show the "Group files" button
   const groupBtn = document.getElementById("group-files-btn");
@@ -3348,6 +4365,8 @@ document.addEventListener("DOMContentLoaded", () => {
       a.download = "alignment.json";
       a.click();
       URL.revokeObjectURL(url);
+      _savedAtCounter = _changeCounter;
+      _updateDirtyState();
     });
     if (alignmentData === "session") dlBtn.style.display = ""; // legacy fallback
   }
@@ -3370,8 +4389,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const radiusNarrow = document.getElementById("radius-narrow");
   const radiusMedium = document.getElementById("radius-medium");
   const radiusWide = document.getElementById("radius-wide");
-  const undoBtn = document.getElementById("tools-undo-btn");
-  const redoBtn = document.getElementById("tools-redo-btn");
+  const undoBtn = document.getElementById("undo-btn");
+  const redoBtn = document.getElementById("redo-btn");
   const revertBtn = document.getElementById("revert-all-btn");
 
   // Tools panel collapse is handled by the generic .collapsible-fieldset
@@ -3393,11 +4412,9 @@ document.addEventListener("DOMContentLoaded", () => {
   if (closeListeningCb) {
     closeListeningCb.addEventListener("change", () => {
       if (closeListeningCb.checked) {
-        if (markers.length > 0) {
-          enterCloseListeningMode(findClosestMarkerIndex());
-        } else {
-          closeListeningCb.checked = false; // can't enter without markers
-        }
+        enterCloseListeningMode(
+          markers.length > 0 ? findClosestMarkerIndex() : null,
+        );
       } else {
         exitCloseListeningMode();
       }
@@ -3452,12 +4469,50 @@ document.addEventListener("DOMContentLoaded", () => {
   /** Push an entry onto the undo stack. Clears redo on commit=true. */
   function _pushUndo(entry, commit = false) {
     _undoStack.push(entry);
-    if (commit) _redoStack.length = 0;
+    if (commit) {
+      _changeCounter++;
+      _redoStack.length = 0;
+    }
     _updateUndoRedoState();
+  }
+
+  /** Delete the currently active marker (close-listening mode). */
+  function _deleteActiveMarker() {
+    if (!closeListeningMode || activeMarkerIx == null) return;
+    const deletedAlignIx = markers[activeMarkerIx];
+    const deletedArrayIx = activeMarkerIx;
+    markers.splice(activeMarkerIx, 1);
+    _persistMarkers();
+    _pushUndo(
+      {
+        type: "marker-delete",
+        alignIx: deletedAlignIx,
+        markerArrayIx: deletedArrayIx,
+      },
+      true,
+    );
+    if (markers.length === 0) {
+      exitCloseListeningMode();
+    } else {
+      let bestIx = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < markers.length; i++) {
+        const dist = markers[i] - deletedAlignIx;
+        const absDist = Math.abs(dist);
+        if (absDist < bestDist || (absDist === bestDist && dist < 0)) {
+          bestDist = absDist;
+          bestIx = i;
+        }
+      }
+      activeMarkerIx = bestIx;
+      redrawAllMarkers();
+      seekToActiveMarker();
+    }
   }
 
   function _undoOne() {
     if (_undoStack.length === 0) return;
+    _changeCounter--;
     const entry = _undoStack.pop();
     switch (entry.type) {
       case "align-fix": {
@@ -3476,8 +4531,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const ix = markers.indexOf(entry.alignIx);
         if (ix > -1) {
           markers.splice(ix, 1);
-          if (storage)
-            storage.setItem("markers_" + workId, JSON.stringify(markers));
+          _persistMarkers();
           _redoStack.push({
             type: "marker-add",
             alignIx: entry.alignIx,
@@ -3501,8 +4555,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Undo delete = re-insert the marker
         const insertIx = Math.min(entry.markerArrayIx, markers.length);
         markers.splice(insertIx, 0, entry.alignIx);
-        if (storage)
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _persistMarkers();
         _redoStack.push({
           type: "marker-delete",
           alignIx: entry.alignIx,
@@ -3517,8 +4570,7 @@ document.addEventListener("DOMContentLoaded", () => {
       case "marker-move": {
         // Undo move = restore old position
         markers[entry.markerArrayIx] = entry.oldAlignIx;
-        if (storage)
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _persistMarkers();
         _redoStack.push({
           type: "marker-move",
           markerArrayIx: entry.markerArrayIx,
@@ -3535,6 +4587,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function _redoOne() {
     if (_redoStack.length === 0) return;
+    _changeCounter++;
     const entry = _redoStack.pop();
     switch (entry.type) {
       case "align-fix": {
@@ -3552,8 +4605,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Redo add = re-insert
         const insertIx = Math.min(entry.markerArrayIx, markers.length);
         markers.splice(insertIx, 0, entry.alignIx);
-        if (storage)
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _persistMarkers();
         _undoStack.push({
           type: "marker-add",
           alignIx: entry.alignIx,
@@ -3567,8 +4619,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const ix = markers.indexOf(entry.alignIx);
         if (ix > -1) {
           markers.splice(ix, 1);
-          if (storage)
-            storage.setItem("markers_" + workId, JSON.stringify(markers));
+          _persistMarkers();
           _undoStack.push({
             type: "marker-delete",
             alignIx: entry.alignIx,
@@ -3590,8 +4641,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       case "marker-move": {
         markers[entry.markerArrayIx] = entry.newAlignIx;
-        if (storage)
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _persistMarkers();
         _undoStack.push({
           type: "marker-move",
           markerArrayIx: entry.markerArrayIx,
@@ -3612,8 +4662,16 @@ document.addEventListener("DOMContentLoaded", () => {
       _syncGridToJSON(filename);
       if (_gridRedrawers[filename]) _gridRedrawers[filename]();
     }
+    // Also restore markers to saved state
+    if (loadedAlignmentJSON?.header?.markers) {
+      markers = [...loadedAlignmentJSON.header.markers];
+    } else {
+      markers.length = 0;
+    }
+    redrawAllMarkers();
     _undoStack.length = 0;
     _redoStack.length = 0;
+    _changeCounter = _savedAtCounter;
     _updateUndoRedoState();
   }
 
@@ -3667,6 +4725,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       revertBtn.disabled = !hasChanges;
     }
+    _updateDirtyState();
   }
 
   function _syncGridToJSON(filename) {
@@ -3688,6 +4747,8 @@ document.addEventListener("DOMContentLoaded", () => {
         _revertAll();
     });
   }
+  // Ensure buttons reflect initial state (all disabled, clean)
+  _updateUndoRedoState();
 
   // Ctrl+Z / Ctrl+Shift+Z keyboard shortcuts for undo / redo
   document.addEventListener("keydown", (e) => {
@@ -3733,18 +4794,27 @@ document.addEventListener("DOMContentLoaded", () => {
       const card = navMiddleToggle.closest(".nav-card");
       if (card && card.classList.contains("collapsed")) {
         card.classList.remove("collapsed");
-        try { localStorage.setItem("nav-middle-collapsed", "false"); } catch (_) {}
+        try {
+          localStorage.setItem("nav-middle-collapsed", "false");
+        } catch (_) {}
       }
     }
     const toolsPanel = document.getElementById("tools-panel");
     if (toolsPanel && toolsPanel.classList.contains("collapsed")) {
       toolsPanel.classList.remove("collapsed");
-      try { localStorage.setItem("fieldset-collapsed-tools-panel", "false"); } catch (_) {}
+      try {
+        localStorage.setItem("fieldset-collapsed-tools-panel", "false");
+      } catch (_) {}
     }
     const dragFieldset = document.getElementById("drag-marker-fieldset");
     if (dragFieldset && dragFieldset.classList.contains("collapsed")) {
       dragFieldset.classList.remove("collapsed");
-      try { localStorage.setItem("fieldset-collapsed-drag-marker-fieldset", "false"); } catch (_) {}
+      try {
+        localStorage.setItem(
+          "fieldset-collapsed-drag-marker-fieldset",
+          "false",
+        );
+      } catch (_) {}
     }
   }
 
@@ -3800,6 +4870,13 @@ document.addEventListener("DOMContentLoaded", () => {
       setTimeout(() => tip.remove(), 2500);
     }
   }
+
+  // Prevent native browser drag on waveforms during draw-region mode.
+  // Without this, the browser initiates a native HTML drag (ghost image)
+  // instead of letting the WaveSurfer regions plugin handle pointer events.
+  document.getElementById("waveforms").addEventListener("dragstart", (e) => {
+    if (_drawModeActive) e.preventDefault();
+  });
 
   // Mousedown on waveforms: handle marker drag start
   document.getElementById("waveforms").addEventListener("mousedown", (e) => {
@@ -3918,7 +4995,9 @@ document.addEventListener("DOMContentLoaded", () => {
       const morphedTime = morphed[_markerDragState.jCenter];
       const _fullW = _getZoomedWidth(filename);
       const leftPx =
-        dur > 0 ? Math.max(0, Math.min(_fullW, (morphedTime / dur) * _fullW)) : 0;
+        dur > 0
+          ? Math.max(0, Math.min(_fullW, (morphedTime / dur) * _fullW))
+          : 0;
       const markerEl = wfEl.querySelector(
         `.ws-marker[data-align-ix="${markers[markerArrayIx]}"]`,
       );
@@ -3929,7 +5008,8 @@ document.addEventListener("DOMContentLoaded", () => {
         const aIx = parseInt(el.dataset.alignIx);
         if (aIx >= 0 && aIx < morphed.length) {
           const t = morphed[aIx];
-          const p = dur > 0 ? Math.max(0, Math.min(_fullW, (t / dur) * _fullW)) : 0;
+          const p =
+            dur > 0 ? Math.max(0, Math.min(_fullW, (t / dur) * _fullW)) : 0;
           el.style.left = `${p}px`;
         }
       });
@@ -4056,8 +5136,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const newAlignIx = getClosestAlignmentIx(newTime, filename);
       if (newAlignIx !== startAlignIx) {
         markers[markerArrayIx] = newAlignIx;
-        if (storage)
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
+        _persistMarkers();
         _pushUndo(
           {
             type: "marker-move",
@@ -4171,27 +5250,52 @@ document.addEventListener("DOMContentLoaded", () => {
         }
       }
     }
-    ctx.strokeStyle = "rgba(40, 160, 40, 0.7)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
+    // Compute peak displacement for colour interpolation
     const n = morphedGrid.length;
+    let peakDispAll = 0;
+    if (origGrid) {
+      for (let j = 0; j < n; j++) {
+        peakDispAll = Math.max(
+          peakDispAll,
+          Math.abs(morphedGrid[j] - origGrid[j]),
+        );
+      }
+    }
+    // Colour endpoints: grid base → bright red, by displacement ratio
+    const r0 = 140,
+      g0 = 90,
+      b0 = 90,
+      a0 = 0.55; // grid base
+    const r1 = 220,
+      g1 = 40,
+      b1 = 40,
+      a1 = 0.9; // max displacement
     const minPixelStep = 4;
     let lastAbsX = -999;
+    ctx.lineWidth = 1;
     for (let j = 0; j < n; j++) {
       const absoluteX = (j / n) * fullW - scrollLeft;
       const relativeX = (morphedGrid[j] / dur) * fullW - scrollLeft;
-      // Skip lines outside viewport
       if (absoluteX > viewW + 10 && relativeX > viewW + 10) continue;
       if (absoluteX < -10 && relativeX < -10) continue;
-      if (absoluteX - lastAbsX >= minPixelStep) {
-        ctx.moveTo(absoluteX, 0);
-        ctx.lineTo(relativeX, h / 6);
-        ctx.moveTo(relativeX, 5 * (h / 6));
-        ctx.lineTo(absoluteX, h);
-        lastAbsX = absoluteX;
-      }
+      if (absoluteX - lastAbsX < minPixelStep) continue;
+      lastAbsX = absoluteX;
+      const disp = origGrid ? Math.abs(morphedGrid[j] - origGrid[j]) : 0;
+      // Skip lines with negligible displacement
+      if (peakDispAll > 1e-6 && disp / peakDispAll < 0.005) continue;
+      const t = peakDispAll > 1e-6 ? disp / peakDispAll : 0;
+      const r = Math.round(r0 + (r1 - r0) * t);
+      const g = Math.round(g0 + (g1 - g0) * t);
+      const b = Math.round(b0 + (b1 - b0) * t);
+      const a = (a0 + (a1 - a0) * t).toFixed(2);
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
+      ctx.beginPath();
+      ctx.moveTo(absoluteX, 0);
+      ctx.lineTo(relativeX, h / 6);
+      ctx.moveTo(relativeX, 5 * (h / 6));
+      ctx.lineTo(absoluteX, h);
+      ctx.stroke();
     }
-    ctx.stroke();
   }
 
   // Hover: show influence zone near active marker in fix mode
@@ -4283,25 +5387,57 @@ document.addEventListener("DOMContentLoaded", () => {
       colorMap = cM;
     })
     .catch((err) => console.warn("Couldn't load colormap:", err));
-  // play/pause button
-  document.getElementById("playpause").addEventListener("click", function (e) {
+  // --- Transport controls ---
+  function _seekBy(delta) {
+    if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
+    const ws = wavesurfers[currentAudioIx];
+    const dur = ws.getDuration();
+    if (dur > 0) {
+      const newTime = Math.max(0, Math.min(dur, ws.getCurrentTime() + delta));
+      ws.seekTo(newTime / dur);
+    }
+  }
+
+  // Play/pause
+  document.getElementById("playpause").addEventListener("click", function () {
     playpause();
   });
+
+  // Skip to start
+  document.getElementById("skip-back").addEventListener("click", function () {
+    if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
+    wavesurfers[currentAudioIx].seekTo(0);
+  });
+
+  // Rewind 10s
+  document.getElementById("seek-back").addEventListener("click", function () {
+    _seekBy(-10);
+  });
+
+  // Forward 10s
+  document.getElementById("seek-fwd").addEventListener("click", function () {
+    _seekBy(10);
+  });
+
+  // Skip to end
+  document.getElementById("skip-end").addEventListener("click", function () {
+    if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
+    wavesurfers[currentAudioIx].seekTo(1);
+  });
+
   // mark button — places a new marker, or removes the active marker when
   // paused at one in close-listening mode
   document.getElementById("mark").addEventListener("click", function (e) {
-    if (this.title === "Remove marker") {
+    if (this.dataset.mode === "remove") {
       _deleteActiveMarker();
       _updateMarkBtnTooltip();
       return;
     }
+    if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
     let toMark = getClosestAlignmentIx();
     const arrIx = markers.length;
     markers.push(toMark);
-    // update markers in storage, if possible
-    if (storage) {
-      storage.setItem("markers_" + workId, JSON.stringify(markers));
-    }
+    _persistMarkers();
     _pushUndo(
       { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
       true,
@@ -4322,14 +5458,24 @@ document.addEventListener("DOMContentLoaded", () => {
     // Audio: adjust GainNode so quieter recordings play at equal volume
     _applyNormGain(norm);
   });
-  // visualize alignment checkbox
+  // visualize alignment checkbox — redraw grids to show/hide alignment lines
   document.getElementById("visalign").checked = false;
-  document.getElementById("visalign").addEventListener("click", (e) => {
-    let display = e.target.checked ? "unset" : "none";
-    Array.from(document.querySelectorAll(".alignment-grid")).forEach(
-      (e) => (e.style.display = display),
-    );
+  document.getElementById("visalign").addEventListener("click", () => {
+    Object.values(_gridRedrawers).forEach((fn) => fn());
   });
+  // show relative position checkbox — redraw immediately when toggled while paused
+  document.getElementById("visrelalign").addEventListener("click", () => {
+    if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
+      _positionUpdaters[currentAudioIx]();
+    }
+  });
+  // Shared time axis checkbox
+  document
+    .getElementById("shared-time-axis")
+    .addEventListener("change", (e) => {
+      _sharedTimeAxis = e.target.checked;
+      applyZoom(_currentZoomLevel);
+    });
 
   // Zoom slider
   const zoomSlider = document.getElementById("zoom-slider");
@@ -4345,15 +5491,45 @@ document.addEventListener("DOMContentLoaded", () => {
       const label = document.getElementById("zoom-label");
       if (label) label.textContent = restoredLevel + "x";
       const scrollControls = document.getElementById("scroll-mode-controls");
-      if (scrollControls) scrollControls.style.display = restoredLevel > 1 ? "" : "none";
+      if (scrollControls)
+        scrollControls.style.display = restoredLevel > 1 ? "" : "none";
     }
   }
 
-  // Scroll mode radios
-  document.querySelectorAll('input[name="scroll-mode"]').forEach((radio) => {
+  // Mousewheel zoom when hovering over a waveform
+  document.getElementById("waveforms").addEventListener(
+    "wheel",
+    (e) => {
+      if (!e.ctrlKey && !e.metaKey) return; // plain scroll = normal scroll
+      e.preventDefault();
+      const currentIdx = ZOOM_LEVELS.indexOf(_currentZoomLevel);
+      const newIdx =
+        e.deltaY < 0
+          ? Math.min(currentIdx + 1, ZOOM_LEVELS.length - 1)
+          : Math.max(currentIdx - 1, 0);
+      if (newIdx === currentIdx) return;
+      applyZoom(ZOOM_LEVELS[newIdx]);
+      if (zoomSlider) zoomSlider.value = newIdx;
+    },
+    { passive: false },
+  );
+
+  // Scroll mode radios — sync variable from browser-restored state on load
+  const scrollRadios = document.querySelectorAll('input[name="scroll-mode"]');
+  scrollRadios.forEach((radio) => {
+    if (radio.checked) _scrollMode = radio.value;
     radio.addEventListener("change", (e) => {
       _scrollMode = e.target.value;
       Object.keys(wavesurfers).forEach((fn) => _applyScrollMode(fn));
+    });
+  });
+  // Belt-and-suspenders: some browsers restore form state after DOMContentLoaded
+  window.addEventListener("pageshow", () => {
+    scrollRadios.forEach((radio) => {
+      if (radio.checked && radio.value !== _scrollMode) {
+        _scrollMode = radio.value;
+        Object.keys(wavesurfers).forEach((fn) => _applyScrollMode(fn));
+      }
     });
   });
 
@@ -4443,8 +5619,7 @@ document.addEventListener("DOMContentLoaded", () => {
               if (newIx !== markers[activeMarkerIx]) {
                 const oldIx = markers[activeMarkerIx];
                 markers[activeMarkerIx] = newIx;
-                if (storage)
-                  storage.setItem("markers_" + workId, JSON.stringify(markers));
+                _persistMarkers();
                 _pushUndo(
                   {
                     type: "marker-move",
@@ -4513,8 +5688,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (newIx !== markers[activeMarkerIx] && newIx < gridLength) {
               const oldIx = markers[activeMarkerIx];
               markers[activeMarkerIx] = newIx;
-              if (storage)
-                storage.setItem("markers_" + workId, JSON.stringify(markers));
+              _persistMarkers();
               _pushUndo(
                 {
                   type: "marker-move",
@@ -4621,9 +5795,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const toMark = getClosestAlignmentIx();
         const arrIx = markers.length;
         markers.push(toMark);
-        if (storage) {
-          storage.setItem("markers_" + workId, JSON.stringify(markers));
-        }
+        _persistMarkers();
         _pushUndo(
           { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
           true,
@@ -4711,6 +5883,77 @@ document.addEventListener("DOMContentLoaded", () => {
       _jumpToTargetActive = false;
       _hideAltNumbers();
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Time measurement: Shift-hold shows marker durations, Shift+drag measures
+  // ---------------------------------------------------------------------------
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Shift" || e.repeat) return;
+    if (_alignCorrectionMode) return; // Shift is used for influence zone in fix mode
+    _measureShiftHeld = true;
+    _showMarkerDurations();
+  });
+
+  document.addEventListener("keyup", (e) => {
+    if (e.key !== "Shift") return;
+    if (!_measureShiftHeld) return;
+    _measureShiftHeld = false;
+    _clearMeasureVisuals();
+  });
+
+  // Shift+drag on waveforms for arbitrary measurement spans
+  const waveformsRoot = document.getElementById("waveforms");
+
+  /** Given a mouse event over #waveforms, find the waveform filename and time. */
+  function _measureHitTest(e) {
+    // Walk up from target to find the .waveform container
+    let wfEl = e.target.closest(".waveform[data-ix]");
+    if (!wfEl) return null;
+    const filename = wfEl.dataset.ix;
+    const ws = wavesurfers[filename];
+    if (!ws || !loaded.has(filename)) return null;
+    const dur = ws.getDuration();
+    const fullW = _getZoomedWidth(filename);
+    if (fullW <= 0 || dur <= 0) return null;
+    // Get x relative to the overlay inner (accounts for scroll)
+    const ow = _overlayWrappers[filename];
+    if (!ow) return null;
+    const rect = ow.inner.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const time = (x / fullW) * dur;
+    const alignIx = getClosestAlignmentIx(time, filename);
+    return { filename, time, alignIx };
+  }
+
+  waveformsRoot.addEventListener("mousedown", (e) => {
+    if (!_measureShiftHeld || e.button !== 0) return;
+    const hit = _measureHitTest(e);
+    if (!hit) return;
+    e.preventDefault();
+    _measureDragState = {
+      filename: hit.filename,
+      startAlignIx: hit.alignIx,
+      endAlignIx: hit.alignIx,
+    };
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!_measureDragState) return;
+    const hit = _measureHitTest(e);
+    if (!hit) return;
+    _measureDragState.endAlignIx = hit.alignIx;
+    _drawMeasureSpan(
+      _measureDragState.startAlignIx,
+      _measureDragState.endAlignIx,
+    );
+  });
+
+  // mouseup does NOT clear — visuals persist until Shift is released
+  document.addEventListener("mouseup", () => {
+    if (!_measureDragState) return;
+    // Finalize the drag state but keep visuals
+    _measureDragState = null;
   });
 });
 

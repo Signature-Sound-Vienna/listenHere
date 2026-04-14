@@ -204,6 +204,9 @@
           <button id="align-prev-btn" class="align-nav-btn" style="visibility:hidden">&larr; Back</button>
           <button id="align-next-btn" class="align-nav-btn primary">Next &rarr;</button>
         </div>
+        <div class="align-footer">
+          v{{ version }} ({{ version_date_iso }}) · <a href="https://iwk.mdw.ac.at" target="_blank">IWK</a>/<a href="https://mdw.ac.at" target="_blank">mdw</a> · <a href="https://iwk.mdw.ac.at/impressum/" target="_blank">Imprint</a>
+        </div>
       </div>
     </div>
 
@@ -277,8 +280,28 @@
             <a href="/" class="nav-logo">
                 <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" alt="Listen Here!">
             </a>
-            <button id="playpause">Play/Pause</button>
-            <button id="mark" title="Place a marker at the current playback position">Place marker</button>
+            <div id="transport">
+              <button id="skip-back" class="transport-btn" title="Skip to start">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+              </button>
+              <button id="seek-back" class="transport-btn" title="Rewind 10s (Shift: 5s, Shift+Alt: 1s)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6 8.5 6V6l-8.5 6z"/></svg>
+              </button>
+              <button id="playpause" class="transport-btn transport-play" title="Play / Pause (Space)">
+                <svg class="icon-play" width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                <svg class="icon-pause" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M6 19h4V5H6zm8-14v14h4V5z"/></svg>
+              </button>
+              <button id="seek-fwd" class="transport-btn" title="Forward 10s (Shift: 5s, Shift+Alt: 1s)">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
+              </button>
+              <button id="skip-end" class="transport-btn" title="Skip to end">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6z"/></svg>
+              </button>
+              <button id="mark" class="transport-btn" data-mode="place" title="Place a marker at the current playback position (M)">
+                <svg class="icon-mark" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 0 1 0-5 2.5 2.5 0 0 1 0 5z"/></svg>
+                <svg class="icon-mark-x" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="display:none"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 0 1 0-5 2.5 2.5 0 0 1 0 5z"/><line x1="3" y1="3" x2="21" y2="21" stroke="#1e40af" stroke-width="4" stroke-linecap="round"/><line x1="3" y1="3" x2="21" y2="21" stroke="#fca5a5" stroke-width="2.5" stroke-linecap="round"/></svg>
+              </button>
+            </div>
         </div>
 
         <!-- Middle: Functional Controls (Collapsible Region) -->
@@ -317,6 +340,10 @@
                     <input type="checkbox" id="visrelalign" title="Show corresponding playback positions"/>
                     <label for="visrelalign" title="Show corresponding playback positions">Show relative position</label>
                   </span>
+                  <span>
+                    <input type="checkbox" id="shared-time-axis" title="All waveforms use the same time scale (shorter recordings appear narrower)"/>
+                    <label for="shared-time-axis" title="All waveforms use the same time scale (shorter recordings appear narrower)">Shared time axis</label>
+                  </span>
                 </div>
               </fieldset>
 
@@ -336,13 +363,13 @@
               <!-- Tools panel: persistent, collapsible fieldset -->
               <fieldset id="tools-panel" class="collapsible-fieldset">
                 <legend id="tools-header" title="Collapse / expand tools">Tools <span class="collapse-arrow">&#9662;</span></legend>
+                <span class="tools-row" id="tools-always">
+                  <span>
+                    <input type="checkbox" id="close-listening-cb" title="Close-listening mode (restarts playback from currently active marker)"/>
+                    <label for="close-listening-cb" title="Close-listening mode (restarts playback from currently active marker)">Close listening</label>
+                  </span>
+                </span>
                 <div id="tools-body" class="fieldset-body">
-                  <div class="tools-row" id="tools-always">
-                    <span>
-                      <input type="checkbox" id="close-listening-cb" title="Close-listening mode (restarts playback from currently active marker)"/>
-                      <label for="close-listening-cb" title="Close-listening mode (restarts playback from currently active marker)">Close Listening</label>
-                    </span>
-                  </div>
                   <hr class="tools-divider"/>
                   <fieldset id="drag-marker-fieldset" class="collapsible-fieldset">
                     <legend title="Collapse / expand marker adjustment settings">Drag Markers <span class="collapse-arrow">&#9662;</span></legend>
@@ -400,6 +427,9 @@
               <div id="audios"></div>
             </div>
           </div>
+        </div>
+        <div id="nav-footer">
+          {{ version }} {{ version_date_iso }} <a href="https://iwk.mdw.ac.at" target="_blank">IWK</a>/<a href="https://mdw.ac.at" target="_blank">mdw</a> <a href="https://iwk.mdw.ac.at/impressum/" target="_blank">Imprint</a>
         </div>
       </nav>
       <div id="content-wrapper">

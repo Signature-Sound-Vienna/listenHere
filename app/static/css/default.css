@@ -221,6 +221,21 @@ canvas {
   /* background & border handled by #region-waveforms */
 }
 
+#nav-footer {
+  flex: 0 0 auto;
+  font-size: 0.65em;
+  color: #94a3b8;
+  text-align: center;
+}
+#nav-footer a {
+  color: #94a3b8;
+  text-decoration: none;
+}
+#nav-footer a:hover {
+  color: #64748b;
+  text-decoration: underline;
+}
+
 #audios {
   flex: 1;
   overflow: hidden;
@@ -337,6 +352,11 @@ canvas {
 #waveforms .waveform:not(.active) *::part(progress),
 #waveforms .waveform:not(.active) *::part(cursor) {
   display: none !important;
+}
+
+/* Position hover time label just below the time-axis ticks */
+#waveforms *::part(hover-label) {
+  margin-top: 18px;
 }
 
 /* Custom marker lines (replaces WaveSurfer v4 markers plugin) */
@@ -566,27 +586,50 @@ details {
   filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
 }
 
-#playpause, #mark {
+#transport {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
   width: 100%;
-  padding: 0.45em;
   background-color: #2563eb;
-  color: white;
-  border: none;
-  border-radius: 6px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease, transform 0.1s;
+  border-radius: 20px;
   box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);
-  margin-bottom: 0.2em;
 }
-
-#playpause:hover, #mark:hover {
-  background-color: #1d4ed8;
-  transform: translateY(-1px);
+.transport-btn {
+  background: none;
+  border: none;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
 }
-
-#playpause:active, #mark:active {
-  transform: translateY(0);
+.transport-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: white;
+}
+.transport-btn:active {
+  background: rgba(255, 255, 255, 0.3);
+}
+.transport-play {
+  color: white;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  padding: 4px;
+  margin: 0 2px;
+}
+.transport-play:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+#mark[data-mode="remove"] {
+  color: #fca5a5;
+}
+#mark[data-mode="remove"]:hover {
+  color: #fecaca;
 }
 
 .nav-fieldset, .collapsible-fieldset {
@@ -674,7 +717,7 @@ details {
 }
 
 .fieldset-body button {
-  font-size: var(--font-size-large);
+  font-size: var(--font-size-medium);
   font-family: inherit;
   width: 100%;
   margin-top: 0.2em;
@@ -703,6 +746,11 @@ details {
   color: #94a3b8;
   cursor: not-allowed;
   background-color: transparent;
+  opacity: 0.4;
+}
+.fieldset-body button:disabled:hover {
+  background-color: transparent;
+  color: #94a3b8;
 }
 
 #tools-always, #files-always {
@@ -763,16 +811,13 @@ details {
 /* Sticky waveform filename label (stays at left edge on zoom scroll) */
 .wf-label {
   position: absolute;
-  top: 2px;
+  bottom: 2px;
   left: 3px;
   font-size: 9px;
   white-space: nowrap;
-  pointer-events: none;
-  user-select: none;
   background-color: rgba(255, 255, 255, 0.7);
   padding: 1px 4px;
   border-radius: 4px;
-  color: black;
   z-index: 4;
 }
 
@@ -791,13 +836,21 @@ details {
   top: 0;
   left: 0;
   width: 100%;
+  -webkit-user-drag: none; /* prevent native canvas drag ghost */
 }
 .wf-overlays-inner {
   position: relative;
   height: 100%;
 }
 .wf-overlays-inner .ws-marker { pointer-events: auto; }
-.wf-overlays .align-correction-overlay { pointer-events: auto; }
+/* correction overlay pointer-events managed via inline style in listen.js */
+
+/* During draw mode, suppress native browser drag on waveform content
+   so pointer events flow to the WaveSurfer regions plugin instead. */
+#waveforms.draw-mode-active,
+#waveforms.draw-mode-active * {
+  -webkit-user-drag: none;
+}
 
 /* Solid Drawer Button Handle */
 #solid-drawer-btn {
@@ -1286,6 +1339,27 @@ nav input[type="checkbox"]:focus-visible {
 .renditionName:hover .nav-drag-handle { opacity: 1; }
 .renditionName.nav-dragging { opacity: 0.4; }
 
+/* Nav group drag handle (on sidebar fieldset legends) */
+.nav-group-drag-handle {
+  margin-left: auto;
+  flex-shrink: 0;
+  opacity: 0;
+  cursor: grab;
+  transition: opacity 0.15s;
+  padding: 0 4px;
+  color: #94a3b8;
+  font-size: 0.9em;
+  user-select: none;
+  line-height: 1;
+}
+#audios .audio-group legend {
+  display: flex;
+  align-items: center;
+  gap: 0.2em;
+}
+#audios .audio-group:hover .nav-group-drag-handle { opacity: 0.7; }
+#audios .audio-group .nav-group-drag-handle:hover { opacity: 1; }
+.nav-group-dragging { opacity: 0.4; }
 
 #file-picker-status {
   text-align: left;
@@ -1841,31 +1915,11 @@ nav input[type="checkbox"]:focus-visible {
   flex-direction: column;
   gap: 0.25em;
 }
-#tools-undo-btn,
-#tools-redo-btn {
-  font-size: 0.78em;
-  padding: 0.25em 0.5em;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
-  background: #f8fafc;
-  cursor: pointer;
-  white-space: nowrap;
-  text-align: left;
-}
-#tools-undo-btn:disabled,
-#tools-redo-btn:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-#tools-undo-btn:not(:disabled):hover,
-#tools-redo-btn:not(:disabled):hover {
-  background: #e2e8f0;
-}
+
 
 /* Close Listening checkbox */
 #close-listening-cb + label {
-  font-weight: 600;
-  font-size: 0.85em;
+  font-size: var(--font-size-medium);
   color: #334155;
   cursor: pointer;
 }
@@ -2173,6 +2227,21 @@ body.marker-dragging * {
   justify-content: space-between;
   padding: 0.8em 2.5em 1.2em;
   border-top: 1px solid #e2e8f0;
+}
+
+.align-footer {
+  padding: 6px 0 10px;
+  font-size: 0.7em;
+  color: #94a3b8;
+  text-align: center;
+}
+.align-footer a {
+  color: #94a3b8;
+  text-decoration: none;
+}
+.align-footer a:hover {
+  color: #64748b;
+  text-decoration: underline;
 }
 
 .align-nav-btn {
@@ -2804,6 +2873,137 @@ body.marker-dragging * {
 }
 .gm-close:hover { color: #0f172a; }
 
+/* Modal tab bar */
+.gm-tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 2px solid #e2e8f0;
+  padding: 0 18px;
+  flex-shrink: 0;
+  overflow-x: auto;
+}
+.gm-tab {
+  padding: 6px 14px;
+  background: none;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: #64748b;
+  cursor: pointer;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  transition: color 0.15s, border-color 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  user-select: none;
+}
+.gm-tab.active { color: #2563eb; border-bottom-color: #2563eb; }
+.gm-tab:hover:not(.gm-tab-add) { color: #334155; }
+.gm-tab-add {
+  color: #94a3b8;
+  font-size: 1.1em;
+  padding: 4px 10px;
+}
+.gm-tab-add:hover { color: #2563eb; }
+.gm-tab-close {
+  font-size: 0.7em;
+  color: #94a3b8;
+  cursor: pointer;
+  margin-left: 2px;
+  line-height: 1;
+}
+.gm-tab-close:hover { color: #ef4444; }
+.gm-tab-label { cursor: pointer; }
+.gm-tab-rename {
+  font-size: inherit;
+  font-weight: inherit;
+  font-family: inherit;
+  border: 1px solid #2563eb;
+  border-radius: 3px;
+  padding: 1px 4px;
+  outline: none;
+}
+
+/* Content pane grouping tab pills */
+#grouping-tab-pills {
+  display: flex;
+  gap: 6px;
+  padding: 6px 12px;
+  flex-shrink: 0;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+  flex-wrap: wrap;
+}
+.gt-pill {
+  padding: 3px 12px;
+  border-radius: 99px;
+  font-size: 0.82em;
+  font-weight: 600;
+  color: #475569;
+  background: #e2e8f0;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  user-select: none;
+}
+.gt-pill:hover { background: #cbd5e1; }
+.gt-pill.active { background: #2563eb; color: #fff; }
+
+/* Time measurement visuals (Shift-hold) */
+.measure-label {
+  position: absolute;
+  top: 2.1em;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-weight: 600;
+  color: #1e40af;
+  background: rgba(219, 234, 254, 0.85);
+  border: 1px solid rgba(96, 165, 250, 0.5);
+  border-radius: 3px;
+  padding: 0 3px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  line-height: 1.4;
+}
+.measure-span {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(96, 165, 250, 0.08);
+  border-left: 1px dashed rgba(96, 165, 250, 0.4);
+  border-right: 1px dashed rgba(96, 165, 250, 0.4);
+  pointer-events: none;
+  z-index: 4;
+}
+.measure-drag-span {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(245, 158, 11, 0.12);
+  border-left: 2px solid rgba(245, 158, 11, 0.6);
+  border-right: 2px solid rgba(245, 158, 11, 0.6);
+  pointer-events: none;
+  z-index: 4;
+}
+.measure-drag-label {
+  position: absolute;
+  top: 1.65em;
+  transform: translateX(-50%);
+  font-size: 10px;
+  font-weight: 700;
+  color: #92400e;
+  background: rgba(254, 243, 199, 0.9);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
+  line-height: 1.4;
+}
+
 .gm-body {
   display: flex;
   flex: 1 1 auto;
@@ -2916,6 +3116,47 @@ body.marker-dragging * {
   font-family: monospace;
 }
 
+/* Colour picker row in group modal */
+.gm-colour-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.gm-colour-row label { font-size: 0.82em; color: #475569; min-width: 3.2em; }
+.gm-swatch-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.gm-swatch {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border-radius: 3px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.gm-swatch:hover { transform: scale(1.2); }
+.gm-swatch-selected {
+  border-color: #334155;
+  box-shadow: 0 0 0 1px #fff inset;
+}
+.gm-colour-input {
+  width: 28px;
+  height: 22px;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  padding: 0;
+  cursor: pointer;
+  background: none;
+}
+.gm-colour-clear {
+  font-size: 0.7em;
+  padding: 1px 4px;
+}
+
 .gm-group-files {
   list-style: none; margin: 0; padding: 0;
   min-height: 28px;
@@ -2962,7 +3203,7 @@ body.marker-dragging * {
 /* Save data (download JSON) button — unsaved-changes indicator */
 #download-json-btn {
   position: relative;
-  font-size: var(--font-size-large);
+  font-size: var(--font-size-medium);
   font-family: inherit;
   background-color: transparent;
   border: 1px solid #606c38;

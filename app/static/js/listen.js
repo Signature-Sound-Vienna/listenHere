@@ -195,13 +195,15 @@ function resolveAudioUrl(filename) {
 // --- Marker redraw helper ---
 // Redraws all markers on all wavesurfers, highlighting the active marker in close-listening mode
 function redrawAllMarkers() {
+  const _style = getComputedStyle(document.documentElement);
+  const markerColor       = _style.getPropertyValue("--color-marker").trim()        || "red";
+  const markerActiveColor = _style.getPropertyValue("--color-marker-active").trim() || "#8b0000";
   Object.keys(wavesurfers).forEach((ws) => {
     _clearMarkers(ws);
     _ensureWfLabel(ws);
     markers.forEach((m, i) => {
       const t = getCorrespondingTime(ws, m);
-      const color =
-        closeListeningMode && activeMarkerIx === i ? "#8b0000" : "red";
+      const color = closeListeningMode && activeMarkerIx === i ? markerActiveColor : markerColor;
       _addMarker(ws, { time: t, color, alignIx: m });
     });
   });
@@ -654,22 +656,51 @@ function _getTempoAtTime(filename, time) {
   return { tempo, label: Math.round(tempo) + " QPM" };
 }
 
-/** Recompute the effective background colour for a waveform's tick labels. */
+/** Parse a CSS colour string ("rgba(…)", "#rrggbb", "#rgb") into {r,g,b,a} or null. */
+function _parseCssColor(str) {
+  str = (str || "").trim();
+  const m = str.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)/);
+  if (m) return { r: +m[1], g: +m[2], b: +m[3], a: m[4] != null ? +m[4] : 1 };
+  const h6 = str.match(/^#([0-9a-f]{6})$/i);
+  if (h6) { const v = parseInt(h6[1], 16); return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255, a: 1 }; }
+  const h3 = str.match(/^#([0-9a-f]{3})$/i);
+  if (h3) { const [, h] = h3; return { r: parseInt(h[0]+h[0],16), g: parseInt(h[1]+h[1],16), b: parseInt(h[2]+h[2],16), a: 1 }; }
+  return null;
+}
+
+/** Alpha-composite fg (rgba) over a solid bg colour, returns {r,g,b}. */
+function _blendOver({ r: fr, g: fg, b: fb, a }, { r: br, g: bg, b: bb }) {
+  return {
+    r: Math.round(fr * a + br * (1 - a)),
+    g: Math.round(fg * a + bg * (1 - a)),
+    b: Math.round(fb * a + bb * (1 - a)),
+  };
+}
+
+/**
+ * Recompute the effective label background colour for a waveform.
+ * Reads CSS custom properties so the result is always theme-correct.
+ * Active waveforms blend --color-waveform-active over --color-bg;
+ * non-active waveforms use --color-bg directly.
+ */
 function _refreshWfBg(filename) {
   const wfEl = document.querySelector(
     `.waveform[data-ix='${CSS.escape(filename)}']`,
   );
-  let bg = "rgba(255, 255, 255, 0.85)";
-  for (let el = wfEl; el && el !== document.body; el = el.parentElement) {
-    const raw = getComputedStyle(el).backgroundColor;
-    if (raw && raw !== "rgba(0, 0, 0, 0)" && raw !== "transparent") {
-      const m = raw.match(/[\d.]+/g);
-      if (m && m.length >= 3) bg = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
-      break;
-    }
+  const style = getComputedStyle(document.documentElement);
+  const baseBg = _parseCssColor(style.getPropertyValue("--color-bg")) ?? { r: 255, g: 255, b: 255, a: 1 };
+
+  let rgb;
+  if (wfEl?.classList.contains("active")) {
+    const activeFg = _parseCssColor(style.getPropertyValue("--color-waveform-active"));
+    rgb = activeFg ? _blendOver(activeFg, baseBg) : baseBg;
+  } else {
+    rgb = baseBg;
   }
+  const bg = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.90)`;
+
   _wfBgCache[filename] = bg;
-  // Also sync the wf-label
+  // Sync the wf-label element
   const lbl =
     wfEl &&
     (
@@ -718,7 +749,7 @@ function _formatTickTime(t) {
  * @param {number} dur    duration in seconds
  * @param {number} scrollLeft  current scroll offset in px
  */
-function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor) {
+function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor, textColor, tickColor) {
   if (dur <= 0 || fullW <= 0) return;
   const pxPerSec = fullW / dur;
   const visibleSec = viewW / pxPerSec;
@@ -748,13 +779,13 @@ function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor) {
     const isLabelled = tickIndex % labelEvery === 0;
     const tickH = isLabelled ? 7 : 4;
 
-    ctx.strokeStyle = isLabelled
-      ? "rgba(80, 80, 80, 0.5)"
-      : "rgba(120, 120, 120, 0.3)";
+    ctx.strokeStyle = tickColor || "#505050";
+    ctx.globalAlpha = isLabelled ? 0.75 : 0.35;
     ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, tickH);
     ctx.stroke();
+    ctx.globalAlpha = 1;
 
     if (isLabelled) {
       ctx.font = "9px sans-serif";
@@ -764,7 +795,7 @@ function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor) {
       const pad = 1;
       ctx.fillStyle = bgColor || "rgba(255, 255, 255, 0.7)";
       ctx.fillRect(x - tw / 2 - pad, tickH, tw + pad * 2, 10);
-      ctx.fillStyle = "rgba(60, 60, 60, 0.7)";
+      ctx.fillStyle = textColor || "rgba(60, 60, 60, 0.7)";
       ctx.fillText(text, x, tickH + 9);
     }
   }
@@ -3600,8 +3631,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     let regions = extractCurrentlyAnnotatedRegions(filename);
     wavesurfers[filename] = WaveSurfer.create({
       container: `#${CSS.escape("waveform-" + filename) + "-wav"}`,
-      waveColor: "violet",
-      progressColor: "purple",
+      ...(_waveformColors()),
       normalize: document.getElementById("normalize").checked,
       fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)),
       plugins: [_regPlugin, _hoverPlugin],
@@ -3718,9 +3748,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         if (file === filename) {
           // Playing waveform: simple vertical line at current playback position
           const x = (currentTime / duration) * fullW - scrollLeft;
+          const _piC = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-alignment-playhead").trim()) || { r: 100, g: 100, b: 200 };
           ctx.beginPath();
           ctx.lineWidth = 2;
-          ctx.strokeStyle = "rgba(100, 100, 200, 0.7)";
+          ctx.strokeStyle = `rgba(${_piC.r},${_piC.g},${_piC.b},0.7)`;
           ctx.moveTo(x, 0);
           ctx.lineTo(x, c.height);
           ctx.stroke();
@@ -3850,9 +3881,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
             );
 
             // Draw solid lines for the top and bottom sections
+            const _agC = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-alignment").trim()) || { r: 140, g: 90, b: 90 };
+            const _agRgb = `${_agC.r},${_agC.g},${_agC.b}`;
             ctx.beginPath();
             ctx.setLineDash([]);
-            ctx.strokeStyle = "rgba(140, 90, 90, 0.55)";
+            ctx.strokeStyle = `rgba(${_agRgb},0.55)`;
             for (let gridIx = loIdx; gridIx <= hiIdx; gridIx += stride) {
               const absoluteX = gridIx * pxPerIdx - scrollLeft;
               const relativeX = (grid[gridIx] / dur) * fullW - scrollLeft;
@@ -3865,7 +3898,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
             // Draw sparsely dotted lines over the waveform section
             ctx.beginPath();
-            ctx.strokeStyle = "rgba(140, 90, 90, 0.3)";
+            ctx.strokeStyle = `rgba(${_agRgb},0.3)`;
             ctx.setLineDash([2, 1]);
             for (let gridIx = loIdx; gridIx <= hiIdx; gridIx += stride) {
               const relativeX = (grid[gridIx] / dur) * fullW - scrollLeft;
@@ -3880,7 +3913,10 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
         // Draw time ticks
         const tickBg = _wfBgCache[filename] || _refreshWfBg(filename);
-        _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg);
+        const _dttStyle = getComputedStyle(document.documentElement);
+        const tickText = _dttStyle.getPropertyValue("--color-text-muted").trim() || "rgba(60,60,60,0.7)";
+        const tickColor = _dttStyle.getPropertyValue("--color-waveform-tick").trim() || "#505050";
+        _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg, tickText, tickColor);
 
         // Draw tempo curve
         drawTempoCurve();
@@ -3907,6 +3943,13 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         const fullW = _getZoomedWidth(filename);
         const scrollLeft = wavesurfers[filename].getScroll();
         const ctx = tempoCanvas.getContext("2d");
+
+        // Read theme colours for tempo curve once per draw
+        const _tcStyle = getComputedStyle(document.documentElement);
+        const _tcBase = _parseCssColor(_tcStyle.getPropertyValue("--color-tempo").trim()) || { r: 30, g: 80, b: 140 };
+        const _tcRgb = `${_tcBase.r},${_tcBase.g},${_tcBase.b}`;
+        const _outlierBase = _parseCssColor(_tcStyle.getPropertyValue("--color-outlier").trim()) || { r: 180, g: 60, b: 60 };
+        const _outlierRgb = `${_outlierBase.r},${_outlierBase.g},${_outlierBase.b}`;
 
         // In relative mode, compute per-file deviation from scope-based corpus mean
         let corpusMean = null;
@@ -3967,8 +4010,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         ctx.closePath();
         ctx.fillStyle =
           _tempoCurveMode === "relative"
-            ? "rgba(70, 130, 180, 0.12)"
-            : "rgba(70, 130, 180, 0.15)";
+            ? `rgba(${_tcRgb},0.12)`
+            : `rgba(${_tcRgb},0.15)`;
         ctx.fill();
 
         // Draw the curve line
@@ -3976,7 +4019,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         ctx.moveTo(pts[startIdx].x, pts[startIdx].y);
         for (let i = startIdx + 1; i <= endIdx; i++)
           ctx.lineTo(pts[i].x, pts[i].y);
-        ctx.strokeStyle = "rgba(30, 80, 140, 0.7)";
+        ctx.strokeStyle = `rgba(${_tcRgb},0.7)`;
         ctx.lineWidth = 1.5;
         ctx.stroke();
 
@@ -3985,7 +4028,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           ctx.beginPath();
           ctx.moveTo(0, zeroY);
           ctx.lineTo(viewW, zeroY);
-          ctx.strokeStyle = "rgba(30, 80, 140, 0.3)";
+          ctx.strokeStyle = `rgba(${_tcRgb},0.3)`;
           ctx.lineWidth = 1;
           ctx.setLineDash([4, 3]);
           ctx.stroke();
@@ -4018,7 +4061,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           ctx.beginPath();
           ctx.moveTo(0, y);
           ctx.lineTo(4, y);
-          ctx.strokeStyle = "rgba(30, 80, 140, 0.5)";
+          ctx.strokeStyle = `rgba(${_tcRgb},0.5)`;
           ctx.lineWidth = 1;
           ctx.stroke();
           // Label
@@ -4028,11 +4071,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           } else {
             tickLabel = String(Math.round(v));
           }
-          ctx.fillStyle = "rgba(30, 80, 140, 0.7)";
+          ctx.fillStyle = `rgba(${_tcRgb},0.7)`;
           ctx.fillText(tickLabel, 5, y);
         }
         // Unit label at top
-        ctx.fillStyle = "rgba(30, 80, 140, 0.5)";
+        ctx.fillStyle = `rgba(${_tcRgb},0.5)`;
         ctx.font = "8px sans-serif";
         ctx.textBaseline = "bottom";
         ctx.fillText(
@@ -4042,7 +4085,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         );
 
         // --- Clipped-value indicators (small triangles at top/bottom edge) ---
-        ctx.fillStyle = "rgba(180, 60, 60, 0.6)";
+        ctx.fillStyle = `rgba(${_outlierRgb},0.6)`;
         const triH = 5,
           triW = 4;
         for (let i = startIdx; i <= endIdx; i++) {
@@ -4956,6 +4999,42 @@ function _applyTheme(theme) {
     document.documentElement.setAttribute("data-theme", theme);
   }
   try { localStorage.setItem(_THEME_KEY, theme); } catch (_) {}
+
+  // Swap bat logo: sleeping bat for light themes, active bat for dark-background themes
+  const darkBgThemes = ["dark", "dracula", "forest", "nord"];
+  const logoEl = document.querySelector(".nav-logo-img");
+  if (logoEl) {
+    logoEl.src = darkBgThemes.includes(theme)
+      ? "/static/bat/ListenHereBat.svg"
+      : "/static/bat/ListenHereBatAsleep.svg";
+  }
+
+  // Re-apply waveform colours to any live WaveSurfer instances
+  const { waveColor, progressColor } = _waveformColors();
+  for (const ws of Object.values(wavesurfers)) {
+    try { ws.setOptions({ waveColor, progressColor }); } catch (_) {}
+  }
+
+  // Refresh label backgrounds (clears cache so next draw picks up new theme)
+  for (const filename of Object.keys(wavesurfers)) {
+    delete _wfBgCache[filename];
+    _refreshWfBg(filename);
+  }
+  // Redraw time axes and alignment grids with new tick/label colours
+  for (const redraw of Object.values(_gridRedrawers)) redraw();
+  // Redraw markers and position indicators with new theme colours
+  redrawAllMarkers();
+  const _firstPosUpdater = Object.values(_positionUpdaters)[0];
+  if (_firstPosUpdater) _firstPosUpdater();
+}
+
+/** Read current waveform colours from CSS custom properties. */
+function _waveformColors() {
+  const s = getComputedStyle(document.documentElement);
+  return {
+    waveColor:     s.getPropertyValue("--color-waveform").trim()          || "violet",
+    progressColor: s.getPropertyValue("--color-waveform-progress").trim() || "purple",
+  };
 }
 
 /** Apply a language preference. Persists to localStorage.
@@ -4968,8 +5047,8 @@ function _applyLanguage(lang) {
 /** Restore persisted theme and language on page load (call before DOMContentLoaded). */
 function _restoreSettings() {
   try {
-    const theme = localStorage.getItem(_THEME_KEY);
-    if (theme) _applyTheme(theme);
+    const theme = localStorage.getItem(_THEME_KEY) || "light";
+    _applyTheme(theme);
     const lang = localStorage.getItem(_LANG_KEY);
     if (lang) _applyLanguage(lang);
   } catch (_) {}
@@ -5956,8 +6035,9 @@ document.addEventListener("DOMContentLoaded", () => {
         jCenter = j;
       }
     }
-    const bandColor = "rgba(70, 130, 230, 0.12)";
-    ctx.fillStyle = bandColor;
+    const _izC = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
+    const _izRgb = `${_izC.r},${_izC.g},${_izC.b}`;
+    ctx.fillStyle = `rgba(${_izRgb},0.12)`;
     const cutoff = Math.ceil(sigma * 3);
     const jMin = Math.max(0, jCenter - cutoff);
     const jMax = Math.min(grid.length - 1, jCenter + cutoff);
@@ -5965,7 +6045,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const xMax = (grid[jMax] / dur) * fullW - scrollLeft;
     ctx.fillRect(xMin, 0, xMax - xMin, h);
     const xCenter = (grid[jCenter] / dur) * fullW - scrollLeft;
-    ctx.strokeStyle = "rgba(70, 130, 230, 0.5)";
+    ctx.strokeStyle = `rgba(${_izRgb},0.5)`;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(xCenter, 0);
@@ -6000,7 +6080,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (jMin <= jMax) {
           const xMin = (morphedGrid[jMin] / dur) * fullW - scrollLeft;
           const xMax = (morphedGrid[jMax] / dur) * fullW - scrollLeft;
-          ctx.fillStyle = "rgba(70, 130, 230, 0.08)";
+          const _mpBand = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
+          ctx.fillStyle = `rgba(${_mpBand.r},${_mpBand.g},${_mpBand.b},0.08)`;
           ctx.fillRect(xMin, 0, xMax - xMin, h);
         }
       }

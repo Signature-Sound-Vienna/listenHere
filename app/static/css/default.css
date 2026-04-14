@@ -96,15 +96,38 @@
   --color-drawer-btn-bg:    #f8fafc;
   --color-drawer-btn-hover: #e2e8f0;
   --color-drawer-btn-border:#cbd5e1;
+
+  /* Waveform colours */
+  --color-waveform:           #6b8cad;   /* unplayed wave                */
+  --color-waveform-progress:  #2d5a7a;   /* played / progress            */
+  --color-waveform-active:    rgba(107, 140, 173, 0.10); /* active waveform bg */
+  --color-waveform-border:    #cbd5e1;   /* waveform container border    */
+  --color-waveform-tick:      #505050;   /* time-axis tick lines         */
+
+  /* Canvas overlay colours */
+  --color-marker:             #e03030;   /* marker pins                  */
+  --color-marker-active:      #8b0000;   /* active marker (close-listen) */
+  --color-tempo:              #1e508c;   /* tempo curve (used at var. α) */
+  --color-outlier:            #b43c3c;   /* tempo outlier triangles      */
+  --color-alignment:          #8c5a5a;   /* alignment grid lines (base)  */
+  --color-alignment-peak:     #dc2828;   /* alignment max-displacement   */
+  --color-alignment-playhead: #6464c8;   /* position indicator line      */
+  --color-score-band:         #4682e6;   /* score-alignment bands        */
+
+  /* Content area group containers */
+  --color-group-bg:           rgba(226, 232, 240, 0.50); /* named group          */
+  --color-group-ungrouped-bg: rgba(241, 245, 249, 0.50); /* ungrouped section    */
 }
 
 /* ============================================================
    Dark theme
    ============================================================ */
 [data-theme="dark"] {
+  color-scheme: dark;
   --color-bg:           #0f172a;
   --color-surface:      #1e293b;
   --color-surface-alt:  #334155;
+  --color-surface-raised: #475569;  /* button backgrounds — above hover level */
 
   --color-border:       #334155;
   --color-border-light: #1e293b;
@@ -134,6 +157,22 @@
   --color-drawer-btn-bg:    #1e293b;
   --color-drawer-btn-hover: #334155;
   --color-drawer-btn-border:#475569;
+
+  --color-waveform:           #4a90a4;
+  --color-waveform-progress:  #7cc0d0;
+  --color-waveform-active:    rgba(74, 144, 164, 0.18);
+  --color-waveform-border:    #334155;
+  --color-waveform-tick:      #b4bece;
+  --color-marker:             #ff6060;
+  --color-marker-active:      #ff3030;
+  --color-tempo:              #60a8e8;
+  --color-outlier:            #f07070;
+  --color-alignment:          #c07878;
+  --color-alignment-peak:     #ff4040;
+  --color-alignment-playhead: #9090f8;
+  --color-score-band:         #6090f8;
+  --color-group-bg:           rgba(51, 65, 85, 0.60);
+  --color-group-ungrouped-bg: rgba(30, 41, 59, 0.50);
 }
 
 /* ============================================================
@@ -172,6 +211,295 @@
   --color-drawer-btn-bg:    #eee8d5;
   --color-drawer-btn-hover: #e3dcc8;
   --color-drawer-btn-border:#cdc9b8;
+
+  --color-waveform:           #2aa198;
+  --color-waveform-progress:  #187068;
+  --color-waveform-active:    rgba(42, 161, 152, 0.12);
+  --color-waveform-border:    #cdc9b8;
+  --color-marker:             #dc322f;
+  --color-marker-active:      #a80000;
+  --color-tempo:              #268bd2;
+  --color-outlier:            #cb4b16;
+  --color-alignment:          #cb4b16;
+  --color-alignment-peak:     #dc322f;
+  --color-alignment-playhead: #6c71c4;
+  --color-score-band:         #268bd2;
+  --color-group-bg:           rgba(205, 201, 184, 0.40);
+  --color-group-ungrouped-bg: rgba(227, 220, 200, 0.40);
+}
+
+/* ============================================================
+   Sepia theme (warm parchment)
+   ============================================================ */
+[data-theme="sepia"] {
+  --color-bg:           #f5ede0;
+  --color-surface:      #ede0ce;
+  --color-surface-alt:  #ddd0bc;
+
+  --color-border:       #c8b89e;
+  --color-border-light: #ddd0bc;
+
+  --color-text:         #3d2b1f;
+  --color-text-secondary: #6b4f3a;
+  --color-text-muted:   #8c6b55;
+  --color-text-subtle:  #b39880;
+
+  --color-accent:       #7a5230;
+  --color-accent-hover: #5a3b22;
+  --color-accent-light: #f5e8cc;
+
+  --color-link:         #7a5230;
+  --color-link-hover:   #5a3b22;
+  --color-focus-ring:   #7a5230;
+
+  --color-success:      #527a3a;
+  --color-success-light:#e8f5e0;
+  --color-danger:       #c0392b;
+  --color-danger-light: #fce4e4;
+  --color-warning:      #c87820;
+
+  --color-nav-bg:       #e8d5bc;
+  --color-nav-border:   #c8b89e;
+
+  --color-drawer-btn-bg:    #ede0ce;
+  --color-drawer-btn-hover: #ddd0bc;
+  --color-drawer-btn-border:#c8b89e;
+
+  --color-waveform:           #8a7340;
+  --color-waveform-progress:  #5a4920;
+  --color-waveform-active:    rgba(138, 115, 64, 0.10);
+  --color-waveform-border:    #c8b99a;
+  --color-marker:             #b03020;
+  --color-marker-active:      #7a1a10;
+  --color-tempo:              #5a6e8c;
+  --color-outlier:            #8c5020;
+  --color-alignment:          #8c5a3a;
+  --color-alignment-peak:     #b04030;
+  --color-alignment-playhead: #6060a0;
+  --color-score-band:         #5878b0;
+  --color-group-bg:           rgba(200, 185, 154, 0.35);
+  --color-group-ungrouped-bg: rgba(224, 212, 192, 0.35);
+}
+
+/* ============================================================
+   Peach theme (warm coral)
+   ============================================================ */
+[data-theme="peach"] {
+  --color-bg:           #fff3ed;
+  --color-surface:      #ffe8dc;
+  --color-surface-alt:  #ffd4c0;
+
+  --color-border:       #f5b89a;
+  --color-border-light: #ffd4c0;
+
+  --color-text:         #4a1f0a;
+  --color-text-secondary: #7a3c20;
+  --color-text-muted:   #a05840;
+  --color-text-subtle:  #c87860;
+
+  --color-accent:       #c05030;
+  --color-accent-hover: #a03820;
+  --color-accent-light: #ffeae0;
+
+  --color-link:         #b04020;
+  --color-link-hover:   #8a2e10;
+  --color-focus-ring:   #c05030;
+
+  --color-success:      #3a7a40;
+  --color-success-light:#dcfce4;
+  --color-danger:       #c02020;
+  --color-danger-light: #fee2e2;
+  --color-warning:      #d08020;
+
+  --color-nav-bg:       #ffe0cc;
+  --color-nav-border:   #f5b89a;
+
+  --color-drawer-btn-bg:    #ffe8dc;
+  --color-drawer-btn-hover: #ffd4c0;
+  --color-drawer-btn-border:#f5b89a;
+
+  --color-waveform:           #c07848;
+  --color-waveform-progress:  #884820;
+  --color-waveform-active:    rgba(192, 120, 72, 0.10);
+  --color-waveform-border:    #f5c49a;
+  --color-marker:             #b82020;
+  --color-marker-active:      #801010;
+  --color-tempo:              #4870b0;
+  --color-outlier:            #c04020;
+  --color-alignment:          #a04828;
+  --color-alignment-peak:     #d03030;
+  --color-alignment-playhead: #6050a0;
+  --color-score-band:         #4878c8;
+  --color-group-bg:           rgba(245, 196, 154, 0.35);
+  --color-group-ungrouped-bg: rgba(255, 218, 180, 0.35);
+}
+
+/* ============================================================
+   Dracula theme (dark purple)
+   ============================================================ */
+[data-theme="dracula"] {
+  color-scheme: dark;
+  --color-bg:           #282a36;
+  --color-surface:      #383a59;
+  --color-surface-alt:  #44475a;
+  --color-surface-raised: #585b70;  /* button backgrounds — above hover level */
+
+  --color-border:       #6272a4;
+  --color-border-light: #44475a;
+
+  --color-text:         #f8f8f2;
+  --color-text-secondary: #cdd6f4;
+  --color-text-muted:   #a0a8d0;
+  --color-text-subtle:  #6272a4;
+
+  --color-accent:       #bd93f9;
+  --color-accent-hover: #cfa7ff;
+  --color-accent-light: #3d3553;
+
+  --color-link:         #8be9fd;
+  --color-link-hover:   #50d8f0;
+  --color-focus-ring:   #bd93f9;
+
+  --color-success:      #50fa7b;
+  --color-success-light:#1a3a20;
+  --color-danger:       #ff5555;
+  --color-danger-light: #3a1515;
+  --color-warning:      #f1fa8c;
+
+  --color-nav-bg:       #1e2033;
+  --color-nav-border:   #44475a;
+
+  --color-drawer-btn-bg:    #383a59;
+  --color-drawer-btn-hover: #44475a;
+  --color-drawer-btn-border:#6272a4;
+
+  --color-waveform:           #50c878;
+  --color-waveform-progress:  #80e898;
+  --color-waveform-active:    rgba(80, 200, 120, 0.12);
+  --color-waveform-border:    #44475a;
+  --color-waveform-tick:      #b0b0d8;
+  --color-marker:             #ff5555;
+  --color-marker-active:      #ff3333;
+  --color-tempo:              #8be9fd;
+  --color-outlier:            #ffb86c;
+  --color-alignment:          #ff79c6;
+  --color-alignment-peak:     #ff4444;
+  --color-alignment-playhead: #bd93f9;
+  --color-score-band:         #8be9fd;
+  --color-group-bg:           rgba(68, 71, 90, 0.60);
+  --color-group-ungrouped-bg: rgba(40, 42, 54, 0.60);
+}
+
+/* ============================================================
+   Forest theme (dark green/earthy)
+   ============================================================ */
+[data-theme="forest"] {
+  color-scheme: dark;
+  --color-bg:           #1a2b1a;
+  --color-surface:      #1f3523;
+  --color-surface-alt:  #2a4230;
+  --color-surface-raised: #2e5225;  /* button backgrounds — above hover level */
+
+  --color-border:       #3d6048;
+  --color-border-light: #2a4230;
+
+  --color-text:         #c8e0c8;
+  --color-text-secondary: #a0c8a8;
+  --color-text-muted:   #78a880;
+  --color-text-subtle:  #4a7855;
+
+  --color-accent:       #5aaa5a;
+  --color-accent-hover: #70c070;
+  --color-accent-light: #1a3520;
+
+  --color-link:         #80d880;
+  --color-link-hover:   #a0f0a0;
+  --color-focus-ring:   #5aaa5a;
+
+  --color-success:      #60d060;
+  --color-success-light:#1a3820;
+  --color-danger:       #e05555;
+  --color-danger-light: #3a1515;
+  --color-warning:      #d0b040;
+
+  --color-nav-bg:       #142214;
+  --color-nav-border:   #2a4230;
+
+  --color-drawer-btn-bg:    #1f3523;
+  --color-drawer-btn-hover: #2a4230;
+  --color-drawer-btn-border:#3d6048;
+
+  --color-waveform:           #6ab858;
+  --color-waveform-progress:  #98de80;
+  --color-waveform-active:    rgba(106, 184, 88, 0.15);
+  --color-waveform-border:    #3d6048;
+  --color-waveform-tick:      #96c882;
+  --color-marker:             #ff8888;
+  --color-marker-active:      #ff5050;
+  --color-tempo:              #88d8c0;
+  --color-outlier:            #ffb878;
+  --color-alignment:          #e8b870;
+  --color-alignment-peak:     #ff8040;
+  --color-alignment-playhead: #a0d8f8;
+  --color-score-band:         #80c8f8;
+  --color-group-bg:           rgba(46, 77, 34, 0.60);
+  --color-group-ungrouped-bg: rgba(23, 35, 18, 0.55);
+}
+
+/* ============================================================
+   Nord theme (arctic blue-grey)
+   ============================================================ */
+[data-theme="nord"] {
+  color-scheme: dark;
+  --color-bg:           #2e3440;
+  --color-surface:      #3b4252;
+  --color-surface-alt:  #434c5e;
+  --color-surface-raised: #4c566a;  /* button backgrounds — above hover level */
+
+  --color-border:       #4c566a;
+  --color-border-light: #434c5e;
+
+  --color-text:         #eceff4;
+  --color-text-secondary: #e5e9f0;
+  --color-text-muted:   #d8dee9;
+  --color-text-subtle:  #4c566a;
+
+  --color-accent:       #88c0d0;
+  --color-accent-hover: #81a1c1;
+  --color-accent-light: #2d3b45;
+
+  --color-link:         #88c0d0;
+  --color-link-hover:   #8fbcbb;
+  --color-focus-ring:   #88c0d0;
+
+  --color-success:      #a3be8c;
+  --color-success-light:#2a3820;
+  --color-danger:       #bf616a;
+  --color-danger-light: #3a2020;
+  --color-warning:      #ebcb8b;
+
+  --color-nav-bg:       #242a33;
+  --color-nav-border:   #434c5e;
+
+  --color-drawer-btn-bg:    #3b4252;
+  --color-drawer-btn-hover: #434c5e;
+  --color-drawer-btn-border:#4c566a;
+
+  --color-waveform:           #5e9ab0;
+  --color-waveform-progress:  #88c0d0;
+  --color-waveform-active:    rgba(94, 154, 176, 0.15);
+  --color-waveform-border:    #4c566a;
+  --color-waveform-tick:      #aab8ce;
+  --color-marker:             #bf616a;
+  --color-marker-active:      #e05060;
+  --color-tempo:              #81a1c1;
+  --color-outlier:            #d08770;
+  --color-alignment:          #d08770;
+  --color-alignment-peak:     #bf616a;
+  --color-alignment-playhead: #b48ead;
+  --color-score-band:         #88c0d0;
+  --color-group-bg:           rgba(67, 76, 94, 0.60);
+  --color-group-ungrouped-bg: rgba(46, 52, 64, 0.55);
 }
 
 html, body {
@@ -194,8 +522,8 @@ canvas {
   height:100%;
 }
 
-#waveforms .active { 
-  background:#ff0;
+#waveforms .active {
+  background: var(--color-waveform-active);
 }
 
 #wrapper { 
@@ -413,13 +741,16 @@ canvas {
   border-radius: 6px;
   margin: 6px 8px;
   padding: 6px 8px 10px 8px;
-  background: rgba(230, 238, 214, 0.6); /* subtle pastel */
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.2);
+  background: var(--color-group-bg, rgba(226, 232, 240, 0.50));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.1);
+}
+.file-group-ungrouped {
+  background: var(--color-group-ungrouped-bg, rgba(241, 245, 249, 0.50)) !important;
 }
 .file-group .group-title {
   font-weight: 600;
   font-size: 0.95em;
-  color: #3f4b2a;
+  color: var(--color-text-muted);
   margin-bottom: 6px;
 }
 .group-count {
@@ -701,9 +1032,18 @@ details {
   margin-bottom: 0.15em; /* reduced */
 }
 
+.nav-logo img,
+.lh-logo-img {
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
+  /* Reserve the same space as the dark-theme coloured box so layout stays stable */
+  border: 10px solid transparent;
+  padding: 4px;
+  border-radius: 6px;
+  box-sizing: content-box;
+}
+
 .nav-logo img {
   height: 80px;
-  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.1));
 }
 
 #transport {
@@ -1121,6 +1461,11 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
   display: block;
 }
 
+/* Suppress drawer slide animation when switching between two open drawers */
+.drawer-no-transition {
+  transition: none !important;
+}
+
 /* ============================================================
    Shared drawer styles
    ============================================================ */
@@ -1221,8 +1566,24 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
 /* Theme swatches */
 .settings-theme-options {
   display: flex;
-  gap: 0.75em;
+  flex-direction: column;
+  gap: 0.5em;
+}
+
+.theme-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
   flex-wrap: wrap;
+}
+
+.theme-row-label {
+  font-size: 0.72em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-subtle);
+  min-width: 2.6em;
 }
 
 .settings-theme-option {
@@ -1265,13 +1626,26 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
 .theme-swatch-light {
   background: linear-gradient(135deg, #f8fafc 60%, #f0f4e3 100%);
 }
-
+.theme-swatch-solarized {
+  background: linear-gradient(135deg, #fdf6e3 60%, #eee8d5 100%);
+}
+.theme-swatch-sepia {
+  background: linear-gradient(135deg, #f5efe6 60%, #e8dcc8 100%);
+}
+.theme-swatch-peach {
+  background: linear-gradient(135deg, #fff5f0 60%, #fde8d8 100%);
+}
 .theme-swatch-dark {
   background: linear-gradient(135deg, #1e293b 60%, #1a2310 100%);
 }
-
-.theme-swatch-solarized {
-  background: linear-gradient(135deg, #fdf6e3 60%, #eee8d5 100%);
+.theme-swatch-dracula {
+  background: linear-gradient(135deg, #282a36 60%, #44475a 100%);
+}
+.theme-swatch-forest {
+  background: linear-gradient(135deg, #1a2310 60%, #2d4a22 100%);
+}
+.theme-swatch-nord {
+  background: linear-gradient(135deg, #2e3440 60%, #3b4252 100%);
 }
 
 /* Language select */
@@ -1303,8 +1677,8 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
    ============================================================ */
 
 /* Apply to all non-light themes */
-[data-theme="dark"],
-[data-theme="solarized"] {
+/* Apply to all non-light themes */
+[data-theme] {
 
   /* Page shell */
   body,
@@ -1364,14 +1738,22 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
     background: transparent;
   }
 
-  /* Labels, checkboxes */
-  label {
+  /* Labels inside nav/fieldsets/settings — excludes transport bar */
+  nav label,
+  .collapsible-fieldset label,
+  .settings-section label {
     color: var(--color-text-secondary);
   }
 
+  /* Sticky waveform filename label */
+  .wf-label {
+    background-color: rgba(0, 0, 0, 0.45);
+    color: var(--color-text);
+  }
+
   /* Buttons */
-  button:not(.drawer-btns button):not(#close-solid-drawer):not(#close-settings-drawer) {
-    background-color: var(--color-surface-alt);
+  button:not(.drawer-btns button):not(#close-solid-drawer):not(#close-settings-drawer):not(.transport-btn) {
+    background-color: var(--color-surface-raised, var(--color-surface-alt));
     color: var(--color-text);
     border-color: var(--color-border);
   }
@@ -1394,11 +1776,13 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
     border-top-color: var(--color-border);
   }
 
-  /* Logo invert for dark theme */
-  .nav-logo-img {
-    filter: brightness(0.9);
-  }
 }
+
+/* Dark-background themes: light tint box around logo fitting each palette */
+[data-theme="dark"]    .nav-logo-img, [data-theme="dark"]    .lh-logo-img { background: #e8f0d0; border-color: #e8f0d0; filter: none; }
+[data-theme="dracula"] .nav-logo-img, [data-theme="dracula"] .lh-logo-img { background: #f0e8ff; border-color: #f0e8ff; filter: none; }
+[data-theme="forest"]  .nav-logo-img, [data-theme="forest"]  .lh-logo-img { background: #dff0d8; border-color: #dff0d8; filter: none; }
+[data-theme="nord"]    .nav-logo-img, [data-theme="nord"]    .lh-logo-img { background: #eceff4; border-color: #eceff4; filter: none; }
 
 /* --- Custom Checkboxes (Alignment Theme) --- */
 nav input[type="checkbox"] {
@@ -1462,14 +1846,14 @@ nav input[type="checkbox"]:focus-visible {
 }
 
 #splash {
-  background: linear-gradient(135deg, #f8fafc 0%, #e0e7ef 100%);
+  background: linear-gradient(135deg, var(--color-surface) 0%, var(--color-surface-alt) 100%);
   min-height: 100vh;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   font-family: 'Segoe UI', 'Helvetica Neue', Arial, 'Liberation Sans', sans-serif;
-  color: #2d3748;
+  color: var(--color-text);
   letter-spacing: 0.01em;
 }
 
@@ -1479,7 +1863,8 @@ nav input[type="checkbox"]:focus-visible {
 }
 
 #splash-card {
-  background: rgba(255,255,255,0.9);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-light);
   border-radius: 16px;
   padding: 2em 2.5em;
   max-width: 720px;
@@ -1490,12 +1875,12 @@ nav input[type="checkbox"]:focus-visible {
 #splash-card h1 {
   margin: 0 0 0.1em;
   font-size: 1.8em;
-  color: #1e293b;
+  color: var(--color-text);
 }
 
 #splash-card h1 .version {
   font-size: 0.45em;
-  color: #94a3b8;
+  color: var(--color-text-subtle);
   font-weight: 400;
   vertical-align: middle;
 }
@@ -1503,7 +1888,7 @@ nav input[type="checkbox"]:focus-visible {
 #splash-card .tagline {
   margin: 0 0 1em;
   font-size: 1em;
-  color: #64748b;
+  color: var(--color-text-muted);
   font-style: italic;
   background: none;
   box-shadow: none;
@@ -1511,8 +1896,8 @@ nav input[type="checkbox"]:focus-visible {
 }
 
 #splash-card .usage-box {
-  background: #f1f5f9;
-  border: 1px solid #cbd5e1;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 0.5em 1em;
   margin: 0.8em 0;
@@ -1520,7 +1905,7 @@ nav input[type="checkbox"]:focus-visible {
 }
 
 #splash-card .usage-box code {
-  color: #7c3aed;
+  color: var(--color-accent);
   font-weight: 600;
 }
 
@@ -1537,7 +1922,7 @@ nav input[type="checkbox"]:focus-visible {
 
 #splash-card p.help-text {
   font-size: 0.85em;
-  color: #64748b;
+  color: var(--color-text-muted);
   margin-top: 0.4em;
 }
 
@@ -1552,64 +1937,64 @@ nav input[type="checkbox"]:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 0.3em;
-  background: #f1f5f9;
-  border: 1.5px solid #cbd5e1;
+  background: var(--color-bg);
+  border: 1.5px solid var(--color-border);
   border-radius: 10px;
   padding: 0.9em 1.1em;
   text-align: left;
-  color: #1e293b;
+  color: var(--color-text);
   transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
   text-decoration: none;
 }
 
 #splash .action-card:hover {
-  background: #e8eef6;
-  border-color: #2563eb;
+  background: var(--color-surface-alt);
+  border-color: var(--color-link);
   box-shadow: 0 2px 10px rgba(37,99,235,0.12);
-  color: #1e293b;
+  color: var(--color-text);
 }
 
 #splash .action-card strong {
   font-size: 1em;
-  color: #2563eb;
+  color: var(--color-link);
   font-weight: 600;
 }
 
 #splash .action-card span {
   font-size: 0.83em;
-  color: #64748b;
+  color: var(--color-text-muted);
   line-height: 1.4;
 }
 
 #splash-card footer {
   margin-top: 1.2em;
   padding-top: 0.8em;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--color-border-light);
   font-size: 0.8em;
-  color: #94a3b8;
+  color: var(--color-text-subtle);
   line-height: 1.8;
 }
 
 #splash a {
-  color: #2563eb;
+  color: var(--color-link);
   text-decoration: none;
-  border-bottom: 1px dotted #2563eb;
+  border-bottom: 1px dotted var(--color-link);
   transition: color 0.2s, border-bottom 0.2s;
 }
 
 #splash a:hover {
-  color: #1e40af;
-  border-bottom: 1px solid #1e40af;
+  color: var(--color-link-hover);
+  border-bottom: 1px solid var(--color-link-hover);
 }
 
 #error-banner {
-  background: #fce4e4;
-  border: 1px solid #c0392b;
+  background: var(--color-danger-light);
+  border: 1px solid var(--color-danger);
   border-radius: 8px;
   padding: 0.8em 1.2em;
   margin: 0 auto 1em;
   max-width: 720px;
-  color: #721c24;
+  color: var(--color-danger);
   font-size: 0.95em;
   text-align: left;
 }
@@ -2219,7 +2604,7 @@ nav input[type="checkbox"]:focus-visible {
   padding: 0.7em 2em;
   border: none;
   border-radius: 8px;
-  background: #2563eb;
+  background: var(--color-link);
   color: #fff;
   font-size: 1em;
   cursor: pointer;
@@ -2229,7 +2614,7 @@ nav input[type="checkbox"]:focus-visible {
 }
 
 #file-picker-continue:hover {
-  background: #1e40af;
+  background: var(--color-link-hover);
 }
 
 /* Legacy sidebar button styles removed to allow olive theme overrides */
@@ -2735,7 +3120,7 @@ body.marker-dragging * {
 
 .privacy-notice {
   font-size: 0.82em;
-  color: #64748b;
+  color: var(--color-text-muted);
   margin: 0.6em 0 1.2em;
   line-height: 1.4;
 }
@@ -3874,4 +4259,126 @@ body.marker-dragging * {
   0% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
   70% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
   100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0); }
+}
+
+/* ── Shared text-input theming (dark modes) ── */
+[data-theme] input[type="text"],
+[data-theme] input[type="url"],
+[data-theme] input[type="number"],
+[data-theme] input[type="email"],
+[data-theme] textarea {
+  background: var(--color-bg);
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+[data-theme] input[type="text"]::placeholder,
+[data-theme] input[type="url"]::placeholder,
+[data-theme] input[type="number"]::placeholder,
+[data-theme] textarea::placeholder {
+  color: var(--color-text-subtle);
+}
+[data-theme] input[type="text"]:focus,
+[data-theme] input[type="url"]:focus,
+[data-theme] input[type="number"]:focus,
+[data-theme] textarea:focus {
+  border-color: var(--color-link);
+  outline: none;
+}
+
+/* ── Splash page URL form CSS classes ── */
+.splash-form-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: bold;
+  font-size: 0.9em;
+  text-align: left;
+  color: var(--color-text-secondary);
+}
+
+.splash-form-input {
+  flex: 1;
+  padding: 0.6em;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-family: monospace;
+  font-size: 0.9em;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+
+.splash-form-submit {
+  padding: 0.6em 1.2em;
+  border: none;
+  background: var(--color-link);
+  color: white;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+.splash-form-submit:hover { background: var(--color-link-hover); }
+
+/* ── Injected settings drawer (landing / align pages via theme-setup.js) ── */
+
+/* The drawer itself — mirrors #settings-drawer exactly */
+.lh-settings-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 340px;
+  height: 100vh;
+  background: var(--color-surface);
+  box-shadow: -4px 0 24px rgba(0,0,0,0.15);
+  z-index: 1000;
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  flex-direction: column;
+  padding: 1.5em;
+  box-sizing: border-box;
+  font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+  color: var(--color-text);
+}
+
+.lh-settings-drawer.closed {
+  transform: translateX(100%);
+}
+
+/* Reuse .settings-drawer-content style from listen.html drawer */
+.lh-settings-drawer .settings-drawer-content {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5em;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+
+/* Close button inside injected drawer */
+#lh-close-settings {
+  background: none;
+  border: none;
+  font-size: 1.5em;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  padding: 0 0.2em;
+  line-height: 1;
+}
+#lh-close-settings:hover { color: var(--color-text); }
+
+/* Drawer-pull button for injected drawer — same as .drawer-btns */
+.lh-drawer-btns {
+  transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Push pull button when injected drawer is open */
+body:has(.lh-settings-drawer:not(.closed)) .lh-drawer-btns {
+  right: 340px;
+}
+
+/* Cog icon colour inside lh drawer-pull */
+#lh-settings-btn svg {
+  stroke: var(--color-text-muted);
+  transition: stroke 0.2s;
+}
+#lh-settings-btn:hover svg {
+  stroke: var(--color-accent);
 }

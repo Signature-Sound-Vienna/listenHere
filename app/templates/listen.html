@@ -3,7 +3,8 @@
     <title>Listen Here!</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='bat/favicon.svg') }}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='css/default.css') }}" />
-    <script> 
+    <script src="{{ url_for('static', filename='js/theme-setup.js') }}"></script>
+    <script>
       var root = "{{ url_for('static', filename='') }}";
       var params = new URL(window.location.toLocaleString()).searchParams;
       var alignmentData = {{ data | tojson }};
@@ -230,7 +231,7 @@
               <input type="number" id="align-peaks-count" value="4096"
                 min="128" max="16384" step="128" style="width:5em" />
               pts/track
-              <span id="align-peaks-size-estimate" style="font-size:smaller;color:#555"></span>
+              <span id="align-peaks-size-estimate" style="font-size:smaller;color:var(--color-text-muted)"></span>
             </div>
           </div>
           <button id="align-start-btn">Start Alignment</button>
@@ -330,7 +331,7 @@
       <nav>
         <div id="nav-top">
             <a href="/" class="nav-logo">
-                <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" alt="Listen Here!" class="nav-logo-img">
+                <img src="{{ url_for('static', filename='bat/ListenHereBatAsleep.svg') }}" alt="Listen Here!" class="nav-logo-img lh-logo-img">
             </a>
             <div id="transport">
               <button id="skip-back" class="transport-btn" title="Skip to start">
@@ -530,21 +531,52 @@
         <section class="settings-section">
           <h3 class="settings-section-title">Theme</h3>
           <div class="settings-theme-options">
-            <label class="settings-theme-option">
-              <input type="radio" name="app-theme" value="light" checked/>
-              <span class="settings-theme-swatch theme-swatch-light" title="Light"></span>
-              <span>Light</span>
-            </label>
-            <label class="settings-theme-option">
-              <input type="radio" name="app-theme" value="dark"/>
-              <span class="settings-theme-swatch theme-swatch-dark" title="Dark"></span>
-              <span>Dark</span>
-            </label>
-            <label class="settings-theme-option">
-              <input type="radio" name="app-theme" value="solarized"/>
-              <span class="settings-theme-swatch theme-swatch-solarized" title="Solarized"></span>
-              <span>Solarized</span>
-            </label>
+            <div class="theme-row">
+              <span class="theme-row-label">Light</span>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="light" checked/>
+                <span class="settings-theme-swatch theme-swatch-light" title="Light"></span>
+                <span>Light</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="solarized"/>
+                <span class="settings-theme-swatch theme-swatch-solarized" title="Solarized"></span>
+                <span>Solarized</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="sepia"/>
+                <span class="settings-theme-swatch theme-swatch-sepia" title="Sepia"></span>
+                <span>Sepia</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="peach"/>
+                <span class="settings-theme-swatch theme-swatch-peach" title="Peach"></span>
+                <span>Peach</span>
+              </label>
+            </div>
+            <div class="theme-row">
+              <span class="theme-row-label">Dark</span>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="dark"/>
+                <span class="settings-theme-swatch theme-swatch-dark" title="Dark"></span>
+                <span>Dark</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="dracula"/>
+                <span class="settings-theme-swatch theme-swatch-dracula" title="Dracula"></span>
+                <span>Dracula</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="forest"/>
+                <span class="settings-theme-swatch theme-swatch-forest" title="Forest"></span>
+                <span>Forest</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="nord"/>
+                <span class="settings-theme-swatch theme-swatch-nord" title="Nord"></span>
+                <span>Nord</span>
+              </label>
+            </div>
           </div>
         </section>
 

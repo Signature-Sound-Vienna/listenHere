@@ -11,6 +11,7 @@
       rel="stylesheet"
       href="{{ url_for('static', filename='css/default.css') }}"
     />
+    <script src="{{ url_for('static', filename='js/theme-setup.js') }}"></script>
     <!-- Load Matomo@mdw.ac.at -->
     <script type="text/javascript">
       var _paq = (window._paq = window._paq || []);
@@ -72,9 +73,10 @@
     <div id="splash-card">
       <div id="logo">
         <img
-          src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}"
+          src="{{ url_for('static', filename='bat/ListenHereBatAsleep.svg') }}"
           height="100"
           alt="Logo"
+          class="lh-logo-img"
         />
       </div>
       <h1>Listen Here!</h1>
@@ -93,16 +95,7 @@
               encodeURIComponent(document.getElementById('align-url').value);
           "
         >
-          <label
-            for="align-url"
-            style="
-              display: block;
-              margin-bottom: 0.5rem;
-              font-weight: bold;
-              font-size: 0.9em;
-              text-align: left;
-              color: #475569;
-            "
+          <label for="align-url" class="splash-form-label"
             >Load an Alignment JSON URL:</label
           >
           <div style="display: flex; gap: 0.5rem">
@@ -111,30 +104,9 @@
               id="align-url"
               placeholder="https://example.com/alignment.json"
               required
-              style="
-                flex: 1;
-                padding: 0.6em;
-                border: 1px solid #cbd5e1;
-                border-radius: 6px;
-                font-family: monospace;
-                font-size: 0.9em;
-              "
+              class="splash-form-input"
             />
-            <button
-              type="submit"
-              style="
-                padding: 0.6em 1.2em;
-                border: none;
-                background: #2563eb;
-                color: white;
-                border-radius: 6px;
-                cursor: pointer;
-                font-weight: 600;
-                transition: background 0.15s;
-              "
-            >
-              Load
-            </button>
+            <button type="submit" class="splash-form-submit">Load</button>
           </div>
         </form>
       </div>

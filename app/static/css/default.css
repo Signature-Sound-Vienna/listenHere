@@ -4018,7 +4018,7 @@ body.marker-dragging * {
   width: 18px;
   height: 18px;
   border-radius: 3px;
-  border: 2px solid transparent;
+  border: 2px solid rgba(0,0,0,0.15);
   cursor: pointer;
   transition: border-color 0.15s, transform 0.1s;
 }

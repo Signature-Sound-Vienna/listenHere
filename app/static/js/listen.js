@@ -1780,6 +1780,14 @@ const _GROUP_PALETTE = [
   "#e9d5ff", // soft purple
 ];
 
+/** Return a legible text colour (#222 or #fff) for a given hex background. */
+function _groupTextColor(hex) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return (r * 299 + g * 587 + b * 114) / 1000 > 128 ? '#222' : '#fff';
+}
+
 /** Return the next palette colour not yet used by any group. */
 function _nextGroupColour(groups) {
   const used = new Set((groups || []).map((g) => g.color).filter(Boolean));
@@ -2470,6 +2478,7 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     container.innerHTML = `<div class="group-title">${g.name} <span class="group-count"></span><span class="group-actions"><span class="group-all">All</span><span class="group-none">None</span></span></div><div class="group-list"></div>`;
     if (g.color) {
       container.style.backgroundColor = g.color;
+      container.style.color = _groupTextColor(g.color);
     }
     contentByName[g.name] = container;
   });
@@ -3294,7 +3303,11 @@ function _openGroupModal() {
 
       // Apply colour preview to card
       if (g.color) {
+        const tc = _groupTextColor(g.color);
         card.style.backgroundColor = g.color;
+        card.style.color = tc;
+        // Override label rules that explicitly set color (specificity beats inheritance)
+        card.querySelectorAll('label').forEach(l => { l.style.color = tc; });
       }
 
       // File list (explicit + regex-matched)

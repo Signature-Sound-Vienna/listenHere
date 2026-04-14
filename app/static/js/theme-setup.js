@@ -112,7 +112,7 @@
     function openDrawer() {
       drawer.classList.remove('closed');
       // Inline right avoids needing :has() for the push animation
-      pullWrap.style.right = '340px';
+      pullWrap.style.right = '380px';
     }
     function closeDrawer() {
       drawer.classList.add('closed');

@@ -1432,7 +1432,7 @@ details {
 /* Push the whole stack when either drawer is open */
 body:has(#solid-drawer:not(.closed)) .drawer-btns,
 body:has(#settings-drawer:not(.closed)) .drawer-btns {
-  right: 340px;
+  right: 380px;
 }
 
 .drawer-btns > button {
@@ -1521,7 +1521,7 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
   position: fixed;
   top: 0;
   right: 0;
-  width: 340px;
+  width: 380px;
   height: 100vh;
   background: var(--color-surface);
   box-shadow: -4px 0 24px rgba(0,0,0,0.1);
@@ -1643,14 +1643,6 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
   color: var(--color-text-secondary);
 }
 
-.settings-theme-option > span:last-child {
-  width: 48px;
-  display: block;
-  text-align: center;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .settings-theme-option input[type="radio"] {
   position: absolute;
@@ -4405,7 +4397,7 @@ body.marker-dragging * {
   position: fixed;
   top: 0;
   right: 0;
-  width: 340px;
+  width: 380px;
   height: 100vh;
   background: var(--color-surface);
   box-shadow: -4px 0 24px rgba(0,0,0,0.15);
@@ -4451,7 +4443,7 @@ body.marker-dragging * {
 
 /* Push pull button when injected drawer is open */
 body:has(.lh-settings-drawer:not(.closed)) .lh-drawer-btns {
-  right: 340px;
+  right: 380px;
 }
 
 /* Cog icon colour inside lh drawer-pull */

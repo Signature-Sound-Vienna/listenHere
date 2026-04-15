@@ -122,6 +122,9 @@ def solid_popup_callback():
 
 @app.route("/static/test/<path:filename>")
 def test_fixtures(filename):
+    if not app.debug:
+        from flask import abort
+        abort(404)
     fixtures_dir = os.path.join(os.path.dirname(app.root_path), 'tests', 'fixtures')
     return send_from_directory(fixtures_dir, filename)
 

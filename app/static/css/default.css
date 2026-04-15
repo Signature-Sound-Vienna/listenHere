@@ -2023,6 +2023,10 @@ nav input[type="checkbox"]:focus-visible {
   line-height: 1.8;
 }
 
+#heart {
+  color: var(--color-link);
+}
+
 #splash a {
   color: var(--color-link);
   text-decoration: none;

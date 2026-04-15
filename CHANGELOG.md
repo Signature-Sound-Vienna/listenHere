@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.19.0
+* Introduce settings drawer
+* Add comprehensive theming support (configurable in settings)
+* Add e2e unit tests for settings and theme functionalities
+
 ### 0.18.0
 * Time-axis ticks along the top of each waveform with adaptive density and smart labelling
 * Shared time axis mode: all waveforms use the same time scale, with shorter recordings displayed proportionally narrower

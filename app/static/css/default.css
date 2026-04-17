@@ -507,7 +507,7 @@
   --color-text:         #eceff4;
   --color-text-secondary: #e5e9f0;
   --color-text-muted:   #d8dee9;
-  --color-text-subtle:  #4c566a;
+  --color-text-subtle:  #a2aec7;
 
   --color-accent:       #88c0d0;
   --color-accent-hover: #81a1c1;
@@ -2135,6 +2135,42 @@ nav input[type="checkbox"]:focus-visible {
   font-size: 0.9em;
   margin: 0 0 1.2em;
   line-height: 1.5;
+}
+
+/* Cross-link between file-picker and alignment-wizard modes —
+   rendered as a small card above the main overlay card, stacking
+   vertically via column flex on the overlay/panel. */
+#file-picker-overlay,
+#align-panel {
+  flex-direction: column;
+  gap: 0.75em;
+}
+
+.mode-switch-hint {
+  margin: 0;
+  padding: 0.55em 1.1em;
+  background: var(--color-surface, #fff);
+  color: var(--color-text-muted, #64748b);
+  border-radius: 10px;
+  box-shadow: 0 4px 14px rgba(0,0,0,0.12);
+  font-size: 0.88em;
+  text-align: center;
+}
+
+.mode-switch-hint a {
+  color: var(--color-link, #2563eb);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--color-link, #2563eb);
+}
+
+.mode-switch-hint a:hover {
+  color: var(--color-link-hover, #1e40af);
+  border-bottom-style: solid;
+}
+
+/* Preserve layout (card position) when the hint is toggled off */
+.mode-switch-hint.is-hidden {
+  visibility: hidden;
 }
 
 #file-picker-actions {

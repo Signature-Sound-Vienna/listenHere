@@ -7165,12 +7165,15 @@ function initFilePicker() {
 
   function updateJsonStatus() {
     if (!jsonStatusEl) return;
-    if (expectedAudioKeys.length > 0) {
+    const loaded = expectedAudioKeys.length > 0;
+    if (loaded) {
       const name = alignmentLoadedFromFile ? "local file" : "URL";
       jsonStatusEl.innerHTML = `<span class="json-status-ok">&#10003; Alignment JSON loaded (${expectedAudioKeys.length} audio entries, from ${name})</span>`;
     } else {
       jsonStatusEl.innerHTML = `<span class="json-status-missing">No alignment JSON loaded yet \u2014 include a .json file</span>`;
     }
+    const modeSwitch = document.getElementById("fp-mode-switch");
+    if (modeSwitch) modeSwitch.classList.toggle("is-hidden", loaded);
   }
 
   // Populate expected file list

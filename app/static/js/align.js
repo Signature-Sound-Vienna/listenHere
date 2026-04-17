@@ -578,6 +578,10 @@ function goToTab(n) {
   const nextBtn = document.getElementById("align-next-btn");
   prevBtn.style.visibility = n === 1 ? "hidden" : "";
 
+  // Cross-link to file picker only makes sense on step 1
+  const modeSwitch = document.getElementById("align-mode-switch");
+  if (modeSwitch) modeSwitch.classList.toggle("is-hidden", n !== 1);
+
   if (n === LAST_TAB) {
     nextBtn.style.display = "none";
     buildSummary();

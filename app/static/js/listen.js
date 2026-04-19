@@ -4023,8 +4023,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         ctx.closePath();
         ctx.fillStyle =
           _tempoCurveMode === "relative"
-            ? `rgba(${_tcRgb},0.12)`
-            : `rgba(${_tcRgb},0.15)`;
+            ? `rgba(${_tcRgb},0.22)`
+            : `rgba(${_tcRgb},0.25)`;
         ctx.fill();
 
         // Draw the curve line
@@ -4032,8 +4032,8 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         ctx.moveTo(pts[startIdx].x, pts[startIdx].y);
         for (let i = startIdx + 1; i <= endIdx; i++)
           ctx.lineTo(pts[i].x, pts[i].y);
-        ctx.strokeStyle = `rgba(${_tcRgb},0.7)`;
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = `rgba(${_tcRgb},0.9)`;
+        ctx.lineWidth = 1.75;
         ctx.stroke();
 
         // In relative mode, draw zero line
@@ -4041,7 +4041,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           ctx.beginPath();
           ctx.moveTo(0, zeroY);
           ctx.lineTo(viewW, zeroY);
-          ctx.strokeStyle = `rgba(${_tcRgb},0.3)`;
+          ctx.strokeStyle = `rgba(${_tcRgb},0.5)`;
           ctx.lineWidth = 1;
           ctx.setLineDash([4, 3]);
           ctx.stroke();
@@ -4074,7 +4074,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           ctx.beginPath();
           ctx.moveTo(0, y);
           ctx.lineTo(4, y);
-          ctx.strokeStyle = `rgba(${_tcRgb},0.5)`;
+          ctx.strokeStyle = `rgba(${_tcRgb},0.7)`;
           ctx.lineWidth = 1;
           ctx.stroke();
           // Label
@@ -4084,11 +4084,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           } else {
             tickLabel = String(Math.round(v));
           }
-          ctx.fillStyle = `rgba(${_tcRgb},0.7)`;
+          ctx.fillStyle = `rgba(${_tcRgb},0.95)`;
           ctx.fillText(tickLabel, 5, y);
         }
         // Unit label at top
-        ctx.fillStyle = `rgba(${_tcRgb},0.5)`;
+        ctx.fillStyle = `rgba(${_tcRgb},0.75)`;
         ctx.font = "8px sans-serif";
         ctx.textBaseline = "bottom";
         ctx.fillText(
@@ -4098,7 +4098,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         );
 
         // --- Clipped-value indicators (small triangles at top/bottom edge) ---
-        ctx.fillStyle = `rgba(${_outlierRgb},0.6)`;
+        ctx.fillStyle = `rgba(${_outlierRgb},0.85)`;
         const triH = 5,
           triW = 4;
         for (let i = startIdx; i <= endIdx; i++) {

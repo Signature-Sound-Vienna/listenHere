@@ -110,7 +110,7 @@
   /* Canvas overlay colours */
   --color-marker:             #e03030;   /* marker pins                  */
   --color-marker-active:      #8b0000;   /* active marker (close-listen) */
-  --color-tempo:              #1e508c;   /* tempo curve (used at var. α) */
+  --color-tempo:              #b8860b;   /* tempo curve (used at var. α) */
   --color-outlier:            #b43c3c;   /* tempo outlier triangles      */
   --color-alignment:          #8c5a5a;   /* alignment grid lines (base)  */
   --color-alignment-peak:     #dc2828;   /* alignment max-displacement   */
@@ -197,7 +197,7 @@
   --color-waveform-tick:      #b4bece;
   --color-marker:             #ff6060;
   --color-marker-active:      #ff3030;
-  --color-tempo:              #60a8e8;
+  --color-tempo:              #f0b840;
   --color-outlier:            #f07070;
   --color-alignment:          #c07878;
   --color-alignment-peak:     #ff4040;
@@ -261,7 +261,7 @@
   --color-waveform-border:    #cdc9b8;
   --color-marker:             #dc322f;
   --color-marker-active:      #a80000;
-  --color-tempo:              #268bd2;
+  --color-tempo:              #d33682;
   --color-outlier:            #cb4b16;
   --color-alignment:          #cb4b16;
   --color-alignment-peak:     #dc322f;
@@ -314,7 +314,7 @@
   --color-waveform-border:    #c8b99a;
   --color-marker:             #b03020;
   --color-marker-active:      #7a1a10;
-  --color-tempo:              #5a6e8c;
+  --color-tempo:              #3a5678;
   --color-outlier:            #8c5020;
   --color-alignment:          #8c5a3a;
   --color-alignment-peak:     #b04030;
@@ -423,7 +423,7 @@
   --color-waveform-tick:      #b0b0d8;
   --color-marker:             #ff5555;
   --color-marker-active:      #ff3333;
-  --color-tempo:              #8be9fd;
+  --color-tempo:              #bd93f9;
   --color-outlier:            #ffb86c;
   --color-alignment:          #ff79c6;
   --color-alignment-peak:     #ff4444;
@@ -480,7 +480,7 @@
   --color-waveform-tick:      #96c882;
   --color-marker:             #ff8888;
   --color-marker-active:      #ff5050;
-  --color-tempo:              #88d8c0;
+  --color-tempo:              #d060a0;
   --color-outlier:            #ffb878;
   --color-alignment:          #e8b870;
   --color-alignment-peak:     #ff8040;
@@ -537,7 +537,7 @@
   --color-waveform-tick:      #aab8ce;
   --color-marker:             #bf616a;
   --color-marker-active:      #e05060;
-  --color-tempo:              #81a1c1;
+  --color-tempo:              #b48ead;
   --color-outlier:            #d08770;
   --color-alignment:          #d08770;
   --color-alignment-peak:     #bf616a;

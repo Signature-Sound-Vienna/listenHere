@@ -582,42 +582,78 @@ def compute_peaks(samples, n_peaks):
     return peaks.tolist()
 
 
-def bulk_align(audio_dict, ref_name, peak_count=0):
+# --- Streaming batch state ---
+# Features are extracted one audio at a time (main thread decodes, transfers,
+# worker extracts, discards raw samples) so only one raw PCM buffer is resident
+# at any moment. All per-batch state lives in these module-level dicts.
+_chromas = {}
+_durations = {}
+_peaks_data = {}
+_ref_audio_copy = None
+_batch_ref_name = ""
+_batch_peak_count = 0
+_batch_score_mode = False
+_feature_count = 0
+_feature_total = 0
+
+
+def begin_batch(ref_name, peak_count, score_mode, feature_total):
+    """Reset per-batch state at the start of a new alignment run."""
+    global _chromas, _durations, _peaks_data, _ref_audio_copy
+    global _batch_ref_name, _batch_peak_count, _batch_score_mode
+    global _feature_count, _feature_total
+    _chromas = {}
+    _durations = {}
+    _peaks_data = {}
+    _ref_audio_copy = None
+    _batch_ref_name = str(ref_name)
+    _batch_peak_count = int(peak_count)
+    _batch_score_mode = bool(score_mode)
+    _feature_count = 0
+    _feature_total = int(feature_total)
+    import gc
+    gc.collect()
+
+
+def extract_feature(name, audio, is_ref):
+    """Extract chroma (+ optional peaks) for one audio, discarding raw samples on return."""
+    global _ref_audio_copy, _feature_count
+    name = str(name)
+    _feature_count += 1
+    reportStep("features", "start", name, _feature_count, _feature_total, None)
+    # Progress bar is advanced by the main thread per completed file (decode + feature
+    # as one unit), so don't also move it here — only refresh the status text.
+    reportProgress(
+        f"Extracting features: {name} ({_feature_count}/{_feature_total})"
+    )
+    t0 = _time.time()
+    _chromas[name] = compute_chroma(audio)
+    _durations[name] = len(audio) / SR
+    if _batch_peak_count > 0:
+        _peaks_data[name] = compute_peaks(audio, _batch_peak_count)
+    # Score alignment needs the ref audio's raw samples later; keep a copy.
+    if bool(is_ref) and _batch_score_mode:
+        _ref_audio_copy = np.array(audio, dtype=np.float32, copy=True)
+    elapsed = _time.time() - t0
+    reportStep("features", "done", name, _feature_count, _feature_total, elapsed)
+    return elapsed
+
+
+def align_all_from_features():
+    """Build the alignment JSON from accumulated features.
+
+    Per-pair gc.collect() frees the non-ref chroma we just consumed, keeping
+    peak heap usage at ref_chroma + one other_chroma + DTW scratch.
     """
-    Align multiple recordings to a reference.
-    audio_dict: {filename: np.array of float32 samples at 22050 Hz}
-    ref_name: filename of the reference recording
-    peak_count: if > 0, include waveform peak data (n points per track)
-    Returns: alignment JSON structure
-    """
-    filenames = list(audio_dict.keys())
+    import gc
+    ref_name = _batch_ref_name
+    if ref_name not in _chromas:
+        raise RuntimeError(f"Reference '{ref_name}' missing from extracted features")
+    ref_duration = _durations[ref_name]
+    ref_grid = np.arange(0, ref_duration, ANNOTATION_STEP)
+    filenames = list(_chromas.keys())
     n = len(filenames)
 
-    # Extract chroma features (and optionally peaks while audio is still in memory)
-    chromas = {}
-    durations = {}
-    peaks_data = {}
-    for i, name in enumerate(filenames):
-        reportStep("features", "start", name, i + 1, n, None)
-        reportProgress(f"Extracting features: {name} ({i+1}/{n})",
-                       int(10 + 20 * i / n))
-        t0 = _time.time()
-        audio = audio_dict[name]
-        chromas[name] = compute_chroma(audio)
-        durations[name] = len(audio) / SR
-        if peak_count > 0:
-            peaks_data[name] = compute_peaks(audio, peak_count)
-        elapsed = _time.time() - t0
-        reportStep("features", "done", name, i + 1, n, elapsed)
-
-    # Free raw audio to save memory
-    del audio_dict
-
-    # Reference isochronous grid
-    ref_duration = durations[ref_name]
-    ref_grid = np.arange(0, ref_duration, ANNOTATION_STEP)
-
-    # Align each recording to the reference
     result = {}
     pair_count = 0
     total_pairs = max(1, n - 1)
@@ -633,25 +669,40 @@ def bulk_align(audio_dict, ref_name, peak_count=0):
             )
             t0 = _time.time()
             times = align_pair(
-                chromas[ref_name], chromas[name],
-                ref_duration, durations[name]
+                _chromas[ref_name], _chromas[name],
+                ref_duration, _durations[name]
             )
             elapsed = _time.time() - t0
             reportStep("align", "done", name, pair_count, total_pairs, elapsed)
-        if peaks_data:
+        if _peaks_data:
             result[name] = {
                 "times": times,
-                "peaks": peaks_data[name],
-                "duration": round(durations[name], 6),
+                "peaks": _peaks_data[name],
+                "duration": round(_durations[name], 6),
             }
         else:
             result[name] = times
+        # Free the non-ref chroma as soon as it's been consumed.
+        if name != ref_name:
+            del _chromas[name]
+            gc.collect()
 
     reportProgress("Done!", 100)
     return {
         "header": {"ref": ref_name},
         "body": {"audio": result}
     }
+
+
+def clear_batch_state():
+    """Release all per-batch memory after the batch is fully consumed."""
+    global _chromas, _durations, _peaks_data, _ref_audio_copy
+    _chromas = {}
+    _durations = {}
+    _peaks_data = {}
+    _ref_audio_copy = None
+    import gc
+    gc.collect()
 
 
 # --- MIDI parsing and score alignment ---
@@ -874,83 +925,114 @@ async function initPyodide() {
 
 /* --- Message handler --- */
 
+/* Streaming message protocol:
+ *
+ *   main → worker: "begin_batch" { refName, peakCount, scoreMode, featureTotal, options }
+ *   worker → main: "batch_ready"
+ *
+ *   (for each audio)
+ *   main → worker: "feature" { name, samples, isRef }   (samples transferred)
+ *   worker → main: "feature_done" { name }
+ *
+ *   main → worker: "align_all" { meiMidi, meiUri }
+ *   worker → main: "result" { alignment }
+ *
+ *   (errors at any point) worker → main: "error" { message }
+ *
+ * Memory discipline: raw PCM is decoded on the main thread, transferred once,
+ * copied into numpy inside extract_feature, then discarded before the next
+ * file's samples arrive. Chroma features (small) accumulate until align_all.
+ */
 self.onmessage = async function (e) {
-  if (e.data.type === "align") {
-    try {
+  try {
+    if (e.data.type === "begin_batch") {
       if (!pyodideReady) pyodideReady = initPyodide();
       const pyodide = await pyodideReady;
 
-      const { audios, refName, meiMidi, meiUri, peakCount, options } = e.data;
-      // audios: [{name: string, samples: Float32Array}, ...]
+      const {
+        refName,
+        peakCount,
+        scoreMode,
+        featureTotal,
+        options,
+      } = e.data;
 
-      // Pass each audio buffer to Python globals
-      for (let i = 0; i < audios.length; i++) {
-        pyodide.globals.set("_audio_name_" + i, audios[i].name);
-        pyodide.globals.set("_audio_data_" + i, audios[i].samples);
-      }
-      pyodide.globals.set("_n_audios", audios.length);
-      pyodide.globals.set("_ref_name", refName);
-      pyodide.globals.set("_peak_count", peakCount || 0);
-      pyodide.globals.set("_has_mei", !!(meiMidi && meiMidi.length > 0));
-      if (meiMidi && meiMidi.length > 0) {
-        pyodide.globals.set("_midi_bytes", meiMidi);
-        pyodide.globals.set("_mei_uri", meiUri || "");
-      }
-
-      // Pass alignment quality options to Python
       const opts = options || {};
       pyodide.globals.set("_opt_coarse", opts.coarse ?? 0);
       pyodide.globals.set("_opt_slack", opts.slack ?? 0);
       pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
       pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
       pyodide.globals.set("_opt_onset_weight", opts.onsetWeight ?? -1);
+      pyodide.globals.set("_ref_name_arg", refName);
+      pyodide.globals.set("_peak_count_arg", peakCount || 0);
+      pyodide.globals.set("_score_mode_arg", !!scoreMode);
+      pyodide.globals.set("_feature_total_arg", featureTotal || 0);
 
-      // Run alignment in Python (audio + optional score)
+      await pyodide.runPythonAsync(`
+_apply_options()
+begin_batch(
+    str(_ref_name_arg),
+    int(_peak_count_arg),
+    bool(_score_mode_arg),
+    int(_feature_total_arg),
+)
+`);
+      self.postMessage({ type: "batch_ready" });
+      return;
+    }
+
+    if (e.data.type === "feature") {
+      const pyodide = await pyodideReady;
+      const { name, samples, isRef } = e.data;
+      pyodide.globals.set("_feature_name", name);
+      pyodide.globals.set("_feature_data", samples);
+      pyodide.globals.set("_feature_is_ref", !!isRef);
+      await pyodide.runPythonAsync(`
+_audio_arr = np.frombuffer(_feature_data.to_py(), dtype=np.float32).copy()
+extract_feature(str(_feature_name), _audio_arr, bool(_feature_is_ref))
+del _audio_arr
+del globals()['_feature_data']
+import gc
+gc.collect()
+`);
+      self.postMessage({ type: "feature_done", name });
+      return;
+    }
+
+    if (e.data.type === "align_all") {
+      const pyodide = await pyodideReady;
+      const { meiMidi, meiUri } = e.data;
+      pyodide.globals.set("_has_mei_arg", !!(meiMidi && meiMidi.length > 0));
+      if (meiMidi && meiMidi.length > 0) {
+        pyodide.globals.set("_midi_bytes_arg", meiMidi);
+        pyodide.globals.set("_mei_uri_arg", meiUri || "");
+      }
       const resultJson = await pyodide.runPythonAsync(`
 import json
-import numpy as np
 
-# Apply user-selected quality options (overrides module defaults)
-_apply_options()
+result = align_all_from_features()
 
-# Build audio dict from JS globals
-audio_dict = {}
-for i in range(int(_n_audios)):
-    name = str(globals()[f'_audio_name_{i}'])
-    data_proxy = globals()[f'_audio_data_{i}']
-    audio_dict[name] = np.frombuffer(data_proxy.to_py(), dtype=np.float32).copy()
-    del globals()[f'_audio_name_{i}']
-    del globals()[f'_audio_data_{i}']
-
-# Keep a copy of the reference audio for optional score alignment
-ref_audio_copy = audio_dict[str(_ref_name)].copy() if bool(_has_mei) else None
-
-result = bulk_align(audio_dict, str(_ref_name), peak_count=int(_peak_count))
-del audio_dict
-
-# Score alignment if MEI MIDI was provided
-if bool(_has_mei) and ref_audio_copy is not None:
-    midi_bytes_py = bytes(_midi_bytes.to_py())
-    score_data = score_align(midi_bytes_py, ref_audio_copy, str(_mei_uri))
-    del ref_audio_copy, midi_bytes_py
+if bool(_has_mei_arg) and _ref_audio_copy is not None:
+    midi_bytes_py = bytes(_midi_bytes_arg.to_py())
+    score_data = score_align(midi_bytes_py, _ref_audio_copy, str(_mei_uri_arg))
     if score_data:
         result["body"]["score"] = score_data
-        result["header"]["meiUri"] = str(_mei_uri)
-elif ref_audio_copy is not None:
-    del ref_audio_copy
+        result["header"]["meiUri"] = str(_mei_uri_arg)
+    del midi_bytes_py
 
+clear_batch_state()
 json.dumps(result)
 `);
-
       self.postMessage({
         type: "result",
         alignment: JSON.parse(resultJson),
       });
-    } catch (err) {
-      self.postMessage({
-        type: "error",
-        message: err.toString(),
-      });
+      return;
     }
+  } catch (err) {
+    self.postMessage({
+      type: "error",
+      message: err.toString(),
+    });
   }
 };

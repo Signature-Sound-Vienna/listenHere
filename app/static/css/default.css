@@ -110,7 +110,7 @@
   /* Canvas overlay colours */
   --color-marker:             #e03030;   /* marker pins                  */
   --color-marker-active:      #8b0000;   /* active marker (close-listen) */
-  --color-tempo:              #b8860b;   /* tempo curve (used at var. α) */
+  --color-tempo:              #be185d;   /* tempo curve (used at var. α) */
   --color-outlier:            #b43c3c;   /* tempo outlier triangles      */
   --color-alignment:          #8c5a5a;   /* alignment grid lines (base)  */
   --color-alignment-peak:     #dc2828;   /* alignment max-displacement   */
@@ -197,7 +197,7 @@
   --color-waveform-tick:      #b4bece;
   --color-marker:             #ff6060;
   --color-marker-active:      #ff3030;
-  --color-tempo:              #f0b840;
+  --color-tempo:              #fb7185;
   --color-outlier:            #f07070;
   --color-alignment:          #c07878;
   --color-alignment-peak:     #ff4040;
@@ -1316,6 +1316,14 @@ details {
 }
 
 /* Tempo curve controls */
+#show-tempo-curve:disabled + label,
+label:has(> #show-tempo-curve:disabled) {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+#show-tempo-curve:disabled {
+  cursor: not-allowed;
+}
 #tempo-curve-options {
   margin-top: 0.3em;
   font-size: var(--font-size-small);
@@ -3683,6 +3691,13 @@ body.marker-dragging * {
   font-weight: 700;
 }
 
+#align-step-list li.align-step-total {
+  margin-top: 0.3em;
+  padding-top: 0.45em;
+  border-top: 1px solid var(--color-border, #e2e8f0);
+  font-size: 0.88em;
+}
+
 .step-time {
   margin-left: auto;
   font-size: 0.9em;
@@ -3694,12 +3709,20 @@ body.marker-dragging * {
   color: var(--color-text-secondary, #475569);
   font-size: 0.85em;
   min-height: 1.6em;
+  margin: 0.3em 0;
+}
+
+/* Collapse the progress-text line when empty (after completion) so it does
+ * not waste vertical space between the step list and the results buttons. */
+#align-progress-text:empty {
+  min-height: 0;
+  margin: 0;
 }
 
 /* Results */
 #align-results h3 {
   color: var(--color-success, #16a34a);
-  margin: 0.5em 0 0.8em;
+  margin: 0.2em 0 0.6em;
 }
 
 #align-download-btn,

@@ -4797,6 +4797,37 @@ async function setGrids(grids) {
   _renderSidebarFileList(filenames);
   _renderGroupingTabPills();
 
+  // Tempo curves are a score-derived view, so only meaningful when a score
+  // alignment is loaded. Enable/disable the control (and its tooltip) to
+  // match the current alignment.
+  const tempoCb = document.getElementById("show-tempo-curve");
+  if (tempoCb) {
+    const hasScore = !!scoreAlignment;
+    tempoCb.disabled = !hasScore;
+    const tip = hasScore
+      ? "Overlay tempo curve on each waveform"
+      : "Tempo curve requires a score alignment";
+    tempoCb.title = tip;
+    const tempoLabel = document.querySelector('label[for="show-tempo-curve"]');
+    if (tempoLabel) tempoLabel.title = tip;
+    // If the alignment lacks a score, make sure any previously-enabled tempo
+    // curve is switched off and its options collapsed.
+    if (!hasScore && tempoCb.checked) {
+      tempoCb.checked = false;
+      _tempoCurveVisible = false;
+      const tempoOpts = document.getElementById("tempo-curve-options");
+      if (tempoOpts) tempoOpts.style.display = "none";
+    }
+  }
+
+  // Populate the content pane with group containers up front so the group
+  // header ("All recordings" / named groups) and the All/None buttons are
+  // visible before any waveform is loaded. Without this, the content pane
+  // would sit empty until the user clicks a file in the nav sidebar.
+  _ensureWaveformGroupContainers(
+    filenames.concat(SYNTH_MEI_KEY in alignmentGrids ? [SYNTH_MEI_KEY] : []),
+  );
+
   // Show the "Group files" button
   const groupBtn = document.getElementById("group-files-btn");
   if (groupBtn) groupBtn.style.display = "";

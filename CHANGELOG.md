@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.20.0
+* Streaming alignment: decode → extract chroma → discard raw PCM one file at a time, enabling alignment of very large audio collections (verified against prior method — bit-identical output)
+* Off-screen annotation region navigation: clickable left/right arrows appear on each zoomed waveform when annotated regions are off-screen, scrolling the region fully into view with cross-waveform sync
+* Tempo curve control now disabled with explanatory tooltip when no score alignment is loaded
+* Fix: "Post to Solid" button now becomes enabled after updating linked-data URI prefix
+* Fix: waveforms no longer disappear after a zoom-in/zoom-out cycle
+
 ### 0.19.0
 * Introduce settings drawer
 * Add comprehensive theming support (configurable in settings)

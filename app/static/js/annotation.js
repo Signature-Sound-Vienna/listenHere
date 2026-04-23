@@ -410,6 +410,24 @@ function _updateWaveformIcons() {
   });
 }
 
+/**
+ * Re-evaluate the disabled state of every "Post to Solid" button on-screen.
+ * Call after any change that affects `_allHaveAbsoluteUri` — in particular,
+ * when the user updates linked-data URI prefixes in Manage Files.
+ */
+export function refreshAllPostButtonStates() {
+  // Published extract cards
+  for (const extractId of Object.keys(_stagedSelections)) {
+    if (document.getElementById(extractId)) _updateStagedListUI(extractId);
+  }
+  // Draft cards
+  for (const draftId of _drafts.keys()) {
+    if (document.getElementById(`draft-card-${draftId}`)) {
+      _updateDraftStagedUI(draftId);
+    }
+  }
+}
+
 function _updateStagedListUI(extractId) {
   const card = document.getElementById(extractId);
   if (!card) return;

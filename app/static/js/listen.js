@@ -14,6 +14,7 @@ import {
   initNewAnnotationButton,
   onSolidAuthChanged,
   getLiveColor,
+  refreshAllPostButtonStates,
 } from "./annotation.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
@@ -941,18 +942,22 @@ function applyZoom(level) {
     if (!ws || !wfEl) return;
 
     try {
+      const duration = ws.getDuration();
       if (_sharedTimeAxis && maxDuration > 0) {
         if (level <= 1) {
-          ws.zoom(0); // fillParent within narrower container
+          // Explicit pxPerSec instead of ws.zoom(0) — the latter can be a
+          // no-op in v7 when fillParent is already active, leaving the wrapper
+          // stuck at its previously zoomed width so the waveform vanishes.
+          ws.zoom(wfEl.clientWidth / duration);
         } else {
           ws.zoom(sharedPxPerSec);
         }
       } else {
         const containerWidth = wfEl.clientWidth;
         if (level <= 1) {
-          ws.zoom(0); // reset to fillParent
+          ws.zoom(containerWidth / duration);
         } else {
-          ws.zoom((level * containerWidth) / ws.getDuration());
+          ws.zoom((level * containerWidth) / duration);
         }
       }
     } catch (e) {
@@ -961,6 +966,7 @@ function applyZoom(level) {
     _applyScrollMode(filename);
     // redrawcomplete will fire and handle overlay resize + marker redraw
   });
+  _updateAllRegionNavArrows();
 }
 
 /** Page-scroll the active waveform if playhead is about to leave visible area. */
@@ -1038,6 +1044,169 @@ function _syncAllWaveformScrolls(sourceFilename) {
     // Redraw viewport-based canvases for this target
     if (_gridRedrawers[targetFilename]) _gridRedrawers[targetFilename]();
   });
+}
+
+// ---------------------------------------------------------------------------
+// Off-screen annotation region navigation arrows
+// ---------------------------------------------------------------------------
+
+const REGION_NAV_BUFFER_FRAC = 0.05; // 5% of viewport width
+
+/** Collect all currently-loaded annotated + draft region times on a waveform. */
+function _collectAllRegionTimes(filename) {
+  const out = [];
+  extractCurrentlyAnnotatedRegions(filename).forEach((r) => {
+    out.push({ start: r.start, end: r.end });
+  });
+  getDraftRegionsForWaveform(filename).forEach((r) => {
+    out.push({ start: r.start, end: r.end });
+  });
+  return out;
+}
+
+/** Create left/right region-nav arrow buttons inside the waveform's overlay wrapper. */
+function _createRegionNavArrows(filename) {
+  const ow = _overlayWrappers[filename];
+  if (!ow) return;
+  if (ow.wrapper.querySelector(".wf-region-nav-left")) return; // already created
+
+  const mkArrow = (side) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.tabIndex = -1; // never part of tab order — arrows are pure pointer affordances
+    btn.className = `wf-region-nav wf-region-nav-${side}`;
+    btn.style.display = "none";
+    btn.setAttribute(
+      "aria-label",
+      side === "left" ? "Jump to previous off-screen region" : "Jump to next off-screen region",
+    );
+    const arrow = document.createElement("span");
+    arrow.className = "wf-region-nav-arrow";
+    arrow.textContent = side === "left" ? "◀" : "▶";
+    const badge = document.createElement("span");
+    badge.className = "wf-region-nav-badge";
+    badge.textContent = "";
+    btn.appendChild(arrow);
+    btn.appendChild(badge);
+    // Don't let the button steal focus from the page — otherwise a subsequent
+    // SPACE / ENTER keypress re-activates the arrow and snaps back to the region.
+    btn.addEventListener("mousedown", (e) => e.preventDefault());
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      _jumpToOffscreenRegion(filename, side);
+      btn.blur();
+    });
+    // Forward wheel events to the waveform scroll container so the user can
+    // scroll past the arrow without it swallowing the gesture.
+    btn.addEventListener(
+      "wheel",
+      (e) => {
+        const sc = _getScrollContainer(filename);
+        if (!sc) return;
+        e.preventDefault();
+        sc.scrollLeft += e.deltaX || e.deltaY || 0;
+      },
+      { passive: false },
+    );
+    return btn;
+  };
+
+  ow.wrapper.appendChild(mkArrow("left"));
+  ow.wrapper.appendChild(mkArrow("right"));
+}
+
+/** Scroll the waveform so that the nearest off-screen region on the given side is fully in view. */
+function _jumpToOffscreenRegion(filename, side) {
+  const ws = wavesurfers[filename];
+  if (!ws || _currentZoomLevel <= 1) return;
+  const duration = ws.getDuration();
+  if (!duration) return;
+  const fullW = _getZoomedWidth(filename);
+  const scrollContainer = _getScrollContainer(filename);
+  if (!scrollContainer || !fullW) return;
+  const viewW = scrollContainer.clientWidth;
+  const scrollLeft = ws.getScroll();
+  const bufferPx = viewW * REGION_NAV_BUFFER_FRAC;
+  const regions = _collectAllRegionTimes(filename);
+
+  // Candidate regions: entirely off-screen on the requested side.
+  const candidates = regions
+    .map((r) => ({
+      startPx: (r.start / duration) * fullW,
+      endPx: (r.end / duration) * fullW,
+    }))
+    .filter((r) =>
+      side === "right" ? r.startPx >= scrollLeft + viewW : r.endPx <= scrollLeft,
+    );
+  if (candidates.length === 0) return;
+
+  // Pick the nearest one (min distance for right, max for left).
+  const target =
+    side === "right"
+      ? candidates.reduce((a, b) => (a.startPx < b.startPx ? a : b))
+      : candidates.reduce((a, b) => (a.endPx > b.endPx ? a : b));
+
+  // Target scroll: place region such that it is fully in view with buffer.
+  let newScroll;
+  if (side === "right") {
+    newScroll = target.startPx - bufferPx;
+  } else {
+    newScroll = target.endPx + bufferPx - viewW;
+  }
+  newScroll = Math.max(0, Math.min(newScroll, fullW - viewW));
+  ws.setScroll(newScroll);
+  _syncOverlayScroll(filename);
+  if (_gridRedrawers[filename]) _gridRedrawers[filename]();
+  _syncAllWaveformScrolls(filename);
+  _updateAllRegionNavArrows();
+}
+
+/** Update arrow visibility + badge count on a single waveform. */
+function _updateRegionNavArrows(filename) {
+  const ow = _overlayWrappers[filename];
+  if (!ow) return;
+  const left = ow.wrapper.querySelector(".wf-region-nav-left");
+  const right = ow.wrapper.querySelector(".wf-region-nav-right");
+  if (!left || !right) return;
+
+  const ws = wavesurfers[filename];
+  if (!ws || _currentZoomLevel <= 1) {
+    left.style.display = "none";
+    right.style.display = "none";
+    return;
+  }
+  const duration = ws.getDuration();
+  const fullW = _getZoomedWidth(filename);
+  const scrollContainer = _getScrollContainer(filename);
+  if (!duration || !fullW || !scrollContainer) {
+    left.style.display = "none";
+    right.style.display = "none";
+    return;
+  }
+  const viewW = scrollContainer.clientWidth;
+  const scrollLeft = ws.getScroll();
+  const viewRight = scrollLeft + viewW;
+
+  let leftCount = 0;
+  let rightCount = 0;
+  _collectAllRegionTimes(filename).forEach((r) => {
+    const startPx = (r.start / duration) * fullW;
+    const endPx = (r.end / duration) * fullW;
+    if (endPx <= scrollLeft) leftCount++;
+    else if (startPx >= viewRight) rightCount++;
+  });
+
+  left.style.display = leftCount > 0 ? "" : "none";
+  right.style.display = rightCount > 0 ? "" : "none";
+  left.querySelector(".wf-region-nav-badge").textContent =
+    leftCount > 1 ? String(leftCount) : "";
+  right.querySelector(".wf-region-nav-badge").textContent =
+    rightCount > 1 ? String(rightCount) : "";
+}
+
+/** Update region-nav arrows on all loaded waveforms. */
+function _updateAllRegionNavArrows() {
+  Object.keys(_overlayWrappers).forEach((fn) => _updateRegionNavArrows(fn));
 }
 
 // ---------------------------------------------------------------------------
@@ -3818,6 +3987,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // Markers sit on .wf-overlays-inner (full zoom width, translateX'd).
       const ow = _createOverlayWrapper(readyWfContainer, WAVE_HEIGHT);
       _overlayWrappers[filename] = ow;
+      _createRegionNavArrows(filename);
 
       const gridCanvas = document.createElement("canvas");
       const gridStyle = gridCanvas.style;
@@ -4167,6 +4337,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
                   _scrollSyncLock = false;
                 });
               }
+              _updateAllRegionNavArrows();
             });
           }
         });
@@ -7103,6 +7274,7 @@ export function updateRenderAnnoRegions() {
     regions.forEach((r) => regPlugin.addRegion(r));
     draftRegions.forEach((r) => regPlugin.addRegion(r));
   });
+  _updateAllRegionNavArrows();
 }
 
 function extractCurrentlyAnnotatedRegions(ws) {
@@ -7358,6 +7530,8 @@ function initFilePicker() {
   // Continue button — persist LD config and close
   function closeOverlay() {
     if (populateLdUriSection._persist) populateLdUriSection._persist();
+    // LD URIs may have changed — refresh all annotation Post-to-Solid buttons.
+    refreshAllPostButtonStates();
     overlay.style.display = "none";
     // If alignment was loaded from a local JSON file, apply it now
     if (window._pendingLocalAlignment) {

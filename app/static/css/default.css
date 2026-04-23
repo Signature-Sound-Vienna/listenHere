@@ -1416,6 +1416,44 @@ label:has(> #show-tempo-curve:disabled) {
 .wf-overlays-inner .ws-marker { pointer-events: auto; }
 /* correction overlay pointer-events managed via inline style in listen.js */
 
+/* Off-screen annotation region navigation arrows */
+.wf-region-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 5;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15em;
+  padding: 0.3em 0.5em;
+  border: 1px solid var(--color-waveform-border, #aaa);
+  border-radius: 999px;
+  background: var(--color-surface, rgba(255, 255, 255, 0.9));
+  color: var(--color-text, #222);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  font-size: var(--font-size-small, 0.85em);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.15s ease;
+}
+.wf-region-nav:hover { opacity: 1; }
+.wf-region-nav-left { left: 0.4em; }
+.wf-region-nav-right { right: 0.4em; }
+.wf-region-nav-arrow {
+  display: inline-block;
+  font-size: 0.9em;
+}
+.wf-region-nav-badge {
+  display: inline-block;
+  min-width: 1em;
+  text-align: center;
+  font-weight: 600;
+}
+.wf-region-nav-badge:empty { display: none; }
+
 /* During draw mode, suppress native browser drag on waveform content
    so pointer events flow to the WaveSurfer regions plugin instead. */
 #waveforms.draw-mode-active,

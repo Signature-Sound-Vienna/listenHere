@@ -150,6 +150,16 @@ You can maintain **multiple independent groupings** of the same recordings — f
 - In the **content pane**, a row of pill-shaped buttons appears when you have two or more tabs, letting you switch between groupings. The sidebar updates to match.
 - Switching tabs in the modal does not affect the content pane until you click **Apply**.
 
+### Settings, Themes, and Appearance
+
+Click the **cog (⚙) button** on the right edge of the screen to open the Settings drawer. 
+
+- **Eight built-in themes**: Light (default), Solarized, Sepia, Peach, Dark, Dracula, Forest, and Nord. Light and Solarized are light-background themes; Dark, Dracula, Forest, and Nord are dark-background themes.
+- Your chosen theme is **saved automatically** and restored on your next visit — including when switching between the landing page and the listening interface.
+
+Support for internationalisation (choosing UI language in the settings menu) to be implemented in future.
+
+
 ### Annotations (Linked Data)
 
 If you are logged into a [Solid Pod](https://solidproject.org), you can create and manage linked-data annotations using the Music Annotation Ontology.

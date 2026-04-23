@@ -11,6 +11,59 @@
       rel="stylesheet"
       href="{{ url_for('static', filename='css/default.css') }}"
     />
+    <script src="{{ url_for('static', filename='js/theme-setup.js') }}"></script>
+    <!-- Load Matomo@mdw.ac.at -->
+    <script type="text/javascript">
+      var _paq = (window._paq = window._paq || []);
+      /* tracker methods like "setCustomDimension" should be called before "trackPageView" */
+      _paq.push(["setDoNotTrack", true]);
+      _paq.push(["requireCookieConsent"]);
+      if (
+        (function () {
+          try {
+            return JSON.parse(
+              unescape(
+                ("; " + document.cookie)
+                  .split("; consent=")
+                  .pop()
+                  .split(";")
+                  .shift(),
+              ),
+            ).tracking;
+          } catch (e) {
+            return false;
+          }
+        })()
+      ) {
+        _paq.push(["setCookieConsentGiven"]);
+      } else {
+        _paq.push(["forgetCookieConsentGiven"]);
+      }
+      _paq.push(["trackPageView"]);
+      _paq.push(["enableLinkTracking"]);
+      (function () {
+        var u = "https://matomo.mdw.ac.at/";
+        _paq.push(["setTrackerUrl", u + "matomo.php"]);
+        _paq.push(["setSiteId", "1000144"]);
+        var d = document,
+          g = d.createElement("script"),
+          s = d.getElementsByTagName("script")[0];
+        g.type = "text/javascript";
+        g.async = true;
+        g.src = u + "matomo.js";
+        s.parentNode.insertBefore(g, s);
+      })();
+    </script>
+    <noscript>
+      <p>
+        <img
+          src="https://matomo.mdw.ac.at/matomo.php?idsite=1000144&amp;rec=1"
+          style="border: 0"
+          alt=""
+        />
+      </p>
+    </noscript>
+    <!-- End Matomo Code -->
   </head>
   <body id="splash">
     <!-- Splash page for Listen Here! -->
@@ -20,9 +73,10 @@
     <div id="splash-card">
       <div id="logo">
         <img
-          src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}"
+          src="{{ url_for('static', filename='bat/ListenHereBatAsleep.svg') }}"
           height="100"
           alt="Logo"
+          class="lh-logo-img"
         />
       </div>
       <h1>Listen Here!</h1>
@@ -41,16 +95,7 @@
               encodeURIComponent(document.getElementById('align-url').value);
           "
         >
-          <label
-            for="align-url"
-            style="
-              display: block;
-              margin-bottom: 0.5rem;
-              font-weight: bold;
-              font-size: 0.9em;
-              text-align: left;
-              color: #475569;
-            "
+          <label for="align-url" class="splash-form-label"
             >Load an Alignment JSON URL:</label
           >
           <div style="display: flex; gap: 0.5rem">
@@ -59,30 +104,9 @@
               id="align-url"
               placeholder="https://example.com/alignment.json"
               required
-              style="
-                flex: 1;
-                padding: 0.6em;
-                border: 1px solid #cbd5e1;
-                border-radius: 6px;
-                font-family: monospace;
-                font-size: 0.9em;
-              "
+              class="splash-form-input"
             />
-            <button
-              type="submit"
-              style="
-                padding: 0.6em 1.2em;
-                border: none;
-                background: #2563eb;
-                color: white;
-                border-radius: 6px;
-                cursor: pointer;
-                font-weight: 600;
-                transition: background 0.15s;
-              "
-            >
-              Load
-            </button>
+            <button type="submit" class="splash-form-submit">Load</button>
           </div>
         </form>
       </div>
@@ -141,7 +165,7 @@
           xmlns="http://www.w3.org/2000/svg"
         >
           <path
-            fill="blue"
+            fill="currentColor"
             contenteditable="false"
             d="M384 864c399-314 384-425 384-512s-72-192-192-192-192 128-192 128-72-128-192-128-192 105-192 192-15 198 384 512z"
           ></path>

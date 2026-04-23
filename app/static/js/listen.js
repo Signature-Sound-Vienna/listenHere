@@ -95,6 +95,7 @@ export function getAudioLinkedDataUri(filename) {
 
 // File picker: maps alignment audio keys to blob URLs from user-selected files
 let fileBlobUrls = new Map();
+let fileBlobs = new Map(); // alignment audio keys -> File/Blob objects
 let useFilesMode = false;
 let _fromAlignmentHandoff = false;
 
@@ -194,13 +195,15 @@ function resolveAudioUrl(filename) {
 // --- Marker redraw helper ---
 // Redraws all markers on all wavesurfers, highlighting the active marker in close-listening mode
 function redrawAllMarkers() {
+  const _style = getComputedStyle(document.documentElement);
+  const markerColor       = _style.getPropertyValue("--color-marker").trim()        || "red";
+  const markerActiveColor = _style.getPropertyValue("--color-marker-active").trim() || "#8b0000";
   Object.keys(wavesurfers).forEach((ws) => {
     _clearMarkers(ws);
     _ensureWfLabel(ws);
     markers.forEach((m, i) => {
       const t = getCorrespondingTime(ws, m);
-      const color =
-        closeListeningMode && activeMarkerIx === i ? "#8b0000" : "red";
+      const color = closeListeningMode && activeMarkerIx === i ? markerActiveColor : markerColor;
       _addMarker(ws, { time: t, color, alignIx: m });
     });
   });
@@ -229,21 +232,481 @@ let _sharedTimeAxis = false; // when true, all waveforms use same px/sec
 const _overlayWrappers = {}; // filename → { wrapper, inner }
 const _wfBgCache = {}; // filename → cached tick background colour string
 
-/** Recompute the effective background colour for a waveform's tick labels. */
-function _refreshWfBg(filename) {
-  const wfEl = document.querySelector(`.waveform[data-ix='${CSS.escape(filename)}']`);
-  let bg = "rgba(255, 255, 255, 0.85)";
-  for (let el = wfEl; el && el !== document.body; el = el.parentElement) {
-    const raw = getComputedStyle(el).backgroundColor;
-    if (raw && raw !== "rgba(0, 0, 0, 0)" && raw !== "transparent") {
-      const m = raw.match(/[\d.]+/g);
-      if (m && m.length >= 3) bg = `rgba(${m[0]}, ${m[1]}, ${m[2]}, 0.85)`;
-      break;
+// ---------------------------------------------------------------------------
+// Tempo curve state
+// ---------------------------------------------------------------------------
+let _tempoCurveVisible = false;
+let _tempoCurveMode = "absolute"; // "absolute" | "relative"
+let _tempoCurveSmoothing = 0; // 0–10 window size for Gaussian smoothing
+let _tempoScopeWithinGroup = false; // true = within group, false = across groups
+let _tempoScopeDisplayedOnly = false; // true = restrict to displayed files
+const _tempoRawCache = {}; // filename → [{time, tempo}] (unsmoothed)
+const _tempoCurveRedrawers = {}; // filename → redraw function
+let _tempoYRange = null; // {min, max} — uniform across waveforms, recomputed on scope/mode change
+
+// Outlier threshold: values deviating from the median by more than this
+// many scaled MADs are treated as outliers — both for Y-axis clipping
+// and for exclusion from the corpus reference in relative mode.
+// Scaled MAD ≈ 1.4826 × MAD approximates SD for normal data, so
+// TEMPO_OUTLIER_K = 2 corresponds to ≈ 2 standard deviations.
+const TEMPO_OUTLIER_K = 2;
+const _TEMPO_OUTLIER_SCALE = TEMPO_OUTLIER_K * 1.4826; // pre-computed
+
+/**
+ * Compute raw (unsmoothed) tempo data points for a single audio file.
+ * Returns [{time, scoreTime, tempo}] where time is in seconds (in this
+ * file's timeline), scoreTime is in quarter-note units, and tempo is in QPM.
+ *
+ * Approach: build a monotonic (scoreTime → audioTime) mapping, then
+ * resample at regular score-time intervals (every TEMPO_RESAMPLE_QN
+ * quarter notes).  Tempo = ΔQN / Δt × 60 between consecutive samples.
+ * This inherently smooths chord duplicates, grace notes, and alignment
+ * quantisation noise.
+ *
+ * Quarter-note positions are sourced from the Verovio timemap (qstamp)
+ * when available, avoiding a dependency on MIDI tick resolution (TPQ).
+ * Falls back to scoreAlignment.score_onset (tick / TPQ) for older
+ * alignment data that predates timemap support.
+ */
+const TEMPO_RESAMPLE_QN = 1; // resample every 1 quarter-note
+
+function _computeRawTempo(filename) {
+  if (!scoreAlignment || !scoreAlignment.ref_onset) return [];
+  const refOnsets = scoreAlignment.ref_onset;
+
+  const refGrid = alignmentGrids[referenceAudioIx];
+  const fileGrid = alignmentGrids[filename];
+  if (!refGrid || !refGrid.length || !fileGrid || !fileGrid.length) return [];
+
+  // Binary search: find the grid index whose value is closest to t
+  function gridIxForTime(grid, t) {
+    let lo = 0,
+      hi = grid.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (grid[mid] <= t) lo = mid + 1;
+      else hi = mid;
+    }
+    const ix = Math.max(0, lo - 1);
+    if (
+      ix < grid.length - 1 &&
+      Math.abs(grid[ix + 1] - t) < Math.abs(grid[ix] - t)
+    )
+      return ix + 1;
+    return ix;
+  }
+
+  // Prefer Verovio timemap qstamp values (authoritative quarter-note positions
+  // from the MEI) over MIDI-tick-derived score_onset.  The timemap tstamp
+  // (MIDI ms) maps to synth-audio seconds, which feeds into the same
+  // alignment-grid lookup as before.  Falls back to score_onset if no timemap.
+  let onsets; // quarter-note positions
+  let synthTimes; // corresponding synth-audio seconds (for grid mapping)
+  if (timemap && timemap.length > 1) {
+    // Extract non-measure entries that carry note events
+    const entries = timemap.filter((e) => "qstamp" in e && !("measureOn" in e));
+    if (entries.length > 1) {
+      onsets = entries.map((e) => e.qstamp);
+      synthTimes = entries.map((e) => e.tstamp / 1000); // MIDI ms → seconds
     }
   }
+  if (!onsets || onsets.length < 2) {
+    // Fallback: use MIDI-tick-derived values from score alignment
+    if (!scoreAlignment.score_onset || scoreAlignment.score_onset.length < 2)
+      return [];
+    onsets = scoreAlignment.score_onset;
+    synthTimes = scoreAlignment.synth_onset || null;
+  }
+
+  // 1. Build deduplicated, monotonic (scoreTime → audioTime) pairs.
+  //    For duplicate score onsets (chords), keep only the first.
+  //    Enforce monotonicity in audioTime (skip retrograde mappings).
+  const synthGrid = alignmentGrids[SYNTH_MEI_KEY];
+  const useSynthGrid = !!(synthTimes && synthGrid && synthGrid.length);
+  const pairs = []; // [{s, t}]  s = score QN, t = audio seconds
+  let prevS = -Infinity,
+    prevT = -Infinity;
+  for (let i = 0; i < onsets.length; i++) {
+    const s = onsets[i];
+    if (s <= prevS) continue; // skip duplicate / non-advancing score time
+    // Map to target file time via alignment grids.
+    // When synth times are available, search the synth alignment grid to
+    // find the shared grid index, then read fileGrid at that index directly
+    // (all alignment grids are parallel arrays indexed by the same positions).
+    // Otherwise fall back to searching refGrid for ref_onset[i].
+    let gIdx;
+    if (useSynthGrid && i < synthTimes.length) {
+      gIdx = gridIxForTime(synthGrid, synthTimes[i]);
+    } else if (i < refOnsets.length) {
+      gIdx = gridIxForTime(refGrid, refOnsets[i]);
+    } else {
+      continue;
+    }
+    const t = fileGrid[Math.min(gIdx, fileGrid.length - 1)];
+    if (t <= prevT) continue; // skip non-advancing audio time
+    pairs.push({ s, t });
+    prevS = s;
+    prevT = t;
+  }
+  if (pairs.length < 2) return [];
+
+  // 2. Resample at regular score-time intervals via linear interpolation.
+  const sMin = pairs[0].s;
+  const sMax = pairs[pairs.length - 1].s;
+  const step = TEMPO_RESAMPLE_QN;
+  const samples = []; // [{s, t}]
+  let pairIdx = 0;
+  for (let sq = Math.ceil(sMin / step) * step; sq <= sMax; sq += step) {
+    // Advance pairIdx so pairs[pairIdx].s <= sq < pairs[pairIdx+1].s
+    while (pairIdx < pairs.length - 2 && pairs[pairIdx + 1].s <= sq) pairIdx++;
+    const p0 = pairs[pairIdx],
+      p1 = pairs[pairIdx + 1];
+    const frac = p1.s - p0.s > 0 ? (sq - p0.s) / (p1.s - p0.s) : 0;
+    const tInterp = p0.t + frac * (p1.t - p0.t);
+    samples.push({ s: sq, t: tInterp });
+  }
+
+  // 3. Compute instantaneous tempo between consecutive samples.
+  const points = [];
+  for (let i = 0; i < samples.length - 1; i++) {
+    const ds = samples[i + 1].s - samples[i].s; // quarter notes (= step)
+    const dt = samples[i + 1].t - samples[i].t; // seconds
+    if (dt <= 0) continue;
+    const tempo = (ds / dt) * 60; // QPM
+    const time = (samples[i].t + samples[i + 1].t) / 2; // mid-point in audio time
+    points.push({ time, scoreTime: samples[i].s + ds / 2, tempo });
+  }
+  return points;
+}
+
+/**
+ * Get (cached) raw tempo data for a file. Cache is invalidated when
+ * alignment grids change (caller must clear _tempoRawCache on grid reload).
+ */
+function _getRawTempo(filename) {
+  if (!_tempoRawCache[filename])
+    _tempoRawCache[filename] = _computeRawTempo(filename);
+  return _tempoRawCache[filename];
+}
+
+/**
+ * Apply Gaussian smoothing to tempo points.
+ * windowSize 0 = no smoothing; higher = more smoothing.
+ */
+function _smoothTempo(points, windowSize) {
+  if (windowSize <= 0 || points.length <= 1) return points;
+  const out = [];
+  for (let i = 0; i < points.length; i++) {
+    let wSum = 0,
+      wCount = 0;
+    for (
+      let j = Math.max(0, i - windowSize);
+      j <= Math.min(points.length - 1, i + windowSize);
+      j++
+    ) {
+      const d = (j - i) / windowSize;
+      const w = Math.exp(-2 * d * d);
+      wSum += points[j].tempo * w;
+      wCount += w;
+    }
+    out.push({
+      time: points[i].time,
+      scoreTime: points[i].scoreTime,
+      tempo: wSum / wCount,
+    });
+  }
+  return out;
+}
+
+/**
+ * Get the set of filenames for the current tempo scope.
+ *
+ * Two independent dimensions:
+ *   _tempoScopeWithinGroup: true = same group as forFilename; false = all groups
+ *   _tempoScopeDisplayedOnly: true = restrict to currently displayed files
+ */
+function _getTempoScopeFiles(forFilename) {
+  let files = Object.keys(wavesurfers).filter(
+    (fn) =>
+      fn !== SYNTH_MEI_KEY && alignmentGrids[fn] && alignmentGrids[fn].length,
+  );
+
+  if (_tempoScopeWithinGroup) {
+    // Restrict to files in the same group as forFilename
+    const groups = _getActiveFileGroups();
+    const grouped = new Set();
+    let myGroupFiles = null;
+    for (const g of groups) {
+      const members = new Set(g.files || []);
+      if (g.pattern) {
+        try {
+          const re = new RegExp(g.pattern);
+          files.forEach((f) => {
+            const short = f.substring(f.lastIndexOf("/") + 1);
+            if (re.test(short) || re.test(f)) members.add(f);
+          });
+        } catch (_) {}
+      }
+      members.forEach((f) => grouped.add(f));
+      if (members.has(forFilename)) {
+        myGroupFiles = files.filter((fn) => members.has(fn));
+      }
+    }
+    if (myGroupFiles) {
+      files = myGroupFiles;
+    } else {
+      // forFilename is ungrouped — use all ungrouped files as the group
+      files = files.filter((fn) => !grouped.has(fn));
+    }
+  }
+
+  if (_tempoScopeDisplayedOnly) {
+    const displayed = new Set(
+      Array.from(document.querySelectorAll("#waveforms .waveform"))
+        .filter((el) => el.style.display !== "none")
+        .map((el) => el.dataset.ix)
+        .filter((fn) => fn && wavesurfers[fn]),
+    );
+    files = files.filter((fn) => displayed.has(fn));
+  }
+
+  return files;
+}
+
+/**
+ * Compute the corpus reference tempo at each resampled score position
+ * across the given files.
+ *
+ * Per-file outlier exclusion: for each file, compute the median and
+ * scaled MAD of its own tempo values.  At each score position, exclude
+ * a file's value if it deviates from that file's own median by more
+ * than TEMPO_OUTLIER_K scaled MADs (≈ 2 standard deviations for normal
+ * data).  This catches structural-mismatch artefacts (e.g. a file that
+ * skips a repeat produces extreme QPM in the unmatched region) even when
+ * a large fraction of the corpus is affected, because the test is
+ * per-file rather than cross-corpus.
+ *
+ * The reference value at each position is the median of the remaining
+ * (non-excluded) values.
+ *
+ * Returns a Map<scoreTime, medianTempo> keyed by score position
+ * (multiples of TEMPO_RESAMPLE_QN).  This avoids index-alignment bugs:
+ * different files may have different-length arrays due to monotonicity
+ * filtering and dt <= 0 skips, so array-index matching is unreliable.
+ */
+function _computeCorpusMeanTempo(files, smoothing) {
+  const sm = smoothing || 0;
+  const tempos = files.map((fn) => _smoothTempo(_getRawTempo(fn), sm));
+
+  // Pre-compute per-file median and outlier threshold (TEMPO_OUTLIER_K × scaled MAD).
+  const fileStats = tempos.map((pts) => {
+    if (!pts.length) return { med: 0, threshold: Infinity };
+    const sorted = pts.map((p) => p.tempo).sort((a, b) => a - b);
+    const med = _median(sorted);
+    const absDevs = sorted.map((v) => Math.abs(v - med)).sort((a, b) => a - b);
+    const mad = _median(absDevs);
+    const threshold = _TEMPO_OUTLIER_SCALE * mad;
+    return { med, threshold: Math.max(threshold, 1) }; // floor of 1 QPM to avoid zero-threshold
+  });
+
+  // Collect all score positions across all files, keyed by scoreTime
+  // (multiples of TEMPO_RESAMPLE_QN, so rounding removes float noise).
+  const posMap = new Map(); // scoreTime → [{tempo, fileIdx}]
+  for (let f = 0; f < tempos.length; f++) {
+    for (const pt of tempos[f]) {
+      const key = Math.round(pt.scoreTime * 1e6) / 1e6; // remove float noise
+      if (!posMap.has(key)) posMap.set(key, []);
+      posMap.get(key).push({ tempo: pt.tempo, fileIdx: f });
+    }
+  }
+
+  const result = new Map();
+  for (const [scoreTime, entries] of posMap) {
+    const vals = [];
+    for (const { tempo, fileIdx } of entries) {
+      const { med, threshold } = fileStats[fileIdx];
+      if (Math.abs(tempo - med) <= threshold) vals.push(tempo);
+    }
+    if (vals.length === 0) {
+      // All values excluded — fall back to unfiltered median
+      const fallback = entries.map((e) => e.tempo).sort((a, b) => a - b);
+      result.set(scoreTime, _median(fallback));
+      continue;
+    }
+    vals.sort((a, b) => a - b);
+    result.set(scoreTime, _median(vals));
+  }
+  return result;
+}
+
+/**
+ * Robust median of a sorted (ascending) numeric array.
+ */
+function _median(sorted) {
+  const n = sorted.length;
+  if (n === 0) return 0;
+  const mid = n >> 1;
+  return n % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * Recompute the uniform Y-axis range for the tempo curve.
+ * Uses robust statistics (median ± 2 × scaled MAD) so that extreme
+ * outliers (alignment artefacts, 1000+ QPM spikes) do not inflate the
+ * range.  Scaled MAD ≈ 1.4826 × MAD approximates SD for normal data.
+ * Values outside this range are clipped and marked with indicators.
+ * For relative mode the range is symmetric around 0.
+ */
+function _recomputeTempoYRange() {
+  const allFiles = Object.keys(wavesurfers).filter(
+    (fn) =>
+      fn !== SYNTH_MEI_KEY && alignmentGrids[fn] && alignmentGrids[fn].length,
+  );
+  if (!allFiles.length || !scoreAlignment) {
+    _tempoYRange = null;
+    return;
+  }
+
+  // Use smoothed data for range computation so the range matches what is
+  // actually drawn, and isolated spikes dampened by smoothing don't widen it.
+  const sm = _tempoCurveSmoothing;
+
+  if (_tempoCurveMode === "absolute") {
+    const allTempos = [];
+    for (const fn of allFiles) {
+      for (const pt of _smoothTempo(_getRawTempo(fn), sm))
+        allTempos.push(pt.tempo);
+    }
+    if (!allTempos.length) {
+      _tempoYRange = null;
+      return;
+    }
+    allTempos.sort((a, b) => a - b);
+    const med = _median(allTempos);
+    const absDevs = allTempos.map((t) => Math.abs(t - med));
+    absDevs.sort((a, b) => a - b);
+    const mad = _median(absDevs);
+    _tempoYRange = {
+      min: Math.max(0, med - _TEMPO_OUTLIER_SCALE * mad),
+      max: med + _TEMPO_OUTLIER_SCALE * mad,
+    };
+  } else {
+    // Relative deviation: robust range symmetric around 0
+    const corpusMean = _computeCorpusMeanTempo(allFiles, sm);
+    const devs = [];
+    for (const fn of allFiles) {
+      const smoothed = _smoothTempo(_getRawTempo(fn), sm);
+      for (const pt of smoothed) {
+        const key = Math.round(pt.scoreTime * 1e6) / 1e6;
+        const ref = corpusMean.get(key);
+        if (ref && ref > 0) devs.push(((pt.tempo - ref) / ref) * 100);
+      }
+    }
+    if (!devs.length) {
+      _tempoYRange = { min: -10, max: 10 };
+      return;
+    }
+    devs.sort((a, b) => a - b);
+    const dMed = _median(devs);
+    const dAbsDevs = devs.map((d) => Math.abs(d - dMed));
+    dAbsDevs.sort((a, b) => a - b);
+    const dMad = _median(dAbsDevs);
+    // Use a generous floor for deviation Y-range: real corpora routinely show
+    // ±75% deviations from legitimate tempo differences between recordings.
+    // Beyond the floor, use 3× scaled MAD to accommodate the data if needed.
+    const DEV_Y_SCALE = 3 * 1.4826;
+    const extent = Math.max(75, Math.abs(dMed) + DEV_Y_SCALE * dMad);
+    _tempoYRange = { min: -extent, max: extent };
+  }
+}
+
+/**
+ * Look up the tempo value at a given time for a file.
+ * Returns { tempo, label } or null if tempo curve is not available.
+ * In relative mode, label shows "±X% avg." ; in absolute mode, "X QPM".
+ */
+function _getTempoAtTime(filename, time) {
+  if (!_tempoCurveVisible || filename === SYNTH_MEI_KEY) return null;
+  const raw = _getRawTempo(filename);
+  if (!raw.length) return null;
+  // Find the raw point whose time is closest to (but ≤) the query time
+  let idx = 0;
+  for (let i = 1; i < raw.length; i++) {
+    if (raw[i].time <= time) idx = i;
+    else break;
+  }
+  const smoothed = _smoothTempo(raw, _tempoCurveSmoothing);
+  if (idx >= smoothed.length) idx = smoothed.length - 1;
+  const tempo = smoothed[idx].tempo;
+
+  if (_tempoCurveMode === "relative") {
+    const scopeFiles = _getTempoScopeFiles(filename);
+    const corpusMean = _computeCorpusMeanTempo(
+      scopeFiles,
+      _tempoCurveSmoothing,
+    );
+    const key = Math.round(smoothed[idx].scoreTime * 1e6) / 1e6;
+    const ref = corpusMean.get(key);
+    if (ref && ref > 0) {
+      const dev = ((tempo - ref) / ref) * 100;
+      const sign = dev >= 0 ? "+" : "";
+      return { tempo, label: sign + dev.toFixed(0) + "% avg." };
+    }
+  }
+  return { tempo, label: Math.round(tempo) + " QPM" };
+}
+
+/** Parse a CSS colour string ("rgba(…)", "#rrggbb", "#rgb") into {r,g,b,a} or null. */
+function _parseCssColor(str) {
+  str = (str || "").trim();
+  const m = str.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)/);
+  if (m) return { r: +m[1], g: +m[2], b: +m[3], a: m[4] != null ? +m[4] : 1 };
+  const h6 = str.match(/^#([0-9a-f]{6})$/i);
+  if (h6) { const v = parseInt(h6[1], 16); return { r: (v >> 16) & 255, g: (v >> 8) & 255, b: v & 255, a: 1 }; }
+  const h3 = str.match(/^#([0-9a-f]{3})$/i);
+  if (h3) { const [, h] = h3; return { r: parseInt(h[0]+h[0],16), g: parseInt(h[1]+h[1],16), b: parseInt(h[2]+h[2],16), a: 1 }; }
+  return null;
+}
+
+/** Alpha-composite fg (rgba) over a solid bg colour, returns {r,g,b}. */
+function _blendOver({ r: fr, g: fg, b: fb, a }, { r: br, g: bg, b: bb }) {
+  return {
+    r: Math.round(fr * a + br * (1 - a)),
+    g: Math.round(fg * a + bg * (1 - a)),
+    b: Math.round(fb * a + bb * (1 - a)),
+  };
+}
+
+/**
+ * Recompute the effective label background colour for a waveform.
+ * Reads CSS custom properties so the result is always theme-correct.
+ * Active waveforms blend --color-waveform-active over --color-bg;
+ * non-active waveforms use --color-bg directly.
+ */
+function _refreshWfBg(filename) {
+  const wfEl = document.querySelector(
+    `.waveform[data-ix='${CSS.escape(filename)}']`,
+  );
+  const style = getComputedStyle(document.documentElement);
+  const baseBg = _parseCssColor(style.getPropertyValue("--color-bg")) ?? { r: 255, g: 255, b: 255, a: 1 };
+
+  let rgb;
+  if (wfEl?.classList.contains("active")) {
+    const activeFg = _parseCssColor(style.getPropertyValue("--color-waveform-active"));
+    rgb = activeFg ? _blendOver(activeFg, baseBg) : baseBg;
+  } else {
+    rgb = baseBg;
+  }
+  const bg = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.90)`;
+
   _wfBgCache[filename] = bg;
-  // Also sync the wf-label
-  const lbl = wfEl && ((_overlayWrappers[filename] && _overlayWrappers[filename].wrapper) || wfEl).querySelector(".wf-label");
+  // Sync the wf-label element
+  const lbl =
+    wfEl &&
+    (
+      (_overlayWrappers[filename] && _overlayWrappers[filename].wrapper) ||
+      wfEl
+    ).querySelector(".wf-label");
   if (lbl) lbl.style.backgroundColor = bg;
   return bg;
 }
@@ -286,7 +749,7 @@ function _formatTickTime(t) {
  * @param {number} dur    duration in seconds
  * @param {number} scrollLeft  current scroll offset in px
  */
-function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor) {
+function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor, textColor, tickColor) {
   if (dur <= 0 || fullW <= 0) return;
   const pxPerSec = fullW / dur;
   const visibleSec = viewW / pxPerSec;
@@ -316,13 +779,13 @@ function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor) {
     const isLabelled = tickIndex % labelEvery === 0;
     const tickH = isLabelled ? 7 : 4;
 
-    ctx.strokeStyle = isLabelled
-      ? "rgba(80, 80, 80, 0.5)"
-      : "rgba(120, 120, 120, 0.3)";
+    ctx.strokeStyle = tickColor || "#505050";
+    ctx.globalAlpha = isLabelled ? 0.75 : 0.35;
     ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, tickH);
     ctx.stroke();
+    ctx.globalAlpha = 1;
 
     if (isLabelled) {
       ctx.font = "9px sans-serif";
@@ -332,7 +795,7 @@ function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor) {
       const pad = 1;
       ctx.fillStyle = bgColor || "rgba(255, 255, 255, 0.7)";
       ctx.fillRect(x - tw / 2 - pad, tickH, tw + pad * 2, 10);
-      ctx.fillStyle = "rgba(60, 60, 60, 0.7)";
+      ctx.fillStyle = textColor || "rgba(60, 60, 60, 0.7)";
       ctx.fillText(text, x, tickH + 9);
     }
   }
@@ -1138,6 +1601,11 @@ function onClickRenditionCheckbox(e) {
     checkbox.checked = false;
   }
   _updateGroupCounts();
+  // Redraw tempo curves if scope depends on displayed files
+  if (_tempoScopeDisplayedOnly && _tempoCurveVisible) {
+    _tempoYRange = null;
+    Object.values(_gridRedrawers).forEach((fn) => fn());
+  }
 }
 
 export function swapCurrentAudio(newAudio) {
@@ -1170,7 +1638,13 @@ export function swapCurrentAudio(newAudio) {
     // a clip-path on the canvases div to show only the unplayed region; the
     // CSS ::part(progress) hides the progress overlay on inactive waveforms,
     // but the clip-path persists and makes the beginning appear blank).
+    // Save & restore scroll position so the seekTo(0) doesn't visibly jump.
+    const oldScrollEl = _getScrollContainer(currentAudioIx);
+    const savedScroll = oldScrollEl ? oldScrollEl.scrollLeft : 0;
+    _scrollSyncLock = true;
     wavesurfers[currentAudioIx].seekTo(0);
+    if (oldScrollEl) oldScrollEl.scrollLeft = savedScroll;
+    _scrollSyncLock = false;
     // swap to new audio and alignment grid
     currentAudioIx = newAudio;
     console.log("new audio ix: ", currentAudioIx);
@@ -1305,6 +1779,14 @@ const _GROUP_PALETTE = [
   "#fde68a", // soft amber
   "#e9d5ff", // soft purple
 ];
+
+/** Return a legible text colour (#222 or #fff) for a given hex background. */
+function _groupTextColor(hex) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return (r * 299 + g * 587 + b * 114) / 1000 > 128 ? '#222' : '#fff';
+}
 
 /** Return the next palette colour not yet used by any group. */
 function _nextGroupColour(groups) {
@@ -1996,6 +2478,7 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     container.innerHTML = `<div class="group-title">${g.name} <span class="group-count"></span><span class="group-actions"><span class="group-all">All</span><span class="group-none">None</span></span></div><div class="group-list"></div>`;
     if (g.color) {
       container.style.backgroundColor = g.color;
+      container.style.color = _groupTextColor(g.color);
     }
     contentByName[g.name] = container;
   });
@@ -2223,6 +2706,12 @@ function _switchActiveTab(tabName) {
 
   // Update pills
   _renderGroupingTabPills();
+
+  // Redraw tempo curves — group membership may have changed
+  if (_tempoScopeWithinGroup && _tempoCurveVisible) {
+    _tempoYRange = null;
+    Object.values(_gridRedrawers).forEach((fn) => fn());
+  }
 
   _changeCounter++;
   _updateDirtyState();
@@ -2814,7 +3303,11 @@ function _openGroupModal() {
 
       // Apply colour preview to card
       if (g.color) {
+        const tc = _groupTextColor(g.color);
         card.style.backgroundColor = g.color;
+        card.style.color = tc;
+        // Override label rules that explicitly set color (specificity beats inheritance)
+        card.querySelectorAll('label').forEach(l => { l.style.color = tc; });
       }
 
       // File list (explicit + regex-matched)
@@ -3141,15 +3634,17 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       formatTimeCallback: (t) => {
         const m = Math.floor(t / 60);
         const s = (t % 60).toFixed(2);
-        return m + ":" + s.padStart(5, "0");
+        let label = m + ":" + s.padStart(5, "0");
+        const ti = _getTempoAtTime(filename, t);
+        if (ti) label += " \u2014 " + ti.label;
+        return label;
       },
     });
     _regionsPlugins[filename] = _regPlugin;
     let regions = extractCurrentlyAnnotatedRegions(filename);
     wavesurfers[filename] = WaveSurfer.create({
       container: `#${CSS.escape("waveform-" + filename) + "-wav"}`,
-      waveColor: "violet",
-      progressColor: "purple",
+      ...(_waveformColors()),
       normalize: document.getElementById("normalize").checked,
       fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)),
       plugins: [_regPlugin, _hoverPlugin],
@@ -3189,11 +3684,20 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     // Start loading (deferred for synth entries until the blob URL is available)
     const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
     const _audioUrl = resolveAudioUrl(filename);
-    if (_audioUrl) {
+    // Prefer passing the Blob directly to WaveSurfer to avoid cross-origin
+    // issues that some browsers (Firefox) have with blob: URLs via fetch().
+    const _audioBlob = fileBlobs.get(filename);
+    if (_audioBlob || _audioUrl) {
       // If pre-computed peaks are available, pass them to load() so WaveSurfer
       // can render the waveform shape immediately (before full audio decode).
       const _peakInfo = _waveformPeaks[filename];
-      if (_peakInfo && _peakInfo.peaks && _peakInfo.duration) {
+      if (_audioBlob) {
+        wavesurfers[filename].loadBlob(
+          _audioBlob,
+          _peakInfo?.peaks ? [_peakInfo.peaks] : undefined,
+          _peakInfo?.duration,
+        );
+      } else if (_peakInfo && _peakInfo.peaks && _peakInfo.duration) {
         wavesurfers[filename].load(
           _audioUrl,
           [_peakInfo.peaks],
@@ -3241,7 +3745,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       }
       // iterate through all positionIndicatorCanvases, drawing in current ix position
       const canvases = document.getElementsByClassName("position-indicator");
-      const playingDuration = wavesurfers[filename].getDuration();
+      const visrelalign = document.getElementById("visrelalign").checked;
       Array.from(canvases).forEach((c) => {
         const file =
           c.closest(".wf-overlays")?.parentElement?.dataset["ix"] ||
@@ -3252,39 +3756,42 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         const fullW = _getZoomedWidth(file);
         const scrollLeft = wavesurfers[file].getScroll();
         ctx.clearRect(0, 0, c.width, c.height);
+        if (!visrelalign) return;
 
-        if (_sharedTimeAxis) {
-          // Shared time axis: draw indicator at the same absolute time
-          if (document.getElementById("visrelalign").checked) {
-            const x = (currentTime / duration) * fullW - scrollLeft;
-            ctx.beginPath();
-            ctx.lineWidth = 2;
-            ctx.strokeStyle = "rgba(100, 100, 200, 0.7)";
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, c.height);
-            ctx.stroke();
-          }
+        if (file === filename) {
+          // Playing waveform: simple vertical line at current playback position
+          const x = (currentTime / duration) * fullW - scrollLeft;
+          const _piC = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-alignment-playhead").trim()) || { r: 100, g: 100, b: 200 };
+          ctx.beginPath();
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = `rgba(${_piC.r},${_piC.g},${_piC.b},0.7)`;
+          ctx.moveTo(x, 0);
+          ctx.lineTo(x, c.height);
+          ctx.stroke();
         } else {
-          // Alignment-based: map through grid
+          // Non-playing waveform: vertical section at the corresponding
+          // aligned position, with slanted top/bottom pointing toward
+          // the playing waveform's indicator position (so all slant tips
+          // form a continuous vertical line across stacked waveforms).
           const correspondingSeconds = alignmentGrids[file][currentGridIx];
-          const absoluteX =
-            (currentTime / playingDuration) * fullW - scrollLeft;
-          const relativeX =
+          const alignedX =
             (correspondingSeconds / duration) * fullW - scrollLeft;
-          const diffMapped = Math.floor((255 * (absoluteX - relativeX)) / 100);
-          if (document.getElementById("visrelalign").checked) {
-            ctx.beginPath();
-            ctx.lineWidth = 2;
-            ctx.moveTo(absoluteX, 0);
-            ctx.lineTo(relativeX, c.height / 6);
-            ctx.lineTo(relativeX, 5 * (c.height / 6));
-            ctx.lineTo(absoluteX, c.height);
-            ctx.strokeStyle =
-              diffMapped < 0
-                ? `rgb(${-1 * diffMapped} 100 100)`
-                : `rgb(100 100 ${diffMapped})`;
-            ctx.stroke();
-          }
+          // playingX: project the playing file's absolute time onto this
+          // file's time axis, so the slant shows the temporal offset
+          // between the playing file's clock time and the aligned position.
+          const playingX = (currentTime / duration) * fullW - scrollLeft;
+          const diffMapped = Math.floor((255 * (playingX - alignedX)) / 100);
+          ctx.beginPath();
+          ctx.lineWidth = 2;
+          ctx.moveTo(playingX, 0);
+          ctx.lineTo(alignedX, c.height / 6);
+          ctx.lineTo(alignedX, 5 * (c.height / 6));
+          ctx.lineTo(playingX, c.height);
+          ctx.strokeStyle =
+            diffMapped < 0
+              ? `rgb(${-1 * diffMapped} 100 100)`
+              : `rgb(100 100 ${diffMapped})`;
+          ctx.stroke();
         }
       });
     }
@@ -3324,9 +3831,17 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       positionIndicatorCanvas.width = readyWfContainer.clientWidth;
       positionIndicatorCanvas.height = WAVE_HEIGHT;
       positionIndicatorStyle.pointerEvents = "none";
+      // Tempo curve canvas (viewport-sized, between grid and position indicator)
+      const tempoCanvas = document.createElement("canvas");
+      tempoCanvas.classList.add("tempo-curve");
+      tempoCanvas.width = readyWfContainer.clientWidth;
+      tempoCanvas.height = WAVE_HEIGHT;
+      tempoCanvas.style.pointerEvents = "none";
+
       // Canvases go on the wrapper (viewport-fixed, not transformed)
       ow.wrapper.insertBefore(positionIndicatorCanvas, ow.inner);
-      ow.wrapper.insertBefore(gridCanvas, positionIndicatorCanvas);
+      ow.wrapper.insertBefore(tempoCanvas, positionIndicatorCanvas);
+      ow.wrapper.insertBefore(gridCanvas, tempoCanvas);
 
       // Function to draw (or redraw) the alignment grid and time ticks.
       // At zoom, draws only the visible viewport portion offset by scroll.
@@ -3352,60 +3867,258 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         // Draw alignment grid lines first (so time ticks render on top)
         const visalignEl = document.getElementById("visalign");
         if (visalignEl && visalignEl.checked) {
-          ctx.lineWidth = 1;
-          ctx.strokeStyle = "rgba(140, 90, 90, 0.55)";
-          const minPixelStep = 4;
+          const grid = alignmentGrids[filename];
+          const gridLen = grid.length;
+          if (gridLen > 0) {
+            ctx.lineWidth = 1;
+            const minPixelStep = 4;
+            const pxPerIdx = fullW / gridLen;
 
-          // Draw solid lines for the top and bottom sections
-          ctx.beginPath();
-          ctx.setLineDash([]);
-          let lastAbsX = -999;
-          alignmentGrids[filename].forEach((gridPos, gridIx) => {
-            const absoluteX =
-              (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
-            const relativeX = (gridPos / dur) * fullW - scrollLeft;
+            // Compute a deterministic stride so the same grid indices are
+            // selected on every frame regardless of scroll position.  This
+            // prevents flickering caused by different indices passing a
+            // distance filter as scrollLeft changes between frames.
+            const stride = Math.max(1, Math.round(minPixelStep / pxPerIdx));
 
-            if (absoluteX > viewW + 10 && relativeX > viewW + 10) return;
-            if (absoluteX < -10 && relativeX < -10) return;
+            // Visible range of grid indices (with margin for angled lines)
+            const margin = 10;
+            // Align loIdx to stride boundary so selection is scroll-independent
+            let loIdx = Math.max(
+              0,
+              Math.floor(((scrollLeft - margin) / fullW) * gridLen),
+            );
+            loIdx = loIdx - (loIdx % stride); // snap down to stride boundary
+            let hiIdx = Math.min(
+              gridLen - 1,
+              Math.ceil(((scrollLeft + viewW + margin) / fullW) * gridLen),
+            );
 
-            if (absoluteX - lastAbsX >= minPixelStep) {
+            // Draw solid lines for the top and bottom sections
+            const _agC = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-alignment").trim()) || { r: 140, g: 90, b: 90 };
+            const _agRgb = `${_agC.r},${_agC.g},${_agC.b}`;
+            ctx.beginPath();
+            ctx.setLineDash([]);
+            ctx.strokeStyle = `rgba(${_agRgb},0.55)`;
+            for (let gridIx = loIdx; gridIx <= hiIdx; gridIx += stride) {
+              const absoluteX = gridIx * pxPerIdx - scrollLeft;
+              const relativeX = (grid[gridIx] / dur) * fullW - scrollLeft;
               ctx.moveTo(absoluteX, 0);
               ctx.lineTo(relativeX, h / 6);
               ctx.moveTo(relativeX, 5 * (h / 6));
               ctx.lineTo(absoluteX, h);
-              lastAbsX = absoluteX;
             }
-          });
-          ctx.stroke();
+            ctx.stroke();
 
-          // Draw sparsely dotted lines over the waveform section
-          ctx.beginPath();
-          ctx.strokeStyle = "rgba(140, 90, 90, 0.3)";
-          ctx.setLineDash([2, 1]);
-          lastAbsX = -999;
-          alignmentGrids[filename].forEach((gridPos, gridIx) => {
-            const absoluteX =
-              (gridIx / alignmentGrids[filename].length) * fullW - scrollLeft;
-            const relativeX = (gridPos / dur) * fullW - scrollLeft;
-
-            if (relativeX > viewW + 10 || relativeX < -10) return;
-
-            if (absoluteX - lastAbsX >= minPixelStep) {
+            // Draw sparsely dotted lines over the waveform section
+            ctx.beginPath();
+            ctx.strokeStyle = `rgba(${_agRgb},0.3)`;
+            ctx.setLineDash([2, 1]);
+            for (let gridIx = loIdx; gridIx <= hiIdx; gridIx += stride) {
+              const relativeX = (grid[gridIx] / dur) * fullW - scrollLeft;
+              if (relativeX > viewW + margin || relativeX < -margin) continue;
               ctx.moveTo(relativeX, h / 6);
               ctx.lineTo(relativeX, 5 * (h / 6));
-              lastAbsX = absoluteX;
             }
-          });
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        }
+
+        // Draw time ticks
+        const tickBg = _wfBgCache[filename] || _refreshWfBg(filename);
+        const _dttStyle = getComputedStyle(document.documentElement);
+        const tickText = _dttStyle.getPropertyValue("--color-text-muted").trim() || "rgba(60,60,60,0.7)";
+        const tickColor = _dttStyle.getPropertyValue("--color-waveform-tick").trim() || "#505050";
+        _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg, tickText, tickColor);
+
+        // Draw tempo curve
+        drawTempoCurve();
+      }
+
+      // --- Tempo curve drawing ---
+      function drawTempoCurve() {
+        if (!readyWfContainer || !readyWfContainer.isConnected) return;
+        const viewW = readyWfContainer.clientWidth;
+        const h = wavesurfers[filename].options.height || 128;
+        tempoCanvas.width = viewW;
+        tempoCanvas.height = h;
+
+        if (!_tempoCurveVisible || filename === SYNTH_MEI_KEY) return;
+        const raw = _getRawTempo(filename);
+        if (!raw.length) return;
+
+        // Ensure Y-range is computed
+        if (!_tempoYRange) _recomputeTempoYRange();
+        if (!_tempoYRange) return;
+
+        const smoothed = _smoothTempo(raw, _tempoCurveSmoothing);
+        const dur = wavesurfers[filename].getDuration();
+        const fullW = _getZoomedWidth(filename);
+        const scrollLeft = wavesurfers[filename].getScroll();
+        const ctx = tempoCanvas.getContext("2d");
+
+        // Read theme colours for tempo curve once per draw
+        const _tcStyle = getComputedStyle(document.documentElement);
+        const _tcBase = _parseCssColor(_tcStyle.getPropertyValue("--color-tempo").trim()) || { r: 30, g: 80, b: 140 };
+        const _tcRgb = `${_tcBase.r},${_tcBase.g},${_tcBase.b}`;
+        const _outlierBase = _parseCssColor(_tcStyle.getPropertyValue("--color-outlier").trim()) || { r: 180, g: 60, b: 60 };
+        const _outlierRgb = `${_outlierBase.r},${_outlierBase.g},${_outlierBase.b}`;
+
+        // In relative mode, compute per-file deviation from scope-based corpus mean
+        let corpusMean = null;
+        if (_tempoCurveMode === "relative") {
+          const scopeFiles = _getTempoScopeFiles(filename);
+          corpusMean = _computeCorpusMeanTempo(
+            scopeFiles,
+            _tempoCurveSmoothing,
+          );
+        }
+
+        // Map tempo value to Y coordinate (top = high, bottom = low)
+        // Use middle 70% of canvas height (leave room for grid and ticks)
+        const yTop = h * 0.1;
+        const yBot = h * 0.85;
+        const yRange = _tempoYRange.max - _tempoYRange.min;
+        function valToY(val) {
+          if (yRange <= 0) return (yTop + yBot) / 2;
+          const frac = (val - _tempoYRange.min) / yRange;
+          return yBot - frac * (yBot - yTop); // inverted: high values at top
+        }
+
+        // Build screen-space points, tracking which are clipped
+        const pts = [];
+        for (let i = 0; i < smoothed.length; i++) {
+          const x = (smoothed[i].time / dur) * fullW - scrollLeft;
+          let val = smoothed[i].tempo;
+          if (_tempoCurveMode === "relative" && corpusMean) {
+            const key = Math.round(smoothed[i].scoreTime * 1e6) / 1e6;
+            const ref = corpusMean.get(key);
+            val = ref && ref > 0 ? ((smoothed[i].tempo - ref) / ref) * 100 : 0;
+          }
+          // Track clipping direction: -1 = below, +1 = above, 0 = within range
+          let clipped = 0;
+          if (val > _tempoYRange.max) clipped = 1;
+          else if (val < _tempoYRange.min) clipped = -1;
+          val = Math.max(_tempoYRange.min, Math.min(_tempoYRange.max, val));
+          pts.push({ x, y: valToY(val), clipped });
+        }
+
+        // Cull to viewport with one-point margin on each side
+        let startIdx = 0,
+          endIdx = pts.length - 1;
+        while (startIdx < pts.length - 1 && pts[startIdx + 1].x < -10)
+          startIdx++;
+        while (endIdx > 0 && pts[endIdx - 1].x > viewW + 10) endIdx--;
+        if (startIdx > 0) startIdx--;
+        if (endIdx < pts.length - 1) endIdx++;
+
+        if (startIdx >= endIdx) return;
+
+        // Draw shaded area under curve
+        const zeroY = _tempoCurveMode === "relative" ? valToY(0) : yBot;
+        ctx.beginPath();
+        ctx.moveTo(pts[startIdx].x, zeroY);
+        for (let i = startIdx; i <= endIdx; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.lineTo(pts[endIdx].x, zeroY);
+        ctx.closePath();
+        ctx.fillStyle =
+          _tempoCurveMode === "relative"
+            ? `rgba(${_tcRgb},0.12)`
+            : `rgba(${_tcRgb},0.15)`;
+        ctx.fill();
+
+        // Draw the curve line
+        ctx.beginPath();
+        ctx.moveTo(pts[startIdx].x, pts[startIdx].y);
+        for (let i = startIdx + 1; i <= endIdx; i++)
+          ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.strokeStyle = `rgba(${_tcRgb},0.7)`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // In relative mode, draw zero line
+        if (_tempoCurveMode === "relative") {
+          ctx.beginPath();
+          ctx.moveTo(0, zeroY);
+          ctx.lineTo(viewW, zeroY);
+          ctx.strokeStyle = `rgba(${_tcRgb},0.3)`;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 3]);
           ctx.stroke();
           ctx.setLineDash([]);
         }
 
-        // Draw time ticks — skip during active playback for performance,
-        // a debounced redraw catches up when scrolling settles.
-        const isPlaying = currentAudioIx && wavesurfers[currentAudioIx] && wavesurfers[currentAudioIx].isPlaying();
-        if (!isPlaying) {
-          const tickBg = _wfBgCache[filename] || _refreshWfBg(filename);
-          _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg);
+        // --- Y-axis labels ---
+        const yAxisNiceSteps =
+          _tempoCurveMode === "relative"
+            ? [1, 2, 5, 10, 20, 25, 50, 100]
+            : [5, 10, 20, 25, 50, 100, 200, 500];
+        const targetTicks = 4;
+        const rawStep = yRange / targetTicks;
+        let yStep = yAxisNiceSteps[yAxisNiceSteps.length - 1];
+        for (const s of yAxisNiceSteps) {
+          if (s >= rawStep) {
+            yStep = s;
+            break;
+          }
+        }
+        ctx.font = "9px sans-serif";
+        ctx.textBaseline = "middle";
+        ctx.textAlign = "left";
+        // Start from a round number at or above yRange min
+        const firstTick = Math.ceil(_tempoYRange.min / yStep) * yStep;
+        for (let v = firstTick; v <= _tempoYRange.max; v += yStep) {
+          const y = valToY(v);
+          if (y < 2 || y > h - 2) continue;
+          // Tick line
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(4, y);
+          ctx.strokeStyle = `rgba(${_tcRgb},0.5)`;
+          ctx.lineWidth = 1;
+          ctx.stroke();
+          // Label
+          let tickLabel;
+          if (_tempoCurveMode === "relative") {
+            tickLabel = (v >= 0 ? "+" : "") + v + "%";
+          } else {
+            tickLabel = String(Math.round(v));
+          }
+          ctx.fillStyle = `rgba(${_tcRgb},0.7)`;
+          ctx.fillText(tickLabel, 5, y);
+        }
+        // Unit label at top
+        ctx.fillStyle = `rgba(${_tcRgb},0.5)`;
+        ctx.font = "8px sans-serif";
+        ctx.textBaseline = "bottom";
+        ctx.fillText(
+          _tempoCurveMode === "relative" ? "% avg." : "QPM",
+          5,
+          yTop - 1,
+        );
+
+        // --- Clipped-value indicators (small triangles at top/bottom edge) ---
+        ctx.fillStyle = `rgba(${_outlierRgb},0.6)`;
+        const triH = 5,
+          triW = 4;
+        for (let i = startIdx; i <= endIdx; i++) {
+          if (!pts[i].clipped) continue;
+          const px = pts[i].x;
+          if (px < -triW || px > viewW + triW) continue;
+          ctx.beginPath();
+          if (pts[i].clipped > 0) {
+            // Arrow pointing up at top edge
+            ctx.moveTo(px, yTop);
+            ctx.lineTo(px - triW, yTop + triH);
+            ctx.lineTo(px + triW, yTop + triH);
+          } else {
+            // Arrow pointing down at bottom edge
+            ctx.moveTo(px, yBot);
+            ctx.lineTo(px - triW, yBot - triH);
+            ctx.lineTo(px + triW, yBot - triH);
+          }
+          ctx.closePath();
+          ctx.fill();
         }
       }
 
@@ -3414,6 +4127,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // and repaints every position-indicator canvas).
       _positionUpdaters[filename] = updatePositionIndicator;
       _gridRedrawers[filename] = drawAlignmentGrid;
+      _tempoCurveRedrawers[filename] = drawTempoCurve;
 
       // --- Alignment correction overlay canvas ---
       const corrCanvas = document.createElement("canvas");
@@ -3465,8 +4179,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         wavesurfers[filename].zoom(
           (_currentZoomLevel * containerWidth) / duration,
         );
-        _applyScrollMode(filename);
       }
+      // Always sync scroll mode on ready — browser may have restored the
+      // "follow" radio before wavesurfers exist, so the pageshow handler
+      // couldn't apply it.  _applyScrollMode checks zoom level internally.
+      _applyScrollMode(filename);
 
       // Initial draw
       drawAlignmentGrid();
@@ -3509,7 +4226,12 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         // playback position; the ::part(progress) CSS hides the progress bar
         // but does not clear the clip-path, leaving the beginning blank.
         if (filename !== currentAudioIx) {
+          const sc = _getScrollContainer(filename);
+          const savedSL = sc ? sc.scrollLeft : 0;
+          _scrollSyncLock = true;
           wavesurfers[filename].seekTo(0);
+          if (sc) sc.scrollLeft = savedSL;
+          _scrollSyncLock = false;
         }
         if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
           _positionUpdaters[currentAudioIx]();
@@ -3979,7 +4701,7 @@ async function _buildAndPrepareSynthWaveform(
     const ws = wavesurfers[synthKey];
     if (ws) {
       updateWaveformOverlayStatus(getWfEl(), "Loading audio\u2026");
-      ws.load(blobUrl);
+      ws.loadBlob(wavBlob);
     }
   } catch (err) {
     console.error("MEI waveform synthesis failed:", err);
@@ -4023,6 +4745,10 @@ async function setGrids(grids) {
               meiDOM = parser.parseFromString(mei, "application/xml");
               tk.loadData(mei, {});
               timemap = tk.renderToTimemap({ includeMeasures: true });
+              // Invalidate tempo cache so it picks up timemap qstamp values
+              for (const k of Object.keys(_tempoRawCache))
+                delete _tempoRawCache[k];
+              _tempoYRange = null;
               console.log("timemap set!", timemap, mei);
             })
             .catch((e) => {
@@ -4048,6 +4774,10 @@ async function setGrids(grids) {
     alignmentGrids = grids;
   }
   console.log("setting grids: ", grids);
+
+  // Invalidate tempo curve cache (alignment data changed)
+  for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
+  _tempoYRange = null;
 
   // Capture original alignment grids for the "Revert all" feature
   for (const [key, grid] of Object.entries(alignmentGrids)) {
@@ -4114,8 +4844,11 @@ async function setGrids(grids) {
 // Called by align.js when alignment completes (no page reload needed).
 // ---------------------------------------------------------------------------
 function onAlignmentComplete(alignmentResult, files) {
-  // Create blob URLs for each audio file so WaveSurfer can load them
-  files.forEach((f) => fileBlobUrls.set(f.name, URL.createObjectURL(f)));
+  // Store each audio file so WaveSurfer can load them directly
+  files.forEach((f) => {
+    fileBlobUrls.set(f.name, URL.createObjectURL(f));
+    fileBlobs.set(f.name, f);
+  });
   useFilesMode = true;
   _fromAlignmentHandoff = true;
   loadedAlignmentJSON = alignmentResult;
@@ -4263,6 +4996,120 @@ function onRegionUpdated(filename, region) {
     );
   }
 }
+
+// ----------------------------------------------------------------------------
+// Settings Drawer — theme & i18n
+// ----------------------------------------------------------------------------
+
+const _THEME_KEY = "listenTool_theme";
+const _LANG_KEY  = "listenTool_language";
+
+/** Apply a theme by setting data-theme on <html>. Persists to localStorage. */
+function _applyTheme(theme) {
+  if (theme === "light") {
+    document.documentElement.removeAttribute("data-theme");
+  } else {
+    document.documentElement.setAttribute("data-theme", theme);
+  }
+  try { localStorage.setItem(_THEME_KEY, theme); } catch (_) {}
+
+  // Swap bat logo: sleeping bat for light themes, active bat for dark-background themes
+  const darkBgThemes = ["dark", "dracula", "forest", "nord"];
+  const logoEl = document.querySelector(".nav-logo-img");
+  if (logoEl) {
+    logoEl.src = darkBgThemes.includes(theme)
+      ? "/static/bat/ListenHereBat.svg"
+      : "/static/bat/ListenHereBatAsleep.svg";
+  }
+
+  // Re-apply waveform colours to any live WaveSurfer instances
+  const { waveColor, progressColor } = _waveformColors();
+  for (const ws of Object.values(wavesurfers)) {
+    try { ws.setOptions({ waveColor, progressColor }); } catch (_) {}
+  }
+
+  // Refresh label backgrounds (clears cache so next draw picks up new theme)
+  for (const filename of Object.keys(wavesurfers)) {
+    delete _wfBgCache[filename];
+    _refreshWfBg(filename);
+  }
+  // Redraw time axes and alignment grids with new tick/label colours
+  for (const redraw of Object.values(_gridRedrawers)) redraw();
+  // Redraw markers and position indicators with new theme colours
+  redrawAllMarkers();
+  const _firstPosUpdater = Object.values(_positionUpdaters)[0];
+  if (_firstPosUpdater) _firstPosUpdater();
+}
+
+/** Read current waveform colours from CSS custom properties. */
+function _waveformColors() {
+  const s = getComputedStyle(document.documentElement);
+  return {
+    waveColor:     s.getPropertyValue("--color-waveform").trim()          || "violet",
+    progressColor: s.getPropertyValue("--color-waveform-progress").trim() || "purple",
+  };
+}
+
+/** Apply a language preference. Persists to localStorage.
+ *  Full i18n support is a future feature; this stores the preference for later. */
+function _applyLanguage(lang) {
+  document.documentElement.setAttribute("lang", lang);
+  try { localStorage.setItem(_LANG_KEY, lang); } catch (_) {}
+}
+
+/** Restore persisted theme and language on page load (call before DOMContentLoaded). */
+function _restoreSettings() {
+  try {
+    const theme = localStorage.getItem(_THEME_KEY) || "light";
+    _applyTheme(theme);
+    const lang = localStorage.getItem(_LANG_KEY);
+    if (lang) _applyLanguage(lang);
+  } catch (_) {}
+}
+
+/** Wire up the Settings drawer UI. Called from DOMContentLoaded. */
+function _initSettingsDrawer() {
+  const drawer = document.getElementById("settings-drawer");
+  const openBtn = document.getElementById("settings-drawer-btn");
+  const closeBtn = document.getElementById("close-settings-drawer");
+
+  openBtn.addEventListener("click", () => {
+    drawer.classList.toggle("closed");
+    // Close Solid drawer if open
+    document.getElementById("solid-drawer").classList.add("closed");
+    // Highlight the button when drawer is open
+    openBtn.classList.toggle("active", !drawer.classList.contains("closed"));
+  });
+
+  closeBtn.addEventListener("click", () => {
+    drawer.classList.add("closed");
+    openBtn.classList.remove("active");
+  });
+
+  // Theme radio buttons — reflect persisted state, then wire change handler
+  const savedTheme = (() => {
+    try { return localStorage.getItem(_THEME_KEY) || "light"; } catch (_) { return "light"; }
+  })();
+  document.querySelectorAll('input[name="app-theme"]').forEach((radio) => {
+    if (radio.value === savedTheme) radio.checked = true;
+    radio.addEventListener("change", () => {
+      if (radio.checked) _applyTheme(radio.value);
+    });
+  });
+
+  // Language select — reflect persisted state, then wire change handler
+  const savedLang = (() => {
+    try { return localStorage.getItem(_LANG_KEY) || "en"; } catch (_) { return "en"; }
+  })();
+  const langSelect = document.getElementById("settings-language");
+  if (langSelect) {
+    langSelect.value = savedLang;
+    langSelect.addEventListener("change", () => _applyLanguage(langSelect.value));
+  }
+}
+
+// Restore theme immediately (before paint) to avoid flash of unstyled content
+_restoreSettings();
 
 // ----------------------------------------------------------------------------
 // Document Ready Hook
@@ -5201,8 +6048,9 @@ document.addEventListener("DOMContentLoaded", () => {
         jCenter = j;
       }
     }
-    const bandColor = "rgba(70, 130, 230, 0.12)";
-    ctx.fillStyle = bandColor;
+    const _izC = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
+    const _izRgb = `${_izC.r},${_izC.g},${_izC.b}`;
+    ctx.fillStyle = `rgba(${_izRgb},0.12)`;
     const cutoff = Math.ceil(sigma * 3);
     const jMin = Math.max(0, jCenter - cutoff);
     const jMax = Math.min(grid.length - 1, jCenter + cutoff);
@@ -5210,7 +6058,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const xMax = (grid[jMax] / dur) * fullW - scrollLeft;
     ctx.fillRect(xMin, 0, xMax - xMin, h);
     const xCenter = (grid[jCenter] / dur) * fullW - scrollLeft;
-    ctx.strokeStyle = "rgba(70, 130, 230, 0.5)";
+    ctx.strokeStyle = `rgba(${_izRgb},0.5)`;
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(xCenter, 0);
@@ -5245,7 +6093,8 @@ document.addEventListener("DOMContentLoaded", () => {
         if (jMin <= jMax) {
           const xMin = (morphedGrid[jMin] / dur) * fullW - scrollLeft;
           const xMax = (morphedGrid[jMax] / dur) * fullW - scrollLeft;
-          ctx.fillStyle = "rgba(70, 130, 230, 0.08)";
+          const _mpBand = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
+          ctx.fillStyle = `rgba(${_mpBand.r},${_mpBand.g},${_mpBand.b},0.08)`;
           ctx.fillRect(xMin, 0, xMax - xMin, h);
         }
       }
@@ -5477,6 +6326,82 @@ document.addEventListener("DOMContentLoaded", () => {
       applyZoom(_currentZoomLevel);
     });
 
+  // --- Tempo curve controls ---
+  const tempoCheckbox = document.getElementById("show-tempo-curve");
+  const tempoOptions = document.getElementById("tempo-curve-options");
+  function _redrawAllTempoCurves() {
+    Object.values(_gridRedrawers).forEach((fn) => fn());
+  }
+  if (tempoCheckbox) {
+    tempoCheckbox.addEventListener("change", (e) => {
+      _tempoCurveVisible = e.target.checked;
+      if (tempoOptions)
+        tempoOptions.style.display = _tempoCurveVisible ? "" : "none";
+      // Recompute Y range when toggling on
+      if (_tempoCurveVisible) {
+        for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
+        _tempoYRange = null;
+      }
+      _redrawAllTempoCurves();
+    });
+  }
+  const scopeControls = document.getElementById("tempo-scope-controls");
+  function _updateScopeVisibility() {
+    if (scopeControls)
+      scopeControls.style.display = _tempoCurveMode === "relative" ? "" : "none";
+  }
+  document.querySelectorAll('input[name="tempo-mode"]').forEach((radio) => {
+    radio.addEventListener("change", (e) => {
+      _tempoCurveMode = e.target.value;
+      _tempoYRange = null; // recompute for new mode
+      _updateScopeVisibility();
+      _redrawAllTempoCurves();
+    });
+  });
+  const tempoSmoothingSlider = document.getElementById("tempo-smoothing");
+  if (tempoSmoothingSlider) {
+    tempoSmoothingSlider.addEventListener("input", (e) => {
+      _tempoCurveSmoothing = parseInt(e.target.value);
+      _tempoYRange = null; // range depends on smoothed data
+      _redrawAllTempoCurves();
+    });
+  }
+  document.querySelectorAll('input[name="tempo-scope"]').forEach((radio) => {
+    radio.addEventListener("change", (e) => {
+      _tempoScopeWithinGroup = e.target.value === "group";
+      _tempoYRange = null;
+      _redrawAllTempoCurves();
+    });
+  });
+  const displayedOnlyCb = document.getElementById("tempo-scope-displayed");
+  if (displayedOnlyCb) {
+    displayedOnlyCb.addEventListener("change", (e) => {
+      _tempoScopeDisplayedOnly = e.target.checked;
+      _tempoYRange = null;
+      _redrawAllTempoCurves();
+    });
+  }
+
+  // Restore state from browser form restoration (controls may retain values
+  // across page reloads but the JS variables default to initial values).
+  if (tempoCheckbox?.checked) {
+    _tempoCurveVisible = true;
+    if (tempoOptions) tempoOptions.style.display = "";
+  }
+  const restoredMode = document.querySelector(
+    'input[name="tempo-mode"]:checked',
+  );
+  if (restoredMode) _tempoCurveMode = restoredMode.value;
+  const restoredScope = document.querySelector(
+    'input[name="tempo-scope"]:checked',
+  );
+  if (restoredScope) _tempoScopeWithinGroup = restoredScope.value === "group";
+  if (displayedOnlyCb) _tempoScopeDisplayedOnly = displayedOnlyCb.checked;
+  if (tempoSmoothingSlider)
+    _tempoCurveSmoothing = parseInt(tempoSmoothingSlider.value);
+  _updateScopeVisibility();
+  if (_tempoCurveVisible) _redrawAllTempoCurves();
+
   // Zoom slider
   const zoomSlider = document.getElementById("zoom-slider");
   if (zoomSlider) {
@@ -5533,19 +6458,23 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 
-  // show the Solid drawer button so users can open the linked-data panel
-  document.getElementById("solid-drawer-btn").style.display = "";
+  // Show the drawer-pull button stack
+  document.querySelector(".drawer-btns").style.display = "flex";
 
   // Solid Drawer toggle logic
   const solidDrawer = document.getElementById("solid-drawer");
   document.getElementById("solid-drawer-btn").addEventListener("click", () => {
     solidDrawer.classList.toggle("closed");
+    document.getElementById("settings-drawer").classList.add("closed");
   });
   document
     .getElementById("close-solid-drawer")
     .addEventListener("click", () => {
       solidDrawer.classList.add("closed");
     });
+
+  // Settings Drawer toggle + theme/i18n wiring
+  _initSettingsDrawer();
 
   // Keep focus available for keyboard shortcuts after clicks on nav/sidebar controls.
   // Blur the focused element after mouseup unless the user clicked into a text input,
@@ -5561,7 +6490,7 @@ document.addEventListener("DOMContentLoaded", () => {
       active.type !== "radio"
     )
       return;
-    if (active.closest(".gm-modal, #solid-drawer, #file-picker-overlay"))
+    if (active.closest(".gm-modal, #solid-drawer, #settings-drawer, #file-picker-overlay"))
       return;
     active.blur();
   });
@@ -5572,7 +6501,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Don't intercept when a modal or the Solid drawer has focus
     if (
       e.target.closest &&
-      e.target.closest(".gm-modal, #solid-drawer, #file-picker-overlay")
+      e.target.closest(".gm-modal, #solid-drawer, #settings-drawer, #file-picker-overlay")
     )
       return;
     console.log("KEYDOWN: ", e);
@@ -6299,8 +7228,9 @@ function initFilePicker() {
         // Validate basic structure
         if (data.body && data.body.audio && data.header && data.header.ref) {
           alignmentLoadedFromFile = true;
-          // Clear old blob URLs and audio keys
+          // Clear old blob URLs/objects and audio keys
           fileBlobUrls.clear();
+          fileBlobs.clear();
           expectedAudioKeys = Object.keys(data.body.audio).filter(
             (k) => k !== SYNTH_MEI_KEY,
           );
@@ -6338,6 +7268,7 @@ function initFilePicker() {
       if (filesByName.has(expectedName)) {
         const file = filesByName.get(expectedName);
         fileBlobUrls.set(key, URL.createObjectURL(file));
+        fileBlobs.set(key, file);
       }
     }
     renderFileList();
@@ -6658,3 +7589,6 @@ function initGlobalJsonDrop() {
 
 // Initialize global JSON drop handler
 initGlobalJsonDrop();
+
+// Expose internals for E2E testing (Playwright)
+window._listenTest = { get wavesurfers() { return wavesurfers; }, get currentAudioIx() { return currentAudioIx; } };

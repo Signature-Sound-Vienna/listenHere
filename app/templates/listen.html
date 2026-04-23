@@ -3,7 +3,8 @@
     <title>Listen Here!</title>
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='bat/favicon.svg') }}" />
     <link rel="stylesheet" href="{{ url_for('static', filename='css/default.css') }}" />
-    <script> 
+    <script src="{{ url_for('static', filename='js/theme-setup.js') }}"></script>
+    <script>
       var root = "{{ url_for('static', filename='') }}";
       var params = new URL(window.location.toLocaleString()).searchParams;
       var alignmentData = {{ data | tojson }};
@@ -19,6 +20,58 @@
     <!-- WaveSurfer v7 is imported as an ES module directly in listen.js -->
     <script src="{{ url_for('static', filename='vendor/solid-client-authn.bundle.js') }}"></script>
     <script src="{{ url_for('static', filename='vendor/jsonld.min.js') }}"></script>
+    <!-- Load Matomo@mdw.ac.at -->
+    <script type="text/javascript">
+      var _paq = (window._paq = window._paq || []);
+      /* tracker methods like "setCustomDimension" should be called before "trackPageView" */
+      _paq.push(["setDoNotTrack", true]);
+      _paq.push(["requireCookieConsent"]);
+      if (
+        (function () {
+          try {
+            return JSON.parse(
+              unescape(
+                ("; " + document.cookie)
+                  .split("; consent=")
+                  .pop()
+                  .split(";")
+                  .shift(),
+              ),
+            ).tracking;
+          } catch (e) {
+            return false;
+          }
+        })()
+      ) {
+        _paq.push(["setCookieConsentGiven"]);
+      } else {
+        _paq.push(["forgetCookieConsentGiven"]);
+      }
+      _paq.push(["trackPageView"]);
+      _paq.push(["enableLinkTracking"]);
+      (function () {
+        var u = "https://matomo.mdw.ac.at/";
+        _paq.push(["setTrackerUrl", u + "matomo.php"]);
+        _paq.push(["setSiteId", "1000144"]);
+        var d = document,
+          g = d.createElement("script"),
+          s = d.getElementsByTagName("script")[0];
+        g.type = "text/javascript";
+        g.async = true;
+        g.src = u + "matomo.js";
+        s.parentNode.insertBefore(g, s);
+      })();
+    </script>
+    <noscript>
+      <p>
+        <img
+          src="https://matomo.mdw.ac.at/matomo.php?idsite=1000144&amp;rec=1"
+          style="border: 0"
+          alt=""
+        />
+      </p>
+    </noscript>
+    <!-- End Matomo Code -->
   </head>
   <body>
     <!-- Align panel (shown when mode=align) -->
@@ -26,7 +79,7 @@
       <div id="align-card">
         <div id="align-header">
           <div id="align-logo">
-            <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="64" alt="Logo" />
+            <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" height="64" alt="Logo" class="lh-logo-img" />
           </div>
           <h1>Align Audio Files</h1>
           <!-- Step indicator -->
@@ -178,7 +231,7 @@
               <input type="number" id="align-peaks-count" value="4096"
                 min="128" max="16384" step="128" style="width:5em" />
               pts/track
-              <span id="align-peaks-size-estimate" style="font-size:smaller;color:#555"></span>
+              <span id="align-peaks-size-estimate" style="font-size:smaller;color:var(--color-text-muted)"></span>
             </div>
           </div>
           <button id="align-start-btn">Start Alignment</button>
@@ -278,7 +331,7 @@
       <nav>
         <div id="nav-top">
             <a href="/" class="nav-logo">
-                <img src="{{ url_for('static', filename='bat/ListenHereBat.svg') }}" alt="Listen Here!">
+                <img src="{{ url_for('static', filename='bat/ListenHereBatAsleep.svg') }}" alt="Listen Here!" class="nav-logo-img lh-logo-img">
             </a>
             <div id="transport">
               <button id="skip-back" class="transport-btn" title="Skip to start">
@@ -311,9 +364,9 @@
               Controls <span id="middle-collapse-arrow" class="collapse-arrow">&#9662;</span>
             </div>
             <div id="nav-middle" class="nav-section-body grow">
-              <!-- Settings panel-->
-              <fieldset id="settings-panel" class="collapsible-fieldset">
-                <legend title="Collapse / expand settings">Settings <span class="collapse-arrow">&#9662;</span></legend>
+              <!-- Playback panel-->
+              <fieldset id="playback-panel" class="collapsible-fieldset">
+                <legend title="Collapse / expand playback options">Playback <span class="collapse-arrow">&#9662;</span></legend>
                 <div id="zoom-controls">
                   <label for="zoom-slider" id="zoom-icon" title="Zoom level for all waveforms"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><line x1="15" y1="15" x2="21" y2="21"/></svg><span id="zoom-label">1x</span></label>
                   <input type="range" id="zoom-slider" min="0" max="5" step="1" value="0" title="Zoom level for all waveforms"/>
@@ -344,6 +397,32 @@
                     <input type="checkbox" id="shared-time-axis" title="All waveforms use the same time scale (shorter recordings appear narrower)"/>
                     <label for="shared-time-axis" title="All waveforms use the same time scale (shorter recordings appear narrower)">Shared time axis</label>
                   </span>
+                  <hr class="tools-divider"/>
+                  <span>
+                    <input type="checkbox" id="show-tempo-curve" title="Overlay tempo curve on each waveform (requires score alignment)"/>
+                    <label for="show-tempo-curve" title="Overlay tempo curve on each waveform (requires score alignment)">Tempo curve</label>
+                  </span>
+                  <div id="tempo-curve-options" style="display:none">
+                    <div id="tempo-mode-controls">
+                      <input type="radio" name="tempo-mode" id="tempo-mode-absolute" value="absolute" checked/>
+                      <label for="tempo-mode-absolute" title="Quarter notes per minute">QPM</label>
+                      <input type="radio" name="tempo-mode" id="tempo-mode-relative" value="relative"/>
+                      <label for="tempo-mode-relative" title="Percentage deviation from corpus mean">Deviation</label>
+                    </div>
+                    <div id="tempo-smoothing-controls">
+                      <label for="tempo-smoothing" title="Smoothing window for tempo curve">Smooth</label>
+                      <input type="range" id="tempo-smoothing" min="0" max="10" step="1" value="0" title="Smoothing window (0 = none)"/>
+                    </div>
+                    <div id="tempo-scope-controls">
+                      <input type="radio" name="tempo-scope" id="tempo-scope-group" value="group"/>
+                      <label for="tempo-scope-group" title="Compute reference from files within the same group">Within group</label>
+                      <input type="radio" name="tempo-scope" id="tempo-scope-all" value="all" checked/>
+                      <label for="tempo-scope-all" title="Compute reference from all files across groups">Across groups</label>
+                      <span class="scope-separator"></span>
+                      <input type="checkbox" id="tempo-scope-displayed" />
+                      <label for="tempo-scope-displayed" title="Restrict to currently displayed files only">Only visible</label>
+                    </div>
+                  </div>
                 </div>
               </fieldset>
 
@@ -440,6 +519,80 @@
       </div>
     </div>
     
+    <!-- Settings Drawer -->
+    <div id="settings-drawer" class="closed">
+      <div class="drawer-header">
+        <h2>Settings</h2>
+        <button id="close-settings-drawer">&#x2715;</button>
+      </div>
+      <div id="settings-drawer-content">
+
+        <!-- Theme -->
+        <section class="settings-section">
+          <h3 class="settings-section-title">Theme</h3>
+          <div class="settings-theme-options">
+            <div class="theme-row">
+              <span class="theme-row-label">Light</span>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="light" checked/>
+                <span class="settings-theme-swatch theme-swatch-light" title="Light"></span>
+                <span>Light</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="solarized"/>
+                <span class="settings-theme-swatch theme-swatch-solarized" title="Solarized"></span>
+                <span>Solarized</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="sepia"/>
+                <span class="settings-theme-swatch theme-swatch-sepia" title="Sepia"></span>
+                <span>Sepia</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="peach"/>
+                <span class="settings-theme-swatch theme-swatch-peach" title="Peach"></span>
+                <span>Peach</span>
+              </label>
+            </div>
+            <div class="theme-row">
+              <span class="theme-row-label">Dark</span>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="dark"/>
+                <span class="settings-theme-swatch theme-swatch-dark" title="Dark"></span>
+                <span>Dark</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="dracula"/>
+                <span class="settings-theme-swatch theme-swatch-dracula" title="Dracula"></span>
+                <span>Dracula</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="forest"/>
+                <span class="settings-theme-swatch theme-swatch-forest" title="Forest"></span>
+                <span>Forest</span>
+              </label>
+              <label class="settings-theme-option">
+                <input type="radio" name="app-theme" value="nord"/>
+                <span class="settings-theme-swatch theme-swatch-nord" title="Nord"></span>
+                <span>Nord</span>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <!-- Language -->
+        <section class="settings-section">
+          <h3 class="settings-section-title">Language</h3>
+          <select id="settings-language" title="Interface language">
+            <option value="en" selected>English</option>
+            <option value="de">Deutsch</option>
+          </select>
+          <p class="settings-hint">Full translation support coming soon.</p>
+        </section>
+
+      </div>
+    </div>
+
     <!-- Solid / Linked Data Drawer -->
     <div id="solid-drawer" class="closed">
       <div class="drawer-header">
@@ -453,10 +606,18 @@
       </div>
     </div>
 
-    <!-- Solid / Linked Data Drawer Button (Floating Handle) -->
-    <button id="solid-drawer-btn" title="Linked Data & Annotations">
-      <img src="{{ url_for('static', filename='svg/RDF-logo.svg') }}" width="20" height="20" alt="RDF" />
-      <span class="solid-status-dot"></span>
-    </button>
+    <!-- Floating drawer-pull buttons (Settings above RDF) -->
+    <div class="drawer-btns">
+      <button id="settings-drawer-btn" title="Settings">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+      <button id="solid-drawer-btn" title="Linked Data & Annotations">
+        <img src="{{ url_for('static', filename='svg/RDF-logo.svg') }}" width="20" height="20" alt="RDF" />
+        <span class="solid-status-dot"></span>
+      </button>
+    </div>
   </body>
 </html>

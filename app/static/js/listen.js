@@ -7799,4 +7799,22 @@ function initGlobalJsonDrop() {
 initGlobalJsonDrop();
 
 // Expose internals for E2E testing (Playwright)
-window._listenTest = { get wavesurfers() { return wavesurfers; }, get currentAudioIx() { return currentAudioIx; } };
+window._listenTest = {
+  get wavesurfers() { return wavesurfers; },
+  get currentAudioIx() { return currentAudioIx; },
+  get currentlyAnnotatedRegions() { return currentlyAnnotatedRegions; },
+  /** Inject a synthetic annotated region via per-waveform localOverrides (bypasses alignment lookup). */
+  injectTestRegion(overridesByWaveform, selection = "test-region") {
+    currentlyAnnotatedRegions.push({
+      from: 0,
+      to: 0,
+      selection,
+      localOverrides: overridesByWaveform,
+    });
+    updateRenderAnnoRegions();
+  },
+  clearTestRegions() {
+    currentlyAnnotatedRegions.length = 0;
+    updateRenderAnnoRegions();
+  },
+};

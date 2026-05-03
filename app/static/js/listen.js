@@ -2623,7 +2623,12 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     return [...members].filter((f) => filenames.includes(f)).sort();
   });
 
-  const ungrouped = filenames.filter((f) => !grouped.has(f)).sort();
+  // The synth/score key has its own dedicated Score container — never count
+  // it as ungrouped (otherwise an empty "Ungrouped recordings" header lingers
+  // when all real recordings are placed into user groups).
+  const ungrouped = filenames
+    .filter((f) => f !== SYNTH_MEI_KEY && !grouped.has(f))
+    .sort();
 
   // Build all containers keyed by group name, then append in saved order
   const contentByName = {};
@@ -4891,13 +4896,17 @@ async function setGrids(grids) {
   if ("body" in grids) {
     if ("audio" in grids.body) {
       // final version of alignment json
-      alignmentGrids = grids.body.audio;
-      // Normalise entries that carry inline peak data {times, peaks, duration}
-      // to plain time arrays, stashing peak info in _waveformPeaks.
-      for (const [key, val] of Object.entries(alignmentGrids)) {
+      // Build alignmentGrids as a fresh map of filename → bare time array,
+      // stashing inline {peaks, duration} into _waveformPeaks. Crucially, do
+      // NOT mutate grids.body.audio — loadedAlignmentJSON aliases the same
+      // object and the inline peaks/duration must survive a Save Data round-trip.
+      alignmentGrids = {};
+      for (const [key, val] of Object.entries(grids.body.audio)) {
         if (val && !Array.isArray(val) && Array.isArray(val.times)) {
           _waveformPeaks[key] = { peaks: val.peaks, duration: val.duration };
           alignmentGrids[key] = val.times;
+        } else {
+          alignmentGrids[key] = val;
         }
       }
       if ("header" in grids) {

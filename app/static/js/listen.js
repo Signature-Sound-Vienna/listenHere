@@ -24,6 +24,7 @@ import {
   configure as configureAlign,
   setVerovioPromise,
 } from "./align.js";
+import { initAnnotationV6 } from "./annotation/index.js";
 
 let markers = [];
 let loaded = new Set();
@@ -5327,6 +5328,8 @@ _restoreSettings();
 // ----------------------------------------------------------------------------
 
 document.addEventListener("DOMContentLoaded", () => {
+  initAnnotationV6();
+
   // --- Collapse wiring for nav cards and collapsible fieldsets ---
 
   // Nav card collapse (Controls / Waveforms)

@@ -1,0 +1,342 @@
+// V6 annotation in-memory state.
+//
+// Pure data + actions + a tiny event emitter. No DOM, no Solid, no LD —
+// those concerns live in ui-* modules and mao-adapter.js.
+//
+// Model:
+//   Annotation {
+//     id, label, color, description,
+//     hasUnsavedChanges, published,
+//     lastPostedUris,                         // populated by mao-adapter on post/update
+//     regions: [{ id, label }],               // GLOBAL, ordered; identity preserved
+//     targets: [{
+//       file, description,
+//       regionTimes: { [regionId]: {start, end} }  // entry for every region
+//     }],
+//     groupNotes:  { [groupLabel]: string },
+//     comparisons: [{ id, leftLabel, rightLabel, text }],
+//     pinnedGrouping: { name, groups: [{ label, color, files: [] }] } | null,
+//   }
+//
+// Invariant: every regions[].id has a regionTimes[regions[].id] entry on every target.
+// Collapsed regions use start === end. All mutating actions preserve this.
+
+const V6_DEFAULT_COLORS = [
+  "#22c55e", "#3b82f6", "#a855f7", "#f59e0b", "#ef4444",
+  "#14b8a6", "#ec4899", "#0ea5e9", "#84cc16", "#eab308",
+];
+
+let _annotations = [];
+let _activeId = null;
+let _colorIx = 0;
+let _nextLocalId = 1;
+const _listeners = new Set();
+
+function _id(prefix) {
+  return prefix + "_" + Date.now().toString(36) + "_" + _nextLocalId++;
+}
+
+function _nextColor() {
+  const c = V6_DEFAULT_COLORS[_colorIx % V6_DEFAULT_COLORS.length];
+  _colorIx++;
+  return c;
+}
+
+function _emit() {
+  for (const fn of _listeners) {
+    try {
+      fn();
+    } catch (e) {
+      console.error("[annotation/v6] listener threw", e);
+    }
+  }
+}
+
+function _getMut(annId) {
+  return _annotations.find((a) => a.id === annId) || null;
+}
+
+// ----- subscription / reads ------------------------------------------------
+
+export function subscribe(fn) {
+  _listeners.add(fn);
+  return () => _listeners.delete(fn);
+}
+
+export function getAll() {
+  return _annotations;
+}
+
+export function getById(id) {
+  return _annotations.find((a) => a.id === id) || null;
+}
+
+export function getActiveId() {
+  return _activeId;
+}
+
+// ----- selection -----------------------------------------------------------
+
+export function setActiveAnnotation(id) {
+  _activeId = id;
+  _emit();
+}
+
+// ----- bulk load -----------------------------------------------------------
+
+export function replaceAll(list) {
+  _annotations = (list || []).map(_normalise);
+  _activeId = null;
+  _emit();
+}
+
+function _normalise(a) {
+  const regions = (a.regions || []).map((r) => ({
+    id: r.id,
+    label: r.label || "",
+  }));
+  const targets = (a.targets || []).map((t) => {
+    const regionTimes = {};
+    regions.forEach((r) => {
+      const src = t.regionTimes && t.regionTimes[r.id];
+      regionTimes[r.id] = src
+        ? { start: src.start, end: src.end }
+        : { start: 0, end: 0 };
+    });
+    return {
+      file: t.file,
+      description: t.description || "",
+      regionTimes,
+    };
+  });
+  return {
+    id: a.id,
+    label: a.label || "",
+    color: a.color || _nextColor(),
+    description: a.description || "",
+    hasUnsavedChanges: !!a.hasUnsavedChanges,
+    published: !!a.published,
+    lastPostedUris: a.lastPostedUris || null,
+    regions,
+    targets,
+    groupNotes: { ...(a.groupNotes || {}) },
+    comparisons: (a.comparisons || []).map((c) => ({
+      id: c.id,
+      leftLabel: c.leftLabel,
+      rightLabel: c.rightLabel,
+      text: c.text || "",
+    })),
+    pinnedGrouping: a.pinnedGrouping || null,
+  };
+}
+
+// ----- annotation lifecycle ------------------------------------------------
+
+export function createAnnotation(opts = {}) {
+  const ann = {
+    id: opts.id || _id("ann"),
+    label: opts.label || "",
+    color: opts.color || _nextColor(),
+    description: "",
+    hasUnsavedChanges: true,
+    published: false,
+    lastPostedUris: null,
+    regions: [],
+    targets: [],
+    groupNotes: {},
+    comparisons: [],
+    pinnedGrouping: opts.pinnedGrouping || null,
+  };
+  _annotations.push(ann);
+  _activeId = ann.id;
+  _emit();
+  return ann.id;
+}
+
+export function removeAnnotation(annId) {
+  _annotations = _annotations.filter((a) => a.id !== annId);
+  if (_activeId === annId) _activeId = null;
+  _emit();
+}
+
+export function updateAnnotationField(annId, field, value) {
+  const a = _getMut(annId);
+  if (!a) return;
+  if (!["label", "color", "description"].includes(field)) return;
+  a[field] = value;
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+// ----- targets (attached recordings) --------------------------------------
+
+function _attachTargetInternal(a, file) {
+  // Seed regionTimes for every existing region from the first existing target,
+  // or zero-zero if no targets exist yet.
+  const regionTimes = {};
+  const src = a.targets[0];
+  a.regions.forEach((r) => {
+    const seed = src && src.regionTimes[r.id];
+    regionTimes[r.id] = seed
+      ? { start: seed.start, end: seed.end }
+      : { start: 0, end: 0 };
+  });
+  a.targets.push({ file, description: "", regionTimes });
+}
+
+export function addTarget(annId, file) {
+  const a = _getMut(annId);
+  if (!a) return;
+  if (a.targets.find((t) => t.file === file)) return;
+  _attachTargetInternal(a, file);
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+export function removeTarget(annId, file) {
+  const a = _getMut(annId);
+  if (!a) return;
+  a.targets = a.targets.filter((t) => t.file !== file);
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+export function updateTargetNote(annId, file, text) {
+  const a = _getMut(annId);
+  if (!a) return;
+  const t = a.targets.find((x) => x.file === file);
+  if (!t) return;
+  t.description = text;
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+// ----- regions (global, ordered) ------------------------------------------
+
+export function addRegion(annId, file, start, end) {
+  const a = _getMut(annId);
+  if (!a) return null;
+  const rid = _id("rgn");
+  a.regions.push({ id: rid, label: "" });
+  // Attach the dragged file if it isn't already.
+  if (!a.targets.find((t) => t.file === file)) {
+    _attachTargetInternal(a, file);
+  }
+  // Mirror the drag bounds to every attached target (V6 option A).
+  a.targets.forEach((t) => {
+    t.regionTimes[rid] = { start, end };
+  });
+  a.hasUnsavedChanges = true;
+  _emit();
+  return rid;
+}
+
+export function removeRegion(annId, regionId) {
+  const a = _getMut(annId);
+  if (!a) return;
+  a.regions = a.regions.filter((r) => r.id !== regionId);
+  a.targets.forEach((t) => {
+    delete t.regionTimes[regionId];
+  });
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+export function updateRegionTime(annId, file, regionId, patch) {
+  const a = _getMut(annId);
+  if (!a) return;
+  const t = a.targets.find((x) => x.file === file);
+  if (!t) return;
+  const cur = t.regionTimes[regionId];
+  if (!cur) return;
+  if (patch.start !== undefined) cur.start = patch.start;
+  if (patch.end !== undefined) cur.end = patch.end;
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+export function updateRegionLabel(annId, regionId, label) {
+  const a = _getMut(annId);
+  if (!a) return;
+  const r = a.regions.find((x) => x.id === regionId);
+  if (!r) return;
+  r.label = label;
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+// ----- group notes & comparisons ------------------------------------------
+
+export function setGroupNote(annId, groupLabel, text) {
+  const a = _getMut(annId);
+  if (!a) return;
+  if (text) a.groupNotes[groupLabel] = text;
+  else delete a.groupNotes[groupLabel];
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+export function addComparison(annId, { leftLabel, rightLabel, text = "" }) {
+  const a = _getMut(annId);
+  if (!a) return null;
+  const cid = _id("cmp");
+  a.comparisons.push({ id: cid, leftLabel, rightLabel, text });
+  a.hasUnsavedChanges = true;
+  _emit();
+  return cid;
+}
+
+export function updateComparison(annId, cid, patch) {
+  const a = _getMut(annId);
+  if (!a) return;
+  const c = a.comparisons.find((x) => x.id === cid);
+  if (!c) return;
+  if (patch.leftLabel !== undefined) c.leftLabel = patch.leftLabel;
+  if (patch.rightLabel !== undefined) c.rightLabel = patch.rightLabel;
+  if (patch.text !== undefined) c.text = patch.text;
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+export function removeComparison(annId, cid) {
+  const a = _getMut(annId);
+  if (!a) return;
+  a.comparisons = a.comparisons.filter((c) => c.id !== cid);
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+// ----- lifecycle flags ----------------------------------------------------
+
+export function markSaved(annId) {
+  const a = _getMut(annId);
+  if (!a) return;
+  a.hasUnsavedChanges = false;
+  _emit();
+}
+
+export function markPosted(annId, lastPostedUris) {
+  const a = _getMut(annId);
+  if (!a) return;
+  a.published = true;
+  a.hasUnsavedChanges = false;
+  if (lastPostedUris) a.lastPostedUris = lastPostedUris;
+  _emit();
+}
+
+export function markDirty(annId) {
+  const a = _getMut(annId);
+  if (!a) return;
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+// ----- test helper --------------------------------------------------------
+
+export function _resetForTests() {
+  _annotations = [];
+  _activeId = null;
+  _colorIx = 0;
+  _nextLocalId = 1;
+  _listeners.clear();
+}

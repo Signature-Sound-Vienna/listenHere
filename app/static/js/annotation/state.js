@@ -315,6 +315,23 @@ export function markSaved(annId) {
   _emit();
 }
 
+/** True iff any annotation currently has hasUnsavedChanges. */
+export function isAnyDirty() {
+  return _annotations.some((a) => a.hasUnsavedChanges);
+}
+
+/** Clear hasUnsavedChanges on every annotation. Single emit at the end. */
+export function markAllSaved() {
+  let changed = false;
+  for (const a of _annotations) {
+    if (a.hasUnsavedChanges) {
+      a.hasUnsavedChanges = false;
+      changed = true;
+    }
+  }
+  if (changed) _emit();
+}
+
 export function markPosted(annId, lastPostedUris) {
   const a = _getMut(annId);
   if (!a) return;

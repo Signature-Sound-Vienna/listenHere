@@ -24,7 +24,10 @@ import {
   configure as configureAlign,
   setVerovioPromise,
 } from "./align.js";
-import { initAnnotationV6 } from "./annotation/index.js";
+import {
+  initAnnotationV6,
+  commitAnnotationsToAlignment,
+} from "./annotation/index.js";
 
 let markers = [];
 let loaded = new Set();
@@ -1344,6 +1347,16 @@ const _redoStack = [];
 // incremented on redo. Dirty = _changeCounter !== _savedAtCounter.
 let _changeCounter = 0;
 let _savedAtCounter = 0;
+// V6 annotation-changes pending. Pushed by annotation/index.js via
+// setAnnoChangesPending(). ORed into _updateDirtyState() so the central
+// Save-data indicator reflects annotation changes too. Tracked separately
+// from _changeCounter so a Solid post can clear annotation dirtiness without
+// affecting the alignment-data dirty flag.
+let _annoChangesPending = false;
+export function setAnnoChangesPending(v) {
+  _annoChangesPending = !!v;
+  _updateDirtyState();
+}
 // Revert: original grids captured when alignment first loads
 const _alignOriginalGrids = {};
 // Radius presets (in alignment indices)
@@ -2931,7 +2944,8 @@ function _updateGroupCounts() {
 }
 
 function _updateDirtyState() {
-  const isDirty = _changeCounter !== _savedAtCounter;
+  const isDirty =
+    _changeCounter !== _savedAtCounter || _annoChangesPending;
   const dlBtn = document.getElementById("download-json-btn");
   if (dlBtn) {
     dlBtn.classList.toggle("json-dirty", isDirty);
@@ -5417,6 +5431,11 @@ document.addEventListener("DOMContentLoaded", () => {
   if (dlBtn) {
     dlBtn.addEventListener("click", () => {
       if (!loadedAlignmentJSON) return;
+      // Phase E will serialise V6 annotation state into loadedAlignmentJSON
+      // inside this hook. For now it just clears V6's per-annotation
+      // hasUnsavedChanges flags, which in turn pushes the central indicator
+      // clean via setAnnoChangesPending(false).
+      commitAnnotationsToAlignment(loadedAlignmentJSON);
       const blob = new Blob([JSON.stringify(loadedAlignmentJSON, null, 2)], {
         type: "application/json",
       });

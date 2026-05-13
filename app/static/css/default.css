@@ -4555,3 +4555,331 @@ body:has(.lh-settings-drawer:not(.closed)) .lh-drawer-btns {
 #lh-settings-btn:hover svg {
   stroke: var(--color-accent);
 }
+
+/* =========================================================================
+   V6 annotation rework (feature-flagged: body.lh-v6-active)
+   Drawer + ribbon + pull-tab. UI atoms inside the drawer body.
+   Removed in Phase F when the feature flag is retired.
+   ========================================================================= */
+
+body.lh-v6-active { padding-bottom: 44px; transition: padding-right 200ms ease; }
+body.lh-v6-active.lh-v6-drawer-open { padding-right: 380px; }
+
+/* --- Bottom ribbon --------------------------------------------------- */
+.lh-v6-ribbon {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  height: 40px;
+  background: var(--color-surface);
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  z-index: 50;
+  font-size: 12px;
+  transition: right 200ms ease;
+}
+body.lh-v6-drawer-open .lh-v6-ribbon { right: 380px; }
+.lh-v6-ribbon-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+.lh-v6-ribbon-filter {
+  width: 120px;
+  padding: 3px 8px;
+  font-size: 11px;
+  border-radius: 12px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  flex-shrink: 0;
+}
+.lh-v6-ribbon-chips {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  min-width: 0;
+  scrollbar-width: thin;
+}
+.lh-v6-ribbon-empty {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+.lh-v6-ribbon-new {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px dashed var(--color-border);
+  background: transparent;
+  color: var(--color-text-secondary, var(--color-text));
+  cursor: pointer;
+}
+.lh-v6-ribbon-new:hover {
+  background: var(--color-accent-light);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+/* --- Chip ----------------------------------------------------------- */
+.lh-v6-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  height: 26px;
+  border-radius: 14px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.lh-v6-chip:hover { background: var(--color-surface-alt); }
+.lh-v6-chip.active {
+  border-color: var(--color-link);
+  background: var(--color-accent-light);
+  box-shadow: 0 0 0 2px var(--color-link-shadow);
+}
+.lh-v6-chip-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.lh-v6-chip-label {
+  font-weight: 600;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lh-v6-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f59e0b;
+}
+.lh-v6-chip-tick { font-size: 10px; color: #22c55e; }
+
+/* --- Side drawer ---------------------------------------------------- */
+.lh-v6-drawer {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: 380px;
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  z-index: 60;
+  transform: translateX(100%);
+  transition: transform 200ms ease;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.06);
+}
+.lh-v6-drawer.open { transform: translateX(0); }
+.lh-v6-drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-border-light);
+  flex-shrink: 0;
+}
+.lh-v6-drawer-title {
+  font-weight: 600;
+  font-size: 13px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.lh-v6-mode-toggle {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+}
+.lh-v6-mode-btn {
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-secondary, var(--color-text));
+  cursor: pointer;
+}
+.lh-v6-mode-btn.active {
+  background: var(--color-link);
+  color: #fff;
+}
+.lh-v6-mode-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.lh-v6-drawer-close {
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+}
+.lh-v6-drawer-close:hover { color: var(--color-text); }
+
+.lh-v6-drawer-toolbar {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border-light);
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--color-text-secondary, var(--color-text));
+}
+.lh-v6-draw-mode-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.lh-v6-draw-mode-checkbox { margin: 0; }
+
+.lh-v6-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  min-height: 0;
+}
+
+.lh-v6-publish-bar {
+  padding: 8px 10px;
+  border-top: 1px solid var(--color-border-light);
+  background: var(--color-surface);
+  flex-shrink: 0;
+}
+.lh-v6-publish-placeholder {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* --- Pull tab (sits inside the existing .drawer-btns column) -------- */
+/* Inherits the .drawer-btns > button styling for visual consistency. */
+.lh-v6-pull-tab.open { color: var(--color-link); }
+/* Push the existing drawer-btns column left when V6 drawer is open. */
+body.lh-v6-drawer-open .drawer-btns { right: 380px; }
+
+/* --- Editor & viewer sections ------------------------------------- */
+.lh-v6-section {
+  margin-bottom: 14px;
+}
+.lh-v6-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  margin: 0 0 6px 0;
+}
+.lh-v6-identity-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.lh-v6-color-picker {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.lh-v6-title-input {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  min-width: 0;
+}
+.lh-v6-delete-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.lh-v6-delete-btn:hover {
+  border-color: #ef4444;
+  color: #ef4444;
+}
+.lh-v6-description-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-family: inherit;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  resize: vertical;
+  min-height: 60px;
+}
+.lh-v6-editor-placeholder {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-style: italic;
+  padding: 8px;
+  border: 1px dashed var(--color-border-light);
+  border-radius: 4px;
+  margin-top: 12px;
+}
+.lh-v6-viewer-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.lh-v6-color-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+.lh-v6-viewer-description {
+  font-size: 12px;
+  color: var(--color-text-secondary, var(--color-text));
+  white-space: pre-wrap;
+  margin: 0;
+}
+.lh-v6-empty,
+.lh-v6-empty-hint {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+

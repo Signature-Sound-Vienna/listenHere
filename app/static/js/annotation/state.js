@@ -193,6 +193,30 @@ export function addTarget(annId, file) {
   _emit();
 }
 
+/**
+ * Attach every file in `files` as a target if not already attached. Single
+ * emit at the end if anything changed. Used by the waveform bridge to keep
+ * every loaded waveform attached to every annotation so regions render
+ * everywhere by default; users curate detached recordings via the editor's
+ * Recordings section.
+ */
+export function ensureTargetsAttached(annId, files) {
+  const a = _getMut(annId);
+  if (!a) return false;
+  let changed = false;
+  for (const f of files) {
+    if (!a.targets.find((t) => t.file === f)) {
+      _attachTargetInternal(a, f);
+      changed = true;
+    }
+  }
+  if (changed) {
+    a.hasUnsavedChanges = true;
+    _emit();
+  }
+  return changed;
+}
+
 export function removeTarget(annId, file) {
   const a = _getMut(annId);
   if (!a) return;
@@ -253,6 +277,30 @@ export function updateRegionTime(annId, file, regionId, patch) {
   if (patch.end !== undefined) cur.end = patch.end;
   a.hasUnsavedChanges = true;
   _emit();
+}
+
+/**
+ * Bulk update: set a region's times across many targets in one emit.
+ * Used by the waveform bridge to mirror a resize/move across all attached
+ * recordings (alignment-aware times computed by the caller).
+ */
+export function updateRegionTimeMulti(annId, regionId, timesByFile) {
+  const a = _getMut(annId);
+  if (!a) return;
+  let changed = false;
+  for (const t of a.targets) {
+    const nt = timesByFile[t.file];
+    if (!nt) continue;
+    const cur = t.regionTimes[regionId];
+    if (!cur || cur.start !== nt.start || cur.end !== nt.end) {
+      t.regionTimes[regionId] = { start: nt.start, end: nt.end };
+      changed = true;
+    }
+  }
+  if (changed) {
+    a.hasUnsavedChanges = true;
+    _emit();
+  }
 }
 
 export function updateRegionLabel(annId, regionId, label) {

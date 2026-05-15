@@ -27,6 +27,7 @@ import {
 import {
   initAnnotationV6,
   commitAnnotationsToAlignment,
+  maybeSyncV6Regions,
 } from "./annotation/index.js";
 
 let markers = [];
@@ -234,7 +235,7 @@ let _currentZoomLevel = 1; // multiplier (1 = no zoom)
 let _scrollMode = "page"; // "follow" | "page" | "manual"
 let _scrollSyncLock = false; // prevents infinite loop in cross-waveform scroll sync
 let _sharedTimeAxis = false; // when true, all waveforms use same px/sec
-const _overlayWrappers = {}; // filename → { wrapper, inner }
+export const _overlayWrappers = {}; // filename → { wrapper, inner }
 const _wfBgCache = {}; // filename → cached tick background colour string
 
 // ---------------------------------------------------------------------------
@@ -3848,12 +3849,15 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
     // Handle new regions drawn by user (draft annotation mode)
     _regPlugin.on("region-created", (region) => {
-      // Only handle user-drawn regions (drag selection creates these)
-      // Programmatic regions (timer, anno_, draft_) are added via addRegion
+      // Only handle user-drawn regions (drag selection creates these).
+      // Programmatic regions (timer, anno_, draft_, v6_) are added via
+      // addRegion and must be skipped here — V6 regions in particular must
+      // not be routed to onDraftRegionCreated, which would remove them.
       if (
         region.id !== "timer" &&
         !region.id.startsWith("anno_region_") &&
-        !region.id.startsWith("draft_")
+        !region.id.startsWith("draft_") &&
+        !region.id.startsWith("v6_")
       ) {
         onDraftRegionCreated(filename, region);
       }
@@ -7090,6 +7094,17 @@ document.addEventListener("DOMContentLoaded", () => {
 
   waveformsRoot.addEventListener("mousedown", (e) => {
     if (!_measureShiftHeld || e.button !== 0) return;
+    // Suppress time measurement when the mousedown lands on a WaveSurfer
+    // region or its resize handles — that pointerdown begins a region drag
+    // (Shift modifies the drag's local-vs-global semantics), so we must not
+    // also start a measurement span. Use composedPath to reach inside any
+    // shadow root the wavesurfer wrapper uses.
+    const path = typeof e.composedPath === "function" ? e.composedPath() : [];
+    for (const el of path) {
+      if (!el || !el.getAttribute) continue;
+      const part = el.getAttribute("part") || "";
+      if (part.startsWith("region")) return;
+    }
     const hit = _measureHitTest(e);
     if (!hit) return;
     e.preventDefault();
@@ -7289,6 +7304,12 @@ function updateRenderTimer() {
 
 // todo refactor with updateRenderTimer above
 export function updateRenderAnnoRegions() {
+  // When V6 is active, route region rendering through the V6 module so the
+  // legacy anno_ / draft_ regions don't appear alongside the new v6_ regions.
+  if (maybeSyncV6Regions()) {
+    _updateAllRegionNavArrows();
+    return;
+  }
   // HACK dlfm2023: for now do nothing, ensure annots are loaded before wavesurfers
   Object.keys(wavesurfers).forEach((ws) => {
     console.log("Update render anno regions: ", ws, currentlyAnnotatedRegions);

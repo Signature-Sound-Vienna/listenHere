@@ -15,7 +15,11 @@ import * as uiState from "./ui-state.js";
 import { mountRibbon } from "./ui-ribbon.js";
 import { mountDrawer } from "./ui-drawer.js";
 import { mountPullTab } from "./ui-pull-tab.js";
-import { setAnnoChangesPending } from "../listen.js";
+import {
+  initWaveformInteractions,
+  syncWaveformRegions,
+} from "./waveform-interactions.js";
+import { setAnnoChangesPending, _regionsPlugins } from "../listen.js";
 
 const STORAGE_KEY = "annot-v6";
 
@@ -28,6 +32,16 @@ const STORAGE_KEY = "annot-v6";
 export function commitAnnotationsToAlignment(_alignmentJSON) {
   // TODO Phase E: serialise state.getAll() into _alignmentJSON.annotations.
   state.markAllSaved();
+}
+
+/**
+ * Listen.js delegates region rendering to us when V6 is active so the
+ * legacy anno_/draft_ rendering doesn't run alongside V6's v6_ regions.
+ */
+export function maybeSyncV6Regions() {
+  if (!isV6Active()) return false;
+  syncWaveformRegions();
+  return true;
 }
 
 export function isV6Active() {
@@ -71,11 +85,21 @@ export function initAnnotationV6() {
   mountDrawer(document.body);
   mountPullTab();
 
+  // Bridge V6 state to the WaveSurfer regions plugins on each waveform.
+  initWaveformInteractions();
+
   // Push V6 dirty state into the central Save-data indicator on every change.
   state.subscribe(() => setAnnoChangesPending(state.isAnyDirty()));
 
-  // Expose state + adapter + uiState for devtools inspection.
-  window.__annotationV6 = { active: true, state, adapter, uiState };
+  // Expose state + adapter + uiState + the live _regionsPlugins map for
+  // devtools inspection.
+  window.__annotationV6 = {
+    active: true,
+    state,
+    adapter,
+    uiState,
+    _regionsPlugins,
+  };
 
   // Adapter round-trip smoke runs once so we have a console-visible health check.
   try {

@@ -4562,8 +4562,95 @@ body:has(.lh-settings-drawer:not(.closed)) .lh-drawer-btns {
    Removed in Phase F when the feature flag is retired.
    ========================================================================= */
 
-body.lh-v6-active { padding-bottom: 44px; transition: padding-right 200ms ease; }
+body.lh-v6-active { transition: padding-right 200ms ease; }
 body.lh-v6-active.lh-v6-drawer-open { padding-right: 380px; }
+/* The waveforms area is the actual scroll container. Append a spacer at
+   the bottom so the last waveform can scroll above the fixed annotation
+   ribbon. padding-bottom on overflow:auto containers is famously dropped
+   from the scroll height by Chrome, so we add an explicit flex-item
+   pseudo-element instead. */
+body.lh-v6-active #waveforms::after {
+  content: "";
+  display: block;
+  height: 48px;
+  flex-shrink: 0;
+}
+
+/* While V6 is editing an annotation, desaturate every waveform that ISN'T
+   in the active annotation's selection. Selected waveforms stay fully
+   saturated — visual cue for "what's part of this annotation". */
+body.lh-v6-edit-active .waveform {
+  filter: saturate(0.25);
+  opacity: 0.7;
+  transition: filter 0.15s, opacity 0.15s;
+}
+body.lh-v6-edit-active .waveform.lh-v6-selected {
+  filter: none;
+  opacity: 1;
+}
+
+/* Hover preview on unselected waveforms during edit mode: pointer cursor
+   plus a faded-in gray checkmark hinting at what clicking would do. Matches
+   the selected indicator's position/shape; the colour difference signals
+   the preview vs. confirmed state. */
+body.lh-v6-edit-active .waveform:not(.lh-v6-selected) {
+  cursor: pointer;
+}
+body.lh-v6-edit-active .waveform:not(.lh-v6-selected)::before {
+  content: "\2713";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(120, 120, 120, 0.75);
+  color: #fff;
+  font-size: 12px;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  z-index: 10;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+body.lh-v6-edit-active .waveform:not(.lh-v6-selected):hover::before {
+  opacity: 1;
+}
+
+/* V6 selection indicator: small button at top-left of each waveform.
+   Shown only when the file is in the active annotation's targets while the
+   drawer is open in edit mode. Defaults to a tick; on hover swaps to a
+   cross, and clicking removes the waveform from the selection. Clicking
+   anywhere ELSE on an unselected waveform adds it to the selection. */
+.lh-v6-selection-indicator {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--color-link, #3b82f6);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: bold;
+  line-height: 1;
+  z-index: 10;
+  padding: 0;
+  transition: background 0.15s;
+}
+.lh-v6-selection-indicator.visible { display: inline-flex; }
+.lh-v6-selection-indicator::before { content: "\2713"; }
+.lh-v6-selection-indicator:hover { background: var(--color-danger, #ef4444); }
+.lh-v6-selection-indicator:hover::before { content: "\2715"; }
 
 /* --- Bottom ribbon --------------------------------------------------- */
 .lh-v6-ribbon {
@@ -4854,6 +4941,231 @@ body.lh-v6-drawer-open .drawer-btns { right: 380px; }
   border: 1px dashed var(--color-border-light);
   border-radius: 4px;
   margin-top: 12px;
+}
+
+/* --- Phase D editor sections (Recordings / Group notes / Comparisons) -- */
+.lh-v6-section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.lh-v6-section-title-row .lh-v6-section-title { margin: 0; }
+.lh-v6-section-subhead {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  margin: 8px 0 4px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Recordings */
+.lh-v6-recording-tile {
+  border: 1px solid var(--color-border-light);
+  border-radius: 5px;
+  background: var(--color-bg);
+  padding: 6px;
+  margin-bottom: 6px;
+}
+.lh-v6-recording-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.lh-v6-recording-filename {
+  font-family: monospace;
+  font-size: 11px;
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lh-v6-recording-group-pill {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border-width: 1px;
+  border-style: solid;
+  color: var(--color-text);
+  flex-shrink: 0;
+}
+.lh-v6-recording-detach {
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 0 5px;
+  flex-shrink: 0;
+}
+.lh-v6-recording-detach:hover { color: #ef4444; border-color: #ef4444; }
+.lh-v6-recording-note {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  resize: vertical;
+  min-height: 30px;
+}
+.lh-v6-detached-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.lh-v6-detached-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px dashed var(--color-border);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--color-text-secondary, var(--color-text));
+  cursor: pointer;
+}
+.lh-v6-detached-chip:hover {
+  border-style: solid;
+  border-color: var(--color-link);
+  color: var(--color-link);
+}
+.lh-v6-detached-filename {
+  font-family: monospace;
+  font-size: 10px;
+}
+
+/* Group notes */
+.lh-v6-group-tile {
+  border: 1px solid var(--color-border-light);
+  border-radius: 5px;
+  background: var(--color-bg);
+  padding: 6px;
+  margin-bottom: 6px;
+}
+.lh-v6-group-tile.disabled { opacity: 0.6; }
+.lh-v6-group-tile-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.lh-v6-group-tile-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  border: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+.lh-v6-group-tile-label {
+  font-weight: 600;
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lh-v6-group-tile-count {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+.lh-v6-group-note-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  resize: vertical;
+  min-height: 30px;
+}
+.lh-v6-group-note-textarea:disabled {
+  background: var(--color-surface-alt, rgba(120, 120, 120, 0.06));
+  cursor: not-allowed;
+}
+
+/* Comparisons */
+.lh-v6-comparison-add {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 3px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-secondary, var(--color-text));
+  cursor: pointer;
+}
+.lh-v6-comparison-add:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+.lh-v6-comparison-add:disabled { opacity: 0.5; cursor: not-allowed; }
+.lh-v6-comparison-tile {
+  border: 1px solid var(--color-border-light);
+  border-radius: 5px;
+  background: var(--color-bg);
+  padding: 6px;
+  margin-bottom: 6px;
+}
+.lh-v6-comparison-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+.lh-v6-comparison-vs {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+.lh-v6-comparison-select {
+  padding: 2px 4px;
+  font-size: 11px;
+  border-radius: 3px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+.lh-v6-comparison-remove {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  padding: 0 4px;
+}
+.lh-v6-comparison-remove:hover { color: #ef4444; }
+.lh-v6-comparison-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  resize: vertical;
+  min-height: 36px;
 }
 .lh-v6-viewer-title {
   display: flex;

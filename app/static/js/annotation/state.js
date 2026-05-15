@@ -184,42 +184,54 @@ function _attachTargetInternal(a, file) {
   a.targets.push({ file, description: "", regionTimes });
 }
 
-export function addTarget(annId, file) {
+/**
+ * Attach a recording as a target.
+ *
+ * @param {string} annId
+ * @param {string} file
+ * @param {object} [opts]
+ * @param {object} [opts.regionTimes] — explicit per-region times
+ *   `{ [regionId]: {start, end} }`. The waveform bridge supplies
+ *   alignment-aware times so a newly-selected recording's regions line up
+ *   musically with existing targets. When omitted, region times are seeded
+ *   from the first existing target (identical seconds).
+ * @param {string} [opts.description] — optional initial per-recording note.
+ *   Used to restore an orphan note when a previously-detached recording is
+ *   re-selected within the same session.
+ */
+export function addTarget(annId, file, opts = {}) {
   const a = _getMut(annId);
   if (!a) return;
   if (a.targets.find((t) => t.file === file)) return;
-  _attachTargetInternal(a, file);
-  a.hasUnsavedChanges = true;
-  _emit();
-}
-
-/**
- * Attach every file in `files` as a target if not already attached. Single
- * emit at the end if anything changed. Used by the waveform bridge to keep
- * every loaded waveform attached to every annotation so regions render
- * everywhere by default; users curate detached recordings via the editor's
- * Recordings section.
- */
-export function ensureTargetsAttached(annId, files) {
-  const a = _getMut(annId);
-  if (!a) return false;
-  let changed = false;
-  for (const f of files) {
-    if (!a.targets.find((t) => t.file === f)) {
-      _attachTargetInternal(a, f);
-      changed = true;
+  const { regionTimes, description } = opts;
+  if (regionTimes) {
+    const newRegionTimes = {};
+    a.regions.forEach((r) => {
+      const t = regionTimes[r.id];
+      newRegionTimes[r.id] = t
+        ? { start: t.start, end: t.end }
+        : { start: 0, end: 0 };
+    });
+    a.targets.push({
+      file,
+      description: description || "",
+      regionTimes: newRegionTimes,
+    });
+  } else {
+    _attachTargetInternal(a, file);
+    if (description) {
+      const t = a.targets.find((x) => x.file === file);
+      if (t) t.description = description;
     }
   }
-  if (changed) {
-    a.hasUnsavedChanges = true;
-    _emit();
-  }
-  return changed;
+  a.hasUnsavedChanges = true;
+  _emit();
 }
 
 export function removeTarget(annId, file) {
   const a = _getMut(annId);
   if (!a) return;
+  if (!a.targets.find((t) => t.file === file)) return;
   a.targets = a.targets.filter((t) => t.file !== file);
   a.hasUnsavedChanges = true;
   _emit();

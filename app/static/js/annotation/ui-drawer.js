@@ -61,15 +61,6 @@ export function mountDrawer(parent) {
   drawer.append(header, drawModeToolbar, body, publishBar);
   parent.appendChild(drawer);
 
-  // Track what the body currently renders so we can skip rebuilding it when
-  // only text fields changed. Rebuilding the body on every keystroke would
-  // destroy the focused input element. UNRENDERED is a sentinel distinct from
-  // any real value (including `null` for "no active annotation") so the very
-  // first render is never skipped.
-  const UNRENDERED = {};
-  let renderedAnnId = UNRENDERED;
-  let renderedMode = UNRENDERED;
-
   function render() {
     const ann = state.getById(state.getActiveId());
     drawer.classList.toggle("open", uiState.getDrawerOpen());
@@ -87,15 +78,11 @@ export function mountDrawer(parent) {
       ? ann.label || "Untitled annotation"
       : "Annotations";
 
-    // Skip body rebuild if the active annotation and mode haven't changed.
-    // Sections that need live updates from state changes will subscribe
-    // independently (Phase D).
-    const wantAnnId = ann ? ann.id : null;
-    const wantMode = ann ? uiState.getMode() : null;
-    if (wantAnnId === renderedAnnId && wantMode === renderedMode) return;
-    renderedAnnId = wantAnnId;
-    renderedMode = wantMode;
-
+    // Always re-render the body. Chain-enforced sections (group notes,
+    // comparisons) depend on text content of upstream sections, so we can't
+    // short-circuit when only text changed. Focus + cursor are preserved
+    // across rebuilds via data-v6-key (see _saveFocus / _restoreFocus).
+    const saved = _saveFocus(body);
     clearChildren(body);
     if (!ann) {
       body.appendChild(
@@ -105,11 +92,12 @@ export function mountDrawer(parent) {
             "Click + New annotation in the ribbon below to start, or select one to edit.",
         }),
       );
-      return;
+    } else {
+      body.appendChild(
+        uiState.getMode() === "edit" ? renderEditor(ann) : renderViewer(ann),
+      );
     }
-    body.appendChild(
-      uiState.getMode() === "edit" ? renderEditor(ann) : renderViewer(ann),
-    );
+    _restoreFocus(body, saved);
   }
 
   state.subscribe(render);
@@ -135,4 +123,40 @@ function _modeToggle() {
       onclick: () => uiState.setMode("edit"),
     }),
   ]);
+}
+
+function _saveFocus(body) {
+  const a = document.activeElement;
+  if (!a || !body.contains(a)) return null;
+  const key = a.getAttribute && a.getAttribute("data-v6-key");
+  if (!key) return null;
+  let selStart = null;
+  let selEnd = null;
+  try {
+    selStart = a.selectionStart;
+    selEnd = a.selectionEnd;
+  } catch (_) {}
+  return { key, selStart, selEnd };
+}
+
+function _restoreFocus(body, saved) {
+  if (!saved) return;
+  let safeKey;
+  try {
+    safeKey = CSS.escape(saved.key);
+  } catch (_) {
+    return;
+  }
+  const next = body.querySelector('[data-v6-key="' + safeKey + '"]');
+  if (!next) return;
+  try {
+    next.focus();
+    if (
+      saved.selStart != null &&
+      saved.selEnd != null &&
+      typeof next.setSelectionRange === "function"
+    ) {
+      next.setSelectionRange(saved.selStart, saved.selEnd);
+    }
+  } catch (_) {}
 }

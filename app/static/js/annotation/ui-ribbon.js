@@ -6,6 +6,7 @@
 import * as state from "./state.js";
 import * as uiState from "./ui-state.js";
 import { el, clearChildren } from "./ui-common.js";
+import { getActiveGroupingSnapshot } from "../listen.js";
 
 export function mountRibbon(parent) {
   const filterInput = el("input", {
@@ -24,7 +25,8 @@ export function mountRibbon(parent) {
     text: "+ New",
     title: "Create new annotation",
     onclick: () => {
-      const id = state.createAnnotation();
+      const pinnedGrouping = getActiveGroupingSnapshot();
+      const id = state.createAnnotation({ pinnedGrouping });
       uiState.setDrawerOpen(true);
       uiState.setMode("edit");
       state.setActiveAnnotation(id);

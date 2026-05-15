@@ -1792,6 +1792,38 @@ function onClickRenditionCheckbox(e) {
   }
 }
 
+/**
+ * Deactivate a waveform: pause it, reset its progress clip-path (so the
+ * played portion doesn't stay visually clipped), remove the `.active`
+ * background, and clear `currentAudioIx` if this was the active recording.
+ * No-op if the named file isn't currently active. Used by the V6 annotation
+ * module when the user removes a recording from the active selection.
+ */
+export function setCurrentAudioInactive(filename) {
+  if (!filename || currentAudioIx !== filename) return;
+  const ws = wavesurfers[filename];
+  if (ws) {
+    try {
+      ws.pause();
+    } catch (_) {}
+    // Reset clip-path via seekTo(0), saving/restoring scroll under the
+    // scroll-sync lock so the waveform doesn't visibly jump. Mirrors the
+    // demoted-waveform dance in swapCurrentAudio.
+    try {
+      const scrollEl = _getScrollContainer(filename);
+      const savedScroll = scrollEl ? scrollEl.scrollLeft : 0;
+      _scrollSyncLock = true;
+      ws.seekTo(0);
+      if (scrollEl) scrollEl.scrollLeft = savedScroll;
+    } finally {
+      _scrollSyncLock = false;
+    }
+  }
+  const wfEl = document.getElementById(`waveform-${filename}-wav`);
+  if (wfEl) wfEl.classList.remove("active");
+  currentAudioIx = "";
+}
+
 export function swapCurrentAudio(newAudio) {
   if (currentAudioIx === newAudio) {
     // no need to swap
@@ -2040,6 +2072,44 @@ function _getActiveTab() {
 
 function _getActiveFileGroups() {
   return _getActiveTab().fileGroups || [];
+}
+
+/**
+ * Snapshot the current grouping (active tab + resolved per-group file
+ * memberships) for the V6 annotation pinned-grouping field. Resolves
+ * each group's `files` list + `pattern` regex against the currently
+ * loaded waveforms so the snapshot reflects what the user actually sees.
+ * Returns null when no alignment data is loaded.
+ */
+export function getActiveGroupingSnapshot() {
+  if (!loadedAlignmentJSON) return null;
+  const tab = _getActiveTab();
+  const groups = _getActiveFileGroups();
+  const loadedFiles = Object.keys(wavesurfers);
+  const out = { name: tab.name || "Default", groups: [] };
+  for (const g of groups) {
+    const explicit = new Set(g.files || []);
+    let pattern = null;
+    if (g.pattern) {
+      try {
+        pattern = new RegExp(g.pattern);
+      } catch (_) {}
+    }
+    const files = loadedFiles.filter((f) => {
+      if (explicit.has(f)) return true;
+      if (pattern) {
+        const short = f.substring(f.lastIndexOf("/") + 1);
+        if (pattern.test(short) || pattern.test(f)) return true;
+      }
+      return false;
+    });
+    out.groups.push({
+      label: g.name || "",
+      color: g.color || "#94a3b8",
+      files,
+    });
+  }
+  return out;
 }
 
 function _getActiveGroupOrder() {

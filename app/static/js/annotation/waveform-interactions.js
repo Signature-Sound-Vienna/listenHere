@@ -32,6 +32,7 @@ import {
   _overlayWrappers,
   wavesurfers,
   setDrawModeActive,
+  setCurrentAudioInactive,
   getClosestAlignmentIx,
   getCorrespondingTime,
 } from "../listen.js";
@@ -106,6 +107,7 @@ export function syncWaveformRegions() {
 function syncAll() {
   syncRegions();
   syncDrawMode();
+  syncSelectionOverlays();
 }
 
 // ---------------------------------------------------------------------------
@@ -116,15 +118,6 @@ function syncRegions() {
   if (_syncingRegions) return;
   _syncingRegions = true;
   try {
-    // Auto-attach every loaded waveform to every annotation, so regions are
-    // visible across all waveforms by default. Recordings can be detached
-    // explicitly via the editor's Recordings section (Phase D).
-    const loadedFiles = Object.keys(_regionsPlugins);
-    if (loadedFiles.length > 0) {
-      for (const ann of state.getAll()) {
-        state.ensureTargetsAttached(ann.id, loadedFiles);
-      }
-    }
     const annotations = state.getAll();
     const activeId = state.getActiveId();
     const specsByFile = _computeSpecsByFile(annotations, activeId);
@@ -355,10 +348,17 @@ function syncDrawMode() {
 function _setUpDragMode(ann) {
   setDrawModeActive(true);
   const dragColor = _withAlpha(ann.color, 0.25);
+  // Pixel threshold (default 3) bumped to 10 so click jitter doesn't get
+  // interpreted as a drag and create an accidental thin region. Intentional
+  // drags clear this easily; jittered clicks fall back to the click handler.
+  const DRAG_THRESHOLD_PX = 10;
   for (const file of Object.keys(_regionsPlugins)) {
     const plugin = _regionsPlugins[file];
     if (!plugin) continue;
-    const cleanup = plugin.enableDragSelection({ color: dragColor });
+    const cleanup = plugin.enableDragSelection(
+      { color: dragColor },
+      DRAG_THRESHOLD_PX,
+    );
     if (typeof cleanup === "function") _dragSelectionCleanups.push(cleanup);
     const onCreated = (region) => {
       const id = region && region.id;
@@ -476,4 +476,162 @@ function _showRegionDurations() {
 function _clearRegionDurations() {
   for (const el of _durationLabelElements) el.remove();
   _durationLabelElements.length = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Selection affordance
+//
+// Each waveform gets a small V6-specific indicator button at top-left:
+//   - Hidden when waveform is not in the active annotation's targets.
+//   - Visible (✓) when selected, during drawer-open + edit-mode + active ann.
+//   - On hover the ✓ swaps to ✕ via CSS; clicking it removes the file from
+//     the selection, stashing any per-recording note into sessionStorage for
+//     restoration if the user re-selects within the session.
+//
+// Clicking anywhere else on an UN-selected waveform adds it to the
+// selection (with alignment-aware region times and orphan-note restore).
+//
+// The legacy `.wf-select-overlay` stays in the DOM but stays hidden (we
+// never add `.visible` to it). Phase F's legacy-removal will delete it.
+// ---------------------------------------------------------------------------
+
+const _wiredWaveformsForAdd = new WeakSet();
+const _wiredIndicators = new WeakSet();
+
+function syncSelectionOverlays() {
+  const ann = state.getById(state.getActiveId());
+  const editing =
+    !!ann && uiState.getDrawerOpen() && uiState.getMode() === "edit";
+  const attached = editing
+    ? new Set(ann.targets.map((t) => t.file))
+    : new Set();
+
+  // Body-level class drives the desaturation CSS for unselected waveforms.
+  if (typeof document !== "undefined" && document.body) {
+    document.body.classList.toggle("lh-v6-edit-active", editing);
+  }
+
+  for (const file of Object.keys(_regionsPlugins)) {
+    const wfEl = document.querySelector(
+      ".waveform[data-ix='" +
+        (window.CSS && CSS.escape ? CSS.escape(file) : file) +
+        "']",
+    );
+    if (!wfEl) continue;
+    _wireWaveformClickOnce(wfEl, file);
+    const indicator = _ensureIndicator(wfEl, file);
+    const showIndicator = editing && attached.has(file);
+    indicator.classList.toggle("visible", showIndicator);
+    // Per-waveform selected class — CSS combines with body class above to
+    // desaturate unselected waveforms during edit mode.
+    wfEl.classList.toggle("lh-v6-selected", editing && attached.has(file));
+  }
+}
+
+function _ensureIndicator(wfEl, file) {
+  let indicator = wfEl.querySelector(".lh-v6-selection-indicator");
+  if (!indicator) {
+    indicator = document.createElement("button");
+    indicator.type = "button";
+    indicator.className = "lh-v6-selection-indicator";
+    indicator.title = "Selected — click to remove from this annotation";
+    indicator.setAttribute("aria-label", "Remove from annotation");
+    wfEl.appendChild(indicator);
+  }
+  if (!_wiredIndicators.has(indicator)) {
+    _wiredIndicators.add(indicator);
+    indicator.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const ann = state.getById(state.getActiveId());
+      if (!ann) return;
+      const target = ann.targets.find((t) => t.file === file);
+      if (target && target.description && target.description.trim().length > 0) {
+        _stashOrphanNote(ann.id, file, target.description);
+      }
+      state.removeTarget(ann.id, file);
+      // If this was the active waveform, pause it and drop the .active state
+      // so removing also visually deactivates playback.
+      setCurrentAudioInactive(file);
+    });
+  }
+  return indicator;
+}
+
+function _wireWaveformClickOnce(wfEl, file) {
+  if (_wiredWaveformsForAdd.has(wfEl)) return;
+  _wiredWaveformsForAdd.add(wfEl);
+  wfEl.addEventListener("click", (e) => {
+    // The indicator button has its own handler with stopPropagation; this
+    // guard is a belt-and-braces in case stopPropagation didn't reach us.
+    if (e.target.closest(".lh-v6-selection-indicator")) return;
+    const ann = state.getById(state.getActiveId());
+    if (!ann) return;
+    if (!uiState.getDrawerOpen() || uiState.getMode() !== "edit") return;
+    if (ann.targets.some((t) => t.file === file)) return; // already selected
+    const regionTimes = _seedRegionTimesForAttach(ann, file);
+    const description = _consumeOrphanNote(ann.id, file);
+    state.addTarget(ann.id, file, {
+      regionTimes: regionTimes || undefined,
+      description: description || undefined,
+    });
+  });
+}
+
+function _seedRegionTimesForAttach(ann, newFile) {
+  if (ann.regions.length === 0 || ann.targets.length === 0) return null;
+  const source = ann.targets[0];
+  const out = {};
+  for (const r of ann.regions) {
+    const src = source.regionTimes[r.id];
+    if (!src) continue;
+    let fromIdx = null;
+    let toIdx = null;
+    try {
+      fromIdx = getClosestAlignmentIx(src.start, source.file);
+      toIdx = getClosestAlignmentIx(src.end, source.file);
+    } catch (_) {}
+    let s = src.start;
+    let e = src.end;
+    if (Number.isFinite(fromIdx) && Number.isFinite(toIdx)) {
+      try {
+        const a = getCorrespondingTime(newFile, fromIdx);
+        const b = getCorrespondingTime(newFile, toIdx);
+        if (Number.isFinite(a) && Number.isFinite(b)) {
+          s = a;
+          e = b;
+        }
+      } catch (_) {}
+    }
+    out[r.id] = { start: s, end: e };
+  }
+  return out;
+}
+
+// Orphan per-recording notes — survive a detach/re-attach round trip within
+// the same browser session. Cleared when the session ends (sessionStorage
+// is per-tab, no cross-session persistence).
+function _stashKey(annId, file) {
+  return (
+    "lh-v6-orphan-note:" +
+    encodeURIComponent(annId) +
+    ":" +
+    encodeURIComponent(file)
+  );
+}
+
+function _stashOrphanNote(annId, file, note) {
+  if (!note) return;
+  try {
+    sessionStorage.setItem(_stashKey(annId, file), note);
+  } catch (_) {}
+}
+
+function _consumeOrphanNote(annId, file) {
+  const key = _stashKey(annId, file);
+  let note = null;
+  try {
+    note = sessionStorage.getItem(key);
+    if (note !== null) sessionStorage.removeItem(key);
+  } catch (_) {}
+  return note;
 }

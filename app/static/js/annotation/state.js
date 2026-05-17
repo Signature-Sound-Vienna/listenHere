@@ -42,6 +42,23 @@ function _nextColor() {
   return c;
 }
 
+/**
+ * Security: alignment JSON can come from an attacker-controlled URL.
+ * Colour fields end up in inline `style.background` and WaveSurfer region
+ * colour options — both let CSS through, including `url(http://...)` which
+ * silently exfiltrates via a remote-resource fetch. We accept only #hex and
+ * rgb/rgba forms; everything else falls back to null (caller picks default).
+ */
+const _HEX_RE = /^#[0-9a-fA-F]{3,8}$/;
+const _RGB_RE = /^rgba?\(\s*[\d.]+\s*[, ]+\s*[\d.]+\s*[, ]+\s*[\d.]+\s*(?:[, /]+\s*[\d.]+%?\s*)?\)$/;
+function _sanitiseColor(c) {
+  if (typeof c !== "string") return null;
+  const trimmed = c.trim();
+  if (_HEX_RE.test(trimmed)) return trimmed;
+  if (_RGB_RE.test(trimmed)) return trimmed;
+  return null;
+}
+
 function _emit() {
   for (const fn of _listeners) {
     try {
@@ -109,10 +126,23 @@ function _normalise(a) {
       regionTimes,
     };
   });
+  // Sanitise the pinned grouping's per-group colours too — they end up in
+  // inline styles as well.
+  let pinnedGrouping = null;
+  if (a.pinnedGrouping && Array.isArray(a.pinnedGrouping.groups)) {
+    pinnedGrouping = {
+      name: typeof a.pinnedGrouping.name === "string" ? a.pinnedGrouping.name : "",
+      groups: a.pinnedGrouping.groups.map((g) => ({
+        label: g.label || "",
+        color: _sanitiseColor(g.color) || "#94a3b8",
+        files: Array.isArray(g.files) ? [...g.files] : [],
+      })),
+    };
+  }
   return {
     id: a.id,
     label: a.label || "",
-    color: a.color || _nextColor(),
+    color: _sanitiseColor(a.color) || _nextColor(),
     description: a.description || "",
     hasUnsavedChanges: !!a.hasUnsavedChanges,
     published: !!a.published,
@@ -126,7 +156,7 @@ function _normalise(a) {
       rightLabel: c.rightLabel,
       text: c.text || "",
     })),
-    pinnedGrouping: a.pinnedGrouping || null,
+    pinnedGrouping,
   };
 }
 

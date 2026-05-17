@@ -27,6 +27,7 @@ import {
 import {
   initAnnotationV6,
   commitAnnotationsToAlignment,
+  loadAnnotationsFromAlignment,
   maybeSyncV6Regions,
 } from "./annotation/index.js";
 
@@ -4982,6 +4983,9 @@ let loadedAlignmentJSON = null; // Full alignment object for download
 async function setGrids(grids) {
   console.log("received grids: ", grids);
   loadedAlignmentJSON = grids;
+  // V6 hook: load any persisted V6 annotations out of the alignment JSON
+  // into the in-memory state. No-op when V6 is inactive.
+  loadAnnotationsFromAlignment(grids);
   if ("body" in grids) {
     if ("audio" in grids.body) {
       // final version of alignment json

@@ -24,14 +24,78 @@ import { setAnnoChangesPending, _regionsPlugins } from "../listen.js";
 const STORAGE_KEY = "annot-v6";
 
 /**
- * Phase E hook: persist V6 annotation state into the alignment.json object
- * (so the existing Save data button writes annotations too) and clear
- * per-annotation hasUnsavedChanges flags. For Phase B we just clear the
- * flags; the actual JSON serialisation lands in Phase E.
+ * Persist V6 annotation state into the alignment.json object (so the
+ * existing Save data button writes annotations too) and mark all V6
+ * annotations as saved. Called from listen.js's Save-data click handler.
+ *
+ * Session-only fields (hasUnsavedChanges) are stripped; everything else
+ * (regions, targets, group notes, comparisons, pinnedGrouping,
+ * lastPostedUris) is written under a top-level `annotations` array.
  */
-export function commitAnnotationsToAlignment(_alignmentJSON) {
-  // TODO Phase E: serialise state.getAll() into _alignmentJSON.annotations.
+export function commitAnnotationsToAlignment(alignmentJSON) {
+  if (!alignmentJSON) return;
+  alignmentJSON.annotations = state.getAll().map(_serializeAnnotationForAlignment);
   state.markAllSaved();
+}
+
+function _serializeAnnotationForAlignment(a) {
+  return {
+    id: a.id,
+    label: a.label,
+    color: a.color,
+    description: a.description,
+    published: !!a.published,
+    lastPostedUris: a.lastPostedUris || null,
+    regions: a.regions.map((r) => ({ id: r.id, label: r.label || "" })),
+    targets: a.targets.map((t) => ({
+      file: t.file,
+      description: t.description || "",
+      regionTimes: _cloneRegionTimes(t.regionTimes),
+    })),
+    groupNotes: { ...a.groupNotes },
+    comparisons: a.comparisons.map((c) => ({
+      id: c.id,
+      leftLabel: c.leftLabel,
+      rightLabel: c.rightLabel,
+      text: c.text || "",
+    })),
+    pinnedGrouping: a.pinnedGrouping
+      ? {
+          name: a.pinnedGrouping.name,
+          groups: a.pinnedGrouping.groups.map((g) => ({
+            label: g.label,
+            color: g.color,
+            files: [...g.files],
+          })),
+        }
+      : null,
+    schemaVersion: 1,
+  };
+}
+
+function _cloneRegionTimes(rt) {
+  const out = {};
+  for (const k of Object.keys(rt || {})) {
+    out[k] = { start: rt[k].start, end: rt[k].end };
+  }
+  return out;
+}
+
+/**
+ * Load V6 annotation state from an alignment.json object. Called by
+ * listen.js's setGrids after assigning loadedAlignmentJSON. Replaces the
+ * full V6 state, so reloading a different alignment doesn't carry stale
+ * annotations across.
+ *
+ * When V6 isn't active, no-ops (legacy code path handles its own load).
+ */
+export function loadAnnotationsFromAlignment(alignmentJSON) {
+  if (!isV6Active()) return;
+  if (!alignmentJSON || !Array.isArray(alignmentJSON.annotations)) {
+    state.replaceAll([]);
+    return;
+  }
+  state.replaceAll(alignmentJSON.annotations);
 }
 
 /**
@@ -71,7 +135,7 @@ export function isV6Active() {
 export function initAnnotationV6() {
   if (!isV6Active()) return;
   console.info(
-    "[annotation/v6] feature flag active — Phase B UI mounting.",
+    "[annotation/v6] feature flag active — V6 module initialised (E1).",
   );
 
   // Mark the body so the scoped CSS rules apply (padding for ribbon, etc.).
@@ -99,6 +163,8 @@ export function initAnnotationV6() {
     adapter,
     uiState,
     _regionsPlugins,
+    commitAnnotationsToAlignment,
+    loadAnnotationsFromAlignment,
   };
 
   // Adapter round-trip smoke runs once so we have a console-visible health check.

@@ -8,6 +8,7 @@
 //     id, label, color, description,
 //     hasUnsavedChanges, published,
 //     lastPostedUris,                         // populated by mao-adapter on post/update
+//     lastPostedHashes,                       // per-resource content hash, lets Update skip unchanged PUTs
 //     regions: [{ id, label }],               // GLOBAL, ordered; identity preserved
 //     targets: [{
 //       file, description,
@@ -147,6 +148,7 @@ function _normalise(a) {
     hasUnsavedChanges: !!a.hasUnsavedChanges,
     published: !!a.published,
     lastPostedUris: a.lastPostedUris || null,
+    lastPostedHashes: a.lastPostedHashes || null,
     regions,
     targets,
     groupNotes: { ...(a.groupNotes || {}) },
@@ -171,6 +173,7 @@ export function createAnnotation(opts = {}) {
     hasUnsavedChanges: true,
     published: false,
     lastPostedUris: null,
+    lastPostedHashes: null,
     regions: [],
     targets: [],
     groupNotes: {},
@@ -179,6 +182,18 @@ export function createAnnotation(opts = {}) {
   };
   _annotations.push(ann);
   _activeId = ann.id;
+  _emit();
+  return ann.id;
+}
+
+/**
+ * Add a fully-formed annotation (e.g. one reconstructed by mao-adapter's
+ * deserialize). The caller owns the object's invariants; we normalise
+ * defensively. Does NOT set active — caller decides.
+ */
+export function addAnnotation(ann) {
+  if (!ann || !ann.id) return null;
+  _annotations.push(_normalise(ann));
   _emit();
   return ann.id;
 }
@@ -422,7 +437,7 @@ export function markAllSaved() {
   if (changed) _emit();
 }
 
-export function markPosted(annId, lastPostedUris) {
+export function markPosted(annId, lastPostedUris, lastPostedHashes) {
   const a = _getMut(annId);
   if (!a) return;
   a.published = true;
@@ -433,6 +448,7 @@ export function markPosted(annId, lastPostedUris) {
   // duplicates on the pod.
   a.hasUnsavedChanges = false;
   if (lastPostedUris) a.lastPostedUris = lastPostedUris;
+  if (lastPostedHashes) a.lastPostedHashes = lastPostedHashes;
   _emit();
 }
 

@@ -389,7 +389,7 @@ export function deserialize(graph, ctx) {
   const selections = selRefs.map((uri) => ({ uri, body: graph[uri] })).filter((s) => s.body);
 
   if (selections.length === 0) {
-    return _emptyAnnotation(mmUri, annLabel);
+    return _emptyAnnotation(mmUri, extractRef, annLabel);
   }
 
   // Build canonical regions[] from the first Selection's part count; identity
@@ -403,6 +403,10 @@ export function deserialize(graph, ctx) {
     regions.push({ id: mintRegionId(), label: "" });
   }
 
+  // Build lastPostedUris as we go so a subsequent Update can route PUTs to
+  // the right resources. Keys mirror serialize's local-key convention.
+  const lastPostedUris = { mm: mmUri, extract: extractRef };
+
   // Targets — one per Selection. Map back to file key via schema:about.
   const targets = selections.map((s, sIdx) => {
     const aboutUri = _firstId(s.body[nsp.SCHEMA + "about"]);
@@ -413,6 +417,7 @@ export function deserialize(graph, ctx) {
       const t = _parseMediaFragment(partUri);
       regionTimes[r.id] = t;
     });
+    if (file) lastPostedUris["sel/" + file] = s.uri;
     return { file, description: "", regionTimes, _selectionUri: s.uri };
   });
 
@@ -430,6 +435,9 @@ export function deserialize(graph, ctx) {
     if (!matchingTarget) continue;
     matchingTarget.description = _readBodyText(a, graph);
     trackOAByFile.set(matchingTarget.file, a);
+    if (matchingTarget.file && a["@id"]) {
+      lastPostedUris["oa/track/" + matchingTarget.file] = a["@id"];
+    }
   }
 
   // Group-level OAs (sda:observing with a hasTarget list of specificResources)
@@ -462,6 +470,7 @@ export function deserialize(graph, ctx) {
     if (!label) continue;
     groupNotes[label] = _readBodyText(a, graph);
     pinnedGroups.push({ label, color: "#94a3b8", files: filesCovered });
+    if (a["@id"]) lastPostedUris["oa/group/" + label] = a["@id"];
   }
 
   // Comparisons (sda:comparing with compositeTarget over two group-level refs)
@@ -478,12 +487,14 @@ export function deserialize(graph, ctx) {
       .map((srcUri) => _labelForGroupOaUri(srcUri, graph))
       .filter(Boolean);
     if (labels.length < 2) continue;
+    const cmpId = "cmp_imp_" + comparisons.length;
     comparisons.push({
-      id: "cmp_imp_" + comparisons.length,
+      id: cmpId,
       leftLabel: labels[0],
       rightLabel: labels[1],
       text: _readBodyText(a, graph),
     });
+    if (a["@id"]) lastPostedUris["oa/cmp/" + cmpId] = a["@id"];
   }
 
   // Top-level description (sda:commenting targeting MM or a compositeTarget)
@@ -501,6 +512,7 @@ export function deserialize(graph, ctx) {
     );
     if (targetsMM || targetsCompositeOverOurs) {
       description = _readBodyText(a, graph);
+      if (a["@id"]) lastPostedUris["oa/top"] = a["@id"];
       break;
     }
   }
@@ -515,7 +527,7 @@ export function deserialize(graph, ctx) {
     description,
     hasUnsavedChanges: false,
     published: true,
-    lastPostedUris: null,
+    lastPostedUris,
     regions,
     targets: cleanTargets,
     groupNotes,
@@ -527,7 +539,7 @@ export function deserialize(graph, ctx) {
   };
 }
 
-function _emptyAnnotation(mmUri, label) {
+function _emptyAnnotation(mmUri, extractRef, label) {
   return {
     id: "ann_imp_" + mmUri,
     label,
@@ -535,7 +547,7 @@ function _emptyAnnotation(mmUri, label) {
     description: "",
     hasUnsavedChanges: false,
     published: true,
-    lastPostedUris: null,
+    lastPostedUris: { mm: mmUri, extract: extractRef },
     regions: [],
     targets: [],
     groupNotes: {},
@@ -740,6 +752,16 @@ export function selfTest() {
     assert(aT.regionTimes[rIds[0]].start === 1.0, "alpha.r1 start lost");
     assert(aT.regionTimes[rIds[1]].start === 5.0, "alpha.r2 (collapsed) start lost");
     assert(aT.regionTimes[rIds[1]].end === 5.0, "alpha.r2 (collapsed) end lost");
+
+    // lastPostedUris round-trip: every key in the serialised template set
+    // (minus discovery decoration) should map back to its known URI.
+    const lpu = restored.lastPostedUris || {};
+    assert(lpu.mm === ctx.uri("mm"), "lastPostedUris.mm missing");
+    assert(lpu.extract === ctx.uri("extract"), "lastPostedUris.extract missing");
+    assert(lpu["sel/alpha.wav"] === ctx.uri("sel/alpha.wav"), "lastPostedUris.sel/alpha lost");
+    assert(lpu["oa/track/alpha.wav"] === ctx.uri("oa/track/alpha.wav"), "lastPostedUris.oa/track/alpha lost");
+    assert(lpu["oa/group/Strings"] === ctx.uri("oa/group/Strings"), "lastPostedUris.oa/group/Strings lost");
+    assert(lpu["oa/top"] === ctx.uri("oa/top"), "lastPostedUris.oa/top lost");
   }
 
   return {

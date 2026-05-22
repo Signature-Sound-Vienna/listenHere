@@ -4717,6 +4717,147 @@ body.lh-v6-drawer-open .lh-v6-ribbon { right: 380px; }
   border-color: var(--color-accent);
   color: var(--color-accent);
 }
+.lh-v6-ribbon-load {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-secondary, var(--color-text));
+  cursor: pointer;
+}
+.lh-v6-ribbon-load:hover {
+  background: var(--color-accent-light);
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+/* --- Load-from-Solid modal ------------------------------------------- */
+.lh-v6-load-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.lh-v6-load-dialog {
+  background: var(--color-bg, #fff);
+  color: var(--color-text);
+  width: min(640px, 92vw);
+  max-height: 80vh;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.25);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.lh-v6-load-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+}
+.lh-v6-load-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+.lh-v6-load-close {
+  background: transparent;
+  border: 0;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  padding: 0 4px;
+}
+.lh-v6-load-close:hover { color: var(--color-text); }
+.lh-v6-load-row {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+}
+.lh-v6-load-input {
+  flex: 1;
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+.lh-v6-load-browse {
+  padding: 4px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+  cursor: pointer;
+}
+.lh-v6-load-browse:hover { background: var(--color-accent); color: #fff; }
+.lh-v6-load-status {
+  padding: 6px 16px 4px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  min-height: 18px;
+  white-space: pre-wrap;
+}
+.lh-v6-load-results {
+  overflow-y: auto;
+  padding: 0 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lh-v6-load-row-result {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+}
+.lh-v6-load-row-result:hover { background: var(--color-hover-bg, rgba(0, 0, 0, 0.03)); }
+.lh-v6-load-meta {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.lh-v6-load-name {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lh-v6-load-sub {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lh-v6-load-pick {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--color-accent);
+  background: transparent;
+  color: var(--color-accent);
+  cursor: pointer;
+}
+.lh-v6-load-pick:hover { background: var(--color-accent); color: #fff; }
 
 /* --- Chip ----------------------------------------------------------- */
 .lh-v6-chip {
@@ -4898,6 +5039,22 @@ body.lh-v6-drawer-open .lh-v6-ribbon { right: 380px; }
   0% { transform: scale(1); }
   40% { transform: scale(1.08); }
   100% { transform: scale(1); }
+}
+.lh-v6-dots {
+  display: inline-block;
+  /* Reserve vertical space for the bounce so the button doesn't jitter. */
+  line-height: 1;
+}
+.lh-v6-dot {
+  display: inline-block;
+  animation: lh-v6-dot-bounce 1.2s infinite ease-in-out;
+}
+.lh-v6-dot:nth-child(1) { animation-delay: 0s; }
+.lh-v6-dot:nth-child(2) { animation-delay: 0.15s; }
+.lh-v6-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes lh-v6-dot-bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-0.175em); }
 }
 .lh-v6-publish-link {
   margin-left: 10px;

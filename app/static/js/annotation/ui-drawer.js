@@ -133,6 +133,17 @@ function _modeToggle() {
   ]);
 }
 
+// Three dot spans wrapped in a container. CSS gives each :nth-child its own
+// translateY animation phase so the dots appear to bounce in sequence (the
+// mei-friend codebase uses a similar trick on its splash loading text).
+function _bouncingDots() {
+  return el("span", { class: "lh-v6-dots", "aria-hidden": "true" }, [
+    el("span", { class: "lh-v6-dot", text: "." }),
+    el("span", { class: "lh-v6-dot", text: "." }),
+    el("span", { class: "lh-v6-dot", text: "." }),
+  ]);
+}
+
 // Per-annotation transient publish state, keyed by annId. Holds:
 //   { phase: 'posting' | 'flash', step?, total?, kind: 'post' | 'update' }
 // Module-level so the render function can read it without going through
@@ -165,22 +176,26 @@ function _renderPublishBar(bar, ann) {
   const sess = solid.getDefaultSession && solid.getDefaultSession();
   const isLoggedIn = !!(sess && sess.info && sess.info.isLoggedIn);
 
-  let label = alreadyPublished ? "Update on Solid" : "Post to Solid";
+  let labelChildren = [alreadyPublished ? "Update on Solid" : "Post to Solid"];
   let disabled;
   let tooltip;
   let extraClass = "";
   if (transient && transient.phase === "posting") {
-    label =
-      (transient.kind === "update" ? "Updating" : "Posting") +
-      "… " +
-      transient.step +
-      "/" +
-      transient.total;
+    const verb = transient.kind === "update" ? "Updating" : "Posting";
+    labelChildren = [verb, _bouncingDots()];
+    // Only show the step counter once we know the denominator — `total` is 0
+    // for the brief window between click and the first onProgress call, and
+    // "0/0" reads as broken. The resource kind label hints at progress when
+    // a single PUT/POST is itself slow.
+    if (transient.total > 0) {
+      const kindLabel = transient.label ? " " + transient.label : "";
+      labelChildren.push(kindLabel + " " + transient.step + "/" + transient.total);
+    }
     disabled = true;
     tooltip = "Talking to your Solid pod…";
     extraClass = " is-busy";
   } else if (transient && transient.phase === "flash") {
-    label = transient.kind === "update" ? "✓ Updated!" : "✓ Posted!";
+    labelChildren = [transient.kind === "update" ? "✓ Updated!" : "✓ Posted!"];
     disabled = true;
     tooltip = "";
     extraClass = " is-flash";
@@ -204,7 +219,6 @@ function _renderPublishBar(bar, ann) {
   const btn = el("button", {
     class: "lh-v6-publish-btn" + extraClass,
     type: "button",
-    text: label,
     title: tooltip,
     disabled,
     onclick: async () => {
@@ -216,11 +230,12 @@ function _renderPublishBar(bar, ann) {
         kind: isUpdate ? "update" : "post",
       });
       if (_rerenderPublishBar) _rerenderPublishBar();
-      const onProgress = (step, total) => {
+      const onProgress = (step, total, label) => {
         const cur = _publishUiState.get(ann.id);
         if (!cur || cur.phase !== "posting") return;
         cur.step = step;
         cur.total = total;
+        if (label !== undefined) cur.label = label;
         if (_rerenderPublishBar) _rerenderPublishBar();
       };
       try {
@@ -251,7 +266,7 @@ function _renderPublishBar(bar, ann) {
         );
       }
     },
-  });
+  }, labelChildren);
   bar.appendChild(btn);
   if (alreadyPublished && ann.lastPostedUris && ann.lastPostedUris["mm"]) {
     bar.appendChild(

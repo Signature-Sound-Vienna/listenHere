@@ -15,6 +15,27 @@
 // Discovery resources are reconciled: new dataset entries added, entries
 // pointing at deleted URIs removed. PUTs honour ETag via If-Match, with
 // 412 retry on conflict.
+//
+// Phase E3-perf (added later): three orthogonal speed-ups apply to both
+// flows.
+//   1. Skip-unchanged via content hash. On every post/update we hash each
+//      resource's final body (post-substitution, post-decoration) and store
+//      the hash next to lastPostedUris. On the next Update, resources whose
+//      hash matches skip the PUT entirely — a text-only edit becomes a
+//      single PUT instead of N.
+//   2. Topo-level parallelism. Templates are grouped by depth in the
+//      dependency graph; each level fires Promise.all so independent
+//      resources don't serialise. PUTs (URIs stable) and POSTs (URIs
+//      assigned within the level) coexist within a level.
+//   3. Session-scoped existence cache for containers and per-audio
+//      discovery resources, so we don't re-check via HEAD on every run.
+//      Caches are soft: a 404 on a presumed-existing resource invalidates
+//      the cache entry and re-establishes once before retrying.
+//
+// OA discovery: each OA is also listed in the discovery resource of every
+// audio it (transitively) targets, tagged with schema:additionalType =
+// oa:Annotation. Consumers can therefore find every annotation about a
+// given audio by reading that audio's discovery resource alone.
 
 import * as state from "./state.js";
 import * as adapter from "./mao-adapter.js";
@@ -33,6 +54,173 @@ import {
 } from "../solid.js";
 import { getAudioLinkedDataUri, loadedAlignmentJSON } from "../listen.js";
 import { commitAnnotationsToAlignment } from "./index.js";
+
+// ---------------------------------------------------------------------------
+// Session-scoped existence cache. We don't HEAD containers / discovery
+// resources twice per session — once verified, we trust them. Both caches
+// are invalidated lazily on 404 (see _safePostResource).
+// ---------------------------------------------------------------------------
+
+let _containersEstablished = false;
+const _discoveryCache = new Map(); // audioUri → discoveryResourceUri
+
+async function _ensureContainers() {
+  if (_containersEstablished) return;
+  await establishContainers();
+  _containersEstablished = true;
+}
+
+function _invalidateContainersCache() {
+  _containersEstablished = false;
+  _discoveryCache.clear();
+}
+
+async function _ensureDiscoveryFor(audioUri) {
+  if (_discoveryCache.has(audioUri)) return _discoveryCache.get(audioUri);
+  const r = await establishDiscoveryResource(audioUri);
+  if (!r || !r.url) {
+    throw new Error("Couldn't establish discovery resource for " + audioUri);
+  }
+  _discoveryCache.set(audioUri, r.url);
+  return r.url;
+}
+
+function _invalidateDiscoveryFor(audioUri) {
+  _discoveryCache.delete(audioUri);
+}
+
+/**
+ * POST a body to `container`, retrying once with a fresh container check on
+ * 404 / no-Location. Returns the URI of the created resource.
+ */
+async function _safePostResource(container, body, label) {
+  const tryPost = async () => {
+    const resp = await postResource(container, body);
+    if (resp && resp.headers && resp.headers.get("Location")) {
+      return resolveLocation(resp);
+    }
+    return null;
+  };
+  let uri = await tryPost();
+  if (uri) return uri;
+  // Possibly container disappeared (or session cache out of sync) —
+  // invalidate, re-establish, retry once.
+  console.warn(
+    "[annotation/v6] POST returned no Location for " + label + "; re-establishing containers and retrying once.",
+  );
+  _invalidateContainersCache();
+  await _ensureContainers();
+  uri = await tryPost();
+  if (uri) return uri;
+  throw new Error("POST returned no Location header for " + label);
+}
+
+/**
+ * Recursively sort object keys so JSON.stringify produces a stable
+ * representation regardless of property-insertion order. Arrays are
+ * preserved as-is (order is semantic in JSON-LD).
+ */
+function _canonicalize(node) {
+  if (Array.isArray(node)) return node.map(_canonicalize);
+  if (node && typeof node === "object") {
+    const out = {};
+    for (const k of Object.keys(node).sort()) {
+      out[k] = _canonicalize(node[k]);
+    }
+    return out;
+  }
+  return node;
+}
+
+/**
+ * 32-bit FNV-1a hash, returned as 8 hex chars. We're detecting whether a
+ * resource body changed between updates — collision-resistance for ~30
+ * resources is more than enough, and we avoid the Promise overhead of
+ * crypto.subtle.digest in a hot loop.
+ */
+function _hashBody(body) {
+  const s = JSON.stringify(_canonicalize(body));
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    // FNV-1a 32-bit prime multiplication via shifts.
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return h.toString(16).padStart(8, "0");
+}
+
+/**
+ * Group templates into topological levels. Level 0 = no in-set deps. Level
+ * N templates depend only on templates at level < N. Templates within a
+ * level are mutually independent and can be processed in parallel.
+ */
+function _topoLevels(templates) {
+  const byKey = new Map(templates.map((t) => [t.localKey, t]));
+  const level = new Map();
+  function depthOf(key) {
+    if (level.has(key)) return level.get(key);
+    const t = byKey.get(key);
+    if (!t) return -1; // External / unknown — pretend it's resolved.
+    let d = 0;
+    for (const dep of t.dependsOn || []) {
+      d = Math.max(d, depthOf(dep) + 1);
+    }
+    level.set(key, d);
+    return d;
+  }
+  const buckets = [];
+  for (const t of templates) {
+    const d = depthOf(t.localKey);
+    while (buckets.length <= d) buckets.push([]);
+    buckets[d].push(t);
+  }
+  return buckets;
+}
+
+/**
+ * For a template (typically an OA), return the set of audio URIs it
+ * transitively targets. The dependsOn list conflates two kinds of edge:
+ * "target-of" (track OA → its Selection; group OA → its track OAs) and
+ * "structural-anchor" (group/comparison/top OA → extract or mm, to scope
+ * the annotation). Only target-of edges carry audio identity, so we
+ * exclude extract/mm from the recursive walk. Top-level OAs that target
+ * MM directly (no roots) fall back to "all audios in the annotation",
+ * which is what MM/Extract themselves are about.
+ */
+function _audioSetFor(localKey, byKey, fileToAudioUri, memo = new Map()) {
+  if (memo.has(localKey)) return memo.get(localKey);
+  if (localKey.startsWith("sel/")) {
+    const file = localKey.slice("sel/".length);
+    const audio = fileToAudioUri[file];
+    const out = audio ? new Set([audio]) : new Set();
+    memo.set(localKey, out);
+    return out;
+  }
+  if (localKey === "extract" || localKey === "mm") {
+    const all = new Set();
+    for (const a of Object.values(fileToAudioUri)) if (a) all.add(a);
+    memo.set(localKey, all);
+    return all;
+  }
+  const t = byKey.get(localKey);
+  if (!t) {
+    const empty = new Set();
+    memo.set(localKey, empty);
+    return empty;
+  }
+  const out = new Set();
+  for (const dep of t.dependsOn || []) {
+    if (dep === "extract" || dep === "mm") continue;
+    for (const a of _audioSetFor(dep, byKey, fileToAudioUri, memo)) out.add(a);
+  }
+  // Top-level OA targeting MM directly (no OA roots) has only structural
+  // deps — fall back to all audios.
+  if (out.size === 0) {
+    for (const a of Object.values(fileToAudioUri)) if (a) out.add(a);
+  }
+  memo.set(localKey, out);
+  return out;
+}
 
 /**
  * Post an annotation to the user's Solid pod. Throws on precondition or
@@ -54,12 +242,74 @@ export async function postAnnotationToSolid(annId, opts = {}) {
     throw new Error("Select at least one recording before posting.");
   }
 
-  // 1. Resolve each selected recording's Linked Data URI. Bail loudly if any
-  //    are missing — without these we can't anchor frbr:parts. URIs are
-  //    normalised through the URL constructor so unencoded spaces and
-  //    special chars in path components get percent-encoded; otherwise the
-  //    JSON-LD parser on the Solid server rejects them as invalid IRIs.
-  const fileToAudioUri = {};
+  const fileToAudioUri = _resolveAudioUris(ann);
+
+  await _ensureContainers();
+  const uniqueAudioUris = [...new Set(Object.values(fileToAudioUri))];
+  const discoveryByAudio = {};
+  for (const audioUri of uniqueAudioUris) {
+    discoveryByAudio[audioUri] = await _ensureDiscoveryFor(audioUri);
+  }
+
+  const { templates } = adapter.serialize(ann, {
+    resolveAudioUri: (f) => fileToAudioUri[f],
+  });
+
+  const byKey = new Map(templates.map((t) => [t.localKey, t]));
+  const audioSetMemo = new Map();
+  const levels = _topoLevels(templates);
+
+  const total = templates.length + Object.keys(discoveryByAudio).length;
+  let step = 0;
+  onProgress(step, total, null);
+  const localToUri = {};
+  const localToHash = {};
+
+  for (const level of levels) {
+    const results = await Promise.all(
+      level.map(async (t) => {
+        const body = _substitutePlaceholders(t.body, localToUri);
+        const audioSet = _audioSetFor(t.localKey, byKey, fileToAudioUri, audioSetMemo);
+        _decorateResource(body, t, fileToAudioUri, discoveryByAudio, audioSet);
+        const uri = await _safePostResource(
+          _containerForKind(t.kind),
+          body,
+          t.localKey,
+        );
+        return { template: t, uri, hash: _hashBody(body) };
+      }),
+    );
+    // Serialise the bookkeeping pass so the next level sees fully-populated maps.
+    for (const r of results) {
+      localToUri[r.template.localKey] = r.uri;
+      localToHash[r.template.localKey] = r.hash;
+      onProgress(++step, total, _labelForKind(r.template.kind));
+    }
+  }
+
+  await _patchDiscoveryResources(
+    templates,
+    localToUri,
+    fileToAudioUri,
+    discoveryByAudio,
+    audioSetMemo,
+    byKey,
+    () => onProgress(++step, total, "Discovery"),
+  );
+
+  state.markPosted(annId, localToUri, localToHash);
+  if (loadedAlignmentJSON) commitAnnotationsToAlignment(loadedAlignmentJSON);
+
+  return localToUri;
+}
+
+function _resolveAudioUris(ann) {
+  // Resolve each selected recording's Linked Data URI. Bail loudly if any
+  // are missing — without these we can't anchor frbr:parts. URIs are
+  // normalised through the URL constructor so unencoded spaces and special
+  // chars in path components get percent-encoded; otherwise the JSON-LD
+  // parser on the Solid server rejects them as invalid IRIs.
+  const out = {};
   for (const t of ann.targets) {
     const audioUri = getAudioLinkedDataUri(t.file);
     if (!audioUri || !/^https?:\/\//i.test(audioUri)) {
@@ -67,61 +317,19 @@ export async function postAnnotationToSolid(annId, opts = {}) {
         `${t.file} has no Linked Data URI. Set one in Manage files → Linked Data URIs first.`,
       );
     }
-    fileToAudioUri[t.file] = _normaliseIri(audioUri);
+    out[t.file] = _normaliseIri(audioUri);
   }
+  return out;
+}
 
-  // 2. Ensure containers + discovery resources exist.
-  await establishContainers();
-  const uniqueAudioUris = [...new Set(Object.values(fileToAudioUri))];
-  const discoveryByAudio = {};
-  for (const audioUri of uniqueAudioUris) {
-    const r = await establishDiscoveryResource(audioUri);
-    if (!r || !r.url) {
-      throw new Error("Couldn't establish discovery resource for " + audioUri);
-    }
-    discoveryByAudio[audioUri] = r.url;
+function _labelForKind(kind) {
+  switch (kind) {
+    case "mao:Selection": return "Selection";
+    case "mao:Extract": return "Extract";
+    case "mao:MusicalMaterial": return "MusicalMaterial";
+    case "oa:Annotation": return "Annotation";
+    default: return kind;
   }
-
-  // 3. Serialise. Adapter emits `{"@id": "_:<localKey>"}` placeholders for
-  //    every inter-resource reference; we'll resolve those at POST time.
-  const { templates } = adapter.serialize(ann, {
-    resolveAudioUri: (f) => fileToAudioUri[f],
-  });
-
-  // 4. Topological order (deps before dependents).
-  const sorted = _topoSort(templates);
-
-  // 5. POST each in turn, substituting placeholders with already-resolved URIs.
-  const total = sorted.length + Object.keys(discoveryByAudio).length;
-  let step = 0;
-  onProgress(step, total);
-  const localToUri = {};
-  for (const t of sorted) {
-    const body = _substitutePlaceholders(t.body, localToUri);
-    _decorateMAOResource(body, t, fileToAudioUri, discoveryByAudio);
-    const container = _containerForKind(t.kind);
-    const response = await postResource(container, body);
-    if (!response || !response.headers || !response.headers.get("Location")) {
-      throw new Error("POST returned no Location header for " + t.localKey);
-    }
-    localToUri[t.localKey] = resolveLocation(response);
-    onProgress(++step, total);
-  }
-
-  // 6. Patch discovery resources so future loads can find the chain by audio.
-  await _patchDiscoveryResources(
-    localToUri,
-    fileToAudioUri,
-    discoveryByAudio,
-    () => onProgress(++step, total),
-  );
-
-  // 7. Record on state and commit the URIs into in-memory alignment.json so
-  //    a subsequent Save Data captures them.
-  state.markPosted(annId, localToUri);
-  if (loadedAlignmentJSON) commitAnnotationsToAlignment(loadedAlignmentJSON);
-
-  return localToUri;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,22 +347,6 @@ function _normaliseIri(uri) {
   } catch (_) {
     return uri;
   }
-}
-
-function _topoSort(templates) {
-  const byKey = new Map(templates.map((t) => [t.localKey, t]));
-  const visited = new Set();
-  const out = [];
-  function visit(t) {
-    if (!t || visited.has(t.localKey)) return;
-    visited.add(t.localKey);
-    for (const dep of t.dependsOn || []) {
-      visit(byKey.get(dep));
-    }
-    out.push(t);
-  }
-  for (const t of templates) visit(t);
-  return out;
 }
 
 function _substitutePlaceholders(node, mapping) {
@@ -192,15 +384,18 @@ function _containerForKind(kind) {
   }
 }
 
-function _decorateMAOResource(body, template, fileToAudioUri, discoveryByAudio) {
-  // Add schema:about and schema:includedInDataCatalog (mirroring the legacy
-  // convention) so MAO resources are discoverable from their audio. OA
-  // annotations aren't decorated — they're found via the chain.
+/**
+ * Decorate a resource body with schema:about (the audio URIs it's about)
+ * and schema:includedInDataCatalog (the discovery resource of each such
+ * audio). MAO resources span the full annotation; OAs target subsets, so
+ * the audio set is computed per-template via _audioSetFor.
+ */
+function _decorateResource(body, template, fileToAudioUri, discoveryByAudio, audioSet) {
   if (template.kind === "mao:Selection") {
+    // Selection's audio is unambiguous — adapter already set schema:about.
     const file = template.localKey.substring("sel/".length);
     const audioUri = fileToAudioUri[file];
     if (audioUri) {
-      // Adapter already set schema:about; just add discovery.
       body[nsp.SCHEMA + "includedInDataCatalog"] = [
         { "@id": discoveryByAudio[audioUri] },
       ];
@@ -213,13 +408,31 @@ function _decorateMAOResource(body, template, fileToAudioUri, discoveryByAudio) 
     body[nsp.SCHEMA + "includedInDataCatalog"] = audios.map((u) => ({
       "@id": discoveryByAudio[u],
     }));
+    return;
+  }
+  if (template.kind === "oa:Annotation") {
+    const audios = [...audioSet].filter(Boolean);
+    if (audios.length === 0) return;
+    body[nsp.SCHEMA + "about"] = audios.map((u) => ({ "@id": u }));
+    body[nsp.SCHEMA + "includedInDataCatalog"] = audios
+      .map((u) => discoveryByAudio[u])
+      .filter(Boolean)
+      .map((u) => ({ "@id": u }));
   }
 }
 
+/**
+ * Patch each audio's discovery resource with dataset entries for every
+ * resource it covers: MM + Extract + that audio's Selection + every OA
+ * that transitively targets that audio.
+ */
 async function _patchDiscoveryResources(
+  templates,
   localToUri,
   fileToAudioUri,
   discoveryByAudio,
+  audioSetMemo,
+  byKey,
   onAudioPatched,
 ) {
   const mmUri = localToUri["mm"];
@@ -235,33 +448,58 @@ async function _patchDiscoveryResources(
     if (!selUri) continue;
     (audioToSelUris[audioUri] = audioToSelUris[audioUri] || []).push(selUri);
   }
+  // Group OA URIs by every audio they target.
+  const audioToOaUris = {};
+  for (const t of templates) {
+    if (t.kind !== "oa:Annotation") continue;
+    const uri = localToUri[t.localKey];
+    if (!uri) continue;
+    const audios = _audioSetFor(t.localKey, byKey, fileToAudioUri, audioSetMemo);
+    for (const audio of audios) {
+      if (!audio) continue;
+      (audioToOaUris[audio] = audioToOaUris[audio] || []).push(uri);
+    }
+  }
 
   const datasetPath =
     "/" +
     nsp.SCHEMA.replaceAll("~", "~0").replaceAll("/", "~1") +
     "dataset/-";
 
-  for (const audioUri of Object.keys(audioToSelUris)) {
-    const discoveryUri = discoveryByAudio[audioUri];
-    if (!discoveryUri) continue;
-    const selUris = audioToSelUris[audioUri];
-    const ops = [
-      _datasetOp(datasetPath, mmUri, nsp.MAO + "MusicalMaterial"),
-      _datasetOp(datasetPath, extractUri, nsp.MAO + "Extract"),
-      ...selUris.map((s) => _datasetOp(datasetPath, s, nsp.MAO + "Selection")),
-    ];
-    try {
-      await safelyPatchResource(discoveryUri, ops);
-    } catch (err) {
-      // Discovery is for findability, not correctness — log but don't abort
-      // the whole post over a patch failure.
-      console.warn(
-        "[annotation/v6] discovery patch failed for " + discoveryUri,
-        err,
-      );
-    }
-    if (typeof onAudioPatched === "function") onAudioPatched();
-  }
+  const allAudios = new Set([
+    ...Object.keys(audioToSelUris),
+    ...Object.keys(audioToOaUris),
+  ]);
+
+  // Patch each audio's discovery in parallel — they don't conflict.
+  await Promise.all(
+    [...allAudios].map(async (audioUri) => {
+      const discoveryUri = discoveryByAudio[audioUri];
+      if (!discoveryUri) return;
+      const selUris = audioToSelUris[audioUri] || [];
+      const oaUris = audioToOaUris[audioUri] || [];
+      const ops = [
+        _datasetOp(datasetPath, mmUri, nsp.MAO + "MusicalMaterial"),
+        _datasetOp(datasetPath, extractUri, nsp.MAO + "Extract"),
+        ...selUris.map((s) => _datasetOp(datasetPath, s, nsp.MAO + "Selection")),
+        ...oaUris.map((o) => _datasetOp(datasetPath, o, nsp.OA + "Annotation")),
+      ];
+      try {
+        await safelyPatchResource(discoveryUri, ops);
+      } catch (err) {
+        // Discovery is for findability, not correctness — log but don't abort
+        // the whole post over a patch failure.
+        console.warn(
+          "[annotation/v6] discovery patch failed for " + discoveryUri,
+          err,
+        );
+        // Soft-invalidate so the next run re-establishes (in case the resource
+        // disappeared between sessions).
+        _invalidateDiscoveryFor(audioUri);
+      }
+      if (typeof onAudioPatched === "function") onAudioPatched();
+    }),
+  );
 }
 
 function _datasetOp(path, url, additionalTypeIri) {
@@ -312,33 +550,27 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
     throw new Error("Select at least one recording before updating.");
   }
 
-  // Resolve and normalise audio URIs for the current target set.
-  const fileToAudioUri = {};
-  for (const t of ann.targets) {
-    const audioUri = getAudioLinkedDataUri(t.file);
-    if (!audioUri || !/^https?:\/\//i.test(audioUri)) {
-      throw new Error(
-        `${t.file} has no Linked Data URI. Set one in Manage files → Linked Data URIs first.`,
-      );
-    }
-    fileToAudioUri[t.file] = _normaliseIri(audioUri);
-  }
+  const fileToAudioUri = _resolveAudioUris(ann);
+  const oldHashes = ann.lastPostedHashes || {};
 
-  // Ensure containers + discovery resources exist for the current audio set.
-  await establishContainers();
+  await _ensureContainers();
   const uniqueAudioUris = [...new Set(Object.values(fileToAudioUri))];
   const discoveryByAudio = {};
   for (const audioUri of uniqueAudioUris) {
-    const r = await establishDiscoveryResource(audioUri);
-    if (r && r.url) discoveryByAudio[audioUri] = r.url;
+    try {
+      discoveryByAudio[audioUri] = await _ensureDiscoveryFor(audioUri);
+    } catch (err) {
+      console.warn("[annotation/v6] discovery establish failed; skipping", audioUri, err);
+    }
   }
   // Audios that were involved before but aren't anymore (detached files)
   // — we still need to touch their discovery resource to remove stale entries.
   const oldFileToAudioUri = _oldFileToAudioUri(ann.lastPostedUris);
   for (const oldAudio of Object.values(oldFileToAudioUri)) {
     if (!discoveryByAudio[oldAudio]) {
-      const r = await establishDiscoveryResource(oldAudio);
-      if (r && r.url) discoveryByAudio[oldAudio] = r.url;
+      try {
+        discoveryByAudio[oldAudio] = await _ensureDiscoveryFor(oldAudio);
+      } catch (_) { /* leave gap; reconcile will skip */ }
     }
   }
 
@@ -347,72 +579,123 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
     resolveAudioUri: (f) => fileToAudioUri[f],
   });
 
+  const byKey = new Map(templates.map((t) => [t.localKey, t]));
+  const audioSetMemo = new Map();
+
   // Delta vs lastPostedUris.
   const oldKeys = new Set(Object.keys(ann.lastPostedUris));
   const newKeys = new Set(templates.map((t) => t.localKey));
   const toDeleteKeys = [...oldKeys].filter((k) => !newKeys.has(k));
 
-  // Process in topological order: deps first so dependent resources have
-  // their reference URIs available for substitution.
-  const sorted = _topoSort(templates);
+  // Topo-level grouping: within each level, PUTs (existing) and POSTs (new)
+  // run in parallel; URIs assigned within a level are visible to later levels.
+  const levels = _topoLevels(templates);
   const localToUri = { ...ann.lastPostedUris };
+  const localToHash = {};
   const createdUris = [];
   const total =
-    sorted.length + toDeleteKeys.length + Object.keys(discoveryByAudio).length;
+    templates.length + toDeleteKeys.length + Object.keys(discoveryByAudio).length;
   let step = 0;
-  onProgress(step, total);
+  let skipped = 0;
+  onProgress(step, total, null);
 
-  for (const t of sorted) {
-    const body = _substitutePlaceholders(t.body, localToUri);
-    _decorateMAOResource(body, t, fileToAudioUri, discoveryByAudio);
-    if (oldKeys.has(t.localKey)) {
-      // Existing resource — PUT new body in place, preserving provenance.
-      await _safelyReplaceResource(localToUri[t.localKey], body);
-    } else {
-      // New resource — POST.
-      const response = await postResource(_containerForKind(t.kind), body);
-      if (!response || !response.headers || !response.headers.get("Location")) {
-        throw new Error("POST returned no Location header for " + t.localKey);
-      }
-      const uri = resolveLocation(response);
-      localToUri[t.localKey] = uri;
-      createdUris.push(uri);
+  for (const level of levels) {
+    const results = await Promise.all(
+      level.map(async (t) => {
+        const body = _substitutePlaceholders(t.body, localToUri);
+        const audioSet = _audioSetFor(t.localKey, byKey, fileToAudioUri, audioSetMemo);
+        _decorateResource(body, t, fileToAudioUri, discoveryByAudio, audioSet);
+        const newHash = _hashBody(body);
+        if (oldKeys.has(t.localKey)) {
+          // Existing resource. Skip the PUT if content hash matches.
+          if (oldHashes[t.localKey] === newHash) {
+            return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: true };
+          }
+          try {
+            await _safelyReplaceResource(localToUri[t.localKey], body);
+            return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: false };
+          } catch (err) {
+            // If the resource disappeared from the pod, fall back to POST.
+            if (_isMissingResourceError(err)) {
+              console.warn(
+                "[annotation/v6] " + t.localKey + " missing on pod; re-POSTing.",
+              );
+              const uri = await _safePostResource(
+                _containerForKind(t.kind),
+                body,
+                t.localKey,
+              );
+              return { template: t, uri, hash: newHash, skipped: false, created: true };
+            }
+            throw err;
+          }
+        }
+        // New resource — POST.
+        const uri = await _safePostResource(
+          _containerForKind(t.kind),
+          body,
+          t.localKey,
+        );
+        return { template: t, uri, hash: newHash, skipped: false, created: true };
+      }),
+    );
+    for (const r of results) {
+      localToUri[r.template.localKey] = r.uri;
+      localToHash[r.template.localKey] = r.hash;
+      if (r.created) createdUris.push(r.uri);
+      if (r.skipped) skipped++;
+      onProgress(++step, total, _labelForKind(r.template.kind));
     }
-    onProgress(++step, total);
   }
 
-  // DELETE removed resources.
+  // DELETE removed resources, in parallel.
   const deletedUris = [];
-  for (const key of toDeleteKeys) {
-    const uri = ann.lastPostedUris[key];
-    try {
-      const resp = await solid.fetch(uri, { method: "DELETE" });
-      if (resp.ok || resp.status === 404) {
-        deletedUris.push(uri);
-        delete localToUri[key];
-      } else {
-        console.warn("[annotation/v6] DELETE failed for", uri, resp.status);
+  await Promise.all(
+    toDeleteKeys.map(async (key) => {
+      const uri = ann.lastPostedUris[key];
+      try {
+        const resp = await solid.fetch(uri, { method: "DELETE" });
+        if (resp.ok || resp.status === 404) {
+          deletedUris.push(uri);
+          delete localToUri[key];
+        } else {
+          console.warn("[annotation/v6] DELETE failed for", uri, resp.status);
+        }
+      } catch (err) {
+        console.warn("[annotation/v6] DELETE threw for", uri, err);
       }
-    } catch (err) {
-      console.warn("[annotation/v6] DELETE threw for", uri, err);
-    }
-    onProgress(++step, total);
-  }
+      onProgress(++step, total, "Delete");
+    }),
+  );
 
   // Reconcile each audio's discovery: add entries for newly-created URIs,
   // remove entries pointing at deleted ones.
   await _reconcileDiscoveryResources(
+    templates,
+    byKey,
+    audioSetMemo,
     discoveryByAudio,
     fileToAudioUri,
     localToUri,
     createdUris,
     deletedUris,
-    () => onProgress(++step, total),
+    () => onProgress(++step, total, "Discovery"),
   );
 
-  state.markPosted(annId, localToUri);
+  if (skipped > 0) {
+    console.info(
+      "[annotation/v6] update skipped " + skipped + " unchanged resource(s).",
+    );
+  }
+
+  state.markPosted(annId, localToUri, localToHash);
   if (loadedAlignmentJSON) commitAnnotationsToAlignment(loadedAlignmentJSON);
   return localToUri;
+}
+
+function _isMissingResourceError(err) {
+  const msg = err && err.message ? err.message : String(err);
+  return /\b404\b/.test(msg) || /\b410\b/.test(msg);
 }
 
 /**
@@ -496,6 +779,9 @@ async function _safelyReplaceResource(uri, newContentBody) {
  * failure logs a warning but doesn't abort the overall update.
  */
 async function _reconcileDiscoveryResources(
+  templates,
+  byKey,
+  audioSetMemo,
   discoveryByAudio,
   fileToAudioUri,
   newUris,
@@ -514,7 +800,7 @@ async function _reconcileDiscoveryResources(
     return;
   }
 
-  // Map created Selection URIs to their audio.
+  // Map created Selection URIs to their audio (one-to-one).
   const selUriToAudio = {};
   for (const [key, uri] of Object.entries(newUris)) {
     if (key.startsWith("sel/")) {
@@ -523,40 +809,53 @@ async function _reconcileDiscoveryResources(
       if (audio) selUriToAudio[uri] = audio;
     }
   }
+  // Map created OA URIs to the set of audios they cover (potentially many).
+  const oaUriToAudios = new Map();
+  for (const t of templates) {
+    if (t.kind !== "oa:Annotation") continue;
+    const uri = newUris[t.localKey];
+    if (!uri) continue;
+    oaUriToAudios.set(
+      uri,
+      _audioSetFor(t.localKey, byKey, fileToAudioUri, audioSetMemo),
+    );
+  }
   const createdSet = new Set(createdUris);
   const deletedSet = new Set(deletedUris);
 
-  for (const [audioUri, discoveryUri] of Object.entries(discoveryByAudio)) {
-    // Determine which new URIs to add to THIS audio's discovery:
-    //   - MM (shared, but only add if we created it).
-    //   - Extract (same).
-    //   - Selections whose audio matches.
-    const adds = [];
-    if (createdSet.has(newUris["mm"])) {
-      adds.push({ uri: newUris["mm"], type: nsp.MAO + "MusicalMaterial" });
-    }
-    if (createdSet.has(newUris["extract"])) {
-      adds.push({ uri: newUris["extract"], type: nsp.MAO + "Extract" });
-    }
-    for (const uri of createdUris) {
-      if (selUriToAudio[uri] === audioUri) {
-        adds.push({ uri, type: nsp.MAO + "Selection" });
+  // Reconcile each audio in parallel.
+  await Promise.all(
+    Object.entries(discoveryByAudio).map(async ([audioUri, discoveryUri]) => {
+      const adds = [];
+      if (createdSet.has(newUris["mm"])) {
+        adds.push({ uri: newUris["mm"], type: nsp.MAO + "MusicalMaterial" });
       }
-    }
-    if (adds.length === 0 && deletedSet.size === 0) {
+      if (createdSet.has(newUris["extract"])) {
+        adds.push({ uri: newUris["extract"], type: nsp.MAO + "Extract" });
+      }
+      for (const uri of createdUris) {
+        if (selUriToAudio[uri] === audioUri) {
+          adds.push({ uri, type: nsp.MAO + "Selection" });
+        } else if (oaUriToAudios.has(uri) && oaUriToAudios.get(uri).has(audioUri)) {
+          adds.push({ uri, type: nsp.OA + "Annotation" });
+        }
+      }
+      if (adds.length === 0 && deletedSet.size === 0) {
+        if (typeof onAudioReconciled === "function") onAudioReconciled();
+        return;
+      }
+      try {
+        await _patchDiscoveryReconcile(discoveryUri, adds, deletedSet);
+      } catch (err) {
+        console.warn(
+          "[annotation/v6] discovery reconcile failed for " + discoveryUri,
+          err,
+        );
+        _invalidateDiscoveryFor(audioUri);
+      }
       if (typeof onAudioReconciled === "function") onAudioReconciled();
-      continue;
-    }
-    try {
-      await _patchDiscoveryReconcile(discoveryUri, adds, deletedSet);
-    } catch (err) {
-      console.warn(
-        "[annotation/v6] discovery reconcile failed for " + discoveryUri,
-        err,
-      );
-    }
-    if (typeof onAudioReconciled === "function") onAudioReconciled();
-  }
+    }),
+  );
 }
 
 async function _patchDiscoveryReconcile(discoveryUri, adds, removeUriSet) {

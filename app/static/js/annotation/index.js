@@ -23,6 +23,9 @@ import {
   postAnnotationToSolid,
   updateAnnotationOnSolid,
 } from "./solid-post.js";
+import { loadAnnotationFromMM, listAnnotationsForAudio } from "./solid-load.js";
+import { _openLoadModal } from "./ui-ribbon.js";
+import { solid } from "../solid.js";
 import { setAnnoChangesPending, _regionsPlugins } from "../listen.js";
 
 const STORAGE_KEY = "annot-v6";
@@ -50,6 +53,7 @@ function _serializeAnnotationForAlignment(a) {
     description: a.description,
     published: !!a.published,
     lastPostedUris: a.lastPostedUris || null,
+    lastPostedHashes: a.lastPostedHashes || null,
     regions: a.regions.map((r) => ({ id: r.id, label: r.label || "" })),
     targets: a.targets.map((t) => ({
       file: t.file,
@@ -171,7 +175,31 @@ export function initAnnotationV6() {
     loadAnnotationsFromAlignment,
     postAnnotationToSolid,
     updateAnnotationOnSolid,
+    loadAnnotationFromMM,
+    listAnnotationsForAudio,
   };
+
+  // URL-param autoload: ?annot=v6&loadMM=<encoded MM URI> opens the load
+  // modal pre-pointed at the given MM. We wait until the auth session is
+  // actually logged in before firing — otherwise the modal would alert
+  // "sign in first" and burn the autoload. The solid-auth-changed event
+  // retries once login completes.
+  let _autoloadConsumed = false;
+  let _pendingMm = null;
+  try {
+    _pendingMm = new URLSearchParams(window.location.search).get("loadMM");
+  } catch (_) {}
+  function _maybeAutoload() {
+    if (_autoloadConsumed || !_pendingMm) return;
+    const sess = solid.getDefaultSession && solid.getDefaultSession();
+    if (!sess || !sess.info || !sess.info.isLoggedIn) return; // wait for login
+    _autoloadConsumed = true;
+    _openLoadModal({ presetMm: _pendingMm });
+  }
+  if (_pendingMm) {
+    document.addEventListener("solid-auth-changed", _maybeAutoload);
+    _maybeAutoload();
+  }
 
   // Adapter round-trip smoke runs once so we have a console-visible health check.
   try {

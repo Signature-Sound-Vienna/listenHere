@@ -9,6 +9,9 @@ import * as uiState from "./ui-state.js";
 import { el, clearChildren } from "./ui-common.js";
 import { renderEditor } from "./ui-editor.js";
 import { renderViewer } from "./ui-viewer.js";
+import { postAnnotationToSolid } from "./solid-post.js";
+import { solid } from "../solid.js";
+import { getAudioLinkedDataUri } from "../listen.js";
 
 export function mountDrawer(parent) {
   const drawer = el("aside", {
@@ -49,14 +52,7 @@ export function mountDrawer(parent) {
 
   const body = el("div", { class: "lh-v6-drawer-body" });
 
-  const publishBar = el(
-    "div",
-    { class: "lh-v6-publish-bar" },
-    el("span", {
-      class: "lh-v6-publish-placeholder",
-      text: "Save / Post-to-Solid wires up in Phase E.",
-    }),
-  );
+  const publishBar = el("div", { class: "lh-v6-publish-bar" });
 
   drawer.append(header, drawModeToolbar, body, publishBar);
   parent.appendChild(drawer);
@@ -98,10 +94,13 @@ export function mountDrawer(parent) {
       );
     }
     _restoreFocus(body, saved);
+    _renderPublishBar(publishBar, ann);
   }
 
   state.subscribe(render);
   uiState.subscribe(render);
+  // Solid auth state changes affect the Post-to-Solid button's gating.
+  document.addEventListener("solid-auth-changed", render);
   render();
   return drawer;
 }
@@ -123,6 +122,97 @@ function _modeToggle() {
       onclick: () => uiState.setMode("edit"),
     }),
   ]);
+}
+
+function _renderPublishBar(bar, ann) {
+  clearChildren(bar);
+  if (!ann) {
+    bar.appendChild(
+      el("span", {
+        class: "lh-v6-publish-placeholder",
+        text: "Select an annotation to publish.",
+      }),
+    );
+    return;
+  }
+  const noTargets = ann.targets.length === 0;
+  const unsaved = ann.hasUnsavedChanges;
+  const alreadyPublished = ann.published;
+  const missingUriFiles = noTargets
+    ? []
+    : ann.targets
+        .filter((t) => {
+          const u = getAudioLinkedDataUri(t.file);
+          return !u || !/^https?:\/\//i.test(u);
+        })
+        .map((t) => t.file);
+  const sess = solid.getDefaultSession && solid.getDefaultSession();
+  const isLoggedIn = !!(sess && sess.info && sess.info.isLoggedIn);
+
+  let label, disabled, tooltip;
+  if (alreadyPublished) {
+    label = "Update on Solid";
+    disabled = true;
+    tooltip = "Update-on-Solid lands in Phase E3.";
+  } else if (noTargets) {
+    label = "Post to Solid";
+    disabled = true;
+    tooltip = "Select at least one recording first.";
+  } else if (missingUriFiles.length > 0) {
+    label = "Post to Solid";
+    disabled = true;
+    tooltip =
+      "Set Linked Data URI prefix in Manage files first. Missing for: " +
+      missingUriFiles.join(", ");
+  } else if (!isLoggedIn) {
+    label = "Post to Solid";
+    disabled = true;
+    tooltip = "Sign in to your Solid pod first (use the RDF icon, right edge).";
+  } else if (unsaved) {
+    label = "Post to Solid";
+    disabled = true;
+    tooltip = "Save data first so the post is anchored to a saved state.";
+  } else {
+    label = "Post to Solid";
+    disabled = false;
+    tooltip = "Post this annotation to your Solid pod.";
+  }
+  const btn = el("button", {
+    class: "lh-v6-publish-btn",
+    type: "button",
+    text: label,
+    title: tooltip,
+    disabled,
+    onclick: async (e) => {
+      const button = e.currentTarget;
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = "Posting…";
+      try {
+        await postAnnotationToSolid(ann.id);
+        // Successful state changes (published=true, hasUnsavedChanges=true)
+        // trigger a state emit that re-renders this bar.
+      } catch (err) {
+        console.error("[annotation/v6] post failed:", err);
+        window.alert("Post failed: " + (err && err.message ? err.message : err));
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+    },
+  });
+  bar.appendChild(btn);
+  if (alreadyPublished && ann.lastPostedUris && ann.lastPostedUris["mm"]) {
+    bar.appendChild(
+      el("a", {
+        class: "lh-v6-publish-link",
+        href: ann.lastPostedUris["mm"],
+        target: "_blank",
+        rel: "noopener noreferrer",
+        title: ann.lastPostedUris["mm"],
+        text: "↗ pod",
+      }),
+    );
+  }
 }
 
 function _saveFocus(body) {

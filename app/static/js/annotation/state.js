@@ -426,7 +426,11 @@ export function markPosted(annId, lastPostedUris) {
   const a = _getMut(annId);
   if (!a) return;
   a.published = true;
-  a.hasUnsavedChanges = false;
+  // After a successful post, lastPostedUris and the `published` flag need
+  // to be persisted into alignment.json so a future load remembers the post.
+  // We mark the annotation dirty so the central Save-data indicator prompts
+  // the user to save. (Phase E3 will refine this for re-post diffs.)
+  a.hasUnsavedChanges = true;
   if (lastPostedUris) a.lastPostedUris = lastPostedUris;
   _emit();
 }

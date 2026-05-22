@@ -4859,6 +4859,33 @@ body.lh-v6-drawer-open .lh-v6-ribbon { right: 380px; }
   color: var(--color-text-muted);
   font-style: italic;
 }
+.lh-v6-publish-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--color-link);
+  background: var(--color-link);
+  color: #fff;
+  cursor: pointer;
+}
+.lh-v6-publish-btn:hover:not(:disabled) {
+  background: var(--color-link-hover, var(--color-link));
+  border-color: var(--color-link-hover, var(--color-link));
+}
+.lh-v6-publish-btn:disabled {
+  background: var(--color-surface-alt, rgba(120, 120, 120, 0.2));
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+.lh-v6-publish-link {
+  margin-left: 10px;
+  font-size: 11px;
+  color: var(--color-link);
+  text-decoration: none;
+}
+.lh-v6-publish-link:hover { text-decoration: underline; }
 
 /* --- Pull tab (sits inside the existing .drawer-btns column) -------- */
 /* Inherits the .drawer-btns > button styling for visual consistency. */

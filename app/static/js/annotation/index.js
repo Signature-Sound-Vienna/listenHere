@@ -19,6 +19,7 @@ import {
   initWaveformInteractions,
   syncWaveformRegions,
 } from "./waveform-interactions.js";
+import { postAnnotationToSolid } from "./solid-post.js";
 import { setAnnoChangesPending, _regionsPlugins } from "../listen.js";
 
 const STORAGE_KEY = "annot-v6";
@@ -165,6 +166,7 @@ export function initAnnotationV6() {
     _regionsPlugins,
     commitAnnotationsToAlignment,
     loadAnnotationsFromAlignment,
+    postAnnotationToSolid,
   };
 
   // Adapter round-trip smoke runs once so we have a console-visible health check.

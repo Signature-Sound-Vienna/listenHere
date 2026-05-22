@@ -426,11 +426,12 @@ export function markPosted(annId, lastPostedUris) {
   const a = _getMut(annId);
   if (!a) return;
   a.published = true;
-  // After a successful post, lastPostedUris and the `published` flag need
-  // to be persisted into alignment.json so a future load remembers the post.
-  // We mark the annotation dirty so the central Save-data indicator prompts
-  // the user to save. (Phase E3 will refine this for re-post diffs.)
-  a.hasUnsavedChanges = true;
+  // Post acts as a save: dirty indicator clears. The caller is responsible
+  // for also updating the in-memory loadedAlignmentJSON so the URIs persist
+  // through a subsequent Save Data download — otherwise a reload before
+  // Save would lose lastPostedUris and a future Post would create
+  // duplicates on the pod.
+  a.hasUnsavedChanges = false;
   if (lastPostedUris) a.lastPostedUris = lastPostedUris;
   _emit();
 }

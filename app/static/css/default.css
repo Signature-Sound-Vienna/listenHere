@@ -4879,6 +4879,26 @@ body.lh-v6-drawer-open .lh-v6-ribbon { right: 380px; }
   color: var(--color-text-muted);
   cursor: not-allowed;
 }
+.lh-v6-publish-btn.is-busy {
+  background: var(--color-link);
+  border-color: var(--color-link);
+  color: #fff;
+  cursor: progress;
+  opacity: 0.85;
+}
+.lh-v6-publish-btn.is-flash {
+  background: #16a34a;
+  border-color: #16a34a;
+  color: #fff;
+  font-weight: 700;
+  cursor: default;
+  animation: lh-v6-publish-flash 0.4s ease-out;
+}
+@keyframes lh-v6-publish-flash {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
 .lh-v6-publish-link {
   margin-left: 10px;
   font-size: 11px;

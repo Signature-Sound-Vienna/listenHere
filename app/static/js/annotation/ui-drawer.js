@@ -9,7 +9,10 @@ import * as uiState from "./ui-state.js";
 import { el, clearChildren } from "./ui-common.js";
 import { renderEditor } from "./ui-editor.js";
 import { renderViewer } from "./ui-viewer.js";
-import { postAnnotationToSolid } from "./solid-post.js";
+import {
+  postAnnotationToSolid,
+  updateAnnotationOnSolid,
+} from "./solid-post.js";
 import { solid } from "../solid.js";
 import { getAudioLinkedDataUri } from "../listen.js";
 
@@ -96,6 +99,12 @@ export function mountDrawer(parent) {
     _restoreFocus(body, saved);
     _renderPublishBar(publishBar, ann);
   }
+  // Expose a re-renderer the click handler can call independently of state
+  // emits — needed to update the in-flight "Posting… 3/12" counter.
+  _rerenderPublishBar = () => {
+    const ann = state.getById(state.getActiveId());
+    _renderPublishBar(publishBar, ann);
+  };
 
   state.subscribe(render);
   uiState.subscribe(render);
@@ -124,6 +133,13 @@ function _modeToggle() {
   ]);
 }
 
+// Per-annotation transient publish state, keyed by annId. Holds:
+//   { phase: 'posting' | 'flash', step?, total?, kind: 'post' | 'update' }
+// Module-level so the render function can read it without going through
+// state.js (state is for persisted things; this is purely UI feedback).
+const _publishUiState = new Map();
+let _rerenderPublishBar = null; // set by mountDrawer
+
 function _renderPublishBar(bar, ann) {
   clearChildren(bar);
   if (!ann) {
@@ -135,8 +151,8 @@ function _renderPublishBar(bar, ann) {
     );
     return;
   }
+  const transient = _publishUiState.get(ann.id);
   const noTargets = ann.targets.length === 0;
-  const unsaved = ann.hasUnsavedChanges;
   const alreadyPublished = ann.published;
   const missingUriFiles = noTargets
     ? []
@@ -149,54 +165,90 @@ function _renderPublishBar(bar, ann) {
   const sess = solid.getDefaultSession && solid.getDefaultSession();
   const isLoggedIn = !!(sess && sess.info && sess.info.isLoggedIn);
 
-  let label, disabled, tooltip;
-  if (alreadyPublished) {
-    label = "Update on Solid";
+  let label = alreadyPublished ? "Update on Solid" : "Post to Solid";
+  let disabled;
+  let tooltip;
+  let extraClass = "";
+  if (transient && transient.phase === "posting") {
+    label =
+      (transient.kind === "update" ? "Updating" : "Posting") +
+      "… " +
+      transient.step +
+      "/" +
+      transient.total;
     disabled = true;
-    tooltip = "Update-on-Solid lands in Phase E3.";
+    tooltip = "Talking to your Solid pod…";
+    extraClass = " is-busy";
+  } else if (transient && transient.phase === "flash") {
+    label = transient.kind === "update" ? "✓ Updated!" : "✓ Posted!";
+    disabled = true;
+    tooltip = "";
+    extraClass = " is-flash";
   } else if (noTargets) {
-    label = "Post to Solid";
     disabled = true;
     tooltip = "Select at least one recording first.";
   } else if (missingUriFiles.length > 0) {
-    label = "Post to Solid";
     disabled = true;
     tooltip =
       "Set Linked Data URI prefix in Manage files first. Missing for: " +
       missingUriFiles.join(", ");
   } else if (!isLoggedIn) {
-    label = "Post to Solid";
     disabled = true;
     tooltip = "Sign in to your Solid pod first (use the RDF icon, right edge).";
-  } else if (unsaved) {
-    label = "Post to Solid";
-    disabled = true;
-    tooltip = "Save data first so the post is anchored to a saved state.";
   } else {
-    label = "Post to Solid";
     disabled = false;
-    tooltip = "Post this annotation to your Solid pod.";
+    tooltip = alreadyPublished
+      ? "Push your local changes to your Solid pod."
+      : "Post this annotation to your Solid pod.";
   }
   const btn = el("button", {
-    class: "lh-v6-publish-btn",
+    class: "lh-v6-publish-btn" + extraClass,
     type: "button",
     text: label,
     title: tooltip,
     disabled,
-    onclick: async (e) => {
-      const button = e.currentTarget;
-      const originalText = button.textContent;
-      button.disabled = true;
-      button.textContent = "Posting…";
+    onclick: async () => {
+      const isUpdate = alreadyPublished;
+      _publishUiState.set(ann.id, {
+        phase: "posting",
+        step: 0,
+        total: 0,
+        kind: isUpdate ? "update" : "post",
+      });
+      if (_rerenderPublishBar) _rerenderPublishBar();
+      const onProgress = (step, total) => {
+        const cur = _publishUiState.get(ann.id);
+        if (!cur || cur.phase !== "posting") return;
+        cur.step = step;
+        cur.total = total;
+        if (_rerenderPublishBar) _rerenderPublishBar();
+      };
       try {
-        await postAnnotationToSolid(ann.id);
-        // Successful state changes (published=true, hasUnsavedChanges=true)
-        // trigger a state emit that re-renders this bar.
+        if (isUpdate) {
+          await updateAnnotationOnSolid(ann.id, { onProgress });
+        } else {
+          await postAnnotationToSolid(ann.id, { onProgress });
+        }
+        _publishUiState.set(ann.id, {
+          phase: "flash",
+          kind: isUpdate ? "update" : "post",
+        });
+        if (_rerenderPublishBar) _rerenderPublishBar();
+        setTimeout(() => {
+          if ((_publishUiState.get(ann.id) || {}).phase === "flash") {
+            _publishUiState.delete(ann.id);
+            if (_rerenderPublishBar) _rerenderPublishBar();
+          }
+        }, 2000);
       } catch (err) {
-        console.error("[annotation/v6] post failed:", err);
-        window.alert("Post failed: " + (err && err.message ? err.message : err));
-        button.disabled = false;
-        button.textContent = originalText;
+        console.error("[annotation/v6] post/update failed:", err);
+        _publishUiState.delete(ann.id);
+        if (_rerenderPublishBar) _rerenderPublishBar();
+        window.alert(
+          (alreadyPublished ? "Update" : "Post") +
+            " failed: " +
+            (err && err.message ? err.message : err),
+        );
       }
     },
   });

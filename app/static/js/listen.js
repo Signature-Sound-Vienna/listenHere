@@ -4978,7 +4978,7 @@ async function _buildAndPrepareSynthWaveform(
   }
 }
 
-let loadedAlignmentJSON = null; // Full alignment object for download
+export let loadedAlignmentJSON = null; // Full alignment object for download
 
 async function setGrids(grids) {
   console.log("received grids: ", grids);

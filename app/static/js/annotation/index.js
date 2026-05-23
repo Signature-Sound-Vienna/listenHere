@@ -1,13 +1,7 @@
 // V6 annotation rework — module entry point.
 //
-// Feature-flag-gated for development. Active iff one of:
-//   - URL contains ?annot=v6 (which also persists the choice in localStorage)
-//   - localStorage["annot-v6"] === "1"
-//
-// To switch back to legacy, load with ?annot=legacy (clears the localStorage flag).
-//
-// While the flag is off this module is a no-op; the legacy annotation.js stack
-// continues to drive the annotation UI. The flag is removed in Phase F.
+// As of Phase F this module is the only annotation UI: the legacy
+// annotation.js stack and the `?annot=v6` feature flag have been removed.
 
 import * as state from "./state.js";
 import * as adapter from "./mao-adapter.js";
@@ -32,8 +26,6 @@ import {
 import { _openLoadModal } from "./ui-ribbon.js";
 import { solid } from "../solid.js";
 import { setAnnoChangesPending, _regionsPlugins } from "../listen.js";
-
-const STORAGE_KEY = "annot-v6";
 
 /**
  * Persist V6 annotation state into the alignment.json object (so the
@@ -99,11 +91,8 @@ function _cloneRegionTimes(rt) {
  * listen.js's setGrids after assigning loadedAlignmentJSON. Replaces the
  * full V6 state, so reloading a different alignment doesn't carry stale
  * annotations across.
- *
- * When V6 isn't active, no-ops (legacy code path handles its own load).
  */
 export function loadAnnotationsFromAlignment(alignmentJSON) {
-  if (!isV6Active()) return;
   if (!alignmentJSON || !Array.isArray(alignmentJSON.annotations)) {
     state.replaceAll([]);
     return;
@@ -112,50 +101,20 @@ export function loadAnnotationsFromAlignment(alignmentJSON) {
 }
 
 /**
- * Listen.js delegates region rendering to us when V6 is active so the
- * legacy anno_/draft_ rendering doesn't run alongside V6's v6_ regions.
+ * Listen.js delegates region rendering to V6 so legacy anno_/draft_
+ * rendering doesn't run alongside V6's v6_ regions. Returns true for
+ * compatibility with the previous flag-aware shape.
  */
 export function maybeSyncV6Regions() {
-  if (!isV6Active()) return false;
   syncWaveformRegions();
   return true;
 }
 
-export function isV6Active() {
-  let urlChoice = null;
-  try {
-    urlChoice = new URLSearchParams(window.location.search).get("annot");
-  } catch (_) {}
-  if (urlChoice === "v6") {
-    try {
-      localStorage.setItem(STORAGE_KEY, "1");
-    } catch (_) {}
-    return true;
-  }
-  if (urlChoice === "legacy") {
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch (_) {}
-    return false;
-  }
-  try {
-    return localStorage.getItem(STORAGE_KEY) === "1";
-  } catch (_) {
-    return false;
-  }
-}
-
 export function initAnnotationV6() {
-  if (!isV6Active()) return;
-  console.info(
-    "[annotation/v6] feature flag active — V6 module initialised (E1).",
-  );
+  console.info("[annotation/v6] module initialised.");
 
   // Mark the body so the scoped CSS rules apply (padding for ribbon, etc.).
-  // Hide the legacy #maoExtracts container while V6 is the active UI.
   document.body.classList.add("lh-v6-active");
-  const legacy = document.getElementById("maoExtracts");
-  if (legacy) legacy.style.display = "none";
 
   // Mount the chrome: ribbon (bottom), drawer (right), pull-tab (in drawer-btns column).
   mountRibbon(document.body);

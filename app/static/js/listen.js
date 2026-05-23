@@ -3,19 +3,6 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { initSolidAuth } from "./solid.js";
-import {
-  toggleStagedSelection,
-  toggleDraftStagedSelection,
-  getDraftRegionsForWaveform,
-  onDraftRegionCreated,
-  onDraftRegionUpdated,
-  continueAnnotationLoopOnWaveform,
-  prepareAnnotationLoopTransfer,
-  initNewAnnotationButton,
-  onSolidAuthChanged,
-  getLiveColor,
-  refreshAllPostButtonStates,
-} from "./annotation.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
@@ -41,8 +28,6 @@ let meiDOM = null; // MEI DOM
 let parser = new DOMParser(); // XML parser for MEI
 let ref;
 export let currentAudioIx = "";
-export let currentlyAnnotatedRegions = []; // alignment indexes of start and end for each active annotated region
-export let maoSelections = [];
 let referenceAudioIx;
 let colorMap;
 let timerFrom = 0;
@@ -55,7 +40,6 @@ const bigMarkerNudge = 0.1;
 
 export let storage;
 export let meiUri;
-export let currentlyActiveMaoSelection = "";
 export let wavesurfers = {};
 export const _regionsPlugins = {}; // filename -> RegionsPlugin instance
 const _timerRegions = {}; // filename -> timer Region object
@@ -1058,16 +1042,14 @@ function _syncAllWaveformScrolls(sourceFilename) {
 
 const REGION_NAV_BUFFER_FRAC = 0.05; // 5% of viewport width
 
-/** Collect all currently-loaded annotated + draft region times on a waveform. */
+/** Collect all currently-visible region times on a waveform (skips the timer). */
 function _collectAllRegionTimes(filename) {
-  const out = [];
-  extractCurrentlyAnnotatedRegions(filename).forEach((r) => {
-    out.push({ start: r.start, end: r.end });
-  });
-  getDraftRegionsForWaveform(filename).forEach((r) => {
-    out.push({ start: r.start, end: r.end });
-  });
-  return out;
+  const plugin = _regionsPlugins[filename];
+  if (!plugin) return [];
+  return plugin
+    .getRegions()
+    .filter((r) => r.id !== "timer")
+    .map((r) => ({ start: r.start, end: r.end }));
 }
 
 /** Create left/right region-nav arrow buttons inside the waveform's overlay wrapper. */
@@ -1836,9 +1818,6 @@ export function swapCurrentAudio(newAudio) {
       "Current duration: ",
       wavesurfers[currentAudioIx].getDuration(),
     );
-    // Detach annotation loop's pause listener before pausing,
-    // so the swap-pause doesn't kill the active annotation loop.
-    prepareAnnotationLoopTransfer();
     const wasPlaying = wavesurfers[currentAudioIx].isPlaying();
     wavesurfers[currentAudioIx].pause();
     // In close-listening mode, seek to the active marker; otherwise follow
@@ -1907,8 +1886,6 @@ export function swapCurrentAudio(newAudio) {
   _refreshWfBg(currentAudioIx);
   if (_gridRedrawers[prevAudio]) _gridRedrawers[prevAudio]();
   if (_gridRedrawers[currentAudioIx]) _gridRedrawers[currentAudioIx]();
-  // If an annotation loop is active, continue it on the newly-active waveform
-  continueAnnotationLoopOnWaveform(currentAudioIx);
 }
 
 function generateCheckboxList(list, isDraggable = false) {
@@ -2003,6 +1980,47 @@ function _groupTextColor(hex) {
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
   return (r * 299 + g * 587 + b * 114) / 1000 > 128 ? '#222' : '#fff';
+}
+
+/**
+ * Security: alignment JSON can come from an attacker-controlled URL.
+ * Colours from header.fileGroups[].color end up in inline `style.color` /
+ * `style.backgroundColor`. Browsers reject obvious script-in-CSS via the
+ * .style.X setter, but bad values silently land in computed garbage; we
+ * accept only #hex and rgb/rgba forms — same shape as V6's sanitiser.
+ */
+const _SAFE_HEX_RE = /^#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+const _SAFE_RGB_RE = /^rgba?\(\s*\d{1,3}(\s*,\s*\d{1,3}){2}(\s*,\s*(0|1|0?\.\d+))?\s*\)$/;
+function _safeColor(c) {
+  if (typeof c !== "string") return null;
+  const t = c.trim();
+  if (_SAFE_HEX_RE.test(t) || _SAFE_RGB_RE.test(t)) return t;
+  return null;
+}
+
+/**
+ * Build a `.group-title` element safely (no innerHTML). The label is set
+ * via textContent so a malicious alignment.json fileGroups[].name can't
+ * inject script tags.
+ */
+function _buildGroupTitle(labelText) {
+  const title = document.createElement("div");
+  title.className = "group-title";
+  // Lead with a text node carrying the (untrusted) label.
+  title.appendChild(document.createTextNode(labelText + " "));
+  const count = document.createElement("span");
+  count.className = "group-count";
+  const actions = document.createElement("span");
+  actions.className = "group-actions";
+  const all = document.createElement("span");
+  all.className = "group-all";
+  all.textContent = "All";
+  const none = document.createElement("span");
+  none.className = "group-none";
+  none.textContent = "None";
+  actions.append(all, none);
+  title.append(count, actions);
+  return title;
 }
 
 /** Return the next palette colour not yet used by any group. */
@@ -2735,10 +2753,12 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     const container = document.createElement("div");
     container.className = "file-group";
     container.dataset.group = g.name;
-    container.innerHTML = `<div class="group-title">${g.name} <span class="group-count"></span><span class="group-actions"><span class="group-all">All</span><span class="group-none">None</span></span></div><div class="group-list"></div>`;
-    if (g.color) {
-      container.style.backgroundColor = g.color;
-      container.style.color = _groupTextColor(g.color);
+    container.appendChild(_buildGroupTitle(g.name));
+    container.appendChild(Object.assign(document.createElement("div"), { className: "group-list" }));
+    const safeColor = _safeColor(g.color);
+    if (safeColor) {
+      container.style.backgroundColor = safeColor;
+      container.style.color = _groupTextColor(safeColor);
     }
     contentByName[g.name] = container;
   });
@@ -2750,7 +2770,8 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
     const uc = document.createElement("div");
     uc.className = "file-group file-group-ungrouped";
     uc.dataset.group = "Ungrouped";
-    uc.innerHTML = `<div class="group-title">${ungroupedLabel} <span class="group-count"></span><span class="group-actions"><span class="group-all">All</span><span class="group-none">None</span></span></div><div class="group-list"></div>`;
+    uc.appendChild(_buildGroupTitle(ungroupedLabel));
+    uc.appendChild(Object.assign(document.createElement("div"), { className: "group-list" }));
     contentByName["Ungrouped"] = uc;
   }
 
@@ -3776,28 +3797,12 @@ function visualiseAlignments() {
 }
 
 function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
-  console.log(
-    "preparing waveform, currently annotated regions:",
-    currentlyAnnotatedRegions,
-  );
   // if not yet created, do so:
   if (!(filename in wavesurfers)) {
     const waveform = document.createElement("div");
     waveform.id = "waveform-" + filename + "-wav";
     waveform.dataset.ix = filename;
     waveform.classList.add("waveform");
-
-    // Full-coverage selection overlay (hidden by default, shown during selection mode)
-    const selectOverlay = document.createElement("div");
-    selectOverlay.className = "wf-select-overlay";
-    selectOverlay.innerHTML = `<img src="${root}svg/RDF-logo.svg" class="wf-overlay-icon" alt="RDF" />`;
-    selectOverlay.addEventListener("click", (e) => {
-      e.stopPropagation();
-      // Route to whichever selection mode is active (both no-op if inactive)
-      toggleStagedSelection(filename);
-      toggleDraftStagedSelection(filename);
-    });
-    waveform.appendChild(selectOverlay);
 
     // Ensure group containers exist and append into the appropriate group-list
     const allFilenames = Object.keys(alignmentGrids || {})
@@ -3902,7 +3907,6 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       },
     });
     _regionsPlugins[filename] = _regPlugin;
-    let regions = extractCurrentlyAnnotatedRegions(filename);
     wavesurfers[filename] = WaveSurfer.create({
       container: `#${CSS.escape("waveform-" + filename) + "-wav"}`,
       ...(_waveformColors()),
@@ -3913,26 +3917,9 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       autoCenter: false, // managed by our zoom scroll logic
     });
 
-    // Handle region adjustments (Phase 4 groundwork)
-    _regPlugin.on("region-updated", (region) => {
-      onRegionUpdated(filename, region);
-    });
-
-    // Handle new regions drawn by user (draft annotation mode)
-    _regPlugin.on("region-created", (region) => {
-      // Only handle user-drawn regions (drag selection creates these).
-      // Programmatic regions (timer, anno_, draft_, v6_) are added via
-      // addRegion and must be skipped here — V6 regions in particular must
-      // not be routed to onDraftRegionCreated, which would remove them.
-      if (
-        region.id !== "timer" &&
-        !region.id.startsWith("anno_region_") &&
-        !region.id.startsWith("draft_") &&
-        !region.id.startsWith("v6_")
-      ) {
-        onDraftRegionCreated(filename, region);
-      }
-    });
+    // Region create/update events are handled by the V6 module's listeners
+    // wired in annotation/waveform-interactions.js — listen.js doesn't need
+    // its own.
 
     // Add timer region and any annotated regions to the shared RegionsPlugin
     _timerRegions[filename] = _regPlugin.addRegion({
@@ -3943,7 +3930,6 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       resize: false, // timer shouldn't be resized
       color: "rgba(255, 0, 100, 0.3)",
     });
-    regions.forEach((r) => _regPlugin.addRegion(r));
 
     // Start loading (deferred for synth entries until the blob URL is available)
     const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
@@ -4504,7 +4490,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         }
         // Re-add annotation regions — WaveSurfer's redraw removes and recreates
         // region SVG elements, so they must be restored after every render cycle.
-        if (currentlyAnnotatedRegions.length) updateRenderAnnoRegions();
+        updateRenderAnnoRegions();
         // Ensure newly-created marker elements inherit the draggable class
         // so that drag works without re-toggling the checkbox.
         _updateMarkerDraggableClass();
@@ -4582,7 +4568,7 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     });
 
     // render anno regions
-    if (currentlyAnnotatedRegions) updateRenderAnnoRegions();
+    updateRenderAnnoRegions();
   } else {
     // waveform already loaded...
     let checkbox = document.getElementById(filename).querySelector("input");
@@ -5139,8 +5125,6 @@ async function setGrids(grids) {
     );
   }
 
-  // Initialize the "New Annotation" button (idempotent — checks for duplicates)
-  initNewAnnotationButton();
 }
 
 // ---------------------------------------------------------------------------
@@ -5182,123 +5166,8 @@ function onAlignmentComplete(alignmentResult, files) {
   // Load alignment data → build waveforms
   setGrids(alignmentResult);
 
-  // Now in listen mode — initialise the Solid panel
-  initSolidAuth().then(onSolidAuthChanged);
-}
-
-// ----------------------------------------------------------------------------
-// Solid Extraction / Annotation Handlers
-// ----------------------------------------------------------------------------
-
-export async function createSelectionForWaveform(filename) {
-  // We need to know which MAO Extract is currently active.
-  const activeExtract = document.querySelector(".maoExtract.active");
-  if (!activeExtract) {
-    alert("Please select (click on) an active annotation card first.");
-    return;
-  }
-
-  // We need the ID of the extract and its label
-  const extractId = activeExtract.id;
-  const extractLabel =
-    activeExtract.querySelector(".maoExtract-label").innerText;
-
-  // We need to find the bounds for this specific waveform
-  let regionStart = 0;
-  let regionEnd = 0;
-
-  // Find the corresponding global annotation index
-  let mySelections = activeExtract.dataset.selection;
-  // (In drawExtractUIElement we stashed the first embodiment URI in dataset.selection)
-
-  let regionIx = currentlyAnnotatedRegions.findIndex(
-    (r) => r.selection === mySelections,
-  );
-
-  if (regionIx >= 0) {
-    // If we have a local override (Phase 4), use it.
-    const globalRegion = currentlyAnnotatedRegions[regionIx];
-    if (globalRegion.localOverrides && globalRegion.localOverrides[filename]) {
-      regionStart = globalRegion.localOverrides[filename].start;
-      regionEnd = globalRegion.localOverrides[filename].end;
-    } else {
-      // Fallback to global alignment mapping
-      regionStart = getCorrespondingTime(filename, globalRegion.from);
-      regionEnd = getCorrespondingTime(filename, globalRegion.to);
-    }
-  } else {
-    // Fallback if not found in memory (shouldn't happen if card is active)
-    const ws = wavesurfers[filename];
-    if (ws && ws.regions && ws.regions.list && ws.regions.list.anno_region_0) {
-      regionStart = ws.regions.list.anno_region_0.start;
-      regionEnd = ws.regions.list.anno_region_0.end;
-    } else {
-      console.error("Could not determine region bounds for selection");
-      return;
-    }
-  }
-
-  const audioMediaUri = `${dummyUriPrefix}${filename}#t=${regionStart},${regionEnd}`;
-
-  // Call the function from annotation.js (it is a global in the current architecture or imported)
-  if (typeof window.addNewMAOSelectionToExtract === "function") {
-    window.addNewMAOSelectionToExtract(
-      filename,
-      audioMediaUri,
-      extractId,
-      extractLabel,
-    );
-  } else {
-    console.error("addNewMAOSelectionToExtract is not available");
-  }
-}
-
-// Phase 4: Handle Region Edits
-function onRegionUpdated(filename, region) {
-  // Handle draft regions
-  if (region.id.startsWith("draft_")) {
-    onDraftRegionUpdated(filename, region);
-    return;
-  }
-
-  // Only handle our annotation regions (ignore the "timer" region)
-  if (!region.id.startsWith("anno_region_")) return;
-
-  const ix = parseInt(region.id.replace("anno_region_", ""));
-  if (isNaN(ix) || !currentlyAnnotatedRegions[ix]) return;
-
-  const isShiftPressed = window.event && window.event.shiftKey;
-
-  if (isShiftPressed) {
-    // Local Mode: store in overrides and do NOT re-render other waveforms
-    if (!currentlyAnnotatedRegions[ix].localOverrides) {
-      currentlyAnnotatedRegions[ix].localOverrides = {};
-    }
-    currentlyAnnotatedRegions[ix].localOverrides[filename] = {
-      start: region.start,
-      end: region.end,
-    };
-    console.log(
-      `Local override saved for ${filename}:`,
-      currentlyAnnotatedRegions[ix].localOverrides[filename],
-    );
-  } else {
-    // Global Mode: convert to alignment ix, update global, re-render all
-    const newFromGlobalIx = getClosestAlignmentIx(region.start, filename);
-    const newToGlobalIx = getClosestAlignmentIx(region.end, filename);
-
-    // Clear any local overrides for this region since we did a global edit
-    currentlyAnnotatedRegions[ix].localOverrides = {};
-
-    currentlyAnnotatedRegions[ix].from = newFromGlobalIx;
-    currentlyAnnotatedRegions[ix].to = newToGlobalIx;
-
-    // Re-render to propagate to all waveforms
-    updateRenderAnnoRegions();
-    console.log(
-      `Global region updated to ${newFromGlobalIx} - ${newToGlobalIx}`,
-    );
-  }
+  // Now in listen mode — initialise the Solid panel.
+  initSolidAuth();
 }
 
 // ----------------------------------------------------------------------------
@@ -5470,11 +5339,8 @@ document.addEventListener("DOMContentLoaded", () => {
   // Initialise Solid auth (process any incoming redirect code, then populate drawer).
   // Skip in align mode — Solid is irrelevant until user transitions to listen mode.
   if (window.alignMode !== "align") {
-    initSolidAuth().then(onSolidAuthChanged);
+    initSolidAuth();
   }
-
-  // Listen for auth state changes (e.g. logout from within the Solid drawer)
-  document.addEventListener("solid-auth-changed", () => onSolidAuthChanged());
 
   // set up Verovio
   const _verovioReady = new Promise((resolve) => {
@@ -7208,146 +7074,6 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 
-export function markScoreRegion(ids, selectionUrl, reset = false) {
-  if (reset) {
-    currentlyAnnotatedRegions = [];
-  }
-  console.log("Marking score region for ids: ", ids);
-  // iterate over ids, attempting to find the first and last note that the tk can getTimesForElements on
-  if (scoreAlignment && tk && referenceAudioIx) {
-    let fromId, toId;
-    let fromTimes, toTimes;
-    for (let id of ids) {
-      console.log("MEI DOM: ", meiDOM);
-      console.log("Looking for id: ", id);
-      let el = meiDOM.querySelector("[*|id='" + id + "']");
-      if (!el) {
-        console.warn("Couldn't find element with id: ", id);
-        continue;
-      }
-      if (el.tagName !== "note") {
-        // get the first note in the closest measure
-        let measure = el.closest("measure");
-        if (measure) {
-          let firstNote = measure.querySelector("note");
-          if (firstNote) {
-            id = firstNote.getAttribute("xml:id");
-            console.log("Using first note in measure: ", id);
-          } else {
-            console.warn("Measure has no notes, skipping: ", id);
-            continue;
-          }
-        } else {
-          console.warn("Element is not within a measure, skipping: ", id);
-          continue;
-        }
-      }
-      console.log("Determined from ID to be: ", id);
-      fromTimes = tk.getTimesForElement(id);
-      if (Object.keys(fromTimes).length) {
-        fromId = id;
-        break;
-      }
-    }
-    for (let id of ids.reverse()) {
-      let el = meiDOM.querySelector("[*|id='" + id + "']");
-      if (!el) {
-        console.warn("Couldn't find element with id: ", id);
-        continue;
-      }
-      if (el.tagName !== "note") {
-        // get the last note in the closest measure
-        let measure = el.closest("measure");
-        if (measure) {
-          let lastNote = measure.querySelector("note:last-of-type");
-          if (lastNote) {
-            id = lastNote.getAttribute("xml:id");
-            console.log("Using last note in measure: ", id);
-          } else {
-            console.warn("Measure has no notes, skipping: ", id);
-            continue;
-          }
-        } else {
-          console.warn("Element is not within a measure, skipping: ", id);
-          continue;
-        }
-      }
-      console.log("Determined to ID to be: ", id);
-      toTimes = tk.getTimesForElement(id);
-      if (Object.keys(toTimes).length) {
-        toId = id;
-        break;
-      }
-    }
-    if (fromTimes) {
-      let onsets = fromTimes.tstampOn;
-      // if no toId specified, mark region from onset to offset of fromId; otherwise, mark from onset of fromId to offset of toId
-      let offsets = toTimes ? toTimes.tstampOff : fromTimes.tstampOff;
-      // getTimesForElements returns onset and offset times for identified elements (plus other stuff)
-      // The returned values are arrays, to handle expansions. So we have to handle the arrays.
-      // Return regions in the reference audio corresponding to these onsets and offsets
-      console.log(
-        "fromId: ",
-        fromId,
-        "toId: ",
-        toId,
-        "fromTimes",
-        fromTimes,
-        "toTimes",
-        toTimes,
-        "onsets: ",
-        onsets,
-        "offsets: ",
-        offsets,
-      );
-      let refRegions = onsets.map((t, expansionIx) => {
-        console.log("In loop: ", t, expansionIx);
-        // Verovio's getTimesForElement returns MIDI real-time milliseconds,
-        // which corresponds to the synth_onset timescale (seconds), NOT score_onset
-        // (which is in symbolic score time / quarter-note positions).
-        const onsetTimes =
-          scoreAlignment.synth_onset || scoreAlignment.score_onset;
-        const offsetTimes =
-          scoreAlignment.synth_offset || scoreAlignment.score_offset;
-        return {
-          from: scoreAlignment.ref_onset[getClosestScoreTimeIx(t, onsetTimes)],
-          to: scoreAlignment.ref_offset[
-            getClosestScoreTimeIx(offsets[expansionIx], offsetTimes)
-          ],
-        };
-      });
-      // convert to alignment ix
-      currentlyAnnotatedRegions.push({
-        selection: selectionUrl.href,
-        from: getClosestAlignmentIx(refRegions[0].from, referenceAudioIx),
-        to: getClosestAlignmentIx(refRegions[0].to, referenceAudioIx),
-      });
-      updateRenderAnnoRegions();
-      /* HACK DH 2023, in future handle multiple regions, for now only use the first
-      /*refRegions.map(r => { 
-        return {
-          from: getClosestAlignmentIx(r.from, referenceAudioIx), 
-          to: getClosestAlignmentIx(r.to, referenceAudioIx)
-        }
-      });*/
-    } else {
-      console.warn(
-        "Verovio couldn't find onset / offset times for any of the selection IDs. Were any notes selected?",
-      );
-    }
-  } else {
-    console.warn("Current alignment JSON does not support score alignment");
-  }
-}
-
-function getClosestScoreTimeIx(tInMilliSec, times) {
-  let t = tInMilliSec / 1000;
-  let closest = times.reduce(function (prev, curr) {
-    return Math.abs(curr - t) < Math.abs(prev - t) ? curr : prev;
-  });
-  return times.indexOf(closest);
-}
-
 function playpause() {
   if (currentAudioIx) {
     if (wavesurfers[currentAudioIx].isPlaying())
@@ -7376,58 +7102,13 @@ function updateRenderTimer() {
   });
 }
 
-// todo refactor with updateRenderTimer above
+/**
+ * Push every annotation's regions onto every waveform via the V6 module,
+ * then refresh the off-screen region nav arrows.
+ */
 export function updateRenderAnnoRegions() {
-  // When V6 is active, route region rendering through the V6 module so the
-  // legacy anno_ / draft_ regions don't appear alongside the new v6_ regions.
-  if (maybeSyncV6Regions()) {
-    _updateAllRegionNavArrows();
-    return;
-  }
-  // HACK dlfm2023: for now do nothing, ensure annots are loaded before wavesurfers
-  Object.keys(wavesurfers).forEach((ws) => {
-    console.log("Update render anno regions: ", ws, currentlyAnnotatedRegions);
-    const regPlugin = _regionsPlugins[ws];
-    if (!regPlugin) return;
-    let regions = extractCurrentlyAnnotatedRegions(ws);
-    // Also include draft regions
-    const draftRegions = getDraftRegionsForWaveform(ws);
-    // Remove only annotation + draft regions, preserving the timer region
-    regPlugin
-      .getRegions()
-      .filter((r) => r.id !== "timer")
-      .forEach((r) => r.remove());
-    regions.forEach((r) => regPlugin.addRegion(r));
-    draftRegions.forEach((r) => regPlugin.addRegion(r));
-  });
+  maybeSyncV6Regions();
   _updateAllRegionNavArrows();
-}
-
-function extractCurrentlyAnnotatedRegions(ws) {
-  return currentlyAnnotatedRegions.map((r, ix) => {
-    let regionStart, regionEnd;
-
-    // Phase 4: Use local override if it exists, otherwise fall back to global alignment
-    if (r.localOverrides && r.localOverrides[ws]) {
-      regionStart = r.localOverrides[ws].start;
-      regionEnd = r.localOverrides[ws].end;
-    } else {
-      regionStart = getCorrespondingTime(ws, r.from);
-      regionEnd = getCorrespondingTime(ws, r.to);
-    }
-
-    return {
-      id: "anno_region_" + ix,
-      start: regionStart,
-      end: regionEnd,
-      drag: true,
-      resize: true,
-      color:
-        (r.color && r.color.bg) ||
-        getLiveColor(r.selection)?.bg ||
-        "rgba(200, 130, 80, 0.3)",
-    };
-  });
 }
 
 // --- File picker logic for ?useFiles mode ---
@@ -7520,7 +7201,12 @@ function initFilePicker() {
       const li = document.createElement("li");
       const isMatched = fileBlobUrls.has(key);
       li.className = isMatched ? "matched" : "missing";
-      li.innerHTML = `<span class="status-icon"></span><span class="filename">${name}</span>`;
+      const icon = document.createElement("span");
+      icon.className = "status-icon";
+      const fname = document.createElement("span");
+      fname.className = "filename";
+      fname.textContent = name;
+      li.append(icon, fname);
       listEl.appendChild(li);
       if (isMatched) matched++;
     });
@@ -7553,7 +7239,14 @@ function initFilePicker() {
       // Give immediate feedback so the user knows their pick registered
       // (large files can take several seconds to read + parse).
       if (jsonStatusEl) {
-        jsonStatusEl.innerHTML = `<span class="json-status-pending">&#8987; Reading ${jsonFiles[0].name}…</span>`;
+        // Filename is user-picked but still safer via textContent on a span
+        // built up DOM-side than interpolated into innerHTML.
+        jsonStatusEl.replaceChildren(
+          Object.assign(document.createElement("span"), {
+            className: "json-status-pending",
+            textContent: "⏳ Reading " + jsonFiles[0].name + "…",
+          }),
+        );
       }
       try {
         const data = await processPickedJsonFile(jsonFiles[0]);
@@ -7653,11 +7346,11 @@ function initFilePicker() {
     }
   });
 
-  // Continue button — persist LD config and close
+  // Continue button — persist LD config and close. The V6 publish bar
+  // re-reads its enable conditions on each render, so we don't need to
+  // imperatively refresh it after LD URI edits.
   function closeOverlay() {
     if (populateLdUriSection._persist) populateLdUriSection._persist();
-    // LD URIs may have changed — refresh all annotation Post-to-Solid buttons.
-    refreshAllPostButtonStates();
     overlay.style.display = "none";
     // If alignment was loaded from a local JSON file, apply it now
     if (window._pendingLocalAlignment) {
@@ -7928,19 +7621,37 @@ initGlobalJsonDrop();
 window._listenTest = {
   get wavesurfers() { return wavesurfers; },
   get currentAudioIx() { return currentAudioIx; },
-  get currentlyAnnotatedRegions() { return currentlyAnnotatedRegions; },
-  /** Inject a synthetic annotated region via per-waveform localOverrides (bypasses alignment lookup). */
+  /**
+   * Inject a synthetic region directly onto each named waveform's regions
+   * plugin. Bypasses V6 state (which is the intended path in production)
+   * because these tests only verify the off-screen nav-arrow behaviour,
+   * which reads region times from the plugin regardless of source.
+   */
   injectTestRegion(overridesByWaveform, selection = "test-region") {
-    currentlyAnnotatedRegions.push({
-      from: 0,
-      to: 0,
-      selection,
-      localOverrides: overridesByWaveform,
+    Object.keys(overridesByWaveform).forEach((filename) => {
+      const plugin = _regionsPlugins[filename];
+      if (!plugin) return;
+      const { start, end } = overridesByWaveform[filename];
+      plugin.addRegion({
+        id: `test_${selection}_${filename}_${Date.now()}`,
+        start,
+        end,
+        color: "rgba(200, 130, 80, 0.3)",
+        drag: false,
+        resize: false,
+      });
     });
     updateRenderAnnoRegions();
   },
   clearTestRegions() {
-    currentlyAnnotatedRegions.length = 0;
+    Object.keys(_regionsPlugins).forEach((filename) => {
+      const plugin = _regionsPlugins[filename];
+      if (!plugin) return;
+      plugin
+        .getRegions()
+        .filter((r) => r.id.startsWith("test_"))
+        .forEach((r) => r.remove());
+    });
     updateRenderAnnoRegions();
   },
 };

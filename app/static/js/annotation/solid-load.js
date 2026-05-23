@@ -65,6 +65,50 @@ export async function listAnnotationsForAudio(audioUri) {
 }
 
 /**
+ * For every locally-loaded recording with a Linked Data URI, read its
+ * pod discovery resource and return the union of MM entries it lists.
+ * Each result row carries `coveredFiles` — the loaded file keys it shows
+ * up for — so the UI can hint at how relevant the annotation is to the
+ * current workspace. Audios with no discovery resource on the pod (404)
+ * are silently skipped.
+ */
+export async function listAnnotationsForLoadedAudios() {
+  const session = solid.getDefaultSession();
+  if (!session || !session.info || !session.info.isLoggedIn) {
+    throw new Error("Sign in to your Solid pod first.");
+  }
+  const reverseMap = _buildReverseAudioMap();
+  const audios = [...reverseMap.keys()];
+  if (audios.length === 0) return [];
+
+  const perAudio = await Promise.all(
+    audios.map(async (audioUri) => {
+      try {
+        const entries = await listAnnotationsForAudio(audioUri);
+        return { file: reverseMap.get(audioUri), entries };
+      } catch (_) {
+        return { file: reverseMap.get(audioUri), entries: [] };
+      }
+    }),
+  );
+
+  // De-dupe by mmUri; record which loaded files each annotation covers.
+  const byMm = new Map();
+  for (const { file, entries } of perAudio) {
+    for (const entry of entries) {
+      if (!byMm.has(entry.mmUri)) {
+        byMm.set(entry.mmUri, { ...entry, coveredFiles: new Set() });
+      }
+      byMm.get(entry.mmUri).coveredFiles.add(file);
+    }
+  }
+  return [...byMm.values()].map((e) => ({
+    ...e,
+    coveredFiles: [...e.coveredFiles].sort(),
+  }));
+}
+
+/**
  * Load a full annotation chain from the user's Solid pod, given the MM
  * URI, and add it to state. Throws if any referenced audio isn't locally
  * loaded.

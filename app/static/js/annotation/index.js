@@ -23,7 +23,11 @@ import {
   postAnnotationToSolid,
   updateAnnotationOnSolid,
 } from "./solid-post.js";
-import { loadAnnotationFromMM, listAnnotationsForAudio } from "./solid-load.js";
+import {
+  loadAnnotationFromMM,
+  listAnnotationsForAudio,
+  listAnnotationsForLoadedAudios,
+} from "./solid-load.js";
 import { _openLoadModal } from "./ui-ribbon.js";
 import { solid } from "../solid.js";
 import { setAnnoChangesPending, _regionsPlugins } from "../listen.js";
@@ -177,6 +181,7 @@ export function initAnnotationV6() {
     updateAnnotationOnSolid,
     loadAnnotationFromMM,
     listAnnotationsForAudio,
+    listAnnotationsForLoadedAudios,
   };
 
   // URL-param autoload: ?annot=v6&loadMM=<encoded MM URI> opens the load

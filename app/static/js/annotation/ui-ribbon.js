@@ -8,7 +8,11 @@ import * as state from "./state.js";
 import * as uiState from "./ui-state.js";
 import { el, clearChildren } from "./ui-common.js";
 import { getActiveGroupingSnapshot } from "../listen.js";
-import { listAnnotationsForAudio, loadAnnotationFromMM } from "./solid-load.js";
+import {
+  listAnnotationsForAudio,
+  listAnnotationsForLoadedAudios,
+  loadAnnotationFromMM,
+} from "./solid-load.js";
 import { solid } from "../solid.js";
 
 export function mountRibbon(parent) {
@@ -124,10 +128,11 @@ export function mountRibbon(parent) {
 let _modalEl = null;
 
 /**
- * Open (or focus) a small modal that asks for an audio Linked Data URI,
- * fetches its discovery resource, and presents a picker for each MM URI
- * listed there. Clicking "Load" walks the chain and adds the annotation
- * to state.
+ * Open a modal that presents annotations available on the pod. Default
+ * mode auto-lists annotations involving the user's currently loaded
+ * recordings; a secondary "Browse a different audio…" section lets the
+ * user paste an arbitrary audio URI to discover annotations involving
+ * recordings they haven't loaded.
  *
  * Exposed for the URL-param autoload too: callers can pass a presetMm to
  * skip the browse step and load a specific MM straight away.
@@ -144,6 +149,29 @@ export function _openLoadModal(opts = {}) {
     _modalEl = null;
   }
 
+  const closeBtn = el("button", {
+    class: "lh-v6-load-close",
+    type: "button",
+    text: "×",
+    title: "Close",
+    "aria-label": "Close",
+    onclick: () => _close(),
+  });
+
+  // Default section: annotations for loaded recordings.
+  const defaultStatus = el("div", { class: "lh-v6-load-status" });
+  const defaultResults = el("div", { class: "lh-v6-load-results" });
+  const defaultSection = el(
+    "section",
+    { class: "lh-v6-load-section" },
+    [
+      el("h3", { class: "lh-v6-load-section-title", text: "Annotations involving your loaded recordings" }),
+      defaultStatus,
+      defaultResults,
+    ],
+  );
+
+  // Secondary section: paste-an-audio-URI browse.
   const audioInput = el("input", {
     type: "text",
     class: "lh-v6-load-input",
@@ -154,18 +182,20 @@ export function _openLoadModal(opts = {}) {
     class: "lh-v6-load-browse",
     type: "button",
     text: "Browse",
-    onclick: () => _browse(),
+    onclick: () => _browseSpecific(),
   });
-  const closeBtn = el("button", {
-    class: "lh-v6-load-close",
-    type: "button",
-    text: "×",
-    title: "Close",
-    "aria-label": "Close",
-    onclick: () => _close(),
-  });
-  const status = el("div", { class: "lh-v6-load-status" });
-  const results = el("div", { class: "lh-v6-load-results" });
+  const browseStatus = el("div", { class: "lh-v6-load-status" });
+  const browseResults = el("div", { class: "lh-v6-load-results" });
+  const browseSection = el(
+    "section",
+    { class: "lh-v6-load-section lh-v6-load-section-secondary" },
+    [
+      el("h3", { class: "lh-v6-load-section-title", text: "Or browse a different audio" }),
+      el("div", { class: "lh-v6-load-row" }, [audioInput, browseBtn]),
+      browseStatus,
+      browseResults,
+    ],
+  );
 
   const dialog = el(
     "div",
@@ -175,9 +205,8 @@ export function _openLoadModal(opts = {}) {
         el("span", { class: "lh-v6-load-title", text: "Load annotation from Solid" }),
         closeBtn,
       ]),
-      el("div", { class: "lh-v6-load-row" }, [audioInput, browseBtn]),
-      status,
-      results,
+      defaultSection,
+      browseSection,
     ],
   );
 
@@ -190,38 +219,66 @@ export function _openLoadModal(opts = {}) {
     dialog,
   );
   document.body.appendChild(_modalEl);
-  audioInput.focus();
-  audioInput.addEventListener("keydown", (e) => { if (e.key === "Enter") _browse(); });
+  audioInput.addEventListener("keydown", (e) => { if (e.key === "Enter") _browseSpecific(); });
 
   function _close() {
     if (_modalEl) _modalEl.remove();
     _modalEl = null;
   }
 
-  async function _browse() {
+  async function _browseSpecific() {
     const uri = audioInput.value.trim();
-    if (!uri) { _setStatus(status, "Enter an audio URI first."); return; }
-    _setStatus(status, "Reading discovery resource…");
-    clearChildren(results);
+    if (!uri) { _setStatus(browseStatus, "Enter an audio URI first."); return; }
+    _setStatus(browseStatus, "Reading discovery resource…");
+    clearChildren(browseResults);
     try {
       const entries = await listAnnotationsForAudio(uri);
       if (entries.length === 0) {
-        _setStatus(status, "No MusicalMaterial entries in that audio's discovery resource.");
+        _setStatus(browseStatus, "No MusicalMaterial entries in that audio's discovery resource.");
         return;
       }
-      _setStatus(status, "Found " + entries.length + " annotation(s):");
-      entries.forEach((entry) => results.appendChild(_resultRow(entry, status, _close)));
+      _setStatus(browseStatus, "Found " + entries.length + " annotation(s):");
+      entries.forEach((entry) => browseResults.appendChild(_resultRow(entry, browseStatus, _close)));
     } catch (err) {
-      _setStatus(status, "Couldn't browse: " + (err.message || err));
+      _setStatus(browseStatus, "Couldn't browse: " + (err.message || err));
     }
   }
 
-  // If invoked with presetMm (URL-param autoload), skip the browse step.
+  // URL-param autoload: skip both browse paths and load straight away.
   if (opts.presetMm) {
-    _setStatus(status, "Loading from URL parameter…");
-    _loadMm(opts.presetMm, status, _close).catch((err) => {
-      _setStatus(status, "Couldn't load: " + (err.message || err));
+    _setStatus(defaultStatus, "Loading from URL parameter…");
+    _loadMm(opts.presetMm, defaultStatus, _close).catch((err) => {
+      _setStatus(defaultStatus, "Couldn't load: " + (err.message || err));
     });
+    return;
+  }
+
+  // Default flow: auto-list annotations for loaded recordings.
+  _autoListForLoaded(defaultStatus, defaultResults, _close);
+}
+
+async function _autoListForLoaded(status, results, close) {
+  _setStatus(status, "Checking your pod for annotations involving the loaded recordings…");
+  try {
+    const entries = await listAnnotationsForLoadedAudios();
+    if (entries.length === 0) {
+      _setStatus(
+        status,
+        "No annotations on your pod reference the currently loaded recordings. Use the section below to browse a different audio.",
+      );
+      return;
+    }
+    _setStatus(status, "Found " + entries.length + " annotation(s):");
+    // Sort by created date desc (newest first), then label.
+    entries.sort((a, b) => {
+      const ta = a.created ? Date.parse(a.created) || 0 : 0;
+      const tb = b.created ? Date.parse(b.created) || 0 : 0;
+      if (ta !== tb) return tb - ta;
+      return (a.label || "").localeCompare(b.label || "");
+    });
+    entries.forEach((entry) => results.appendChild(_resultRow(entry, status, close)));
+  } catch (err) {
+    _setStatus(status, "Couldn't list: " + (err.message || err));
   }
 }
 
@@ -234,6 +291,18 @@ function _resultRow(entry, status, close) {
   }
   subParts.push(entry.mmUri);
   sub.textContent = subParts.join(" — ");
+  const metaChildren = [
+    el("span", { class: "lh-v6-load-name", text: title }),
+    sub,
+  ];
+  if (Array.isArray(entry.coveredFiles) && entry.coveredFiles.length > 0) {
+    metaChildren.push(
+      el("span", {
+        class: "lh-v6-load-covers",
+        text: "covers: " + entry.coveredFiles.join(", "),
+      }),
+    );
+  }
   const btn = el("button", {
     class: "lh-v6-load-pick",
     type: "button",
@@ -241,10 +310,7 @@ function _resultRow(entry, status, close) {
     onclick: () => _loadMm(entry.mmUri, status, close),
   });
   return el("div", { class: "lh-v6-load-row-result" }, [
-    el("div", { class: "lh-v6-load-meta" }, [
-      el("span", { class: "lh-v6-load-name", text: title }),
-      sub,
-    ]),
+    el("div", { class: "lh-v6-load-meta" }, metaChildren),
     btn,
   ]);
 }

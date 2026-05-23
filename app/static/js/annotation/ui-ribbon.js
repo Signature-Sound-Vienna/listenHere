@@ -49,6 +49,12 @@ export function mountRibbon(parent) {
     onclick: () => _openLoadModal(),
   });
 
+  const actions = el(
+    "div",
+    { class: "lh-v6-ribbon-actions" },
+    [newBtn, loadBtn],
+  );
+
   const ribbon = el(
     "div",
     { class: "lh-v6-ribbon", role: "toolbar", "aria-label": "Annotations" },
@@ -59,8 +65,7 @@ export function mountRibbon(parent) {
       }),
       filterInput,
       chips,
-      newBtn,
-      loadBtn,
+      actions,
     ],
   );
   parent.appendChild(ribbon);

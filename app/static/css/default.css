@@ -4188,14 +4188,31 @@ body.lh-v6-drawer-open .lh-v6-ribbon { right: 380px; }
   flex-shrink: 0;
 }
 .lh-v6-ribbon-chips {
-  flex: 1;
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
   overflow-x: auto;
   overflow-y: hidden;
-  min-width: 0;
   scrollbar-width: thin;
+  /* Subtle gradient at the right edge hints at scrollable content. The
+     background-attachment trick keeps the fade pinned to the chips' right
+     side regardless of scroll position. */
+  mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent 100%);
+}
+/* Actions group — pinned right of the chip scroll area. A left border
+   separates the always-visible buttons from the scrolling chip strip. */
+.lh-v6-ribbon-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 10px;
+  margin-left: 4px;
+  border-left: 1px solid var(--color-border);
+  height: 100%;
 }
 .lh-v6-ribbon-empty {
   font-size: 11px;

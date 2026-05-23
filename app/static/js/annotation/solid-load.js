@@ -125,6 +125,18 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
     throw new Error("Sign in to your Solid pod first.");
   }
 
+  // De-dup: if an annotation with this MM URI is already in local state,
+  // just make it active and return its id — skips the chain fetch entirely
+  // and avoids ending up with two copies in memory.
+  const existing = state.getAll().find(
+    (a) => a.lastPostedUris && a.lastPostedUris.mm === mmUri,
+  );
+  if (existing) {
+    state.setActiveAnnotation(existing.id);
+    console.info("[annotation/v6] already loaded; switched to existing copy:", mmUri);
+    return existing.id;
+  }
+
   const { graph, selUris, uniqueAudios } = await _fetchChainAsGraph(mmUri, onProgress);
 
   // Per-Selection audio URI (from schema:about). Refuse the load if any

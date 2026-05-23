@@ -24,6 +24,7 @@ import {
   updateAnnotationOnSolid,
 } from "./solid-post.js";
 import {
+  deleteAnnotationFromPod,
   loadAnnotationFromMM,
   listAnnotationsForAudio,
   listAnnotationsForLoadedAudios,
@@ -182,6 +183,7 @@ export function initAnnotationV6() {
     loadAnnotationFromMM,
     listAnnotationsForAudio,
     listAnnotationsForLoadedAudios,
+    deleteAnnotationFromPod,
   };
 
   // URL-param autoload: ?annot=v6&loadMM=<encoded MM URI> opens the load

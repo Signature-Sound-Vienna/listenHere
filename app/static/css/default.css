@@ -4798,6 +4798,12 @@ body.lh-v6-drawer-open .lh-v6-ribbon { right: 380px; }
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
+/* Inherits .group-all (text-decoration:underline, muted colour, pointer). */
+.lh-v6-load-all {
+  align-self: flex-start;
+  margin: -2px 0 0 4px;
+  font-size: 11px;
+}
 .lh-v6-load-row {
   display: flex;
   gap: 8px;
@@ -4881,6 +4887,167 @@ body.lh-v6-drawer-open .lh-v6-ribbon { right: 380px; }
   cursor: pointer;
 }
 .lh-v6-load-pick:hover { background: var(--color-accent); color: #fff; }
+.lh-v6-load-check {
+  margin: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.lh-v6-load-trash {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.lh-v6-load-trash:hover {
+  background: #fee2e2;
+  border-color: #dc2626;
+  color: #dc2626;
+}
+.lh-v6-load-row-result.is-busy {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.lh-v6-load-footer {
+  padding: 10px 16px;
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--color-bg, #fff);
+  position: sticky;
+  bottom: 0;
+}
+.lh-v6-load-footer-status {
+  flex: 1;
+  padding: 0;
+  font-size: 11px;
+}
+.lh-v6-load-bulk {
+  flex-shrink: 0;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
+  color: #fff;
+  cursor: pointer;
+}
+.lh-v6-load-bulk:disabled {
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  border-color: var(--color-border);
+  cursor: not-allowed;
+}
+.lh-v6-load-bulk:not(:disabled):hover {
+  filter: brightness(0.95);
+}
+
+/* --- Delete confirmation (red, alarming) ---------------------------- */
+.lh-v6-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(120, 0, 0, 0.55);
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: lh-v6-confirm-fade 0.15s ease-out;
+}
+@keyframes lh-v6-confirm-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.lh-v6-confirm-dialog {
+  width: min(480px, 92vw);
+  background: var(--color-bg, #fff);
+  color: var(--color-text);
+  border-radius: 8px;
+  border: 2px solid #dc2626;
+  box-shadow: 0 20px 60px rgba(120, 0, 0, 0.5);
+  overflow: hidden;
+  animation: lh-v6-confirm-pop 0.18s ease-out;
+}
+@keyframes lh-v6-confirm-pop {
+  from { transform: scale(0.92); }
+  to { transform: scale(1); }
+}
+.lh-v6-confirm-header {
+  background: #dc2626;
+  color: #fff;
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.lh-v6-confirm-warning {
+  font-size: 22px;
+  line-height: 1;
+}
+.lh-v6-confirm-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+.lh-v6-confirm-body {
+  padding: 16px 18px 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.lh-v6-confirm-body p {
+  margin: 0 0 10px;
+}
+.lh-v6-confirm-target strong {
+  color: #b91c1c;
+  word-break: break-all;
+}
+.lh-v6-confirm-detail {
+  color: var(--color-text-secondary, var(--color-text-muted));
+}
+.lh-v6-confirm-warn {
+  font-weight: 700;
+  color: #b91c1c;
+  letter-spacing: 0.2px;
+}
+.lh-v6-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 18px 16px;
+}
+.lh-v6-confirm-cancel {
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-text);
+  cursor: pointer;
+}
+.lh-v6-confirm-cancel:hover { background: var(--color-hover-bg, rgba(0, 0, 0, 0.04)); }
+.lh-v6-confirm-delete {
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  border-radius: 4px;
+  border: 1px solid #b91c1c;
+  background: #dc2626;
+  color: #fff;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.4);
+}
+.lh-v6-confirm-delete:hover { background: #b91c1c; }
+.lh-v6-confirm-delete:focus-visible {
+  outline: 3px solid rgba(220, 38, 38, 0.4);
+  outline-offset: 2px;
+}
 
 /* --- Chip ----------------------------------------------------------- */
 .lh-v6-chip {

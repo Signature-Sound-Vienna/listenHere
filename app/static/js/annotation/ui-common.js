@@ -45,3 +45,34 @@ export function el(tag, attrs = {}, children = []) {
 export function clearChildren(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
+
+/**
+ * Three dot spans wrapped in a container. CSS gives each :nth-child its own
+ * translateY animation phase so the dots appear to bounce in sequence.
+ * Used for in-flight progress text in the drawer's publish bar and the
+ * load-from-Solid modal.
+ */
+export function bouncingDots() {
+  return el("span", { class: "lh-v6-dots", "aria-hidden": "true" }, [
+    el("span", { class: "lh-v6-dot", text: "." }),
+    el("span", { class: "lh-v6-dot", text: "." }),
+    el("span", { class: "lh-v6-dot", text: "." }),
+  ]);
+}
+
+/**
+ * Set a status-line node's content from a plain string, swapping a trailing
+ * "…" (or "...") for animated bouncing dots so in-flight messages have a
+ * subtle motion cue. Terminal-state strings (no trailing ellipsis) render
+ * as plain text.
+ */
+export function setStatusText(node, text) {
+  clearChildren(node);
+  const m = text.match(/^([\s\S]*?)(…|\.\.\.)\s*$/);
+  if (m) {
+    if (m[1]) node.appendChild(document.createTextNode(m[1]));
+    node.appendChild(bouncingDots());
+  } else {
+    node.textContent = text;
+  }
+}

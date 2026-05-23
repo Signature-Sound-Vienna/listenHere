@@ -125,25 +125,10 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
     throw new Error("Sign in to your Solid pod first.");
   }
 
-  onProgress("Fetching MusicalMaterial");
-  const mm = await _fetchJsonLd(mmUri);
-  const extractUri = _firstId(_asArray(mm[nsp.MAO + "setting"]));
-  if (!extractUri) throw new Error("MusicalMaterial has no mao:setting reference.");
+  const { graph, selUris, uniqueAudios } = await _fetchChainAsGraph(mmUri, onProgress);
 
-  onProgress("Fetching Extract");
-  const extract = await _fetchJsonLd(extractUri);
-  const selUris = _asArray(extract[nsp.FRBR + "embodiment"])
-    .map((o) => o?.["@id"])
-    .filter(Boolean);
-  if (selUris.length === 0) throw new Error("Extract lists no Selections.");
-
-  onProgress("Fetching Selections");
-  const sels = await Promise.all(selUris.map(_fetchJsonLd));
-
-  // Per-Selection audio URI (from schema:about). Then refuse the load if
-  // any audio isn't locally loaded — the user explicitly chose strict mode.
-  const selectionAudios = sels.map((s) => _firstId(_asArray(s[nsp.SCHEMA + "about"])));
-  const uniqueAudios = [...new Set(selectionAudios.filter(Boolean).map(_normaliseIri))];
+  // Per-Selection audio URI (from schema:about). Refuse the load if any
+  // audio isn't locally loaded — the user's strict-mode E4 choice.
   const localUriToFile = _buildReverseAudioMap();
   const missing = uniqueAudios.filter((u) => !localUriToFile.has(u));
   if (missing.length > 0) {
@@ -156,48 +141,7 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
     );
   }
 
-  // Discover OAs by reading each audio's discovery resource. We then fetch
-  // each candidate OA — deserialize will filter to ones that actually
-  // target our chain, so over-fetching is harmless.
-  onProgress("Discovering OAs");
-  const oaUrisToFetch = new Set();
-  await Promise.all(
-    uniqueAudios.map(async (audioUri) => {
-      try {
-        const discoveryUri = await _discoveryUriFor(audioUri);
-        if (!discoveryUri) return;
-        const disc = await _fetchJsonLd(discoveryUri);
-        for (const entry of _asArray(disc[nsp.SCHEMA + "dataset"])) {
-          const t = _firstId(_asArray(entry?.[nsp.SCHEMA + "additionalType"]));
-          if (t !== nsp.OA + "Annotation") continue;
-          const url = _firstId(_asArray(entry?.[nsp.SCHEMA + "url"]));
-          if (url) oaUrisToFetch.add(url);
-        }
-      } catch (err) {
-        console.warn("[annotation/v6] couldn't read discovery for", audioUri, err);
-      }
-    }),
-  );
-
-  onProgress("Fetching " + oaUrisToFetch.size + " annotation resource(s)");
-  const oaUriArr = [...oaUrisToFetch];
-  const oas = await Promise.all(
-    oaUriArr.map(async (uri) => {
-      try {
-        return await _fetchJsonLd(uri);
-      } catch (err) {
-        console.warn("[annotation/v6] couldn't fetch OA", uri, err);
-        return null;
-      }
-    }),
-  );
-
-  // Build the graph object expected by deserialize: { uri: body }.
-  const graph = {};
-  graph[mmUri] = mm;
-  graph[extractUri] = extract;
-  selUris.forEach((u, i) => { graph[u] = sels[i]; });
-  oaUriArr.forEach((u, i) => { if (oas[i]) graph[u] = oas[i]; });
+  void selUris; // not needed past the chain build
 
   onProgress("Reconstructing");
   const annotation = adapter.deserialize(graph, {
@@ -222,6 +166,185 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
   state.addAnnotation(annotation);
   state.setActiveAnnotation(annotation.id);
   return annotation.id;
+}
+
+/**
+ * Delete an annotation chain (MM + Extract + Selections + related OAs)
+ * from the pod, then patch each affected audio's discovery resource to
+ * remove the dataset entries pointing at the deleted resources. Best-
+ * effort on discovery cleanup: a discovery PATCH failure doesn't roll the
+ * deletions back, just logs and surfaces a warning to the caller.
+ *
+ * If a local annotation with the same lastPostedUris.mm exists, it's also
+ * removed from state — having a local copy that points at non-existent
+ * pod resources would be confusing.
+ *
+ * @param {string} mmUri
+ * @param {object} [opts]
+ * @param {(label: string) => void} [opts.onProgress]
+ * @returns {Promise<{ deletedUris: string[], failedUris: string[] }>}
+ */
+export async function deleteAnnotationFromPod(mmUri, opts = {}) {
+  const onProgress = opts.onProgress || (() => {});
+  const session = solid.getDefaultSession();
+  if (!session || !session.info || !session.info.isLoggedIn) {
+    throw new Error("Sign in to your Solid pod first.");
+  }
+
+  const { graph, uniqueAudios } = await _fetchChainAsGraph(mmUri, onProgress);
+
+  // Run deserialize purely to extract the local-key → URI map. We don't
+  // need the annotation object itself.
+  const ann = adapter.deserialize(graph, {
+    musicalMaterialUri: mmUri,
+    resolveFileFromAudioUri: (uri) => uri, // dummy; we don't care about file matching for delete
+  });
+  if (!ann || !ann.lastPostedUris) {
+    throw new Error("Couldn't reconstruct chain from " + mmUri);
+  }
+  const urisToDelete = [...new Set(Object.values(ann.lastPostedUris))].filter(Boolean);
+
+  onProgress("Deleting " + urisToDelete.length + " resource(s)");
+  const deletedUris = [];
+  const failedUris = [];
+  await Promise.all(
+    urisToDelete.map(async (uri) => {
+      try {
+        const resp = await solid.fetch(uri, { method: "DELETE" });
+        if (resp.ok || resp.status === 404) {
+          deletedUris.push(uri);
+        } else {
+          failedUris.push(uri);
+          console.warn("[annotation/v6] DELETE failed for", uri, resp.status);
+        }
+      } catch (err) {
+        failedUris.push(uri);
+        console.warn("[annotation/v6] DELETE threw for", uri, err);
+      }
+    }),
+  );
+
+  // Reconcile each audio's discovery: drop dataset entries pointing at any
+  // URI we deleted. Best-effort.
+  if (deletedUris.length > 0 && uniqueAudios.length > 0) {
+    onProgress("Cleaning discovery resources");
+    const deletedSet = new Set(deletedUris);
+    await Promise.all(
+      uniqueAudios.map(async (audioUri) => {
+        try {
+          await _purgeDeletedFromDiscovery(audioUri, deletedSet);
+        } catch (err) {
+          console.warn(
+            "[annotation/v6] discovery purge failed for " + audioUri,
+            err,
+          );
+        }
+      }),
+    );
+  }
+
+  // Drop matching local state if present — the user's pod-side copy is gone.
+  const local = state.getAll().find((a) => a.lastPostedUris && a.lastPostedUris.mm === mmUri);
+  if (local) state.removeAnnotation(local.id);
+
+  return { deletedUris, failedUris };
+}
+
+/**
+ * Walk MM → Extract → Selections → (per-audio-discovery) OAs and return
+ * the assembled graph plus a few intermediate values callers also use.
+ * Shared by load and delete.
+ */
+async function _fetchChainAsGraph(mmUri, onProgress) {
+  onProgress("Fetching MusicalMaterial");
+  const mm = await _fetchJsonLd(mmUri);
+  const extractUri = _firstId(_asArray(mm[nsp.MAO + "setting"]));
+  if (!extractUri) throw new Error("MusicalMaterial has no mao:setting reference.");
+
+  onProgress("Fetching Extract");
+  const extract = await _fetchJsonLd(extractUri);
+  const selUris = _asArray(extract[nsp.FRBR + "embodiment"])
+    .map((o) => o?.["@id"])
+    .filter(Boolean);
+  if (selUris.length === 0) throw new Error("Extract lists no Selections.");
+
+  onProgress("Fetching Selections");
+  const sels = await Promise.all(selUris.map(_fetchJsonLd));
+
+  const selectionAudios = sels.map((s) => _firstId(_asArray(s[nsp.SCHEMA + "about"])));
+  const uniqueAudios = [...new Set(selectionAudios.filter(Boolean).map(_normaliseIri))];
+
+  onProgress("Discovering OAs");
+  const oaUrisToFetch = new Set();
+  await Promise.all(
+    uniqueAudios.map(async (audioUri) => {
+      try {
+        const discoveryUri = await _discoveryUriFor(audioUri);
+        if (!discoveryUri) return;
+        const disc = await _fetchJsonLd(discoveryUri);
+        for (const entry of _asArray(disc[nsp.SCHEMA + "dataset"])) {
+          const t = _firstId(_asArray(entry?.[nsp.SCHEMA + "additionalType"]));
+          if (t !== nsp.OA + "Annotation") continue;
+          const url = _firstId(_asArray(entry?.[nsp.SCHEMA + "url"]));
+          if (url) oaUrisToFetch.add(url);
+        }
+      } catch (err) {
+        console.warn("[annotation/v6] couldn't read discovery for", audioUri, err);
+      }
+    }),
+  );
+
+  onProgress("Fetching " + oaUrisToFetch.size + " annotation resource(s)");
+  const oaUriArr = [...oaUrisToFetch];
+  const oas = await Promise.all(
+    oaUriArr.map(async (uri) => {
+      try { return await _fetchJsonLd(uri); }
+      catch (err) {
+        console.warn("[annotation/v6] couldn't fetch OA", uri, err);
+        return null;
+      }
+    }),
+  );
+
+  const graph = {};
+  graph[mmUri] = mm;
+  graph[extractUri] = extract;
+  selUris.forEach((u, i) => { graph[u] = sels[i]; });
+  oaUriArr.forEach((u, i) => { if (oas[i]) graph[u] = oas[i]; });
+
+  return { graph, extractUri, selUris, uniqueAudios };
+}
+
+/**
+ * Read an audio's discovery resource and PUT it back with all dataset
+ * entries pointing at deleted URIs filtered out. Uses ETag if-match.
+ */
+async function _purgeDeletedFromDiscovery(audioUri, deletedSet) {
+  const discoveryUri = await _discoveryUriFor(audioUri);
+  if (!discoveryUri) return;
+  const resp = await solid.fetch(discoveryUri, {
+    headers: { Accept: "application/ld+json" },
+  });
+  if (!resp.ok) return; // no discovery — nothing to clean
+  const etag = resp.headers.get("ETag");
+  const body = await resp.json();
+  const datasetKey = nsp.SCHEMA + "dataset";
+  let dataset = _asArray(body[datasetKey]);
+  const before = dataset.length;
+  dataset = dataset.filter((entry) => {
+    const url = _firstId(_asArray(entry?.[nsp.SCHEMA + "url"]));
+    return !url || !deletedSet.has(url);
+  });
+  if (dataset.length === before) return; // nothing to remove
+  body[datasetKey] = dataset;
+  await solid.fetch(discoveryUri, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/ld+json",
+      ...(etag ? { "If-Match": etag } : {}),
+    },
+    body: JSON.stringify(body),
+  });
 }
 
 // ---------------------------------------------------------------------------

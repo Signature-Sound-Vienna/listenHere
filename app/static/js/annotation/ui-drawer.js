@@ -6,7 +6,7 @@
 
 import * as state from "./state.js";
 import * as uiState from "./ui-state.js";
-import { el, clearChildren } from "./ui-common.js";
+import { el, clearChildren, bouncingDots } from "./ui-common.js";
 import { renderEditor } from "./ui-editor.js";
 import { renderViewer } from "./ui-viewer.js";
 import {
@@ -133,17 +133,6 @@ function _modeToggle() {
   ]);
 }
 
-// Three dot spans wrapped in a container. CSS gives each :nth-child its own
-// translateY animation phase so the dots appear to bounce in sequence (the
-// mei-friend codebase uses a similar trick on its splash loading text).
-function _bouncingDots() {
-  return el("span", { class: "lh-v6-dots", "aria-hidden": "true" }, [
-    el("span", { class: "lh-v6-dot", text: "." }),
-    el("span", { class: "lh-v6-dot", text: "." }),
-    el("span", { class: "lh-v6-dot", text: "." }),
-  ]);
-}
-
 // Per-annotation transient publish state, keyed by annId. Holds:
 //   { phase: 'posting' | 'flash', step?, total?, kind: 'post' | 'update' }
 // Module-level so the render function can read it without going through
@@ -182,7 +171,7 @@ function _renderPublishBar(bar, ann) {
   let extraClass = "";
   if (transient && transient.phase === "posting") {
     const verb = transient.kind === "update" ? "Updating" : "Posting";
-    labelChildren = [verb, _bouncingDots()];
+    labelChildren = [verb, bouncingDots()];
     // Only show the step counter once we know the denominator — `total` is 0
     // for the brief window between click and the first onProgress call, and
     // "0/0" reads as broken. The resource kind label hints at progress when

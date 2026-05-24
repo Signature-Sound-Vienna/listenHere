@@ -41,10 +41,10 @@ import * as state from "./state.js";
 import * as adapter from "./mao-adapter.js";
 import { nsp } from "../linked-data.js";
 import {
+  createResourceAtUri,
   establishContainers,
   establishDiscoveryResource,
-  postResource,
-  resolveLocation,
+  getSolidStorage,
   safelyPatchResource,
   selectionContainer,
   extractContainer,
@@ -90,29 +90,115 @@ function _invalidateDiscoveryFor(audioUri) {
 }
 
 /**
- * POST a body to `container`, retrying once with a fresh container check on
- * 404 / no-Location. Returns the URI of the created resource.
+ * Fire-and-forget container + per-audio discovery establishment, called
+ * after login so the first user-triggered post doesn't pay for the
+ * ~3 round trips that `_ensureContainers` + `_ensureDiscoveryFor` would
+ * otherwise add to its critical path. Safe to call repeatedly: cached
+ * results short-circuit on the second call.
+ *
+ * If we don't know the audio URIs yet (e.g. alignment hasn't loaded),
+ * we just warm the containers and let discovery establish on demand.
  */
-async function _safePostResource(container, body, label) {
-  const tryPost = async () => {
-    const resp = await postResource(container, body);
-    if (resp && resp.headers && resp.headers.get("Location")) {
-      return resolveLocation(resp);
-    }
-    return null;
-  };
-  let uri = await tryPost();
-  if (uri) return uri;
-  // Possibly container disappeared (or session cache out of sync) —
-  // invalidate, re-establish, retry once.
-  console.warn(
-    "[annotation/v6] POST returned no Location for " + label + "; re-establishing containers and retrying once.",
+export async function prewarmCaches(audioUris) {
+  try {
+    await _ensureContainers();
+  } catch (err) {
+    console.warn("[annotation/v6] prewarm: container establish failed", err);
+  }
+  if (!Array.isArray(audioUris) || audioUris.length === 0) return;
+  await Promise.all(
+    audioUris.map(async (u) => {
+      try { await _ensureDiscoveryFor(u); }
+      catch (err) { console.warn("[annotation/v6] prewarm: discovery establish failed for", u, err); }
+    }),
   );
-  _invalidateContainersCache();
-  await _ensureContainers();
-  uri = await tryPost();
-  if (uri) return uri;
-  throw new Error("POST returned no Location header for " + label);
+}
+
+// ---------------------------------------------------------------------------
+// Client-minted slugs. We PUT-to-URI instead of POSTing-to-container so
+// that (a) we avoid the post-POST "@id-fixup" round trip Solid otherwise
+// requires and (b) every URI is known up front, letting us substitute
+// placeholders before any I/O fires. Slug shape:
+//   ${YYYYMMDDTHHMMSS}-${sessionShortId}-${counterPadded4}
+// The timestamp makes the URI sortable + debuggable when staring at pod
+// contents; sessionShortId disambiguates between page-loads / tabs; the
+// monotonic counter guarantees no same-millisecond collisions within a
+// session (which can happen when topo-level Promise.all fires several
+// mints in the same JS tick). Counter is module-level and never resets.
+// ---------------------------------------------------------------------------
+
+const _sessionShortId = (function () {
+  try {
+    return crypto.randomUUID().slice(0, 8);
+  } catch (_) {
+    return Math.random().toString(36).slice(2, 10).padStart(8, "0");
+  }
+})();
+let _slugCounter = 0;
+
+function _mintSlug() {
+  const n = new Date();
+  const pad = (x, w) => String(x).padStart(w, "0");
+  const ts =
+    n.getUTCFullYear() +
+    pad(n.getUTCMonth() + 1, 2) +
+    pad(n.getUTCDate(), 2) +
+    "T" +
+    pad(n.getUTCHours(), 2) +
+    pad(n.getUTCMinutes(), 2) +
+    pad(n.getUTCSeconds(), 2);
+  _slugCounter += 1;
+  return `${ts}-${_sessionShortId}-${pad(_slugCounter, 4)}`;
+}
+
+/**
+ * Pre-mint URIs for every template in a serialized annotation, keyed by
+ * localKey. The orchestrator substitutes these into bodies before any
+ * network I/O — no post-POST @id-fixup, no waiting on Location headers.
+ *
+ * Container paths come from the existing solid.js constants and are
+ * appended to the user's storage root, which we resolve once. Caller is
+ * responsible for ensuring containers exist (see _ensureContainers).
+ */
+async function _mintUrisFor(templates) {
+  const storage = await getSolidStorage();
+  if (!storage) throw new Error("Couldn't resolve Solid storage root.");
+  const containers = {
+    "mao:Selection": storage + selectionContainer,
+    "mao:Extract": storage + extractContainer,
+    "mao:MusicalMaterial": storage + musicalMaterialContainer,
+    "oa:Annotation": storage + annotationContainer,
+  };
+  const localToUri = {};
+  for (const t of templates) {
+    const root = containers[t.kind];
+    if (!root) throw new Error("Unknown resource kind: " + t.kind);
+    localToUri[t.localKey] = root + _mintSlug();
+  }
+  return localToUri;
+}
+
+/**
+ * PUT a body to its caller-minted URI, retrying once on a 404-shaped
+ * failure with a fresh container check. Replaces the older POST path
+ * which required a follow-up @id-fixup PUT (eliminated).
+ */
+async function _safePutResource(uri, body, label) {
+  try {
+    await createResourceAtUri(uri, body);
+    return;
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    if (!/\b404\b/.test(msg)) throw err;
+    // Container may have disappeared between sessions — invalidate, re-
+    // establish, retry once.
+    console.warn(
+      "[annotation/v6] PUT 404 for " + label + "; re-establishing containers and retrying once.",
+    );
+    _invalidateContainersCache();
+    await _ensureContainers();
+    await createResourceAtUri(uri, body);
+  }
 }
 
 /**
@@ -259,10 +345,14 @@ export async function postAnnotationToSolid(annId, opts = {}) {
   const audioSetMemo = new Map();
   const levels = _topoLevels(templates);
 
+  // Mint every resource URI up front. From here on we don't need to wait
+  // on Location headers or do post-POST @id-fixup PUTs: every body can be
+  // substituted with the final URIs before any I/O fires.
+  const localToUri = await _mintUrisFor(templates);
+
   const total = templates.length + Object.keys(discoveryByAudio).length;
   let step = 0;
   onProgress(step, total, null);
-  const localToUri = {};
   const localToHash = {};
 
   for (const level of levels) {
@@ -271,17 +361,11 @@ export async function postAnnotationToSolid(annId, opts = {}) {
         const body = _substitutePlaceholders(t.body, localToUri);
         const audioSet = _audioSetFor(t.localKey, byKey, fileToAudioUri, audioSetMemo);
         _decorateResource(body, t, fileToAudioUri, discoveryByAudio, audioSet);
-        const uri = await _safePostResource(
-          _containerForKind(t.kind),
-          body,
-          t.localKey,
-        );
-        return { template: t, uri, hash: _hashBody(body) };
+        await _safePutResource(localToUri[t.localKey], body, t.localKey);
+        return { template: t, hash: _hashBody(body) };
       }),
     );
-    // Serialise the bookkeeping pass so the next level sees fully-populated maps.
     for (const r of results) {
-      localToUri[r.template.localKey] = r.uri;
       localToHash[r.template.localKey] = r.hash;
       onProgress(++step, total, _labelForKind(r.template.kind));
     }
@@ -374,15 +458,6 @@ function _substitutePlaceholders(node, mapping) {
   return node;
 }
 
-function _containerForKind(kind) {
-  switch (kind) {
-    case "mao:Selection": return selectionContainer;
-    case "mao:Extract": return extractContainer;
-    case "mao:MusicalMaterial": return musicalMaterialContainer;
-    case "oa:Annotation": return annotationContainer;
-    default: throw new Error("Unknown resource kind: " + kind);
-  }
-}
 
 /**
  * Decorate a resource body with schema:about (the audio URIs it's about)
@@ -587,10 +662,19 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
   const newKeys = new Set(templates.map((t) => t.localKey));
   const toDeleteKeys = [...oldKeys].filter((k) => !newKeys.has(k));
 
-  // Topo-level grouping: within each level, PUTs (existing) and POSTs (new)
-  // run in parallel; URIs assigned within a level are visible to later levels.
+  // Topo-level grouping: within each level, PUTs (existing) and PUTs-to-
+  // new-URI (newly-created) run in parallel. All URIs are known up front
+  // — existing ones from lastPostedUris, new ones minted client-side —
+  // so substitution can run in any order without waiting on POSTs.
   const levels = _topoLevels(templates);
   const localToUri = { ...ann.lastPostedUris };
+  // Mint URIs for templates that don't yet have one. The minted URIs are
+  // also what we'll consider "created" for discovery reconciliation.
+  const freshTemplates = templates.filter((t) => !oldKeys.has(t.localKey));
+  if (freshTemplates.length > 0) {
+    const fresh = await _mintUrisFor(freshTemplates);
+    for (const k of Object.keys(fresh)) localToUri[k] = fresh[k];
+  }
   const localToHash = {};
   const createdUris = [];
   const total =
@@ -615,28 +699,23 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
             await _safelyReplaceResource(localToUri[t.localKey], body);
             return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: false };
           } catch (err) {
-            // If the resource disappeared from the pod, fall back to POST.
+            // If the resource disappeared from the pod, fall back to a
+            // fresh PUT-to-URI under a newly-minted URI (so creator /
+            // created / provenance are set correctly).
             if (_isMissingResourceError(err)) {
               console.warn(
-                "[annotation/v6] " + t.localKey + " missing on pod; re-POSTing.",
+                "[annotation/v6] " + t.localKey + " missing on pod; re-creating at a fresh URI.",
               );
-              const uri = await _safePostResource(
-                _containerForKind(t.kind),
-                body,
-                t.localKey,
-              );
-              return { template: t, uri, hash: newHash, skipped: false, created: true };
+              const replacementUri = (await _mintUrisFor([t]))[t.localKey];
+              await _safePutResource(replacementUri, body, t.localKey);
+              return { template: t, uri: replacementUri, hash: newHash, skipped: false, created: true };
             }
             throw err;
           }
         }
-        // New resource — POST.
-        const uri = await _safePostResource(
-          _containerForKind(t.kind),
-          body,
-          t.localKey,
-        );
-        return { template: t, uri, hash: newHash, skipped: false, created: true };
+        // New resource — PUT at its pre-minted URI.
+        await _safePutResource(localToUri[t.localKey], body, t.localKey);
+        return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: false, created: true };
       }),
     );
     for (const r of results) {

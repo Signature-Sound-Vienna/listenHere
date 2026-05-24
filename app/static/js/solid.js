@@ -99,6 +99,42 @@ export async function postResource(containerUri, resource) {
 }
 
 /**
+ * PUT a resource at a caller-chosen URI. Eliminates two round trips per
+ * resource vs `postResource`: no container-existence HEAD (the
+ * orchestrator's session-level cache is trusted) and no follow-up
+ * "@id-fixup" GET+PUT (we know the URI up front and bake it in).
+ *
+ * Sets dct:creator / dct:created / dct:provenance and the @id, then PUTs
+ * with `If-None-Match: *` so an accidental URI collision fails fast
+ * rather than overwriting someone else's resource. Throws on non-2xx so
+ * callers can surface failure to the user.
+ *
+ * @param {string} uri — fully-qualified target URI (orchestrator-minted).
+ * @param {object} body — JSON-LD body. Mutated in place to add metadata.
+ * @returns {Promise<Response>} the PUT response.
+ */
+export async function createResourceAtUri(uri, body) {
+  const webId = solid.getDefaultSession().info.webId;
+  body["@id"] = uri;
+  body[nsp.DCT + "creator"] = { "@id": webId };
+  body[nsp.DCT + "created"] = new Date().toISOString();
+  body[nsp.DCT + "provenance"] =
+    `Generated using Listen Here v.${versionString}: https://iwk.mdw.ac.at/signature-sound-vienna`;
+  const resp = await solid.fetch(uri, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/ld+json",
+      "If-None-Match": "*",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    throw new Error("PUT failed for " + uri + ": " + resp.status + " " + resp.statusText);
+  }
+  return resp;
+}
+
+/**
  * Safely append to the specified resource:
  * 1. Get fresh copy of resource from URI, noting its etag
  * 2. Apply patch to the obtained resource copy

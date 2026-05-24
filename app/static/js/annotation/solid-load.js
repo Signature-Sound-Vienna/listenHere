@@ -191,10 +191,21 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
  * removed from state — having a local copy that points at non-existent
  * pod resources would be confusing.
  *
+ * If `_fetchChainAsGraph` fails with a 404 on the MM itself, we treat the
+ * entry as a stale discovery reference (an earlier delete left dataset
+ * pointers but the underlying resources are gone) and fall through to a
+ * cleanup pass: walk the discovery resources of the hinted audios (or all
+ * locally-loaded audios as fallback) and drop dataset entries whose
+ * schema:url matches this MM URI.
+ *
  * @param {string} mmUri
  * @param {object} [opts]
  * @param {(label: string) => void} [opts.onProgress]
- * @returns {Promise<{ deletedUris: string[], failedUris: string[] }>}
+ * @param {string[]} [opts.coveredFiles] — local file keys whose discovery resources
+ *   listed this annotation (from the load modal's per-row metadata). When the
+ *   chain is reachable, this hint is unused; when it isn't (stale case), it
+ *   scopes the cleanup pass to just those audios.
+ * @returns {Promise<{ deletedUris: string[], failedUris: string[], stale?: boolean, cleanedAudios?: number }>}
  */
 export async function deleteAnnotationFromPod(mmUri, opts = {}) {
   const onProgress = opts.onProgress || (() => {});
@@ -203,7 +214,18 @@ export async function deleteAnnotationFromPod(mmUri, opts = {}) {
     throw new Error("Sign in to your Solid pod first.");
   }
 
-  const { graph, uniqueAudios } = await _fetchChainAsGraph(mmUri, onProgress);
+  let graph, uniqueAudios;
+  try {
+    ({ graph, uniqueAudios } = await _fetchChainAsGraph(mmUri, onProgress));
+  } catch (err) {
+    // Chain unreachable. If it's a 404 anywhere in the walk, switch to
+    // stale-cleanup mode — the entry is from an earlier partial-delete
+    // and we can at least prune the discovery references that surfaced it.
+    if (_isMissingResourceError(err)) {
+      return _cleanupStaleDiscoveryRefs(mmUri, opts, onProgress);
+    }
+    throw err;
+  }
 
   // Run deserialize purely to extract the local-key → URI map. We don't
   // need the annotation object itself.
@@ -260,6 +282,65 @@ export async function deleteAnnotationFromPod(mmUri, opts = {}) {
   if (local) state.removeAnnotation(local.id);
 
   return { deletedUris, failedUris };
+}
+
+/**
+ * Stale-entry cleanup branch of deleteAnnotationFromPod. The MM URI 404s
+ * but it's still listed in one or more discovery resources, so a previous
+ * delete must have partially completed. Walk the candidate audios'
+ * discovery resources and prune dataset entries whose schema:url equals
+ * the dead MM URI. Conservatively scoped: we only remove entries matching
+ * this exact URI — never delete sibling dataset entries that might be
+ * other orphan Extract / Selection / OA resources. (A wider sweep is in
+ * the roadmap.)
+ */
+async function _cleanupStaleDiscoveryRefs(mmUri, opts, onProgress) {
+  // Resolve which audios to scan. Prefer the hint from the UI (covered
+  // files from the per-row metadata) so we don't touch unrelated audios.
+  // Fallback: every locally-loaded recording.
+  const reverseMap = _buildReverseAudioMap();
+  let audioUris;
+  if (Array.isArray(opts.coveredFiles) && opts.coveredFiles.length > 0) {
+    const fileToAudio = new Map();
+    for (const [audio, file] of reverseMap.entries()) fileToAudio.set(file, audio);
+    audioUris = opts.coveredFiles
+      .map((f) => fileToAudio.get(f))
+      .filter(Boolean);
+  } else {
+    audioUris = [...reverseMap.keys()];
+  }
+
+  if (audioUris.length === 0) {
+    return { deletedUris: [], failedUris: [], stale: true, cleanedAudios: 0 };
+  }
+
+  onProgress("Removing stale references from " + audioUris.length + " discovery resource(s)");
+  const deadSet = new Set([mmUri]);
+  let cleanedAudios = 0;
+  await Promise.all(
+    audioUris.map(async (audioUri) => {
+      try {
+        const cleaned = await _purgeDeletedFromDiscovery(audioUri, deadSet);
+        if (cleaned) cleanedAudios++;
+      } catch (err) {
+        console.warn(
+          "[annotation/v6] stale-ref cleanup failed for " + audioUri,
+          err,
+        );
+      }
+    }),
+  );
+
+  // Drop any local copy that points at this dead MM, just in case.
+  const local = state.getAll().find((a) => a.lastPostedUris && a.lastPostedUris.mm === mmUri);
+  if (local) state.removeAnnotation(local.id);
+
+  return { deletedUris: [], failedUris: [], stale: true, cleanedAudios };
+}
+
+function _isMissingResourceError(err) {
+  const msg = err && err.message ? err.message : String(err);
+  return /\b404\b/.test(msg) || /\b410\b/.test(msg);
 }
 
 /**
@@ -330,14 +411,17 @@ async function _fetchChainAsGraph(mmUri, onProgress) {
 /**
  * Read an audio's discovery resource and PUT it back with all dataset
  * entries pointing at deleted URIs filtered out. Uses ETag if-match.
+ * Returns true if at least one entry was removed (and the PUT fired),
+ * false otherwise — callers in the stale-cleanup path use this to count
+ * how many discoveries were actually touched.
  */
 async function _purgeDeletedFromDiscovery(audioUri, deletedSet) {
   const discoveryUri = await _discoveryUriFor(audioUri);
-  if (!discoveryUri) return;
+  if (!discoveryUri) return false;
   const resp = await solid.fetch(discoveryUri, {
     headers: { Accept: "application/ld+json" },
   });
-  if (!resp.ok) return; // no discovery — nothing to clean
+  if (!resp.ok) return false; // no discovery — nothing to clean
   const etag = resp.headers.get("ETag");
   const body = await resp.json();
   const datasetKey = nsp.SCHEMA + "dataset";
@@ -347,7 +431,7 @@ async function _purgeDeletedFromDiscovery(audioUri, deletedSet) {
     const url = _firstId(_asArray(entry?.[nsp.SCHEMA + "url"]));
     return !url || !deletedSet.has(url);
   });
-  if (dataset.length === before) return; // nothing to remove
+  if (dataset.length === before) return false; // nothing to remove
   body[datasetKey] = dataset;
   await solid.fetch(discoveryUri, {
     method: "PUT",
@@ -357,6 +441,7 @@ async function _purgeDeletedFromDiscovery(audioUri, deletedSet) {
     },
     body: JSON.stringify(body),
   });
+  return true;
 }
 
 // ---------------------------------------------------------------------------

@@ -267,6 +267,16 @@ export function _openLoadModal(opts = {}) {
   });
   const footer = el("div", { class: "lh-v6-load-footer" }, [footerStatus, loadSelectedBtn]);
 
+  // Resumed-after-login banner: only rendered when opts.resumed is true.
+  // Causally connects the auto-pop to the just-completed login so the user
+  // understands why the modal appeared.
+  const resumedBanner = opts.resumed
+    ? el("div", { class: "lh-v6-load-resumed", role: "status" }, [
+        el("span", { class: "lh-v6-load-resumed-icon", text: "✓", "aria-hidden": "true" }),
+        el("span", { text: "Signed in — resuming your Load from Solid." }),
+      ])
+    : null;
+
   const dialog = el(
     "div",
     { class: "lh-v6-load-dialog", role: "dialog", "aria-label": "Load annotation from Solid pod" },
@@ -275,6 +285,7 @@ export function _openLoadModal(opts = {}) {
         el("span", { class: "lh-v6-load-title", text: "Load annotation from Solid" }),
         closeBtn,
       ]),
+      resumedBanner,
       defaultSection,
       browseSection,
       footer,
@@ -317,6 +328,9 @@ export function _openLoadModal(opts = {}) {
     _setStatus(footerStatus, "Deleting " + title + "…");
     deleteAnnotationFromPod(mmUri, {
       onProgress: (label) => _setStatus(footerStatus, "Deleting " + title + ": " + label + "…"),
+      // Hint for the stale-cleanup branch: scope discovery patches to the
+      // audios that surfaced this entry in the first place.
+      coveredFiles: entry && entry.coveredFiles,
     })
       .then((res) => {
         rowEl.remove();
@@ -324,6 +338,19 @@ export function _openLoadModal(opts = {}) {
         selection.delete(mmUri);
         _refreshBulkBtn();
         if (defaultResults.children.length === 0) defaultAllLink.style.display = "none";
+        if (res.stale) {
+          // The MM was already gone from the pod; we only pruned stale
+          // dataset references. Report that distinctly so the user knows
+          // nothing live was deleted.
+          const n = res.cleanedAudios || 0;
+          _setStatus(
+            footerStatus,
+            n > 0
+              ? "✓ Pod copy was already missing. Pruned stale references from " + n + " discovery resource(s)."
+              : "Pod copy was already missing and no stale references were found.",
+          );
+          return;
+        }
         const failedCount = res.failedUris.length;
         _setStatus(
           footerStatus,
@@ -498,6 +525,15 @@ function _setStatus(status, text) {
  */
 function _highlightSolidLogin() {
   uiState.setDrawerOpen(true);
+  // Record intent: if the user logs in within LOAD_INTENT_WINDOW_MS, the
+  // load modal auto-pops on the auth-changed event with a banner that
+  // explains why. sessionStorage so we survive the OAuth redirect.
+  try {
+    sessionStorage.setItem(
+      "v6-load-intent",
+      JSON.stringify({ ts: Date.now() }),
+    );
+  } catch (_) {}
   // Wait for the drawer's transform-transition (≈200ms) before flashing
   // the footer — pulsing on an off-screen element would land unseen.
   setTimeout(() => {
@@ -514,5 +550,27 @@ function _highlightSolidLogin() {
     };
     footer.addEventListener("animationend", onEnd);
   }, 220);
+}
+
+const LOAD_INTENT_WINDOW_MS = 15000;
+
+/**
+ * If the user clicked Load-from-Solid while logged out within the last
+ * LOAD_INTENT_WINDOW_MS, consume the flag and return its timestamp so
+ * the caller knows to auto-pop the modal. Returns null otherwise. Called
+ * from the `solid-auth-changed{isLoggedIn:true}` handler in index.js.
+ */
+export function consumeLoadIntent() {
+  let raw;
+  try { raw = sessionStorage.getItem("v6-load-intent"); } catch (_) { return null; }
+  if (!raw) return null;
+  try { sessionStorage.removeItem("v6-load-intent"); } catch (_) {}
+  try {
+    const { ts } = JSON.parse(raw) || {};
+    if (typeof ts === "number" && Date.now() - ts <= LOAD_INTENT_WINDOW_MS) {
+      return ts;
+    }
+  } catch (_) {}
+  return null;
 }
 

@@ -15,6 +15,7 @@ import {
 } from "./waveform-interactions.js";
 import {
   postAnnotationToSolid,
+  prewarmCaches,
   updateAnnotationOnSolid,
 } from "./solid-post.js";
 import {
@@ -23,9 +24,14 @@ import {
   listAnnotationsForAudio,
   listAnnotationsForLoadedAudios,
 } from "./solid-load.js";
-import { _openLoadModal } from "./ui-ribbon.js";
+import { _openLoadModal, consumeLoadIntent } from "./ui-ribbon.js";
 import { solid } from "../solid.js";
-import { setAnnoChangesPending, _regionsPlugins } from "../listen.js";
+import {
+  setAnnoChangesPending,
+  _regionsPlugins,
+  getAudioLinkedDataUri,
+  loadedAlignmentJSON,
+} from "../listen.js";
 
 /**
  * Persist V6 annotation state into the alignment.json object (so the
@@ -145,27 +151,66 @@ export function initAnnotationV6() {
     deleteAnnotationFromPod,
   };
 
-  // URL-param autoload: ?annot=v6&loadMM=<encoded MM URI> opens the load
-  // modal pre-pointed at the given MM. We wait until the auth session is
-  // actually logged in before firing — otherwise the modal would alert
-  // "sign in first" and burn the autoload. The solid-auth-changed event
-  // retries once login completes.
+  // Two auto-open paths for the Load-from-Solid modal:
+  //   (a) URL-param autoload: ?annot=v6&loadMM=<encoded MM URI> pops the
+  //       modal pre-pointed at the given MM once auth completes. Survives
+  //       bookmark sharing.
+  //   (b) Load-intent resume: if the user clicked Load-from-Solid while
+  //       logged out and then signed in within the last 15s (the window
+  //       in ui-ribbon.js), we re-open the modal automatically with a
+  //       small "Signed in — resuming…" banner.
+  // Both are checked on `solid-auth-changed`. The URL-param path takes
+  // priority because it carries a specific target.
   let _autoloadConsumed = false;
   let _pendingMm = null;
   try {
     _pendingMm = new URLSearchParams(window.location.search).get("loadMM");
   } catch (_) {}
-  function _maybeAutoload() {
-    if (_autoloadConsumed || !_pendingMm) return;
+
+  function _onAuthChanged() {
     const sess = solid.getDefaultSession && solid.getDefaultSession();
-    if (!sess || !sess.info || !sess.info.isLoggedIn) return; // wait for login
-    _autoloadConsumed = true;
-    _openLoadModal({ presetMm: _pendingMm });
+    const isLoggedIn = !!(sess && sess.info && sess.info.isLoggedIn);
+    if (!isLoggedIn) return;
+    // Pre-warm the post-orchestrator's container + discovery caches in
+    // the background. Saves ≈3 round trips off the first user-triggered
+    // post — they pay the establish cost during login latency instead.
+    // Audio URIs come from the alignment header; if alignment hasn't
+    // loaded yet we warm containers only and discovery falls back to
+    // on-demand establish.
+    const audioUris = _audioUrisForPrewarm();
+    prewarmCaches(audioUris);
+    if (!_autoloadConsumed && _pendingMm) {
+      _autoloadConsumed = true;
+      // The presetMm path bypasses the resumed banner — the user landed
+      // here via a shared link, not an in-session intent.
+      _openLoadModal({ presetMm: _pendingMm });
+      return;
+    }
+    const intent = consumeLoadIntent();
+    if (intent) {
+      _openLoadModal({ resumed: true });
+    }
   }
-  if (_pendingMm) {
-    document.addEventListener("solid-auth-changed", _maybeAutoload);
-    _maybeAutoload();
+
+  /**
+   * Snapshot the currently-loaded recordings' Linked Data URIs for
+   * prewarming the per-audio discovery cache. Empty when alignment
+   * hasn't loaded yet — prewarm degrades to containers-only in that case.
+   */
+  function _audioUrisForPrewarm() {
+    const audioMap = loadedAlignmentJSON && loadedAlignmentJSON.body && loadedAlignmentJSON.body.audio;
+    if (!audioMap) return [];
+    const out = [];
+    for (const file of Object.keys(audioMap)) {
+      const uri = getAudioLinkedDataUri(file);
+      if (uri && /^https?:\/\//i.test(uri)) out.push(uri);
+    }
+    return out;
   }
+  document.addEventListener("solid-auth-changed", _onAuthChanged);
+  // Fire once at init in case the session is already authenticated
+  // (e.g. page reload mid-session).
+  _onAuthChanged();
 
   // Adapter round-trip smoke runs once so we have a console-visible health check.
   try {

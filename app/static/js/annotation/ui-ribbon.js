@@ -6,7 +6,7 @@
 
 import * as state from "./state.js";
 import * as uiState from "./ui-state.js";
-import { el, clearChildren, setStatusText } from "./ui-common.js";
+import { el, clearChildren, setStatusText, confirmDeleteFromPod } from "./ui-common.js";
 import { getActiveGroupingSnapshot } from "../listen.js";
 import {
   deleteAnnotationFromPod,
@@ -14,6 +14,7 @@ import {
   listAnnotationsForLoadedAudios,
   loadAnnotationFromMM,
 } from "./solid-load.js";
+import * as playback from "./playback.js";
 import { solid } from "../solid.js";
 
 export function mountRibbon(parent) {
@@ -45,7 +46,7 @@ export function mountRibbon(parent) {
     class: "lh-v6-ribbon-load",
     type: "button",
     text: "↓ Load from Solid",
-    title: "Browse and load an annotation from your Solid pod",
+    title: "Browse, load, or delete annotations on your Solid pod",
     onclick: () => _openLoadModal(),
   });
 
@@ -91,13 +92,45 @@ export function mountRibbon(parent) {
 
   function _chip(a) {
     const isActive = a.id === state.getActiveId();
+    const playingNow = playback.isPlaying(a.id);
+    // The play/pause overlay only appears on the active chip; click toggles.
+    // On non-active chips, clicking the chip body sets it active and the
+    // overlay appears in its "ready to play" state.
+    const overlay = isActive
+      ? el("button", {
+          class: "lh-v6-chip-play" + (playingNow ? " playing" : ""),
+          type: "button",
+          title: playingNow ? "Pause looped playback" : "Play this annotation on loop",
+          "aria-label": playingNow ? "Pause" : "Play",
+          // Stop propagation so we don't re-fire the chip's setActive click.
+          onclick: (e) => { e.stopPropagation(); playback.toggle(a.id); },
+          text: playingNow ? "❚❚" : "▶",
+        })
+      : null;
     return el(
-      "button",
+      "div",
       {
-        class: "lh-v6-chip" + (isActive ? " active" : ""),
-        type: "button",
+        class:
+          "lh-v6-chip" +
+          (isActive ? " active" : "") +
+          (playingNow ? " playing" : ""),
+        role: "button",
+        tabIndex: "0",
         title: a.label || "Untitled annotation",
-        onclick: () => state.setActiveAnnotation(a.id),
+        onclick: () => {
+          if (!isActive) {
+            // Switching annotations: stop any current playback, then activate.
+            playback.stop();
+            state.setActiveAnnotation(a.id);
+          }
+        },
+        onkeydown: (e) => {
+          if ((e.key === "Enter" || e.key === " ") && !isActive) {
+            e.preventDefault();
+            playback.stop();
+            state.setActiveAnnotation(a.id);
+          }
+        },
       },
       [
         el("span", {
@@ -118,11 +151,13 @@ export function mountRibbon(parent) {
               "aria-label": "Posted to Solid",
             })
           : null,
+        overlay,
       ],
     );
   }
 
   state.subscribe(render);
+  playback.subscribe(render);
   render();
   return ribbon;
 }
@@ -146,7 +181,10 @@ let _modalEl = null;
 export function _openLoadModal(opts = {}) {
   const sess = solid.getDefaultSession && solid.getDefaultSession();
   if (!sess || !sess.info || !sess.info.isLoggedIn) {
-    window.alert("Sign in to your Solid pod first (use the RDF icon on the right edge).");
+    // Open the drawer (if it isn't already) and pulse the Solid section
+    // at the bottom — the only login surface in this iteration. Replaces
+    // the older modal-alert that pointed at a now-removed RDF icon.
+    _highlightSolidLogin();
     return;
   }
 
@@ -273,7 +311,7 @@ export function _openLoadModal(opts = {}) {
   async function _onDelete(mmUri, rowEl) {
     const entry = entryByUri.get(mmUri);
     const title = (entry && entry.label) || mmUri;
-    const ok = await _confirmDelete(title);
+    const ok = await confirmDeleteFromPod(title);
     if (!ok) return;
     rowEl.classList.add("is-busy");
     _setStatus(footerStatus, "Deleting " + title + "…");
@@ -450,70 +488,31 @@ function _setStatus(status, text) {
 }
 
 /**
- * Custom confirmation dialog for pod-side deletion. Returns a Promise that
- * resolves to true if the user clicks Delete, false otherwise (Cancel,
- * backdrop click, or Escape). Layered above the load modal (higher
- * z-index) and visually alarming so a misclick stands out.
+ * Open the annotation drawer (if it isn't already) and pulse the Solid
+ * auth footer so the user notices where to log in. Used when a
+ * login-required affordance is hit while signed out — replaces the
+ * previous `window.alert` that pointed at a now-removed RDF icon.
+ *
+ * The class is removed once the animation ends so subsequent triggers
+ * restart it cleanly.
  */
-function _confirmDelete(title) {
-  return new Promise((resolve) => {
-    let settled = false;
-    function settle(answer) {
-      if (settled) return;
-      settled = true;
-      document.removeEventListener("keydown", onKey);
-      overlay.remove();
-      resolve(answer);
-    }
-    function onKey(e) {
-      if (e.key === "Escape") settle(false);
-      else if (e.key === "Enter") settle(true);
-    }
-
-    const cancelBtn = el("button", {
-      class: "lh-v6-confirm-cancel",
-      type: "button",
-      text: "Cancel",
-      onclick: () => settle(false),
-    });
-    const deleteBtn = el("button", {
-      class: "lh-v6-confirm-delete",
-      type: "button",
-      text: "Delete from pod",
-      onclick: () => settle(true),
-    });
-
-    const dialog = el(
-      "div",
-      { class: "lh-v6-confirm-dialog", role: "alertdialog", "aria-labelledby": "lh-v6-confirm-h" },
-      [
-        el("div", { class: "lh-v6-confirm-header" }, [
-          el("span", { class: "lh-v6-confirm-warning", text: "⚠", "aria-hidden": "true" }),
-          el("h2", { id: "lh-v6-confirm-h", class: "lh-v6-confirm-title", text: "Delete this annotation?" }),
-        ]),
-        el("div", { class: "lh-v6-confirm-body" }, [
-          el("p", { class: "lh-v6-confirm-target" }, [
-            "You are about to permanently delete ",
-            el("strong", { text: '"' + title + '"' }),
-            " from your Solid pod.",
-          ]),
-          el("p", { class: "lh-v6-confirm-detail", text: "This removes the MusicalMaterial, Extract, Selections, and every related OA Annotation. If a local copy is loaded in this session, it will also be removed." }),
-          el("p", { class: "lh-v6-confirm-warn", text: "This cannot be undone." }),
-        ]),
-        el("div", { class: "lh-v6-confirm-actions" }, [cancelBtn, deleteBtn]),
-      ],
-    );
-
-    const overlay = el(
-      "div",
-      {
-        class: "lh-v6-confirm-overlay",
-        onclick: (e) => { if (e.target === overlay) settle(false); },
-      },
-      dialog,
-    );
-    document.body.appendChild(overlay);
-    document.addEventListener("keydown", onKey);
-    cancelBtn.focus(); // safer default focus than the destructive button
-  });
+function _highlightSolidLogin() {
+  uiState.setDrawerOpen(true);
+  // Wait for the drawer's transform-transition (≈200ms) before flashing
+  // the footer — pulsing on an off-screen element would land unseen.
+  setTimeout(() => {
+    const footer = document.querySelector(".lh-v6-drawer-solid");
+    if (!footer) return;
+    footer.classList.remove("lh-v6-pulse");
+    // Force a reflow so re-adding the class restarts the animation
+    // even if it's still mid-cycle from a previous click.
+    void footer.offsetWidth;
+    footer.classList.add("lh-v6-pulse");
+    const onEnd = () => {
+      footer.classList.remove("lh-v6-pulse");
+      footer.removeEventListener("animationend", onEnd);
+    };
+    footer.addEventListener("animationend", onEnd);
+  }, 220);
 }
+

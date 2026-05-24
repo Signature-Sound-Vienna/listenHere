@@ -1421,8 +1421,7 @@ label:has(> #show-tempo-curve:disabled) {
   transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Push the whole stack when either drawer is open */
-body:has(#solid-drawer:not(.closed)) .drawer-btns,
+/* Push the whole stack when the settings drawer is open */
 body:has(#settings-drawer:not(.closed)) .drawer-btns {
   right: 380px;
 }
@@ -1458,19 +1457,6 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
   background-color: var(--color-drawer-btn-hover);
 }
 
-/* Solid drawer button specifics */
-#solid-drawer-btn img {
-  opacity: 0.6;
-  filter: grayscale(100%);
-  transition: opacity 0.3s, filter 0.3s;
-  display: block;
-}
-
-#solid-drawer-btn.logged-in img {
-  opacity: 1;
-  filter: none;
-}
-
 /* Settings drawer button — cog icon colour */
 #settings-drawer-btn svg {
   stroke: var(--color-text-muted);
@@ -1482,24 +1468,6 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
   stroke: var(--color-accent);
 }
 
-.solid-status-dot {
-  position: absolute;
-  top: 4px;
-  left: 4px;
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background-color: var(--color-success, #22c55e);
-  border: 2px solid var(--color-drawer-btn-bg);
-  display: none;
-  box-shadow: 0 0 6px var(--color-link-shadow, rgba(34, 197, 94, 0.4));
-  transition: background-color 0.3s, box-shadow 0.3s;
-}
-
-#solid-drawer-btn.logged-in .solid-status-dot {
-  display: block;
-}
-
 /* Suppress drawer slide animation when switching between two open drawers */
 .drawer-no-transition {
   transition: none !important;
@@ -1508,7 +1476,6 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
 /* ============================================================
    Shared drawer styles
    ============================================================ */
-#solid-drawer,
 #settings-drawer {
   position: fixed;
   top: 0;
@@ -1525,7 +1492,6 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
   box-sizing: border-box;
 }
 
-#solid-drawer.closed,
 #settings-drawer.closed {
   transform: translateX(100%);
 }
@@ -1546,7 +1512,6 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
   color: var(--color-text);
 }
 
-#close-solid-drawer,
 #close-settings-drawer {
   background: none;
   border: none;
@@ -1557,23 +1522,8 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
   line-height: 1;
 }
 
-#close-solid-drawer:hover,
 #close-settings-drawer:hover {
   color: var(--color-text);
-}
-
-#solidTab {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5em;
-  overflow-y: auto;
-  flex: 1 1 auto;
-}
-
-#solidTab a {
-  color: var(--color-link);
-  cursor: pointer;
-  text-decoration: underline;
 }
 
 /* ============================================================
@@ -1792,7 +1742,7 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
   }
 
   /* Buttons */
-  button:not(.drawer-btns button):not(#close-solid-drawer):not(#close-settings-drawer):not(.transport-btn) {
+  button:not(.drawer-btns button):not(#close-settings-drawer):not(.transport-btn) {
     background-color: var(--color-surface-raised, var(--color-surface-alt));
     color: var(--color-text);
     border-color: var(--color-border);
@@ -1875,14 +1825,6 @@ nav input[type="checkbox"]:focus-visible {
   outline: 2px solid var(--color-focus-ring, #2563eb);
   outline-offset: 1px;
   border-radius: 2px;
-}
-
-#solidTab input[type="text"] {
-  width: 100%;
-  padding: 0.5em;
-  margin-bottom: 0.5em;
-  border: 1px solid var(--color-border, #cbd5e1);
-  border-radius: 4px;
 }
 
 #splash {
@@ -4608,6 +4550,37 @@ body.lh-v6-drawer-open .lh-v6-ribbon { right: 380px; }
   background: #f59e0b;
 }
 .lh-v6-chip-tick { font-size: 10px; color: #22c55e; }
+.lh-v6-chip-play {
+  /* Overlay sitting centered over the chip; only on the active chip.
+     `pointer-events: none` while invisible so clicks pass through to the
+     chip body — otherwise tapping an active chip would silently trigger
+     playback even though no button was visible. */
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  letter-spacing: 1px;
+  cursor: pointer;
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+.lh-v6-chip:hover .lh-v6-chip-play,
+.lh-v6-chip.playing .lh-v6-chip-play,
+.lh-v6-chip-play:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+.lh-v6-chip.playing {
+  box-shadow: 0 0 0 2px var(--color-link, #2563eb);
+}
+.lh-v6-chip { position: relative; }
 
 /* --- Side drawer ---------------------------------------------------- */
 .lh-v6-drawer {
@@ -4664,16 +4637,142 @@ body.lh-v6-drawer-open .lh-v6-ribbon { right: 380px; }
   color: #fff;
 }
 .lh-v6-mode-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.lh-v6-drawer-close {
+.lh-v6-drawer-trash,
+.lh-v6-drawer-unload {
   background: transparent;
-  border: none;
-  font-size: 18px;
+  border: 1px solid transparent;
+  font-size: 14px;
   line-height: 1;
   color: var(--color-text-muted);
   cursor: pointer;
-  padding: 2px 6px;
+  padding: 4px 8px;
+  border-radius: 4px;
 }
-.lh-v6-drawer-close:hover { color: var(--color-text); }
+.lh-v6-drawer-unload { font-size: 18px; }
+.lh-v6-drawer-trash:hover {
+  background: #fee2e2;
+  border-color: #dc2626;
+  color: #dc2626;
+}
+.lh-v6-drawer-unload:hover {
+  background: var(--color-hover-bg, rgba(0,0,0,0.04));
+  color: var(--color-text);
+}
+
+/* --- Sticky Solid auth footer at the drawer bottom ----------------- */
+.lh-v6-drawer-solid {
+  flex-shrink: 0;
+  border-top: 1px solid var(--color-border-light);
+  padding: 8px 10px;
+  font-size: 11px;
+  background: var(--color-surface);
+  /* Anchored so the absolute pulse-ring overlay below pins to this box. */
+  position: relative;
+}
+/* Pulse the footer to draw attention when a login-required action is
+   triggered while signed out. Two cycles, ending with the ring fully
+   transparent so removing the class is invisible. */
+.lh-v6-drawer-solid.lh-v6-pulse {
+  animation: lh-v6-solid-pulse 1.4s ease-out 2 both;
+}
+@keyframes lh-v6-solid-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.55);
+    background: var(--color-accent-light, rgba(37, 99, 235, 0.08));
+  }
+  60% {
+    box-shadow: 0 0 0 8px rgba(37, 99, 235, 0);
+    background: var(--color-accent-light, rgba(37, 99, 235, 0.08));
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+    background: var(--color-surface);
+  }
+}
+.lh-v6-solid-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.lh-v6-solid-label {
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+.lh-v6-solid-tick {
+  color: #22c55e;
+  font-size: 14px;
+  line-height: 1;
+}
+.lh-v6-solid-status {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lh-v6-solid-select {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  font-size: 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+.lh-v6-solid-custom {
+  margin-top: 6px;
+  width: 100%;
+  padding: 4px 8px;
+  font-size: 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  box-sizing: border-box;
+}
+.lh-v6-solid-connect {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 4px;
+  border: 1px solid var(--color-link, #2563eb);
+  background: var(--color-link, #2563eb);
+  color: #fff;
+  cursor: pointer;
+}
+.lh-v6-solid-connect:hover { filter: brightness(0.95); }
+.lh-v6-solid-link {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--color-link, #2563eb);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* --- Pull-tab Solid-connected indicator (green bobble) ------------- */
+.lh-v6-pull-tab {
+  position: relative;
+}
+.lh-v6-pull-tab-dot {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-success, #22c55e);
+  border: 2px solid var(--color-drawer-btn-bg);
+  display: none;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.4);
+}
+.lh-v6-pull-tab.logged-in .lh-v6-pull-tab-dot {
+  display: block;
+}
 
 .lh-v6-drawer-toolbar {
   padding: 6px 10px;

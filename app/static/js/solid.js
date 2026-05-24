@@ -602,112 +602,21 @@ export async function postWebAnnotation(targetUri, bodyText) {
   return postResource(annotationContainer, resource);
 }
 
+/**
+ * As of the Phase F + drawer-redesign iteration, this function no longer
+ * paints a separate Solid drawer — the V6 annotation drawer subscribes to
+ * `solid-auth-changed` and renders its own footer. We just dispatch the
+ * event with the current login status and clear the "pending" flag so
+ * cancelled-login state doesn't get stuck.
+ */
 export async function populateSolidDrawer() {
-  const solidTab = document.getElementById("solidTab");
   const isLoggedIn = solid.getDefaultSession().info.isLoggedIn;
-
-  // Notify other modules of auth state change
+  if (isLoggedIn) {
+    try { localStorage.removeItem("solidLoginPending"); } catch (_) {}
+  }
   document.dispatchEvent(
     new CustomEvent("solid-auth-changed", { detail: { isLoggedIn } }),
   );
-
-  if (isLoggedIn) {
-    const profile = await getProfile();
-    const webId = solid.getDefaultSession().info.webId;
-    // JSON-LD expanded: foaf:name → [{"@value": "Name"}]
-    const foafName = profile && profile[nsp.FOAF + "name"];
-    const extractedName =
-      Array.isArray(foafName) && foafName.length > 0
-        ? foafName[0]["@value"]
-        : typeof foafName === "string"
-          ? foafName
-          : null;
-    // Fall back to the WebID hostname (e.g. "username.solidcommunity.net")
-    const name = extractedName || (webId ? new URL(webId).hostname : "Unknown");
-
-    solidTab.innerHTML = `
-      <div id="authStatus" style="margin-bottom: 1.5em; color: #1e293b;">
-        Logged in as <strong>${name}</strong>
-        <div style="margin-top: 0.5em;">
-          <a id="solidLogout" style="color: #64748b; font-size: 0.9em; cursor: pointer; text-decoration: underline;">Log out</a>
-        </div>
-      </div>
-    `;
-
-    document
-      .getElementById("solidLogout")
-      .addEventListener("click", solidLogout);
-  } else {
-    const wasCancelled = localStorage.getItem("solidLoginPending") !== null;
-    if (wasCancelled) {
-      localStorage.removeItem("solidLoginPending");
-    }
-
-    const storedProvider = localStorage.getItem("solidProvider");
-    const hasStoredSession =
-      localStorage.getItem("solidClientAuthn:currentSession") !== null;
-
-    if (storedProvider && hasStoredSession && !wasCancelled) {
-      // Reconnect UI — user has a previous Solid session
-      const providerLabel = storedProvider
-        .replace(/^https?:\/\//, "")
-        .replace(/\/$/, "");
-      solidTab.innerHTML = `<div id="authStatus">
-          <p style="font-size: 0.9em; color: #475569; margin-bottom: 1em;">
-            Previously connected via <strong>${providerLabel}</strong>
-          </p>
-          <button id="solidReconnectBtn" style="width: 100%; padding: 0.6em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Reconnect to Solid</button>
-          <div style="text-align: center; margin-top: 0.6em;">
-            <a id="solidDifferentBtn" style="color: #64748b; font-size: 0.85em; cursor: pointer; text-decoration: underline;">Use a different account</a>
-          </div>
-        </div>`;
-      document
-        .getElementById("solidReconnectBtn")
-        .addEventListener("click", () => loginAndFetch(storedProvider));
-      document
-        .getElementById("solidDifferentBtn")
-        .addEventListener("click", () => {
-          localStorage.removeItem("solidProvider");
-          localStorage.removeItem("solidClientAuthn:currentSession");
-          populateSolidDrawer();
-        });
-    } else {
-      // Full login UI
-      solidTab.innerHTML = `<div id="authStatus">
-          <label for="providerSelect" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Solid Provider</label>
-          <select name="provider" id="providerSelect" style="width: 100%; padding: 0.6em; margin-bottom: 0.5em; border: 1px solid #cbd5e1; border-radius: 4px;">
-            <option value="https://solidcommunity.net">SolidCommunity.net</option>
-            <option value="https://login.inrupt.com">Inrupt PodSpaces</option>
-            <option value="_other">Other…</option>
-          </select>
-          <div id="customProviderWrap" style="display:none; margin-bottom: 0.5em;">
-            <input type="url" id="customProviderInput" placeholder="https://your-provider.example" style="width: 100%; padding: 0.6em; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;" />
-          </div>
-          ${wasCancelled ? '<div style="color: #ef4444; font-size: 0.85em; margin-bottom: 0.8em;">Login cancelled. Try again?</div>' : ""}
-          <button id="solidLoginBtn" style="width: 100%; padding: 0.6em; margin-top: 0.5em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Connect to Solid Pod</button>
-        </div>`;
-      const providerSelect = document.getElementById("providerSelect");
-      const customWrap = document.getElementById("customProviderWrap");
-      providerSelect.addEventListener("change", () => {
-        customWrap.style.display =
-          providerSelect.value === "_other" ? "" : "none";
-      });
-      document.getElementById("solidLoginBtn").addEventListener("click", () => {
-        if (providerSelect.value === "_other") {
-          const custom = document
-            .getElementById("customProviderInput")
-            .value.trim();
-          if (!custom) return;
-          loginAndFetch(
-            custom.startsWith("http") ? custom : "https://" + custom,
-          );
-        } else {
-          loginAndFetch();
-        }
-      });
-    }
-  }
-
 }
 
 export async function getProfile() {

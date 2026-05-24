@@ -105,7 +105,7 @@ function _recordingsSection(ann) {
       el("p", {
         class: "lh-v6-empty-hint",
         text:
-          "No recordings selected yet. Click the RDF icon on a waveform to add it as a selection. Drawing a region on a waveform also selects it automatically.",
+          "No recordings selected yet. While Edit mode is active, click on any waveform to add it as a selection. Drawing a region on a waveform also selects it automatically.",
       }),
     );
     return sec;

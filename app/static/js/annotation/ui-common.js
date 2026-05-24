@@ -76,3 +76,73 @@ export function setStatusText(node, text) {
     node.textContent = text;
   }
 }
+
+/**
+ * Custom confirmation dialog for destructive pod-side actions. Returns a
+ * Promise that resolves to true if the user clicks Delete, false otherwise
+ * (Cancel, backdrop click, or Escape). Layered above other modals (high
+ * z-index) and visually alarming so a misclick stands out. Caller passes
+ * the annotation title for the bold callout.
+ */
+export function confirmDeleteFromPod(title) {
+  return new Promise((resolve) => {
+    let settled = false;
+    function settle(answer) {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+      resolve(answer);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") settle(false);
+      else if (e.key === "Enter") settle(true);
+    }
+
+    const cancelBtn = el("button", {
+      class: "lh-v6-confirm-cancel",
+      type: "button",
+      text: "Cancel",
+      onclick: () => settle(false),
+    });
+    const deleteBtn = el("button", {
+      class: "lh-v6-confirm-delete",
+      type: "button",
+      text: "Delete from pod",
+      onclick: () => settle(true),
+    });
+
+    const dialog = el(
+      "div",
+      { class: "lh-v6-confirm-dialog", role: "alertdialog", "aria-labelledby": "lh-v6-confirm-h" },
+      [
+        el("div", { class: "lh-v6-confirm-header" }, [
+          el("span", { class: "lh-v6-confirm-warning", text: "⚠", "aria-hidden": "true" }),
+          el("h2", { id: "lh-v6-confirm-h", class: "lh-v6-confirm-title", text: "Delete this annotation?" }),
+        ]),
+        el("div", { class: "lh-v6-confirm-body" }, [
+          el("p", { class: "lh-v6-confirm-target" }, [
+            "You are about to permanently delete ",
+            el("strong", { text: '"' + title + '"' }),
+            " from your Solid pod.",
+          ]),
+          el("p", { class: "lh-v6-confirm-detail", text: "This removes the MusicalMaterial, Extract, Selections, and every related OA Annotation. If a local copy is loaded in this session, it will also be removed." }),
+          el("p", { class: "lh-v6-confirm-warn", text: "This cannot be undone." }),
+        ]),
+        el("div", { class: "lh-v6-confirm-actions" }, [cancelBtn, deleteBtn]),
+      ],
+    );
+
+    const overlay = el(
+      "div",
+      {
+        class: "lh-v6-confirm-overlay",
+        onclick: (e) => { if (e.target === overlay) settle(false); },
+      },
+      dialog,
+    );
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", onKey);
+    cancelBtn.focus(); // safer default focus than the destructive button
+  });
+}

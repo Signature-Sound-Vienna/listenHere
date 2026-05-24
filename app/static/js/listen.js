@@ -3,6 +3,7 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { initSolidAuth } from "./solid.js";
+import * as v6Playback from "./annotation/playback.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
@@ -1812,6 +1813,13 @@ export function swapCurrentAudio(newAudio) {
     // no need to swap
     return;
   }
+  // Heads-up to the V6 playback engine BEFORE we pause the outgoing
+  // wavesurfer. This sets a "swapping" flag so the imminent pause event
+  // is interpreted correctly, and (if the incoming waveform is also a
+  // target of the playing annotation) re-binds the loop's listeners to
+  // the new wavesurfer. The pause-then-play below then drives the audio
+  // transition transparently.
+  v6Playback.notifySwap(newAudio);
   if (currentAudioIx) {
     console.log("Pausing current: ", currentAudioIx);
     console.log(
@@ -5248,8 +5256,6 @@ function _initSettingsDrawer() {
 
   openBtn.addEventListener("click", () => {
     drawer.classList.toggle("closed");
-    // Close Solid drawer if open
-    document.getElementById("solid-drawer").classList.add("closed");
     // Highlight the button when drawer is open
     openBtn.classList.toggle("active", !drawer.classList.contains("closed"));
   });
@@ -6638,18 +6644,6 @@ document.addEventListener("DOMContentLoaded", () => {
   // Show the drawer-pull button stack
   document.querySelector(".drawer-btns").style.display = "flex";
 
-  // Solid Drawer toggle logic
-  const solidDrawer = document.getElementById("solid-drawer");
-  document.getElementById("solid-drawer-btn").addEventListener("click", () => {
-    solidDrawer.classList.toggle("closed");
-    document.getElementById("settings-drawer").classList.add("closed");
-  });
-  document
-    .getElementById("close-solid-drawer")
-    .addEventListener("click", () => {
-      solidDrawer.classList.add("closed");
-    });
-
   // Settings Drawer toggle + theme/i18n wiring
   _initSettingsDrawer();
 
@@ -6667,7 +6661,7 @@ document.addEventListener("DOMContentLoaded", () => {
       active.type !== "radio"
     )
       return;
-    if (active.closest(".gm-modal, #solid-drawer, #settings-drawer, #file-picker-overlay"))
+    if (active.closest(".gm-modal, #settings-drawer, #file-picker-overlay, .lh-v6-drawer, .lh-v6-load-overlay, .lh-v6-confirm-overlay"))
       return;
     active.blur();
   });
@@ -6678,7 +6672,7 @@ document.addEventListener("DOMContentLoaded", () => {
     // Don't intercept when a modal or the Solid drawer has focus
     if (
       e.target.closest &&
-      e.target.closest(".gm-modal, #solid-drawer, #settings-drawer, #file-picker-overlay")
+      e.target.closest(".gm-modal, #settings-drawer, #file-picker-overlay, .lh-v6-drawer, .lh-v6-load-overlay, .lh-v6-confirm-overlay")
     )
       return;
     console.log("KEYDOWN: ", e);

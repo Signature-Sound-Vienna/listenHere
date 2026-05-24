@@ -6,14 +6,15 @@
 
 import * as state from "./state.js";
 import * as uiState from "./ui-state.js";
-import { el, clearChildren, bouncingDots } from "./ui-common.js";
+import { el, clearChildren, bouncingDots, confirmDeleteFromPod } from "./ui-common.js";
 import { renderEditor } from "./ui-editor.js";
 import { renderViewer } from "./ui-viewer.js";
 import {
   postAnnotationToSolid,
   updateAnnotationOnSolid,
 } from "./solid-post.js";
-import { solid } from "../solid.js";
+import { deleteAnnotationFromPod } from "./solid-load.js";
+import { solid, loginAndFetch, solidLogout } from "../solid.js";
 import { getAudioLinkedDataUri } from "../listen.js";
 
 export function mountDrawer(parent) {
@@ -24,18 +25,27 @@ export function mountDrawer(parent) {
 
   const titleSpan = el("span", { class: "lh-v6-drawer-title", text: "Annotations" });
   const modeToggle = _modeToggle();
-  const closeBtn = el("button", {
-    class: "lh-v6-drawer-close",
+  const trashBtn = el("button", {
+    class: "lh-v6-drawer-trash",
     type: "button",
-    title: "Close drawer",
-    "aria-label": "Close drawer",
+    title: "Delete this annotation from your Solid pod",
+    "aria-label": "Delete from pod",
+    text: "🗑",
+    onclick: () => _onTrashClick(),
+  });
+  const unloadBtn = el("button", {
+    class: "lh-v6-drawer-unload",
+    type: "button",
+    title: "Unload this annotation from the session (the pod copy is preserved)",
+    "aria-label": "Unload annotation",
     text: "×",
-    onclick: () => uiState.setDrawerOpen(false),
+    onclick: () => _onUnloadClick(),
   });
   const header = el("div", { class: "lh-v6-drawer-header" }, [
     titleSpan,
     modeToggle,
-    closeBtn,
+    trashBtn,
+    unloadBtn,
   ]);
 
   const drawModeCheckbox = el("input", {
@@ -57,8 +67,48 @@ export function mountDrawer(parent) {
 
   const publishBar = el("div", { class: "lh-v6-publish-bar" });
 
-  drawer.append(header, drawModeToolbar, body, publishBar);
+  // Sticky footer: Solid auth status + login/logout controls. Lives
+  // outside the body so it stays visible while editing.
+  const solidFooter = el("div", { class: "lh-v6-drawer-solid" });
+
+  drawer.append(header, drawModeToolbar, body, publishBar, solidFooter);
   parent.appendChild(drawer);
+
+  function _onUnloadClick() {
+    const ann = state.getById(state.getActiveId());
+    if (!ann) return;
+    if (ann.hasUnsavedChanges) {
+      const ok = window.confirm(
+        "Discard unsaved changes to “" +
+          (ann.label || "this annotation") +
+          "”?\n\nThe annotation will be removed from this session. " +
+          "If it was posted to your Solid pod, the pod copy is preserved.",
+      );
+      if (!ok) return;
+    }
+    state.removeAnnotation(ann.id);
+  }
+
+  async function _onTrashClick() {
+    const ann = state.getById(state.getActiveId());
+    if (!ann) return;
+    const mmUri = ann.lastPostedUris && ann.lastPostedUris.mm;
+    if (!mmUri) {
+      // Not published — fall back to a plain unload (with confirm if dirty).
+      _onUnloadClick();
+      return;
+    }
+    const ok = await confirmDeleteFromPod(ann.label || mmUri);
+    if (!ok) return;
+    try {
+      await deleteAnnotationFromPod(mmUri);
+      // deleteAnnotationFromPod already removes the matching local copy.
+    } catch (err) {
+      window.alert(
+        "Couldn't delete: " + ((err && err.message) || err),
+      );
+    }
+  }
 
   function render() {
     const ann = state.getById(state.getActiveId());
@@ -76,6 +126,9 @@ export function mountDrawer(parent) {
     titleSpan.textContent = ann
       ? ann.label || "Untitled annotation"
       : "Annotations";
+    // Header buttons are only meaningful when an annotation is active.
+    unloadBtn.style.display = ann ? "" : "none";
+    trashBtn.style.display = ann ? "" : "none";
 
     // Always re-render the body. Chain-enforced sections (group notes,
     // comparisons) depend on text content of upstream sections, so we can't
@@ -98,6 +151,7 @@ export function mountDrawer(parent) {
     }
     _restoreFocus(body, saved);
     _renderPublishBar(publishBar, ann);
+    _renderSolidFooter(solidFooter);
   }
   // Expose a re-renderer the click handler can call independently of state
   // emits — needed to update the in-flight "Posting… 3/12" counter.
@@ -108,7 +162,8 @@ export function mountDrawer(parent) {
 
   state.subscribe(render);
   uiState.subscribe(render);
-  // Solid auth state changes affect the Post-to-Solid button's gating.
+  // Solid auth state changes affect the Post-to-Solid button's gating
+  // and the footer's logged-in/out switch.
   document.addEventListener("solid-auth-changed", render);
   render();
   return drawer;
@@ -198,7 +253,7 @@ function _renderPublishBar(bar, ann) {
       missingUriFiles.join(", ");
   } else if (!isLoggedIn) {
     disabled = true;
-    tooltip = "Sign in to your Solid pod first (use the RDF icon, right edge).";
+    tooltip = "Sign in to your Solid pod first (use the Solid section at the bottom of this drawer).";
   } else {
     disabled = false;
     tooltip = alreadyPublished
@@ -283,6 +338,81 @@ function _saveFocus(body) {
     selEnd = a.selectionEnd;
   } catch (_) {}
   return { key, selStart, selEnd };
+}
+
+/**
+ * Render the Solid auth footer. Logged-out: provider chooser + Connect
+ * button (uses any stored provider as the default option). Logged-in:
+ * one-line status with the WebID host and a Log-out link.
+ */
+function _renderSolidFooter(node) {
+  clearChildren(node);
+  const sess = solid.getDefaultSession && solid.getDefaultSession();
+  const isLoggedIn = !!(sess && sess.info && sess.info.isLoggedIn);
+  if (isLoggedIn) {
+    const webId = sess.info.webId || "";
+    let label = "your pod";
+    try { label = new URL(webId).hostname; } catch (_) {}
+    node.appendChild(
+      el("div", { class: "lh-v6-solid-row" }, [
+        el("span", { class: "lh-v6-solid-tick", text: "●", "aria-hidden": "true" }),
+        el("span", { class: "lh-v6-solid-status", text: "Connected to " + label }),
+        el("button", {
+          class: "lh-v6-solid-link",
+          type: "button",
+          text: "Log out",
+          onclick: () => { solidLogout(); },
+        }),
+      ]),
+    );
+    return;
+  }
+  // Logged out: provider chooser + Connect button.
+  const stored = (function () {
+    try { return localStorage.getItem("solidProvider") || ""; } catch (_) { return ""; }
+  })();
+  const providers = [
+    { value: "https://solidcommunity.net", label: "SolidCommunity.net" },
+    { value: "https://login.inrupt.com", label: "Inrupt PodSpaces" },
+  ];
+  const select = el("select", { class: "lh-v6-solid-select", "aria-label": "Solid provider" });
+  for (const p of providers) {
+    select.appendChild(
+      el("option", { value: p.value, text: p.label, selected: p.value === stored }),
+    );
+  }
+  select.appendChild(el("option", { value: "_other", text: "Other…" }));
+  const customInput = el("input", {
+    type: "url",
+    class: "lh-v6-solid-custom",
+    placeholder: "https://your-provider.example",
+  });
+  customInput.style.display = "none";
+  select.addEventListener("change", () => {
+    customInput.style.display = select.value === "_other" ? "" : "none";
+  });
+  const connectBtn = el("button", {
+    class: "lh-v6-solid-connect",
+    type: "button",
+    text: "Connect",
+    onclick: () => {
+      const chosen =
+        select.value === "_other"
+          ? customInput.value.trim()
+          : select.value;
+      if (!chosen) return;
+      const provider = chosen.startsWith("http") ? chosen : "https://" + chosen;
+      loginAndFetch(provider);
+    },
+  });
+  node.appendChild(
+    el("div", { class: "lh-v6-solid-row" }, [
+      el("span", { class: "lh-v6-solid-label", text: "Solid:" }),
+      select,
+      connectBtn,
+    ]),
+  );
+  node.appendChild(customInput);
 }
 
 function _restoreFocus(body, saved) {

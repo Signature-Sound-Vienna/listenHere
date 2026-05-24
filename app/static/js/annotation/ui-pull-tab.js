@@ -6,6 +6,7 @@
 
 import * as uiState from "./ui-state.js";
 import { el } from "./ui-common.js";
+import { solid } from "../solid.js";
 
 const PENCIL_SVG =
   '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
@@ -29,9 +30,24 @@ export function mountPullTab() {
     onclick: () => uiState.setDrawerOpen(!uiState.getDrawerOpen()),
     html: PENCIL_SVG,
   });
+  // Solid-connected indicator dot (the green bobble used to live on the
+  // RDF icon button; that button is gone in this iteration).
+  const dot = el("span", {
+    class: "lh-v6-pull-tab-dot",
+    "aria-hidden": "true",
+  });
+  btn.appendChild(dot);
   container.appendChild(btn);
-  const sync = () => btn.classList.toggle("open", uiState.getDrawerOpen());
-  uiState.subscribe(sync);
-  sync();
+
+  const syncOpen = () => btn.classList.toggle("open", uiState.getDrawerOpen());
+  const syncAuth = () => {
+    const sess = solid.getDefaultSession && solid.getDefaultSession();
+    const loggedIn = !!(sess && sess.info && sess.info.isLoggedIn);
+    btn.classList.toggle("logged-in", loggedIn);
+  };
+  uiState.subscribe(syncOpen);
+  document.addEventListener("solid-auth-changed", syncAuth);
+  syncOpen();
+  syncAuth();
   return btn;
 }

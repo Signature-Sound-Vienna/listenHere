@@ -392,46 +392,28 @@ async function startAlignment() {
     li.innerHTML += `<span class="step-time">${timeStr}s</span>`;
   }
 
-  // Decode audio sequentially (limits peak memory)
-  const audios = [];
-  for (let i = 0; i < selectedFiles.length; i++) {
-    const f = selectedFiles[i];
-    progressText.textContent = `Decoding audio: ${f.name} (${i + 1}/${selectedFiles.length})`;
-    progressBar.style.width = `${5 + (5 * i) / selectedFiles.length}%`;
-    const li = addStep(`Decode: ${f.name}`);
-    try {
-      const samples = await decodeAudio(f);
-      audios.push({ name: f.name, samples });
-      completeStep(li);
-    } catch (err) {
-      progressText.textContent = `Error decoding ${f.name}: ${err.message}`;
-      clearInterval(elapsedTimer);
-      return;
-    }
-  }
-  progressText.textContent = "Starting alignment worker...";
-  progressBar.style.width = "10%";
-
-  // Optionally fetch MEI and render to MIDI
-  let meiMidi = null;
-  const meiUri = document.getElementById("align-mei-input").value.trim();
-  if (meiUri) {
-    progressText.textContent = "Loading MEI and rendering to MIDI…";
-    const meiLi = addStep("Render MEI → MIDI");
-    try {
-      meiMidi = await fetchMeiMidi(meiUri);
-      completeStep(meiLi);
-    } catch (err) {
-      progressText.textContent = `MEI error: ${err.message}`;
-      clearInterval(elapsedTimer);
-      return;
-    }
-  }
-
-  // Launch Web Worker
+  // --- Launch the worker up front so we can stream features into it ---
+  // Streaming protocol: decode one file on the main thread, transfer samples
+  // to the worker for feature extraction, wait for ack, then move on. This
+  // keeps only one raw PCM buffer resident at a time, avoiding the heap
+  // saturation that plagued the previous all-at-once decode.
   const currentOptions = readAdvancedParams();
+  const meiUri = document.getElementById("align-mei-input").value.trim();
+  const scoreMode = !!meiUri;
   const worker = new Worker(_workerUrl);
   const activeSteps = {};
+  const pendingWaiters = new Map();
+  let workerFailed = false;
+
+  const waitFor = (key) =>
+    new Promise((resolve, reject) => {
+      pendingWaiters.set(key, { resolve, reject });
+    });
+
+  const rejectAllWaiters = (err) => {
+    for (const { reject } of pendingWaiters.values()) reject(err);
+    pendingWaiters.clear();
+  };
 
   worker.onmessage = function (e) {
     if (e.data.type === "step") {
@@ -457,12 +439,33 @@ async function startAlignment() {
       if (e.data.pct >= 0) {
         progressBar.style.width = e.data.pct + "%";
       }
+    } else if (e.data.type === "batch_ready") {
+      const w = pendingWaiters.get("batch_ready");
+      if (w) {
+        pendingWaiters.delete("batch_ready");
+        w.resolve();
+      }
+    } else if (e.data.type === "feature_done") {
+      const k = "feature_done:" + e.data.name;
+      const w = pendingWaiters.get(k);
+      if (w) {
+        pendingWaiters.delete(k);
+        w.resolve();
+      }
     } else if (e.data.type === "result") {
       clearInterval(elapsedTimer);
-      const totalSecs = ((performance.now() - alignStartTime) / 1000).toFixed(
-        1,
-      );
+      const totalSecsNum = (performance.now() - alignStartTime) / 1000;
+      const totalSecs = totalSecsNum.toFixed(1);
       elapsedEl.textContent = `Total time: ${totalSecs}s`;
+      // Also surface the total in the step list for visual parity with per-step times.
+      const totalLi = document.createElement("li");
+      totalLi.className = "align-step done align-step-total";
+      totalLi.innerHTML =
+        `<span class="step-icon">&#10003;</span> ` +
+        `<strong>Alignment complete</strong>` +
+        `<span class="step-time">${totalSecs}s</span>`;
+      stepList.appendChild(totalLi);
+      totalLi.scrollIntoView({ behavior: "smooth", block: "nearest" });
       alignmentResult = e.data.alignment;
       // Inject LD URI prefix from the alignment form (if provided)
       const ldPrefixEl = document.getElementById("align-ld-uri-prefix");
@@ -485,34 +488,128 @@ async function startAlignment() {
       progressText.textContent = "";
       document.getElementById("align-results").style.display = "";
       worker.terminate();
+      const w = pendingWaiters.get("result");
+      if (w) {
+        pendingWaiters.delete("result");
+        w.resolve();
+      }
     } else if (e.data.type === "error") {
       clearInterval(elapsedTimer);
       progressText.textContent = "Error: " + e.data.message;
       progressBar.style.width = "100%";
       progressBar.style.background = "#ef4444";
+      workerFailed = true;
       worker.terminate();
+      rejectAllWaiters(new Error(e.data.message));
     }
   };
   worker.onerror = function (err) {
     clearInterval(elapsedTimer);
-    progressText.textContent = "Worker error: " + err.message;
+    const detail =
+      err.message ||
+      (err.filename
+        ? `${err.filename}:${err.lineno || "?"}:${err.colno || "?"}`
+        : null) ||
+      (err.error && err.error.message) ||
+      "(no message — check worker console)";
+    console.error("Worker error event:", err, {
+      message: err.message,
+      filename: err.filename,
+      lineno: err.lineno,
+      colno: err.colno,
+      error: err.error,
+    });
+    progressText.textContent = "Worker error: " + detail;
     progressBar.style.background = "#ef4444";
+    workerFailed = true;
+    rejectAllWaiters(new Error(detail));
   };
 
-  const transferables = audios.map((a) => a.samples.buffer);
-  if (meiMidi) transferables.push(meiMidi.buffer);
-  worker.postMessage(
-    {
-      type: "align",
-      audios,
+  try {
+    // --- Initialise the batch on the worker ---
+    const batchReady = waitFor("batch_ready");
+    worker.postMessage({
+      type: "begin_batch",
       refName,
-      meiMidi: meiMidi || null,
-      meiUri: meiUri || "",
       peakCount,
+      scoreMode,
+      featureTotal: selectedFiles.length,
       options: currentOptions,
-    },
-    transferables,
-  );
+    });
+    await batchReady;
+
+    // --- Stream features: decode → transfer → await, one file at a time ---
+    // Decode + feature-extract for each file is one unit of work, spanning
+    // 25% of the total progress bar (5%→30%). Advance monotonically once per
+    // completed file so the bar never jumps backwards between phases.
+    const FEATURE_PHASE_START = 5;
+    const FEATURE_PHASE_END = 30;
+    const featurePhaseSpan = FEATURE_PHASE_END - FEATURE_PHASE_START;
+    for (let i = 0; i < selectedFiles.length; i++) {
+      if (workerFailed) return;
+      const f = selectedFiles[i];
+      progressText.textContent = `Decoding audio: ${f.name} (${i + 1}/${selectedFiles.length})`;
+      const li = addStep(`Decode: ${f.name}`);
+      let samples;
+      try {
+        samples = await decodeAudio(f);
+        completeStep(li);
+      } catch (err) {
+        progressText.textContent = `Error decoding ${f.name}: ${err.message}`;
+        clearInterval(elapsedTimer);
+        worker.terminate();
+        return;
+      }
+      const featureDone = waitFor("feature_done:" + f.name);
+      worker.postMessage(
+        {
+          type: "feature",
+          name: f.name,
+          samples,
+          isRef: f.name === refName,
+        },
+        [samples.buffer],
+      );
+      await featureDone;
+      // samples.buffer was transferred; the main-thread view is now empty.
+      progressBar.style.width = `${
+        FEATURE_PHASE_START + (featurePhaseSpan * (i + 1)) / selectedFiles.length
+      }%`;
+    }
+
+    // --- Optionally fetch MEI and render to MIDI ---
+    let meiMidi = null;
+    if (meiUri) {
+      progressText.textContent = "Loading MEI and rendering to MIDI…";
+      const meiLi = addStep("Render MEI → MIDI");
+      try {
+        meiMidi = await fetchMeiMidi(meiUri);
+        completeStep(meiLi);
+      } catch (err) {
+        progressText.textContent = `MEI error: ${err.message}`;
+        clearInterval(elapsedTimer);
+        worker.terminate();
+        return;
+      }
+    }
+
+    // --- Run alignment on the worker-held features ---
+    progressText.textContent = "Starting alignment...";
+    const resultReady = waitFor("result");
+    const transferables = meiMidi ? [meiMidi.buffer] : [];
+    worker.postMessage(
+      {
+        type: "align_all",
+        meiMidi: meiMidi || null,
+        meiUri: meiUri || "",
+      },
+      transferables,
+    );
+    await resultReady;
+  } catch (err) {
+    // Worker/feature errors surface here via rejectAllWaiters; UI was updated
+    // by the message handler already. Nothing else to do.
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -577,6 +674,10 @@ function goToTab(n) {
   const prevBtn = document.getElementById("align-prev-btn");
   const nextBtn = document.getElementById("align-next-btn");
   prevBtn.style.visibility = n === 1 ? "hidden" : "";
+
+  // Cross-link to file picker only makes sense on step 1
+  const modeSwitch = document.getElementById("align-mode-switch");
+  if (modeSwitch) modeSwitch.classList.toggle("is-hidden", n !== 1);
 
   if (n === LAST_TAB) {
     nextBtn.style.display = "none";

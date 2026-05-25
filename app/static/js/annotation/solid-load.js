@@ -18,7 +18,16 @@ import * as state from "./state.js";
 import * as adapter from "./mao-adapter.js";
 import { nsp } from "../linked-data.js";
 import { solid, friendContainer, discoveryFragment, getSolidStorage } from "../solid.js";
-import { getAudioLinkedDataUri, loadedAlignmentJSON } from "../listen.js";
+import {
+  getAudioLinkedDataUri,
+  getClosestAlignmentIx,
+  getCorrespondingTime,
+  getReferenceAudioIx,
+  loadedAlignmentJSON,
+  meiUri,
+  scoreAlignment,
+  tk,
+} from "../listen.js";
 
 /**
  * List annotations that involve a given audio. We read the audio's
@@ -34,10 +43,13 @@ export async function listAnnotationsForAudio(audioUri) {
   if (!session || !session.info || !session.info.isLoggedIn) {
     throw new Error("Sign in to your Solid pod first.");
   }
-  const normalised = _normaliseIri(audioUri);
-  const discoveryUri = await _discoveryUriFor(normalised);
-  if (!discoveryUri) return [];
-  const discovery = await _fetchJsonLd(discoveryUri);
+  // Discovery resources are keyed by encoded URI. For raw.githubusercontent.com
+  // URLs the same blob is reachable with or without `/refs/heads/`, and we
+  // don't know which form mei-friend (or another writer) used. Try the
+  // normalised (short) form first, then any equivalent forms — return the
+  // first one that exists.
+  const discovery = await _readFirstDiscovery(_iriVariantsForLookup(audioUri));
+  if (!discovery) return [];
   const dataset = _asArray(discovery[nsp.SCHEMA + "dataset"]);
   const mmUrls = dataset
     .filter((entry) => {
@@ -79,27 +91,50 @@ export async function listAnnotationsForLoadedAudios() {
   }
   const reverseMap = _buildReverseAudioMap();
   const audios = [...reverseMap.keys()];
-  if (audios.length === 0) return [];
+  // Score annotations live in the discovery resource keyed by the
+  // reference MEI URI — mei-friend posts MAO stacks there. Include it
+  // alongside the audios so score-only annotations surface in the same
+  // list, marked with a "score" pill by the result-row renderer.
+  const scoreUri = (typeof meiUri === "string" && meiUri) ? _normaliseIri(meiUri) : null;
+  if (audios.length === 0 && !scoreUri) return [];
 
-  const perAudio = await Promise.all(
-    audios.map(async (audioUri) => {
+  const perSource = await Promise.all([
+    ...audios.map(async (audioUri) => {
       try {
         const entries = await listAnnotationsForAudio(audioUri);
-        return { file: reverseMap.get(audioUri), entries };
+        return { kind: "audio", file: reverseMap.get(audioUri), entries };
       } catch (_) {
-        return { file: reverseMap.get(audioUri), entries: [] };
+        return { kind: "audio", file: reverseMap.get(audioUri), entries: [] };
       }
     }),
-  );
+    scoreUri
+      ? (async () => {
+          try {
+            const entries = await listAnnotationsForAudio(scoreUri);
+            return { kind: "score", file: null, entries };
+          } catch (_) {
+            return { kind: "score", file: null, entries: [] };
+          }
+        })()
+      : Promise.resolve(null),
+  ]);
 
-  // De-dupe by mmUri; record which loaded files each annotation covers.
+  // De-dupe by mmUri; record which loaded files each annotation covers
+  // and whether it surfaced from the score's discovery resource.
   const byMm = new Map();
-  for (const { file, entries } of perAudio) {
-    for (const entry of entries) {
+  for (const result of perSource) {
+    if (!result) continue;
+    for (const entry of result.entries) {
       if (!byMm.has(entry.mmUri)) {
-        byMm.set(entry.mmUri, { ...entry, coveredFiles: new Set() });
+        byMm.set(entry.mmUri, {
+          ...entry,
+          coveredFiles: new Set(),
+          aboutsScore: false,
+        });
       }
-      byMm.get(entry.mmUri).coveredFiles.add(file);
+      const agg = byMm.get(entry.mmUri);
+      if (result.kind === "audio" && result.file) agg.coveredFiles.add(result.file);
+      if (result.kind === "score") agg.aboutsScore = true;
     }
   }
   return [...byMm.values()].map((e) => ({
@@ -139,21 +174,42 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
 
   const { graph, selUris, uniqueAudios } = await _fetchChainAsGraph(mmUri, onProgress);
 
-  // Per-Selection audio URI (from schema:about). Refuse the load if any
-  // audio isn't locally loaded — the user's strict-mode E4 choice.
+  // Branch on Selection shape: if every Selection's schema:about points
+  // at the reference MEI URI, this is a score annotation. Otherwise the
+  // existing audio-annotation path applies.
   const localUriToFile = _buildReverseAudioMap();
-  const missing = uniqueAudios.filter((u) => !localUriToFile.has(u));
-  if (missing.length > 0) {
-    throw new Error(
-      "Refusing to load: this annotation references " +
-        missing.length +
-        " recording(s) that aren't loaded locally:\n\n" +
-        missing.map((m) => "  • " + m).join("\n") +
-        "\n\nLoad these audio files (and set their Linked Data URIs in Manage files) before loading the annotation.",
-    );
-  }
+  const normalisedMeiUri = (typeof meiUri === "string" && meiUri) ? _normaliseIri(meiUri) : null;
+  const isScoreAnnotation =
+    !!normalisedMeiUri &&
+    uniqueAudios.length > 0 &&
+    uniqueAudios.every((u) => u === normalisedMeiUri);
 
-  void selUris; // not needed past the chain build
+  if (isScoreAnnotation) {
+    // Score annotations from mei-friend reference MEI element IDs in
+    // frbr:part. We project those onto every currently-loaded recording
+    // via Verovio's timemap + the alignment grids, and synthesize an
+    // audio-shaped chain in memory so adapter.deserialize stays simple.
+    onProgress("Projecting score regions onto loaded recordings");
+    _rewriteScoreChainAsAudio(graph, selUris, localUriToFile);
+  } else {
+    // Mixed (score + audio) or audio-only annotation: refuse to load if
+    // any audio Selection's URI isn't locally loaded. Selections whose
+    // schema:about IS the reference MEI URI are valid as-is (they round-
+    // trip via preservedSelections), so we exclude them from the missing
+    // check rather than treating the MEI URI as an absent recording.
+    const missing = uniqueAudios.filter(
+      (u) => u !== normalisedMeiUri && !localUriToFile.has(u),
+    );
+    if (missing.length > 0) {
+      throw new Error(
+        "Refusing to load: this annotation references " +
+          missing.length +
+          " recording(s) that aren't loaded locally:\n\n" +
+          missing.map((m) => "  • " + m).join("\n") +
+          "\n\nLoad these audio files (and set their Linked Data URIs in Manage files) before loading the annotation.",
+      );
+    }
+  }
 
   onProgress("Reconstructing");
   const annotation = adapter.deserialize(graph, {
@@ -174,6 +230,26 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
   // correctly. This avoids reconstructing local-shape canonical bodies
   // here just to seed the hash map.
   annotation.lastPostedHashes = null;
+
+  if (isScoreAnnotation) {
+    // The projection synthesised audio Selections in-memory; their
+    // `local:score-projected/...` URIs landed in lastPostedUris via the
+    // normal deserialize indexing. On the next Update we want those
+    // treated as NEW resources to mint at fresh pod URIs (PUT-replacing
+    // a local: URI would otherwise fail in solid.fetch).
+    //
+    // The original score Selections are preserved separately, via
+    // annotation.preservedSelections (populated by the deserializer
+    // when a Selection's schema:about doesn't resolve to a loaded
+    // audio). The Update path's adapter.serialize appends them back
+    // into Extract.frbr:embodiment so the chain stays additive: the
+    // score Selections + their mei-friend OAs keep their place, the
+    // user's newly-created audio Selections + OAs get added.
+    annotation.lastPostedUris = {
+      mm: annotation.lastPostedUris.mm,
+      extract: annotation.lastPostedUris.extract,
+    };
+  }
 
   state.addAnnotation(annotation);
   state.setActiveAnnotation(annotation.id);
@@ -348,6 +424,185 @@ function _isMissingResourceError(err) {
  * the assembled graph plus a few intermediate values callers also use.
  * Shared by load and delete.
  */
+/**
+ * Rewrite a score-annotation chain into an audio-annotation chain in
+ * place. Replaces each score-Selection (one whose schema:about is the
+ * reference MEI URI) with one synthetic Selection per locally-loaded
+ * recording. Each new Selection's frbr:part list is computed by:
+ *   1. Parsing MEI element IDs from the original Selection's frbr:part
+ *      (each part being a URI like `${meiUri}#elementId`).
+ *   2. Asking Verovio for each element's MIDI onset / offset.
+ *   3. Mapping those ref-audio times to the alignment grid for the
+ *      reference recording, then projecting to every other loaded
+ *      recording via getCorrespondingTime.
+ *
+ * The original score Selection URIs are removed from the graph and the
+ * Extract's frbr:embodiment list is replaced. After this rewrite the
+ * graph looks like a normal audio annotation, so the rest of the load
+ * path (adapter.deserialize) handles it unchanged. Trade-off: a future
+ * Update of this annotation will post audio-Selections, losing the
+ * original score reference. That matches the legacy projection-on-load
+ * behaviour.
+ */
+function _rewriteScoreChainAsAudio(graph, scoreSelUris, audioUriToFile) {
+  const refFile = (typeof getReferenceAudioIx === "function") ? getReferenceAudioIx() : null;
+  if (!refFile) {
+    throw new Error("No reference recording is set; cannot project score regions onto audio.");
+  }
+  if (!tk || typeof tk.getTimesForElement !== "function") {
+    throw new Error("Score-rendering toolkit not ready; cannot project score regions.");
+  }
+  if (!scoreAlignment) {
+    throw new Error("Score alignment is missing from the loaded session; cannot project.");
+  }
+  const audios = [...audioUriToFile.entries()]; // [[audioUri, file], ...]
+  if (audios.length === 0) {
+    throw new Error("No audio recordings are loaded; cannot project score regions.");
+  }
+
+  // Replacement Selection URIs are synthesized so they're stable in the
+  // graph but don't collide with anything else; they're never used as
+  // identifiers on the pod (this rewrite is purely in-memory).
+  const newSelUris = [];
+  const onsetTimes = scoreAlignment.synth_onset || scoreAlignment.score_onset;
+  const offsetTimes = scoreAlignment.synth_offset || scoreAlignment.score_offset;
+  if (!Array.isArray(onsetTimes) || !Array.isArray(offsetTimes)) {
+    throw new Error("Score alignment doesn't expose synth_onset/synth_offset.");
+  }
+
+  // Pull the original score Selections so we can mine their frbr:part lists.
+  const origScoreSels = scoreSelUris.map((u) => graph[u]).filter(Boolean);
+  if (origScoreSels.length === 0) {
+    throw new Error("No score Selections found in the fetched chain.");
+  }
+
+  // For each loaded recording, build a synthetic Selection with ONE
+  // projected region spanning every MEI element's onset/offset in this
+  // annotation. mei-friend annotations that mark a phrase of N notes
+  // would otherwise come through as N adjacent micro-regions, which
+  // reads as noise rather than as the intended span. We collapse to
+  // [min(onsets), max(offsets)] across every part of every Selection;
+  // if no element projects successfully, the Selection has zero parts
+  // (whole-audio semantic, matching the V6 no-regions case).
+  for (const [audioUri, file] of audios) {
+    const synthUri = "local:score-projected/" + encodeURIComponent(file);
+    let minStart = Infinity;
+    let maxEnd = -Infinity;
+    for (const origSel of origScoreSels) {
+      const origParts = origSel[nsp.FRBR + "part"] || [];
+      for (const p of origParts) {
+        const partUri = p && p["@id"];
+        if (!partUri) continue;
+        const hashIx = partUri.lastIndexOf("#");
+        const elementId = hashIx >= 0 ? partUri.slice(hashIx + 1) : null;
+        const times = _projectMeiElementToTimes(
+          elementId, file, onsetTimes, offsetTimes,
+        );
+        if (!times) continue;
+        if (times.start < minStart) minStart = times.start;
+        if (times.end > maxEnd) maxEnd = times.end;
+      }
+    }
+    const parts =
+      Number.isFinite(minStart) && Number.isFinite(maxEnd) && maxEnd >= minStart
+        ? [{ "@id": audioUri + "#t=" + _fmtSec(minStart) + "," + _fmtSec(maxEnd) }]
+        : [];
+    graph[synthUri] = {
+      "@id": synthUri,
+      "@type": [nsp.MAO + "Selection", nsp.SCHEMA + "Dataset"],
+      [nsp.SCHEMA + "about"]: [{ "@id": audioUri }],
+      [nsp.FRBR + "part"]: parts,
+    };
+    newSelUris.push(synthUri);
+  }
+
+  // ADDITIVE: keep the original score Selections in the Extract's
+  // embodiment list. The deserializer recognises them as preserved (its
+  // resolveFileFromAudioUri returns null for the score's MEI URI) and
+  // they round-trip through ann.preservedSelections so the next Update
+  // keeps them in the chain. New audio Selections are appended after
+  // the originals.
+  let extractUri = null;
+  for (const uri of Object.keys(graph)) {
+    const node = graph[uri];
+    const types = _asArray(node && node["@type"]);
+    if (types.includes(nsp.MAO + "Extract")) {
+      extractUri = uri;
+      break;
+    }
+  }
+  if (extractUri) {
+    const existing = _asArray(graph[extractUri][nsp.FRBR + "embodiment"]);
+    graph[extractUri][nsp.FRBR + "embodiment"] = [
+      ...existing,
+      ...newSelUris.map((u) => ({ "@id": u })),
+    ];
+  }
+  // Original score Selections + their referencing OAs stay on the pod
+  // untouched. Their body text isn't surfaced in V6's drawer (the
+  // existing OAs target the score Selection, not an audio Selection,
+  // so V6's track-OA heuristic doesn't pick them up). The user can
+  // still add new OAs in V6 that target the audio Selections; those
+  // are pure additions to the chain when the user clicks Update.
+}
+
+/**
+ * Project a single MEI element ID to an audio media-fragment URI on the
+ * given audio. Falls back to a zero-length fragment at 0s if Verovio
+ * can't resolve the element (so the row still renders rather than
+ * dropping silently). Uses the first MIDI expansion.
+ */
+/**
+ * Project a single MEI element ID onto an audio file's timeline.
+ * Returns `{ start, end }` in seconds, or null if Verovio can't resolve
+ * the element. The caller is responsible for collapsing multiple
+ * elements' spans if it wants a single coalesced region.
+ */
+function _projectMeiElementToTimes(elementId, file, onsetTimes, offsetTimes) {
+  if (!elementId) return null;
+  let times;
+  try { times = tk.getTimesForElement(elementId); } catch (_) { times = null; }
+  if (!times || !Array.isArray(times.tstampOn) || times.tstampOn.length === 0) {
+    return null;
+  }
+  // Verovio returns milliseconds; the alignment tables are in seconds.
+  const onsetS = times.tstampOn[0] / 1000;
+  const offsetS =
+    Array.isArray(times.tstampOff) && times.tstampOff.length > 0
+      ? times.tstampOff[0] / 1000
+      : onsetS;
+  // Score time → corresponding time on the REFERENCE recording.
+  const refStart = scoreAlignment.ref_onset[_closestIx(onsetS, onsetTimes)];
+  const refEnd = scoreAlignment.ref_offset[_closestIx(offsetS, offsetTimes)];
+  const refFile = getReferenceAudioIx();
+  if (file === refFile) return { start: refStart, end: refEnd };
+  // Ref → this file: ref-time → alignment index on the ref grid →
+  // corresponding time on this file's grid.
+  try {
+    const ixStart = getClosestAlignmentIx(refStart, refFile);
+    const ixEnd = getClosestAlignmentIx(refEnd, refFile);
+    const a = getCorrespondingTime(file, ixStart);
+    const b = getCorrespondingTime(file, ixEnd);
+    if (Number.isFinite(a) && Number.isFinite(b)) return { start: a, end: b };
+  } catch (_) { /* fall through */ }
+  return { start: refStart, end: refEnd };
+}
+
+function _closestIx(t, table) {
+  if (!Array.isArray(table) || table.length === 0) return 0;
+  let bestIx = 0;
+  let bestDist = Math.abs(table[0] - t);
+  for (let i = 1; i < table.length; i++) {
+    const d = Math.abs(table[i] - t);
+    if (d < bestDist) { bestDist = d; bestIx = i; }
+  }
+  return bestIx;
+}
+
+function _fmtSec(t) {
+  return (Math.round(t * 1000) / 1000).toString();
+}
+
 async function _fetchChainAsGraph(mmUri, onProgress) {
   onProgress("Fetching MusicalMaterial");
   const mm = await _fetchJsonLd(mmUri);
@@ -455,7 +710,31 @@ async function _fetchJsonLd(uri) {
   if (!resp.ok) {
     throw new Error("GET " + uri + " failed: " + resp.status);
   }
-  return resp.json();
+  const raw = await resp.json();
+  // JSON-LD expand so keys are always full IRIs. Our own resources are
+  // already expanded (POSTed that way), but third-party writers like
+  // mei-friend ship compact form with a `@context`, which our key-by-
+  // full-IRI deserialize wouldn't match. Expansion is idempotent on
+  // already-expanded input. If expansion fails (no context, malformed,
+  // unreachable remote context, …) we fall through to the raw body.
+  let expanded;
+  try {
+    if (typeof globalThis.jsonld !== "undefined") {
+      expanded = await globalThis.jsonld.expand(raw);
+    }
+  } catch (err) {
+    console.warn("[annotation/v6] JSON-LD expansion failed for " + uri + "; using raw body.", err);
+  }
+  if (!Array.isArray(expanded) || expanded.length === 0) return raw;
+  // Pick the node whose @id matches the URI we asked for — that's the
+  // resource's own self-description. If we can't find it, fall back to
+  // common self-reference forms ("" / "./") used by some pods, or
+  // (as a last resort) the first entry.
+  return (
+    expanded.find((e) => e["@id"] === uri) ||
+    expanded.find((e) => e["@id"] === "" || e["@id"] === "./") ||
+    expanded[0]
+  );
 }
 
 /**
@@ -470,12 +749,70 @@ async function _discoveryUriFor(audioUri) {
   return storage + friendContainer + discoveryFragment + encodeURIComponent(audioUri);
 }
 
+/**
+ * Return URI variants to try when reading a discovery resource — they
+ * all reference the same blob but differ in surface form. Order: most-
+ * canonical first. For raw.githubusercontent.com URLs that means
+ * branch-shorthand before the `/refs/heads/` long form. Non-GH URIs
+ * round-trip to a single-entry array.
+ */
+function _iriVariantsForLookup(uri) {
+  const normalised = _normaliseIri(uri);
+  const variants = [normalised];
+  // Inflate the long form for GH raw URLs whose normalised form is the
+  // short version. Match `…/<owner>/<repo>/<ref>/<path>` and inject
+  // `refs/heads/` only when the ref segment isn't already a SHA-like
+  // hash (which would be a commit hash, not a branch).
+  const m = normalised.match(
+    /^(https:\/\/raw\.githubusercontent\.com\/[^/]+\/[^/]+\/)([^/]+)(\/.+)$/,
+  );
+  if (m && !/^[0-9a-f]{7,40}$/i.test(m[2])) {
+    variants.push(`${m[1]}refs/heads/${m[2]}${m[3]}`);
+  }
+  return variants;
+}
+
+/**
+ * Try `_discoveryUriFor` for each URI variant in turn; return the
+ * first one that successfully GETs as JSON-LD. Returns null if none
+ * resolve (e.g. all 404).
+ */
+async function _readFirstDiscovery(uriVariants) {
+  for (const variant of uriVariants) {
+    const discoveryUri = await _discoveryUriFor(variant);
+    if (!discoveryUri) continue;
+    try {
+      return await _fetchJsonLd(discoveryUri);
+    } catch (_) {
+      // 404 (or other) on this variant — try the next.
+    }
+  }
+  return null;
+}
+
+/**
+ * Normalise a URI for equality comparison. Two passes:
+ *   1. Through the URL constructor so percent-encoding is consistent
+ *      with whatever the server returns.
+ *   2. Specifically for raw.githubusercontent.com URLs, strip the
+ *      `/refs/heads/` segment when present. GitHub serves the same blob
+ *      from both `…/<owner>/<repo>/<branch>/<path>` and
+ *      `…/<owner>/<repo>/refs/heads/<branch>/<path>` — mei-friend and
+ *      alignment files in this codebase use both forms interchangeably,
+ *      so a strict string-compare misses obviously-equivalent URIs.
+ *      We treat the branch-shorthand form as canonical.
+ */
 function _normaliseIri(uri) {
+  let normalised;
   try {
-    return new URL(uri).toString();
+    normalised = new URL(uri).toString();
   } catch (_) {
     return uri;
   }
+  return normalised.replace(
+    /^(https:\/\/raw\.githubusercontent\.com\/[^/]+\/[^/]+\/)refs\/heads\/(?=[^/]+\/)/,
+    "$1",
+  );
 }
 
 /**

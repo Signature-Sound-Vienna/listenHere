@@ -4293,6 +4293,37 @@ body.lh-v6-drawer-open .lh-v6-ribbon { right: 380px; }
   display: flex;
   gap: 8px;
 }
+.lh-v6-load-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.lh-v6-load-name-row .lh-v6-load-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* "score" pill marker — entries that surface from the reference MEI's
+   discovery resource. Matches the other small pills in the modal but
+   uses a distinct hue to stand apart from the audio "covers:" hint. */
+.lh-v6-load-pill {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+.lh-v6-load-pill-score {
+  background: var(--color-accent-light, rgba(99, 102, 241, 0.1));
+  border-color: var(--color-link, #6366f1);
+  color: var(--color-link, #4f46e5);
+}
 .lh-v6-load-covers {
   font-size: 11px;
   color: var(--color-accent, var(--color-text-muted));

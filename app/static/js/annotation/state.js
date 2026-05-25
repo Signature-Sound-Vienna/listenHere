@@ -149,6 +149,14 @@ function _normalise(a) {
     published: !!a.published,
     lastPostedUris: a.lastPostedUris || null,
     lastPostedHashes: a.lastPostedHashes || null,
+    // Selection URIs that aren't a per-target audio Selection — typically
+    // score-side Selections from a mei-friend-loaded MAO chain. The
+    // adapter appends these to Extract.frbr:embodiment on serialize so
+    // the chain stays additive (the original score Selections keep their
+    // place alongside the audio ones the user creates in listen-here).
+    preservedSelections: Array.isArray(a.preservedSelections)
+      ? [...a.preservedSelections]
+      : [],
     regions,
     targets,
     groupNotes: { ...(a.groupNotes || {}) },
@@ -174,6 +182,7 @@ export function createAnnotation(opts = {}) {
     published: false,
     lastPostedUris: null,
     lastPostedHashes: null,
+    preservedSelections: [],
     regions: [],
     targets: [],
     groupNotes: {},

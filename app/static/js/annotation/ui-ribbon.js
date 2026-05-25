@@ -10,7 +10,6 @@ import { el, clearChildren, setStatusText, confirmDeleteFromPod } from "./ui-com
 import { getActiveGroupingSnapshot } from "../listen.js";
 import {
   deleteAnnotationFromPod,
-  listAnnotationsForAudio,
   listAnnotationsForLoadedAudios,
   loadAnnotationFromMM,
 } from "./solid-load.js";
@@ -231,28 +230,31 @@ export function _openLoadModal(opts = {}) {
     ],
   );
 
-  const audioInput = el("input", {
+  // "Load specific annotation" — direct-MM-URI input. Useful for loading
+  // annotations whose contents aren't surfaced by the auto-discovery
+  // above (e.g. score annotations created in mei-friend, or anything
+  // hosted on a pod we haven't queried). Replaces the older
+  // "Browse a different audio" affordance.
+  const directInput = el("input", {
     type: "text",
     class: "lh-v6-load-input",
-    placeholder: "Audio Linked Data URI (e.g. https://w3id.org/.../track.wav)",
-    "aria-label": "Audio Linked Data URI",
+    placeholder: "MusicalMaterial URI (e.g. https://your-pod/at.ac.mdw.mei-friend/mao/musicalMaterial/…)",
+    "aria-label": "MusicalMaterial URI",
   });
-  const browseBtn = el("button", {
+  const directLoadBtn = el("button", {
     class: "lh-v6-load-browse",
     type: "button",
-    text: "Browse",
-    onclick: () => _browseSpecific(),
+    text: "Load",
+    onclick: () => _loadDirect(),
   });
-  const browseStatus = el("div", { class: "lh-v6-load-status" });
-  const browseResults = el("div", { class: "lh-v6-load-results" });
-  const browseSection = el(
+  const directStatus = el("div", { class: "lh-v6-load-status" });
+  const directSection = el(
     "section",
     { class: "lh-v6-load-section lh-v6-load-section-secondary" },
     [
-      el("h3", { class: "lh-v6-load-section-title", text: "Or browse a different audio" }),
-      el("div", { class: "lh-v6-load-row" }, [audioInput, browseBtn]),
-      browseStatus,
-      browseResults,
+      el("h3", { class: "lh-v6-load-section-title", text: "Load specific annotation" }),
+      el("div", { class: "lh-v6-load-row" }, [directInput, directLoadBtn]),
+      directStatus,
     ],
   );
 
@@ -287,7 +289,7 @@ export function _openLoadModal(opts = {}) {
       ]),
       resumedBanner,
       defaultSection,
-      browseSection,
+      directSection,
       footer,
     ],
   );
@@ -301,7 +303,7 @@ export function _openLoadModal(opts = {}) {
     dialog,
   );
   document.body.appendChild(_modalEl);
-  audioInput.addEventListener("keydown", (e) => { if (e.key === "Enter") _browseSpecific(); });
+  directInput.addEventListener("keydown", (e) => { if (e.key === "Enter") _loadDirect(); });
 
   function _close() {
     if (_modalEl) _modalEl.remove();
@@ -388,24 +390,22 @@ export function _openLoadModal(opts = {}) {
     setTimeout(_close, 800);
   }
 
-  async function _browseSpecific() {
-    const uri = audioInput.value.trim();
-    if (!uri) { _setStatus(browseStatus, "Enter an audio URI first."); return; }
-    _setStatus(browseStatus, "Reading discovery resource…");
-    clearChildren(browseResults);
+  async function _loadDirect() {
+    const uri = directInput.value.trim();
+    if (!uri) { _setStatus(directStatus, "Paste a MusicalMaterial URI first."); return; }
+    if (!/^https?:\/\//i.test(uri)) {
+      _setStatus(directStatus, "URI must start with http:// or https://.");
+      return;
+    }
+    _setStatus(directStatus, "Loading…");
     try {
-      const entries = await listAnnotationsForAudio(uri);
-      if (entries.length === 0) {
-        _setStatus(browseStatus, "No MusicalMaterial entries in that audio's discovery resource.");
-        return;
-      }
-      _setStatus(browseStatus, "Found " + entries.length + " annotation(s):");
-      entries.forEach((entry) => {
-        entryByUri.set(entry.mmUri, entry);
-        browseResults.appendChild(_resultRow(entry, _onToggle, _onDelete));
+      await loadAnnotationFromMM(uri, {
+        onProgress: (label) => _setStatus(directStatus, label + "…"),
       });
+      _setStatus(directStatus, "✓ Loaded.");
+      setTimeout(_close, 600);
     } catch (err) {
-      _setStatus(browseStatus, "Couldn't browse: " + (err.message || err));
+      _setStatus(directStatus, "Couldn't load: " + ((err && err.message) || err));
     }
   }
 
@@ -474,10 +474,17 @@ function _resultRow(entry, onToggle, onDelete) {
   }
   subParts.push(entry.mmUri);
   sub.textContent = subParts.join(" — ");
-  const metaChildren = [
+  const titleRow = el("div", { class: "lh-v6-load-name-row" }, [
     el("span", { class: "lh-v6-load-name", text: title }),
-    sub,
-  ];
+    entry.aboutsScore
+      ? el("span", {
+          class: "lh-v6-load-pill lh-v6-load-pill-score",
+          title: "Annotates the reference score (MEI)",
+          text: "score",
+        })
+      : null,
+  ]);
+  const metaChildren = [titleRow, sub];
   if (Array.isArray(entry.coveredFiles) && entry.coveredFiles.length > 0) {
     metaChildren.push(
       el("span", {

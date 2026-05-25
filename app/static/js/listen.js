@@ -22,7 +22,7 @@ import {
 let markers = [];
 let loaded = new Set();
 let alignmentGrids = {};
-let scoreAlignment; // score tstamp to ref tstamp maps for onset and offset
+export let scoreAlignment; // score tstamp to ref tstamp maps for onset and offset
 let timemap = []; // verovio timemap
 let mei = null; // MEI XML
 let meiDOM = null; // MEI DOM
@@ -33,7 +33,7 @@ let referenceAudioIx;
 let colorMap;
 let timerFrom = 0;
 let timerTo = 0;
-let tk; // verovio toolkit
+export let tk; // verovio toolkit — exported so V6's loader can project score-element IDs to ref-audio times when loading score annotations.
 
 // seconds by which to nudge markers when arrow keys pressed in close-listening mode
 const smallMarkerNudge = 0.02;

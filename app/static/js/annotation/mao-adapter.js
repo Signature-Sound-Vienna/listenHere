@@ -110,11 +110,21 @@ export function serialize(annotation, ctx) {
   });
 
   // ---- mao:Extract --------------------------------------------------------
+  // Embodiment list = one entry per audio target (our locally-mintable
+  // Selections) plus any preservedSelections — Selections we should
+  // keep in the chain but not modify, typically score-side Selections
+  // from a mei-friend-loaded MAO stack. The preserved URIs are real,
+  // already-existing pod resources, so they bypass the local-key
+  // substitution and go straight into the body as direct references.
+  const preservedSelectionRefs = (annotation.preservedSelections || []).map(
+    (uri) => ref(uri),
+  );
   const extractBody = {
     "@type": [nsp.MAO + "Extract", nsp.SCHEMA + "Dataset"],
-    [nsp.FRBR + "embodiment"]: annotation.targets.map((t) =>
-      linkTo(`sel/${t.file}`),
-    ),
+    [nsp.FRBR + "embodiment"]: [
+      ...annotation.targets.map((t) => linkTo(`sel/${t.file}`)),
+      ...preservedSelectionRefs,
+    ],
   };
   if (nonEmpty(annotation.label)) {
     extractBody[nsp.RDFS + "label"] = [lit(annotation.label)];
@@ -392,12 +402,37 @@ export function deserialize(graph, ctx) {
 
   const annLabel = _firstValue(mm[nsp.RDFS + "label"]) || "";
 
-  // Selections — IN ORDER. Each Selection's frbr:parts are PARALLEL across Selections.
+  // Selections — IN ORDER. Each Selection's frbr:parts are PARALLEL across
+  // (audio) Selections. Selections whose schema:about doesn't resolve via
+  // the caller's resolver — typically score-side Selections from a
+  // mei-friend MAO chain when only audios are loaded locally — are split
+  // off into `preservedSelections`, kept as URI references so a later
+  // serialize round-trips them back into Extract.frbr:embodiment without
+  // V6 attempting to mutate them.
   const selRefs = (extract[nsp.FRBR + "embodiment"] || []).map((o) => o["@id"]);
-  const selections = selRefs.map((uri) => ({ uri, body: graph[uri] })).filter((s) => s.body);
+  const allSelections = selRefs.map((uri) => ({ uri, body: graph[uri] })).filter((s) => s.body);
+
+  const preservedSelections = [];
+  const selections = [];
+  for (const s of allSelections) {
+    const aboutUri = _firstId(s.body[nsp.SCHEMA + "about"]);
+    const file = aboutUri && ctx.resolveFileFromAudioUri
+      ? ctx.resolveFileFromAudioUri(aboutUri)
+      : aboutUri
+        ? fileFromAudio(aboutUri)
+        : null;
+    if (!file) {
+      preservedSelections.push(s.uri);
+      continue;
+    }
+    s._resolvedFile = file;
+    selections.push(s);
+  }
 
   if (selections.length === 0) {
-    return _emptyAnnotation(mmUri, extractRef, annLabel);
+    const empty = _emptyAnnotation(mmUri, extractRef, annLabel);
+    empty.preservedSelections = preservedSelections;
+    return empty;
   }
 
   // Build canonical regions[] from the first Selection's part count; identity
@@ -415,10 +450,11 @@ export function deserialize(graph, ctx) {
   // the right resources. Keys mirror serialize's local-key convention.
   const lastPostedUris = { mm: mmUri, extract: extractRef };
 
-  // Targets — one per Selection. Map back to file key via schema:about.
+  // Targets — one per audio Selection. The file key was already resolved
+  // during the split-from-preserved pass; reuse it rather than calling
+  // fileFromAudio a second time (the resolver may be stateful).
   const targets = selections.map((s, sIdx) => {
-    const aboutUri = _firstId(s.body[nsp.SCHEMA + "about"]);
-    const file = aboutUri ? fileFromAudio(aboutUri) : "";
+    const file = s._resolvedFile;
     const regionTimes = {};
     regions.forEach((r, ri) => {
       const partUri = partsBySelection[sIdx][ri];
@@ -547,6 +583,7 @@ export function deserialize(graph, ctx) {
     hasUnsavedChanges: false,
     published: true,
     lastPostedUris,
+    preservedSelections,
     regions,
     targets: cleanTargets,
     groupNotes,

@@ -57,6 +57,9 @@ function _serializeAnnotationForAlignment(a) {
     published: !!a.published,
     lastPostedUris: a.lastPostedUris || null,
     lastPostedHashes: a.lastPostedHashes || null,
+    preservedSelections: Array.isArray(a.preservedSelections)
+      ? [...a.preservedSelections]
+      : [],
     regions: a.regions.map((r) => ({ id: r.id, label: r.label || "" })),
     targets: a.targets.map((t) => ({
       file: t.file,

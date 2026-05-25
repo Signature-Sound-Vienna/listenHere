@@ -11,7 +11,7 @@
 // focus + selection across re-renders.
 
 import * as state from "./state.js";
-import { el } from "./ui-common.js";
+import { el, confirmRemoveIfTextful } from "./ui-common.js";
 
 export function renderEditor(ann) {
   const root = el("div", { class: "lh-v6-editor" });
@@ -26,6 +26,70 @@ export function renderEditor(ann) {
   }
   return root;
 }
+
+/**
+ * Region row for a specific (target, region) pair. Shows the times in
+ * that recording's timescale + the duration. Deleting removes the region
+ * across every selection (state.removeRegion is global by design).
+ */
+function _regionRowForTarget(ann, target, region, ix) {
+  const rt = target.regionTimes && target.regionTimes[region.id];
+  const timeText = rt ? _fmtRange(rt.start, rt.end) : "(no times)";
+  const durText = rt ? _fmtDuration(rt.end - rt.start) : "";
+  // data-* attributes let waveform-interactions.js's region-update handler
+  // find this row by (file, regionId) and patch its text directly during
+  // a drag — no state churn until drop.
+  return el("li", {
+    class: "lh-v6-region-row",
+    "data-region-file": target.file,
+    "data-region-id": region.id,
+  }, [
+    el("span", { class: "lh-v6-region-ix", text: "#" + (ix + 1) }),
+    el("span", { class: "lh-v6-region-time", text: timeText }),
+    el("span", {
+      class: "lh-v6-region-dur",
+      text: durText || "",
+      style: durText ? {} : { display: "none" },
+    }),
+    region.label
+      ? el("span", { class: "lh-v6-region-label", text: region.label })
+      : null,
+    el("button", {
+      class: "lh-v6-region-trash",
+      type: "button",
+      title: "Remove this region from every recording in this annotation",
+      "aria-label": "Remove region",
+      text: "🗑",
+      onclick: () => {
+        const ok = window.confirm(
+          "Remove region #" +
+            (ix + 1) +
+            " from this annotation? It will be deleted from every recording.",
+        );
+        if (ok) state.removeRegion(ann.id, region.id);
+      },
+    }),
+  ]);
+}
+
+export function fmtRegionRange(start, end) {
+  const fmt = (t) => {
+    const m = Math.floor(t / 60);
+    const s = (t % 60).toFixed(2);
+    return m + ":" + s.padStart(5, "0");
+  };
+  if (Math.abs(end - start) < 0.005) return fmt(start) + " (point)";
+  return fmt(start) + " – " + fmt(end);
+}
+
+export function fmtRegionDuration(d) {
+  if (d == null || isNaN(d) || d < 0.005) return "";
+  return d.toFixed(2) + "s";
+}
+
+// Internal-name aliases keep existing callsites in this file readable.
+const _fmtRange = fmtRegionRange;
+const _fmtDuration = (d) => fmtRegionDuration(d) || "—";
 
 // ---------------------------------------------------------------------------
 // Identity / Description (Phase B; data-v6-key added for focus restore)
@@ -118,46 +182,56 @@ function _recordingsSection(ann) {
 
 function _recordingTile(ann, target) {
   const groupLabel = _groupLabelForFile(ann, target.file);
-  return el(
-    "div",
-    { class: "lh-v6-recording-tile" },
-    [
-      el("div", { class: "lh-v6-recording-header" }, [
-        el("span", {
-          class: "lh-v6-recording-filename",
-          title: target.file,
-          text: target.file,
-        }),
-        groupLabel
-          ? el("span", {
-              class: "lh-v6-recording-group-pill",
-              style: {
-                background: (groupLabel.color || "#94a3b8") + "33",
-                borderColor: groupLabel.color || "#94a3b8",
-              },
-              text: groupLabel.label,
-            })
-          : null,
-        el("button", {
-          class: "lh-v6-recording-detach",
-          type: "button",
-          title: "Detach this recording from the annotation",
-          "aria-label": "Detach " + target.file,
-          text: "×",
-          onclick: () => state.removeTarget(ann.id, target.file),
-        }),
-      ]),
-      el("textarea", {
-        class: "lh-v6-recording-note",
-        placeholder: "Notes on this recording in this annotation…",
-        rows: "2",
-        value: target.description || "",
-        "data-v6-key": "tgt-note-" + target.file,
-        oninput: (e) =>
-          state.updateTargetNote(ann.id, target.file, e.target.value),
+  const children = [
+    el("div", { class: "lh-v6-recording-header" }, [
+      el("span", {
+        class: "lh-v6-recording-filename",
+        title: target.file,
+        text: target.file,
       }),
-    ],
-  );
+      groupLabel
+        ? el("span", {
+            class: "lh-v6-recording-group-pill",
+            style: {
+              background: (groupLabel.color || "#94a3b8") + "33",
+              borderColor: groupLabel.color || "#94a3b8",
+            },
+            text: groupLabel.label,
+          })
+        : null,
+      el("button", {
+        class: "lh-v6-recording-remove",
+        type: "button",
+        title: "Remove this recording from the annotation",
+        "aria-label": "Remove " + target.file,
+        text: "×",
+        onclick: () => {
+          if (!confirmRemoveIfTextful(target.description)) return;
+          state.removeTarget(ann.id, target.file);
+        },
+      }),
+    ]),
+    el("textarea", {
+      class: "lh-v6-recording-note",
+      placeholder: "Notes on this recording in this annotation…",
+      rows: "2",
+      value: target.description || "",
+      "data-v6-key": "tgt-note-" + target.file,
+      oninput: (e) =>
+        state.updateTargetNote(ann.id, target.file, e.target.value),
+    }),
+  ];
+  // Per-target region list. Each row shows times in this recording's
+  // own timescale + duration, with a trash that removes the region
+  // across every recording (regions are a global per-annotation concept).
+  if (ann.regions && ann.regions.length > 0) {
+    const list = el("ol", { class: "lh-v6-regions-list" });
+    ann.regions.forEach((r, ix) => {
+      list.appendChild(_regionRowForTarget(ann, target, r, ix));
+    });
+    children.push(list);
+  }
+  return el("div", { class: "lh-v6-recording-tile" }, children);
 }
 
 function _groupLabelForFile(ann, file) {
@@ -181,17 +255,14 @@ function _groupNotesSection(ann) {
   const attached = new Set(ann.targets.map((t) => t.file));
   for (const g of ann.pinnedGrouping.groups) {
     const eligibleFiles = g.files.filter((f) => attached.has(f));
-    const hasUnderlyingNote = ann.targets.some(
-      (t) =>
-        g.files.includes(t.file) &&
-        typeof t.description === "string" &&
-        t.description.trim().length > 0,
-    );
-    const disabledReason = !hasUnderlyingNote
-      ? eligibleFiles.length === 0
+    // A group note only needs at least one attached recording from this
+    // group — per-recording notes are no longer required. The adapter
+    // falls back to referencing the Selections directly when there are
+    // no track-level OAs to reference.
+    const disabledReason =
+      eligibleFiles.length === 0
         ? "Attach at least one recording from this group to enable."
-        : "Add a per-recording note to at least one recording in this group first."
-      : null;
+        : null;
     sec.appendChild(_groupNoteTile(ann, g, disabledReason));
   }
   return sec;
@@ -233,21 +304,21 @@ function _groupNoteTile(ann, g, disabledReason) {
 }
 
 // ---------------------------------------------------------------------------
-// Comparisons: pairwise group-vs-group. Add disabled when fewer than two
-// groups have non-empty group notes.
+// Comparisons: pairwise group-vs-group. Enabled when at least two groups
+// have attached recordings — neither group notes nor per-recording notes
+// are required.
 // ---------------------------------------------------------------------------
 
 function _comparisonsSection(ann) {
   const sec = el("section", { class: "lh-v6-section" });
-  const groupsWithNotes = ann.pinnedGrouping.groups.filter(
-    (g) =>
-      typeof ann.groupNotes[g.label] === "string" &&
-      ann.groupNotes[g.label].trim().length > 0,
+  const attached = new Set(ann.targets.map((t) => t.file));
+  const eligibleGroups = ann.pinnedGrouping.groups.filter((g) =>
+    g.files.some((f) => attached.has(f)),
   );
-  const canAdd = groupsWithNotes.length >= 2;
+  const canAdd = eligibleGroups.length >= 2;
   const addReason = canAdd
     ? "Add a comparison between two groups."
-    : "Add a group note to at least two groups first.";
+    : "Attach at least one recording from each of two groups first.";
 
   const header = el("div", { class: "lh-v6-section-title-row" }, [
     el("h3", { class: "lh-v6-section-title", text: "Comparisons" }),
@@ -260,8 +331,8 @@ function _comparisonsSection(ann) {
       onclick: () => {
         if (!canAdd) return;
         state.addComparison(ann.id, {
-          leftLabel: groupsWithNotes[0].label,
-          rightLabel: groupsWithNotes[1].label,
+          leftLabel: eligibleGroups[0].label,
+          rightLabel: eligibleGroups[1].label,
           text: "",
         });
       },
@@ -275,19 +346,19 @@ function _comparisonsSection(ann) {
         class: "lh-v6-empty-hint",
         text: canAdd
           ? "No comparisons yet."
-          : "Add a group note to at least two groups to enable comparisons.",
+          : "Attach at least one recording from each of two groups to enable comparisons.",
       }),
     );
     return sec;
   }
   for (const c of ann.comparisons) {
-    sec.appendChild(_comparisonTile(ann, c, groupsWithNotes));
+    sec.appendChild(_comparisonTile(ann, c, eligibleGroups));
   }
   return sec;
 }
 
-function _comparisonTile(ann, c, groupsWithNotes) {
-  const opts = groupsWithNotes.length >= 2 ? groupsWithNotes : [];
+function _comparisonTile(ann, c, eligibleGroups) {
+  const opts = eligibleGroups.length >= 2 ? eligibleGroups : [];
   const makeSelect = (side, value) =>
     el(
       "select",
@@ -297,7 +368,7 @@ function _comparisonTile(ann, c, groupsWithNotes) {
         disabled: opts.length < 2,
         title:
           opts.length < 2
-            ? "Both groups need a group note to be comparable."
+            ? "Both groups need attached recordings to be comparable."
             : "",
         onchange: (e) =>
           state.updateComparison(ann.id, c.id, { [side + "Label"]: e.target.value }),

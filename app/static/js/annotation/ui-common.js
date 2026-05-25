@@ -78,6 +78,24 @@ export function setStatusText(node, text) {
 }
 
 /**
+ * If a recording about to be removed from an annotation has a non-empty
+ * per-recording note, prompt before discarding it. Returns true if it's
+ * safe to proceed (no note, or user confirmed), false if the user
+ * cancelled. Uses window.confirm — short, one-shot, doesn't warrant the
+ * styled confirm modal.
+ */
+export function confirmRemoveIfTextful(description) {
+  if (!description || !description.trim()) return true;
+  const trimmed = description.trim();
+  const preview = trimmed.length > 200 ? trimmed.slice(0, 200) + "…" : trimmed;
+  return window.confirm(
+    'This recording has a note attached:\n\n"' +
+      preview +
+      '"\n\nRemove the recording from this annotation? The note will be discarded.',
+  );
+}
+
+/**
  * Custom confirmation dialog for destructive pod-side actions. Returns a
  * Promise that resolves to true if the user clicks Delete, false otherwise
  * (Cancel, backdrop click, or Escape). Layered above other modals (high

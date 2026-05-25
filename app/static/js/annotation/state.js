@@ -294,7 +294,7 @@ export function updateTargetNote(annId, file, text) {
 
 // ----- regions (global, ordered) ------------------------------------------
 
-export function addRegion(annId, file, start, end) {
+export function addRegion(annId, file, start, end, timesByFile) {
   const a = _getMut(annId);
   if (!a) return null;
   const rid = _id("rgn");
@@ -303,9 +303,15 @@ export function addRegion(annId, file, start, end) {
   if (!a.targets.find((t) => t.file === file)) {
     _attachTargetInternal(a, file);
   }
-  // Mirror the drag bounds to every attached target (V6 option A).
+  // If the caller has alignment-mapped per-file times, use them so each
+  // target's regionTimes reflects that recording's own timescale. Falls
+  // back to mirroring the raw drag bounds when the caller can't compute
+  // alignment (e.g. tests, single-target annotations).
   a.targets.forEach((t) => {
-    t.regionTimes[rid] = { start, end };
+    const mapped = timesByFile && timesByFile[t.file];
+    t.regionTimes[rid] = mapped
+      ? { start: mapped.start, end: mapped.end }
+      : { start, end };
   });
   a.hasUnsavedChanges = true;
   _emit();

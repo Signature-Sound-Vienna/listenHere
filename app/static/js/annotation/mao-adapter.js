@@ -162,23 +162,31 @@ export function serialize(annotation, ctx) {
 
   // ---- Group-level OAs (sda:observing on specificResources) --------------
   // Chain rule: a group-level OA's specificResources each reference a
-  // track-level OA. We only include recordings that (a) are in the group
-  // (per pinnedGrouping) AND (b) are attached AND (c) have a track-level OA.
-  // The UI guarantees ≥1 such recording exists for any group whose note has
-  // been entered (otherwise the input is disabled).
+  // track-level OA when one exists for that recording, otherwise the
+  // Selection directly. We only include recordings that (a) are in the
+  // group AND (b) are attached to the annotation. Per-recording notes
+  // are no longer required for a group note to be emitted.
+  const attachedFiles = new Set(annotation.targets.map((t) => t.file));
   const groupKeysByLabel = new Map();
   if (annotation.pinnedGrouping && annotation.pinnedGrouping.groups) {
     annotation.pinnedGrouping.groups.forEach((g) => {
       const noteText = annotation.groupNotes[g.label];
       if (!nonEmpty(noteText)) return;
-      const items = g.files
-        .filter((f) => trackKeysByFile.has(f))
-        .map((f) => ({
-          "@type": [nsp.OA + "SpecificResource"],
-          [nsp.OA + "hasSource"]: [linkTo(trackKeysByFile.get(f))],
-          [nsp.OA + "hasScope"]: [linkTo("extract")],
-        }));
-      if (items.length === 0) return; // invariant: UI guarantees ≥1
+      // Files in this group that are attached to the annotation. Prefer
+      // pointing each item at the track-level OA when one exists (so the
+      // group note is composed of per-recording observations); otherwise
+      // point directly at the Selection.
+      const includedFiles = g.files.filter((f) => attachedFiles.has(f));
+      if (includedFiles.length === 0) return;
+      const items = includedFiles.map((f) => ({
+        "@type": [nsp.OA + "SpecificResource"],
+        [nsp.OA + "hasSource"]: [
+          trackKeysByFile.has(f)
+            ? linkTo(trackKeysByFile.get(f))
+            : linkTo(`sel/${f}`),
+        ],
+        [nsp.OA + "hasScope"]: [linkTo("extract")],
+      }));
       const key = `oa/group/${g.label}`;
       groupKeysByLabel.set(g.label, key);
       const body = {
@@ -194,9 +202,9 @@ export function serialize(annotation, ctx) {
         body,
         dependsOn: [
           "extract",
-          ...g.files
-            .filter((f) => trackKeysByFile.has(f))
-            .map((f) => trackKeysByFile.get(f)),
+          ...includedFiles.map((f) =>
+            trackKeysByFile.has(f) ? trackKeysByFile.get(f) : `sel/${f}`,
+          ),
         ],
       });
     });
@@ -450,7 +458,9 @@ export function deserialize(graph, ctx) {
     // Distinguish from track-level: target list is multiple specificResources.
     const isSpecificList = targetArr.every((t) => _hasType(t, nsp.OA + "SpecificResource"));
     if (!isSpecificList) continue;
-    // Each item should reference a track-level OA via hasSource, scoped to our Extract.
+    // Each item references either a track-level OA (preferred when a
+    // per-recording note exists) or a Selection directly (fall-back used
+    // when no per-recording note is set). Both shapes scope to our Extract.
     const sourceUris = targetArr
       .map((t) => _firstId(t[nsp.OA + "hasSource"]))
       .filter(Boolean);
@@ -458,12 +468,21 @@ export function deserialize(graph, ctx) {
       (t) => _firstId(t[nsp.OA + "hasScope"]) === extractRef,
     );
     if (!scopedToOurExtract) continue;
-    // Map source OA URIs back to files via trackOAByFile.
+    // Map source URIs back to files via either trackOAByFile (track-OA
+    // hasSource) or by matching the Selection URI directly.
+    const fileBySelectionUri = new Map(
+      targets.map((t) => [t._selectionUri, t.file]),
+    );
     const filesCovered = [];
     sourceUris.forEach((su) => {
       for (const [file, oa] of trackOAByFile.entries()) {
-        if (oa["@id"] === su) filesCovered.push(file);
+        if (oa["@id"] === su) {
+          filesCovered.push(file);
+          return;
+        }
       }
+      const fileFromSel = fileBySelectionUri.get(su);
+      if (fileFromSel) filesCovered.push(fileFromSel);
     });
     if (filesCovered.length === 0) continue;
     const label = _firstValue(a[nsp.RDFS + "label"]) || "";

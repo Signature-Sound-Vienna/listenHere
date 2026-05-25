@@ -27,6 +27,8 @@
 
 import * as state from "./state.js";
 import * as uiState from "./ui-state.js";
+import { fmtRegionRange, fmtRegionDuration } from "./ui-editor.js";
+import { confirmRemoveIfTextful } from "./ui-common.js";
 import {
   _regionsPlugins,
   _overlayWrappers,
@@ -238,22 +240,140 @@ function _withAlpha(hexOrRgb, alpha) {
 function _ensureHooked(plugin, file) {
   if (_hookedPlugins.has(plugin)) return;
   _hookedPlugins.add(plugin);
-  plugin.on("region-updated", (region) => {
+  // `region-update` fires continuously during drag/resize. We only use it
+  // to refresh the dragged target's row in the drawer (cheap DOM-only
+  // patch — no state mutation, no editor rebuild), so the numbers move
+  // in step with the cursor. The proper state update + alignment
+  // propagation happens once on drop via `region-updated` below.
+  plugin.on("region-update", (region) => {
     const meta = region && region._v6Meta;
     if (!meta) return;
     const start = Math.min(region.start, region.end);
     const end = Math.max(region.start, region.end);
+    const ann = state.getById(meta.annId);
+    _liveUpdateRegionRow(file, meta.regionId, start, end, ann && ann.color);
+  });
+  plugin.on("region-updated", (region) => {
+    const meta = region && region._v6Meta;
+    if (!meta) return;
+    // Cancel any in-flight live-update rAF so it doesn't fire AFTER the
+    // editor re-renders below and re-apply the "dragging" class to the
+    // freshly-rendered row (which is what was leaving the source row
+    // permanently coloured).
+    _cancelPendingLiveUpdate();
+    const start = Math.min(region.start, region.end);
+    const end = Math.max(region.start, region.end);
+    const ann = state.getById(meta.annId);
+    const annColor = ann && ann.color;
     if (_shiftHeld) {
-      // Local override: only this recording's times change.
+      // Local override: only this recording's times change. Flash just
+      // the source row so the user sees confirmation of the local edit.
       state.updateRegionTime(meta.annId, file, meta.regionId, { start, end });
+      _flashRows(meta.regionId, [file], annColor);
       return;
     }
-    // Propagate alignment-aware to every attached recording.
-    const ann = state.getById(meta.annId);
     if (!ann) return;
+    // Propagate alignment-aware to every attached recording, then flash
+    // every row that received the propagation — including the source —
+    // so all updated numbers light up in the region colour and fade
+    // back to default in step.
     const timesByFile = _alignedTimesByFile(ann, file, start, end);
     state.updateRegionTimeMulti(meta.annId, meta.regionId, timesByFile);
+    _flashRows(meta.regionId, Object.keys(timesByFile), annColor);
   });
+}
+
+/**
+ * Cheap DOM-only update of the drawer's region row for (file, regionId)
+ * during a drag. rAF-coalesced so a burst of region-update events maps
+ * to one paint. No state mutation — that happens on drop. Returns early
+ * if the drawer isn't currently rendering this row (e.g. drawer closed,
+ * different annotation active, viewer mode).
+ *
+ * Tints the source row's time/duration in the annotation's colour for
+ * the duration of the drag (the `.lh-v6-region-dragging` class + CSS
+ * custom property are picked up by the editor stylesheet). The next
+ * editor re-render — which fires on the `region-updated` drop event —
+ * rebuilds the row from scratch and the tint clears naturally.
+ */
+let _liveRafHandle = null;
+let _livePending = null; // { file, regionId, start, end, annColor }
+function _liveUpdateRegionRow(file, regionId, start, end, annColor) {
+  _livePending = { file, regionId, start, end, annColor };
+  if (_liveRafHandle != null) return;
+  _liveRafHandle = requestAnimationFrame(() => {
+    _liveRafHandle = null;
+    const p = _livePending;
+    _livePending = null;
+    if (!p) return;
+    const row = _findRegionRow(p.file, p.regionId);
+    if (!row) return;
+    if (p.annColor) {
+      row.style.setProperty("--lh-v6-region-color", p.annColor);
+      row.classList.add("lh-v6-region-dragging");
+    }
+    const timeEl = row.querySelector(".lh-v6-region-time");
+    const durEl = row.querySelector(".lh-v6-region-dur");
+    if (timeEl) timeEl.textContent = fmtRegionRange(p.start, p.end);
+    if (durEl) {
+      const d = fmtRegionDuration(p.end - p.start);
+      durEl.textContent = d;
+      durEl.style.display = d ? "" : "none";
+    }
+  });
+}
+
+/**
+ * Cancel any pending live-update rAF. Called by the drop handler so a
+ * region-update event scheduled mid-drag doesn't fire AFTER the editor
+ * re-renders — that's what was leaving the source row stuck in the
+ * dragging-coloured state.
+ */
+function _cancelPendingLiveUpdate() {
+  if (_liveRafHandle != null) {
+    cancelAnimationFrame(_liveRafHandle);
+    _liveRafHandle = null;
+  }
+  _livePending = null;
+}
+
+/**
+ * Briefly flash the time/duration in each given target's row for this
+ * region in the annotation's colour, then fade back to the row's
+ * default text colour over 0.5s. Used on drop for every row that
+ * received an update (source + other targets for a global propagation,
+ * source only for shift-drag/local).
+ */
+function _flashRows(regionId, files, annColor) {
+  if (!annColor) return;
+  for (const f of files) {
+    const row = _findRegionRow(f, regionId);
+    if (!row) continue;
+    row.style.setProperty("--lh-v6-region-color", annColor);
+    // Force a clean re-start even if a prior flash is still running.
+    row.classList.remove("lh-v6-region-flash");
+    void row.offsetWidth;
+    row.classList.add("lh-v6-region-flash");
+    const onEnd = (e) => {
+      if (e.target !== row && !row.contains(e.target)) return;
+      row.classList.remove("lh-v6-region-flash");
+      row.style.removeProperty("--lh-v6-region-color");
+      row.removeEventListener("animationend", onEnd);
+    };
+    row.addEventListener("animationend", onEnd);
+  }
+}
+
+function _findRegionRow(file, regionId) {
+  try {
+    const fileSel = CSS.escape(file);
+    const idSel = CSS.escape(regionId);
+    return document.querySelector(
+      `.lh-v6-region-row[data-region-file="${fileSel}"][data-region-id="${idSel}"]`,
+    );
+  } catch (_) {
+    return null;
+  }
 }
 
 /**
@@ -375,9 +495,28 @@ function _setUpDragMode(ann) {
       } catch (_) {}
       const activeId = state.getActiveId();
       if (!activeId) return;
-      // Ignore vanishingly small drags (sub-10ms — accidental clicks).
-      if (Math.abs(end - start) < 0.01) return;
-      state.addRegion(activeId, file, start, end);
+      // Clicks (and jitter-clicks that just barely cross the drag-selection
+      // pixel threshold) shouldn't create a region — only intentional
+      // drags should. Threshold raised from 10ms to 100ms of audio to
+      // filter out the WaveSurfer drag-selection plugin's initial
+      // start+5px placeholder when the user releases without further
+      // motion. The attach-on-click path lives elsewhere and is
+      // unaffected.
+      if (Math.abs(end - start) < 0.1) return;
+      // Map the drag bounds into every other target's timescale via the
+      // alignment grid so the regions list shows each recording's own
+      // seconds (otherwise every target would show the source file's
+      // raw timestamps — see issue surfaced 2026-05-25). Belt-and-braces:
+      // any exception here MUST NOT block the addRegion call, otherwise
+      // the source region just disappears (region.remove() ran above).
+      let timesByFile = null;
+      try {
+        const ann = state.getById(activeId);
+        if (ann) timesByFile = _alignedTimesByFile(ann, file, start, end);
+      } catch (err) {
+        console.warn("[annotation/v6] alignment map for new region failed; falling back to mirrored times.", err);
+      }
+      state.addRegion(activeId, file, start, end, timesByFile);
     };
     plugin.on("region-created", onCreated);
     _activeRegionCreatedListeners.push({ plugin, file, fn: onCreated });
@@ -545,6 +684,7 @@ function _ensureIndicator(wfEl, file) {
       const ann = state.getById(state.getActiveId());
       if (!ann) return;
       const target = ann.targets.find((t) => t.file === file);
+      if (!confirmRemoveIfTextful(target && target.description)) return;
       if (target && target.description && target.description.trim().length > 0) {
         _stashOrphanNote(ann.id, file, target.description);
       }

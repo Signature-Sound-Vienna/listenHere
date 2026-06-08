@@ -46,7 +46,10 @@ const FIRST_CHUNK_SEC = 3; // small first chunk after a (re)start → fast start
 const REFILL_SEC = 6; // begin decoding the next chunk this far before the current ends
 const SCHEDULE_LATENCY = 0.04; // start the first source this far in the future
 const WARMUP_FRAMES = { mp3: 12, "aac-adts": 3 }; // frames decoded before the target (bit reservoir / SBR)
-const DECODER_DELAY = { mp3: 0, "aac-adts": 2112 }; // priming samples decodeAudioData prepends per fragment
+// Per-fragment priming to skip. 0 for both: the priming a fragment decode adds
+// also appears in the full/peaks decode, so it cancels (verified empirically,
+// Chromium MP3 + AAC → 0-sample lag). Kept as a hook in case a format differs.
+const DECODER_DELAY = { mp3: 0, "aac-adts": 0 };
 const CHUNK_CACHE = 4; // LRU of decoded chunks (keyed by sliceStartFrame)
 
 export class WindowedAudioPlayer extends Emitter {
@@ -107,18 +110,22 @@ export class WindowedAudioPlayer extends Emitter {
   }
 
   /**
-   * One-time calibration of the gapless offset: measure exactly how many leading
-   * samples decodeAudioData trims from the full file (Xing frame + encoder delay),
-   * so windowed seeks land sample-accurately on the peaks/marker timeline.
-   * Encoder- and browser-agnostic (no LAME tag required). Safe to await; on any
-   * failure it keeps the duration-difference heuristic. Idempotent.
+   * One-time calibration of the gapless offset so windowed seeks land
+   * sample-accurately on the peaks/marker timeline. We calibrate the REAL chunk
+   * playback path against a byte-0 reference decode (which == the full/peaks
+   * timeline at the start): decode a probe chunk exactly as playback does,
+   * cross-correlate it against the reference, and take the lag as the offset.
+   * This absorbs every browser-specific per-fragment behaviour (encoder delay,
+   * MDCT/overlap startup, dropped first frame) because the probe uses the same
+   * decode path as playback. Encoder/format/browser-agnostic; on any failure it
+   * keeps the duration-difference heuristic. Idempotent. Safe to await.
    */
   async init() {
     if (this._calibrated) return this;
     this._calibrated = true;
     try {
       const offset = await this._measureGaplessOffset();
-      if (Number.isFinite(offset) && offset >= 0 && offset < 0.5) this._gaplessOffset = offset;
+      if (Number.isFinite(offset) && offset >= -0.05 && offset < 0.5) this._gaplessOffset = offset;
     } catch (e) {
       // keep heuristic; not fatal
     }
@@ -128,23 +135,42 @@ export class WindowedAudioPlayer extends Emitter {
   async _measureGaplessOffset() {
     const idx = this._index;
     const SR = idx.sampleRate, spf = idx.samplesPerFrame;
-    const framesFor = (sec) => Math.min(idx.frameCount - 1, Math.ceil((sec * SR) / spf));
-    // Decode from byte 0: a Xing/header file gets the decoder's leading trim applied
-    // (matching the full-file decode that produced peaks/times).
-    const headEnd = idx.frameOffsets[framesFor(3)];
-    const bufTrim = await this._ctx.decodeAudioData(await this._blob.slice(0, headEnd).arrayBuffer());
-    // Naive decode from frame 1 (no header in the slice -> no trim): our chunk convention.
-    const nStart = idx.frameOffsets[1];
-    const nEnd = idx.frameOffsets[framesFor(3) + 1] || this._blob.size;
-    const bufNaive = await this._ctx.decodeAudioData(await this._blob.slice(nStart, nEnd).arrayBuffer());
-    const bufR = bufTrim.sampleRate;
-    const skip = Math.round(spf * 4 * (bufR / SR)); // skip frame-1 reservoir warmup (both arrays)
-    const a = bufNaive.getChannelData(0).subarray(skip);
-    const b = bufTrim.getChannelData(0).subarray(skip);
-    const { lag, c } = this._xcorr(a, b, Math.round(0.1 * bufR));
+    const dur = (idx.frameCount * spf) / SR;
+    const framesFor = (sec) =>
+      Math.min(idx.frameCount - 1, Math.max(1, Math.ceil((sec * SR) / spf)));
+    const refSec = Math.min(8, dur * 0.6);
+    const probeSec = refSec / 2;
+
+    // Reference = decode from byte 0 == the full/peaks timeline (ref[k] = peaks sample k).
+    const ref = await this._ctx.decodeAudioData(
+      await this._blob.slice(0, idx.frameOffsets[framesFor(refSec)]).arrayBuffer(),
+    );
+    const bufR = ref.sampleRate;
+
+    // Probe = our exact chunk path at probeSec, computed with offset 0.
+    const targetSample = Math.round(probeSec * SR);
+    const frameIndex = Math.floor(targetSample / spf);
+    const sliceStartFrame = Math.max(0, frameIndex - this._warmup);
+    const sliceEndFrame = Math.min(idx.frameCount, frameIndex + framesFor(2));
+    const chunk = await this._decodeChunk(sliceStartFrame, sliceEndFrame, this._gen);
+    const offsetSec =
+      (targetSample - sliceStartFrame * spf) / SR + (this._decoderDelay * (bufR / SR)) / bufR;
+
+    const probeStart = Math.max(0, Math.round(offsetSec * bufR));
+    const refStart = Math.round(probeSec * bufR);
+    const N = Math.min(
+      Math.round(0.8 * bufR),
+      chunk.length - probeStart - 1,
+      ref.length - refStart - 1,
+    );
+    if (N < bufR * 0.1) throw new Error("calibration window too small");
+    const probe = chunk.getChannelData(0).subarray(probeStart, probeStart + N);
+    const refWin = ref.getChannelData(0).subarray(refStart, refStart + N);
+
+    // refWin[i] ~ probe[i+lag]  =>  gaplessOffset(sec) = lag / bufR.
+    const { lag, c } = this._xcorr(refWin, probe, Math.round(0.15 * bufR));
     if (c < 0.7) throw new Error("calibration correlation too low: " + c.toFixed(3));
-    // gaplessOffset(sec) = spf/SR - lag/bufR  (rate-correct; see header note).
-    return spf / SR - lag / bufR;
+    return lag / bufR;
   }
 
   /** Best integer lag of b vs a (a[i] ~ b[i+lag]) and its normalized correlation. */

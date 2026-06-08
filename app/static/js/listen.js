@@ -7,6 +7,8 @@ import * as v6Playback from "./annotation/playback.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
+import { analyzeAudio } from "./audio-seek-index.js";
+import { WindowedAudioPlayer } from "./windowed-audio-player.js";
 import {
   initAlignPanel,
   configure as configureAlign,
@@ -51,6 +53,12 @@ let _normAudioCtx = null; // lazy AudioContext shared across all waveforms
 const _normGainNodes = {}; // filename -> GainNode
 const _normSourceNodes = {}; // filename -> MediaElementAudioSourceNode
 const _normPeaks = {}; // filename -> peak amplitude (0..1)
+
+// Windowed Web-Audio players for frame-stream formats (VBR MP3 / ADTS AAC) whose
+// <audio> seeking is inaccurate. Keyed by filename; absent => native playback.
+const _windowedPlayers = {}; // filename -> WindowedAudioPlayer
+const _seekAnalysis = new Map(); // filename -> analyzeAudio() result (index, or null = native seek)
+const _preparing = new Set(); // filenames mid-(async)-prepareWaveform, to avoid double-create
 
 /** Return the pre-computed peak data for a filename, or null if unavailable. */
 export function getWaveformPeaks(filename) {
@@ -3716,29 +3724,85 @@ function _computePeak(decodedData) {
   return peak;
 }
 
+/** Peak amplitude (0..1) from a pregenerated peaks array (already abs maxima). */
+function _peakFromPeaks(peaks) {
+  let peak = 0;
+  for (let i = 0; i < peaks.length; i++) {
+    const abs = Math.abs(peaks[i]);
+    if (abs > peak) peak = abs;
+  }
+  return peak;
+}
+
+/**
+ * Build (and calibrate) a WindowedAudioPlayer for a file if it's a frame-stream
+ * format with inaccurate native seeking (VBR MP3 / ADTS AAC). Returns the
+ * player, or null to use WaveSurfer's default <audio> playback. Requires the
+ * original blob (user-supplied audio); URL-only sources use the native path.
+ */
+async function _maybeBuildWindowedPlayer(filename) {
+  if (_windowedPlayers[filename]) return _windowedPlayers[filename];
+  const blob = fileBlobs.get(filename);
+  if (!blob) return null;
+  try {
+    // Analyze once per file (cached; negative results too, so CBR/WAV/etc. are
+    // not re-read/re-scanned on reloadWaveforms).
+    let index;
+    if (_seekAnalysis.has(filename)) {
+      index = _seekAnalysis.get(filename);
+    } else {
+      index = analyzeAudio(await blob.arrayBuffer());
+      _seekAnalysis.set(filename, index);
+    }
+    if (!index) return null; // CBR MP3 / WAV / Ogg / FLAC / MP4 → seek natively
+    const player = new WindowedAudioPlayer(blob, index, {
+      audioContext: _getNormAudioCtx(),
+      duration: _waveformPeaks[filename]?.duration,
+    });
+    // Calibrate the gapless offset in the background so it doesn't block the
+    // waveform render. Until it lands (~tens of ms) the player uses the
+    // ~10 ms-accurate duration heuristic; seeks become exact once calibrated.
+    player.init();
+    _windowedPlayers[filename] = player;
+    console.log(
+      `Windowed playback for ${filename} (${index.format} VBR, accurate seek)`,
+    );
+    return player;
+  } catch (e) {
+    console.warn("Windowed player setup failed for", filename, e);
+    return null;
+  }
+}
+
 /**
  * Set up a GainNode for a waveform after it signals "ready".
- * Routes: <audio> → MediaElementSourceNode → GainNode → destination.
+ * Native: <audio> → MediaElementSourceNode → GainNode → destination.
+ * Windowed: the player owns its gain chain; we just drive its app-gain node.
  */
 function _setupNormGainNode(filename) {
   const ws = wavesurfers[filename];
   if (!ws) return;
-  const mediaEl = ws.getMediaElement();
-  // MediaElementAudioSourceNode can only be created once per <audio> element.
-  // If already connected (shouldn't happen), skip.
-  if (_normSourceNodes[filename]) return;
+  if (_normGainNodes[filename]) return; // already wired
   const ctx = _getNormAudioCtx();
-  const source = ctx.createMediaElementSource(mediaEl);
-  const gain = ctx.createGain();
-  source.connect(gain);
-  gain.connect(ctx.destination);
-  _normSourceNodes[filename] = source;
-  _normGainNodes[filename] = gain;
-  // Compute and cache peak amplitude from the decoded audio buffer
-  const decoded = ws.getDecodedData();
-  if (decoded) {
-    _normPeaks[filename] = _computePeak(decoded);
+  const player = _windowedPlayers[filename];
+  let gain;
+  if (player) {
+    // Engine-backed: normalize via the player's own gain node (already routed
+    // to destination). Peak comes from the pregenerated peaks (no full buffer).
+    gain = player.getGainNode();
+    const pk = _waveformPeaks[filename]?.peaks;
+    if (pk) _normPeaks[filename] = _peakFromPeaks(pk);
+  } else {
+    const mediaEl = ws.getMediaElement();
+    const source = ctx.createMediaElementSource(mediaEl);
+    gain = ctx.createGain();
+    source.connect(gain);
+    gain.connect(ctx.destination);
+    _normSourceNodes[filename] = source;
+    const decoded = ws.getDecodedData();
+    if (decoded) _normPeaks[filename] = _computePeak(decoded);
   }
+  _normGainNodes[filename] = gain;
   // Apply current normalize state
   if (document.getElementById("normalize").checked) {
     const peak = _normPeaks[filename] || 1;
@@ -3748,6 +3812,15 @@ function _setupNormGainNode(filename) {
 
 /** Disconnect and clean up the GainNode for a waveform being destroyed. */
 function _teardownNormGainNode(filename) {
+  const player = _windowedPlayers[filename];
+  if (player) {
+    // The player owns its gain chain; destroying it disconnects everything.
+    player.destroy();
+    delete _windowedPlayers[filename];
+    delete _normGainNodes[filename]; // (this was the player's gain; don't disconnect here)
+    delete _normPeaks[filename];
+    return;
+  }
   if (_normSourceNodes[filename]) {
     _normSourceNodes[filename].disconnect();
     delete _normSourceNodes[filename];
@@ -3804,9 +3877,10 @@ function visualiseAlignments() {
   });
 }
 
-function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
-  // if not yet created, do so:
-  if (!(filename in wavesurfers)) {
+async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
+  // if not yet created, do so (guard against the async gap below re-entering):
+  if (!(filename in wavesurfers) && !_preparing.has(filename)) {
+    _preparing.add(filename);
     const waveform = document.createElement("div");
     waveform.id = "waveform-" + filename + "-wav";
     waveform.dataset.ix = filename;
@@ -3915,15 +3989,30 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       },
     });
     _regionsPlugins[filename] = _regPlugin;
+
+    // For frame-stream formats (VBR MP3 / ADTS AAC), hand WaveSurfer a windowed
+    // Web-Audio media object so seeking is sample-accurate. Returns null for
+    // formats that seek fine natively (CBR MP3, WAV, …) → default <audio> path.
+    const _windowedPlayer = await _maybeBuildWindowedPlayer(filename);
+    const _wpPeaks = _windowedPlayer ? _waveformPeaks[filename] : null;
     wavesurfers[filename] = WaveSurfer.create({
       container: `#${CSS.escape("waveform-" + filename) + "-wav"}`,
       ...(_waveformColors()),
       normalize: document.getElementById("normalize").checked,
-      fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)),
       plugins: [_regPlugin, _hoverPlugin],
       autoScroll: false, // managed by our zoom scroll logic
       autoCenter: false, // managed by our zoom scroll logic
+      ...(_windowedPlayer
+        ? {
+            // External media owns playback; render from pregenerated peaks.
+            media: _windowedPlayer,
+            peaks: _wpPeaks?.peaks ? [_wpPeaks.peaks] : undefined,
+            duration: _wpPeaks?.duration,
+          }
+        : { fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)) }),
     });
+    // Past the async gap; the wavesurfers[] entry now guards re-entry.
+    _preparing.delete(filename);
 
     // Region create/update events are handled by the V6 module's listeners
     // wired in annotation/waveform-interactions.js — listen.js doesn't need
@@ -3945,7 +4034,11 @@ function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     // Prefer passing the Blob directly to WaveSurfer to avoid cross-origin
     // issues that some browsers (Firefox) have with blob: URLs via fetch().
     const _audioBlob = fileBlobs.get(filename);
-    if (_audioBlob || _audioUrl) {
+    if (_windowedPlayer) {
+      // Windowed player already holds the audio and peaks were passed at
+      // create(); nothing to load. Overlay clears on the "ready" event.
+      showWaveformOverlay(wfEl, "Loading audio…");
+    } else if (_audioBlob || _audioUrl) {
       // If pre-computed peaks are available, pass them to load() so WaveSurfer
       // can render the waveform shape immediately (before full audio decode).
       const _peakInfo = _waveformPeaks[filename];
@@ -7250,6 +7343,7 @@ function initFilePicker() {
           // Clear old blob URLs/objects and audio keys
           fileBlobUrls.clear();
           fileBlobs.clear();
+          _seekAnalysis.clear();
           expectedAudioKeys = Object.keys(data.body.audio).filter(
             (k) => k !== SYNTH_MEI_KEY,
           );

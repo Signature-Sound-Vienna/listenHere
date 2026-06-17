@@ -40,7 +40,8 @@ import {
  *
  * Session-only fields (hasUnsavedChanges) are stripped; everything else
  * (regions, targets, group notes, comparisons, pinnedGrouping,
- * lastPostedUris) is written under a top-level `annotations` array.
+ * detachedNotes, lastPostedUris) is written under a top-level `annotations`
+ * array.
  */
 export function commitAnnotationsToAlignment(alignmentJSON) {
   if (!alignmentJSON) return;
@@ -69,21 +70,31 @@ function _serializeAnnotationForAlignment(a) {
     groupNotes: { ...a.groupNotes },
     comparisons: a.comparisons.map((c) => ({
       id: c.id,
-      leftLabel: c.leftLabel,
-      rightLabel: c.rightLabel,
+      leftGroupId: c.leftGroupId,
+      rightGroupId: c.rightGroupId,
       text: c.text || "",
     })),
     pinnedGrouping: a.pinnedGrouping
       ? {
           name: a.pinnedGrouping.name,
           groups: a.pinnedGrouping.groups.map((g) => ({
+            groupId: g.groupId,
             label: g.label,
             color: g.color,
             files: [...g.files],
           })),
         }
       : null,
-    schemaVersion: 1,
+    detachedNotes: (a.detachedNotes || []).map((d) => ({
+      groupId: d.groupId,
+      label: d.label,
+      color: d.color,
+      text: d.text || "",
+    })),
+    // v2: group notes/comparisons keyed by stable groupId (was label); adds
+    // detachedNotes. Older v1 files load fine — state._normalise backfills
+    // groupId = label, which is exactly how v1 keyed everything.
+    schemaVersion: 2,
   };
 }
 

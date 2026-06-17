@@ -14,10 +14,18 @@
 //       file, description,
 //       regionTimes: { [regionId]: {start, end} }  // entry for every region
 //     }],
-//     groupNotes:  { [groupLabel]: string },
-//     comparisons: [{ id, leftLabel, rightLabel, text }],
-//     pinnedGrouping: { name, groups: [{ label, color, files: [] }] } | null,
+//     groupNotes:  { [groupId]: string },        // keyed by stable group id, not label
+//     comparisons: [{ id, leftGroupId, rightGroupId, text }],
+//     pinnedGrouping: { name, groups: [{ groupId, label, color, files: [] }] } | null,
+//     detachedNotes: [{ groupId, label, color, text }],  // notes whose group left the
+//                                                         // pinned set on a re-pin; held
+//                                                         // for recovery, re-attach by id.
 //   }
+//
+// Group identity: `groupId` is stable across a rename; `label` is display-only.
+// Legacy data (pre-groupId) and imports without an explicit id fall back to
+// groupId === label, which is exactly how notes/comparisons used to be keyed —
+// so old alignment JSON and old pod resources round-trip unchanged.
 //
 // Invariant: every regions[].id has a regionTimes[regions[].id] entry on every target.
 // Collapsed regions use start === end. All mutating actions preserve this.
@@ -133,13 +141,17 @@ function _normalise(a) {
   if (a.pinnedGrouping && Array.isArray(a.pinnedGrouping.groups)) {
     pinnedGrouping = {
       name: typeof a.pinnedGrouping.name === "string" ? a.pinnedGrouping.name : "",
-      groups: a.pinnedGrouping.groups.map((g) => ({
-        label: g.label || "",
-        color: _sanitiseColor(g.color) || "#94a3b8",
-        files: Array.isArray(g.files) ? [...g.files] : [],
-      })),
+      groups: a.pinnedGrouping.groups.map(_normaliseGroup),
     };
   }
+  const detachedNotes = (Array.isArray(a.detachedNotes) ? a.detachedNotes : [])
+    .map((d) => ({
+      groupId: d.groupId || d.label || "",
+      label: d.label || "",
+      color: _sanitiseColor(d.color) || "#94a3b8",
+      text: typeof d.text === "string" ? d.text : "",
+    }))
+    .filter((d) => d.groupId && d.text);
   return {
     id: a.id,
     label: a.label || "",
@@ -162,11 +174,26 @@ function _normalise(a) {
     groupNotes: { ...(a.groupNotes || {}) },
     comparisons: (a.comparisons || []).map((c) => ({
       id: c.id,
-      leftLabel: c.leftLabel,
-      rightLabel: c.rightLabel,
+      // groupId-keyed endpoints. Accept legacy {leftLabel,rightLabel} —
+      // for legacy data groupId === label, so the values still resolve.
+      leftGroupId: c.leftGroupId != null ? c.leftGroupId : c.leftLabel,
+      rightGroupId: c.rightGroupId != null ? c.rightGroupId : c.rightLabel,
       text: c.text || "",
     })),
     pinnedGrouping,
+    detachedNotes,
+  };
+}
+
+// Normalise one pinned-grouping group: backfill a stable groupId from the
+// label when absent (legacy / import), sanitise the colour.
+function _normaliseGroup(g) {
+  const label = g.label || "";
+  return {
+    groupId: g.groupId || label,
+    label,
+    color: _sanitiseColor(g.color) || "#94a3b8",
+    files: Array.isArray(g.files) ? [...g.files] : [],
   };
 }
 
@@ -187,7 +214,10 @@ export function createAnnotation(opts = {}) {
     targets: [],
     groupNotes: {},
     comparisons: [],
-    pinnedGrouping: opts.pinnedGrouping || null,
+    pinnedGrouping: opts.pinnedGrouping
+      ? { name: opts.pinnedGrouping.name || "", groups: (opts.pinnedGrouping.groups || []).map(_normaliseGroup) }
+      : null,
+    detachedNotes: [],
   };
   _annotations.push(ann);
   _activeId = ann.id;
@@ -387,20 +417,20 @@ export function updateRegionLabel(annId, regionId, label) {
 
 // ----- group notes & comparisons ------------------------------------------
 
-export function setGroupNote(annId, groupLabel, text) {
+export function setGroupNote(annId, groupId, text) {
   const a = _getMut(annId);
   if (!a) return;
-  if (text) a.groupNotes[groupLabel] = text;
-  else delete a.groupNotes[groupLabel];
+  if (text) a.groupNotes[groupId] = text;
+  else delete a.groupNotes[groupId];
   a.hasUnsavedChanges = true;
   _emit();
 }
 
-export function addComparison(annId, { leftLabel, rightLabel, text = "" }) {
+export function addComparison(annId, { leftGroupId, rightGroupId, text = "" }) {
   const a = _getMut(annId);
   if (!a) return null;
   const cid = _id("cmp");
-  a.comparisons.push({ id: cid, leftLabel, rightLabel, text });
+  a.comparisons.push({ id: cid, leftGroupId, rightGroupId, text });
   a.hasUnsavedChanges = true;
   _emit();
   return cid;
@@ -411,9 +441,147 @@ export function updateComparison(annId, cid, patch) {
   if (!a) return;
   const c = a.comparisons.find((x) => x.id === cid);
   if (!c) return;
-  if (patch.leftLabel !== undefined) c.leftLabel = patch.leftLabel;
-  if (patch.rightLabel !== undefined) c.rightLabel = patch.rightLabel;
+  if (patch.leftGroupId !== undefined) c.leftGroupId = patch.leftGroupId;
+  if (patch.rightGroupId !== undefined) c.rightGroupId = patch.rightGroupId;
   if (patch.text !== undefined) c.text = patch.text;
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+// ----- re-pin grouping (adopt current application grouping) ---------------
+
+function _nonEmpty(s) {
+  return typeof s === "string" && s.trim().length > 0;
+}
+
+/**
+ * Compute what a re-pin to `snapshot` (from getActiveGroupingSnapshot) would
+ * change for this annotation, WITHOUT mutating anything. Drives the
+ * diff-confirmation dialog. Groups are matched by stable groupId.
+ *
+ * Returns { changed, added[], removed[], renamed[], affectedComparisons[],
+ *           detachedNoteCount, restoredNoteCount, podDeleteCount }.
+ */
+export function diffGrouping(ann, snapshot) {
+  const curGroups = (ann && ann.pinnedGrouping && ann.pinnedGrouping.groups) || [];
+  const newGroups = (snapshot && snapshot.groups) || [];
+  const curById = new Map(curGroups.map((g) => [g.groupId, g]));
+  const newById = new Map(newGroups.map((g) => [g.groupId, g]));
+  const detached = (ann && ann.detachedNotes) || [];
+  const groupNotes = (ann && ann.groupNotes) || {};
+
+  const added = newGroups
+    .filter((g) => !curById.has(g.groupId))
+    .map((g) => ({ groupId: g.groupId, label: g.label }));
+  const removed = curGroups
+    .filter((g) => !newById.has(g.groupId))
+    .map((g) => ({
+      groupId: g.groupId,
+      label: g.label,
+      hasNote: _nonEmpty(groupNotes[g.groupId]),
+    }));
+  const renamed = curGroups
+    .filter((g) => newById.has(g.groupId) && newById.get(g.groupId).label !== g.label)
+    .map((g) => ({ groupId: g.groupId, from: g.label, to: newById.get(g.groupId).label }));
+
+  const removedIds = new Set(removed.map((g) => g.groupId));
+  const affectedComparisons = ((ann && ann.comparisons) || [])
+    .filter((c) => removedIds.has(c.leftGroupId) || removedIds.has(c.rightGroupId))
+    .map((c) => ({
+      id: c.id,
+      left: (curById.get(c.leftGroupId) || {}).label || c.leftGroupId,
+      right: (curById.get(c.rightGroupId) || {}).label || c.rightGroupId,
+    }));
+
+  const detachedNoteCount = removed.filter((g) => g.hasNote).length;
+  const restoredNoteCount = detached.filter((d) => newById.has(d.groupId)).length;
+
+  // Pod impact: only meaningful once posted. A removed group's note OA and
+  // any affected comparison OA would be DELETEd on the next Update.
+  let podDeleteCount = 0;
+  if (ann && ann.published && ann.lastPostedUris) {
+    const lpu = ann.lastPostedUris;
+    for (const g of removed) if (lpu["oa/group/" + g.groupId]) podDeleteCount++;
+    for (const c of affectedComparisons) if (lpu["oa/cmp/" + c.id]) podDeleteCount++;
+  }
+
+  const changed =
+    added.length > 0 ||
+    removed.length > 0 ||
+    renamed.length > 0 ||
+    restoredNoteCount > 0;
+
+  return {
+    changed,
+    added,
+    removed,
+    renamed,
+    affectedComparisons,
+    detachedNoteCount,
+    restoredNoteCount,
+    podDeleteCount,
+  };
+}
+
+/**
+ * Adopt `snapshot` (current application grouping) as this annotation's pinned
+ * grouping. Group notes are matched by groupId: survivors keep their note;
+ * notes on groups that left the set move to detachedNotes (recoverable);
+ * detached notes whose group reappears are re-attached; comparisons that
+ * reference a departed group are dropped. The caller is responsible for
+ * obtaining explicit user confirmation first (see diffGrouping).
+ */
+export function repinGrouping(annId, snapshot) {
+  const a = _getMut(annId);
+  if (!a || !snapshot) return;
+  const newGroups = (snapshot.groups || []).map(_normaliseGroup);
+  const newById = new Map(newGroups.map((g) => [g.groupId, g]));
+  const curGroups = (a.pinnedGrouping && a.pinnedGrouping.groups) || [];
+
+  // 1. Departed groups with a note → detachedNotes (dedupe by groupId).
+  const detachedById = new Map((a.detachedNotes || []).map((d) => [d.groupId, d]));
+  for (const g of curGroups) {
+    if (newById.has(g.groupId)) continue;
+    const note = a.groupNotes[g.groupId];
+    if (_nonEmpty(note)) {
+      detachedById.set(g.groupId, {
+        groupId: g.groupId,
+        label: g.label,
+        color: g.color || "#94a3b8",
+        text: note,
+      });
+    }
+    delete a.groupNotes[g.groupId];
+  }
+
+  // 2. Re-attach detached notes whose group is back in the set (only when
+  //    the survivor doesn't already carry a note).
+  for (const [gid, d] of [...detachedById.entries()]) {
+    if (newById.has(gid)) {
+      if (!_nonEmpty(a.groupNotes[gid])) a.groupNotes[gid] = d.text;
+      detachedById.delete(gid);
+    }
+  }
+  a.detachedNotes = [...detachedById.values()];
+
+  // 3. Drop comparisons referencing a now-absent group.
+  a.comparisons = a.comparisons.filter(
+    (c) => newById.has(c.leftGroupId) && newById.has(c.rightGroupId),
+  );
+
+  // 4. Swap in the new grouping.
+  a.pinnedGrouping = { name: snapshot.name || "", groups: newGroups };
+  a.hasUnsavedChanges = true;
+  _emit();
+}
+
+/** Permanently drop a detached (removed-group) note. */
+export function discardDetachedNote(annId, groupId) {
+  const a = _getMut(annId);
+  if (!a || !a.detachedNotes) return;
+  const next = a.detachedNotes.filter((d) => d.groupId !== groupId);
+  if (next.length === a.detachedNotes.length) return;
+  a.detachedNotes = next;
   a.hasUnsavedChanges = true;
   _emit();
 }

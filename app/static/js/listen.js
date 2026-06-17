@@ -2049,6 +2049,17 @@ function _nextGroupColour(groups) {
   return _GROUP_PALETTE[(groups || []).length % _GROUP_PALETTE.length];
 }
 
+/**
+ * Mint a stable, opaque group id. Used when a new group is created in the
+ * grouping modal so the V6 annotation layer can key group notes/comparisons
+ * on an identity that survives a later rename. Older groups without an id
+ * fall back to their name at snapshot time (see getActiveGroupingSnapshot).
+ */
+let _groupIdCounter = 0;
+function _mintGroupId() {
+  return "g_" + Date.now().toString(36) + "_" + _groupIdCounter++;
+}
+
 /** Returns the localStorage key for the current context. */
 function _groupsStorageKey() {
   return _GROUPS_STORAGE_PREFIX + (window.location.pathname || "default");
@@ -2139,6 +2150,12 @@ export function getActiveGroupingSnapshot() {
       return false;
     });
     out.groups.push({
+      // Stable identity for the group, independent of its display label.
+      // Source groups created via the grouping modal carry a minted `id`;
+      // older groups (and the score foldout) fall back to their name. This
+      // id is what the V6 annotation layer keys group notes/comparisons on
+      // and what survives a group rename across a re-pin.
+      groupId: g.id || g.name || "",
       label: g.name || "",
       color: g.color || "#94a3b8",
       files,
@@ -3260,6 +3277,7 @@ function _openGroupModal() {
   addGroupBtn.textContent = "+ New Group";
   addGroupBtn.addEventListener("click", () => {
     groups().push({
+      id: _mintGroupId(),
       name: "New Group",
       pattern: "",
       files: [],

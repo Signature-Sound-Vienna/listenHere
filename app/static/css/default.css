@@ -4098,10 +4098,14 @@ body.lh-v6-edit-active .waveform:not(.lh-v6-selected):hover::before {
 /* --- Bottom ribbon --------------------------------------------------- */
 .lh-v6-ribbon {
   position: fixed;
-  left: 0; right: 0; bottom: 0;
+  left: 200px; right: 0; bottom: 0; /* anchored past the left control bar (nav width) */
   height: 40px;
-  background: var(--color-surface);
-  border-top: 1px solid var(--color-border);
+  /* Float as a card, like .file-group: gap from the control bar and the
+     content pane's right edge; sits flush with the screen bottom. */
+  margin: 0 8px;
+  background: var(--color-group-bg, rgba(226, 232, 240, 0.50));
+  border-radius: 6px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   display: flex;
   align-items: center;
   gap: 8px;

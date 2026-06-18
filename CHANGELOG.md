@@ -1,5 +1,26 @@
 # Listen Here! CHANGELOG.md
 
+### 0.23.0
+* Rename Group / Manage files to Group / Manage recordings to avoid confusion (recordings: in app, files: in filesystem)
+* Comprehensive improvements to group recordings modal UI: multi-select, make regex less cryptic, drag between groups, drag to create groups, prompt user when exiting modal with unapplied changes
+* Annotation editor: Selection groups are now editable after an annotation is created: re-pin, modify, and recover the groups (and any attached notes) of an existing annotation, rather than fixing them at creation time
+* Annotation ribbon refinements: replaced the "Annotation" label with the pencil icon (matching the drawer pull) and the "Filter…" field with a compact magnifying-glass search box. Improved styling of annotation cards during overflow. 
+* Fix: play/pause transport icon no longer flips to "Play" mid-playback when arrow-navigating between waveforms across a VBR ↔ non-VBR boundary (stale events from the no-longer-active waveform are now ignored)
+* Add e2e coverage for the group recordings modal (multi-select, add-by-filename + regex toggle, remove, fixed height, unapplied-changes prompt, and drag into/between/out-of groups, drag-to-create, hover preview) and for annotation group re-pinning (diff dialog, adopt/cancel, detached-note recovery)
+
+### 0.22.0
+* Address visual<->audio mismatches when working with variable bitrate formats
+* Send VBR formats through a custom Web Audio player that uses an in-memory frame index to decode 30-second audio chunks on demand, ensuring precise seeking and alignment with visual waveforms.
+* Optimize to retain fast audio loading (when peaks pre-rendered) and seamless switching between waveforms even in VBR case
+* Add new e2e tests to guard against regressions for new VBR playback
+
+### 0.21.0 
+* Comprehensive reworking of annotation functionalities
+* New ('V6') annotation UI integrating Solid login / load
+* Annotate individual selections, groups of selections, and group comparisons, according to ongoing MAO extension work
+* Integrate discovery service UI to find existing relevant annotations in Solid pod.
+
+
 ### 0.20.0
 * Streaming alignment: decode → extract chroma → discard raw PCM one file at a time, enabling alignment of very large audio collections (verified against prior method — bit-identical output)
 * Off-screen annotation region navigation: clickable left/right arrows appear on each zoomed waveform when annotated regions are off-screen, scrolling the region fully into view with cross-waveform sync

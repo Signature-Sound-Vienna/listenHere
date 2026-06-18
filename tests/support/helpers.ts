@@ -97,6 +97,45 @@ export async function waitForWaveformsReady(page: Page, timeout = 30_000) {
 }
 
 // ---------------------------------------------------------------------------
+// HTML5 drag-and-drop helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Simulate a native HTML5 drag-and-drop by dispatching the dragstart →
+ * dragenter → dragover → drop → dragend sequence with a single shared
+ * DataTransfer. Playwright's mouse-based dragTo does not reliably trigger
+ * HTML5 DnD, so we drive the events directly. Both selectors are resolved in
+ * the page; if `fireDrop` is false the drop is skipped (dragend still fires) —
+ * useful for asserting hover-only behaviour such as drop previews.
+ */
+export async function htmlDragTo(
+  page: Page,
+  sourceSelector: string,
+  targetSelector: string,
+  opts: { fireDrop?: boolean; fireDragEnd?: boolean } = {},
+) {
+  const { fireDrop = true, fireDragEnd = true } = opts;
+  await page.evaluate(
+    ({ src, tgt, fireDrop, fireDragEnd }) => {
+      const source = document.querySelector(src);
+      const target = document.querySelector(tgt);
+      if (!source || !target) throw new Error(`DnD: missing ${!source ? src : tgt}`);
+      const dt = new DataTransfer();
+      const fire = (el: Element, type: string) =>
+        el.dispatchEvent(
+          new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt }),
+        );
+      fire(source, 'dragstart');
+      fire(target, 'dragenter');
+      fire(target, 'dragover');
+      if (fireDrop) fire(target, 'drop');
+      if (fireDragEnd) fire(source, 'dragend');
+    },
+    { src: sourceSelector, tgt: targetSelector, fireDrop, fireDragEnd },
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Playback helpers
 // ---------------------------------------------------------------------------
 

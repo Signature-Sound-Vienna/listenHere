@@ -164,3 +164,127 @@ export function confirmDeleteFromPod(title) {
     cancelBtn.focus(); // safer default focus than the destructive button
   });
 }
+
+/**
+ * Confirmation dialog for re-pinning an annotation's grouping to the current
+ * application grouping. Renders the diff produced by state.diffGrouping so the
+ * change is a deliberate, informed decision. Resolves true to proceed, false
+ * to cancel (Cancel, backdrop, or Escape). Enter confirms.
+ *
+ * `diff` is the object returned by state.diffGrouping; `published` toggles the
+ * pod-impact line.
+ */
+export function confirmRepin(diff, published) {
+  return new Promise((resolve) => {
+    let settled = false;
+    function settle(answer) {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener("keydown", onKey);
+      overlay.remove();
+      resolve(answer);
+    }
+    function onKey(e) {
+      if (e.key === "Escape") settle(false);
+      else if (e.key === "Enter") settle(true);
+    }
+
+    const lines = [];
+    const pushLine = (cls, text) =>
+      lines.push(el("li", { class: "lh-v6-repin-line " + cls, text }));
+
+    diff.added.forEach((g) =>
+      pushLine("added", "+ New group: " + (g.label || "(untitled)")),
+    );
+    diff.renamed.forEach((g) =>
+      pushLine("renamed", "↻ Renamed: “" + g.from + "” → “" + g.to + "” (note kept)"),
+    );
+    diff.removed.forEach((g) =>
+      pushLine(
+        "removed",
+        "− Group leaves: “" +
+          (g.label || "(untitled)") +
+          "”" +
+          (g.hasNote ? " — its note moves to “Notes from removed groups”" : ""),
+      ),
+    );
+    diff.affectedComparisons.forEach((c) =>
+      pushLine("removed", "− Comparison removed: " + c.left + " vs. " + c.right),
+    );
+    if (diff.restoredNoteCount > 0) {
+      pushLine(
+        "added",
+        "↩ " +
+          diff.restoredNoteCount +
+          " previously-removed note(s) re-attach to a returning group",
+      );
+    }
+    if (lines.length === 0) {
+      pushLine("neutral", "No group changes — the grouping is already current.");
+    }
+
+    const bodyChildren = [
+      el("p", {
+        class: "lh-v6-confirm-target",
+        text: "Re-pin this annotation's grouping to the current view?",
+      }),
+      el("ul", { class: "lh-v6-repin-list" }, lines),
+    ];
+    if (published && diff.podDeleteCount > 0) {
+      bodyChildren.push(
+        el("p", {
+          class: "lh-v6-confirm-warn",
+          text:
+            "On the next Update to Solid, " +
+            diff.podDeleteCount +
+            " published annotation resource(s) will be deleted from your pod.",
+        }),
+      );
+    }
+    bodyChildren.push(
+      el("p", {
+        class: "lh-v6-confirm-detail",
+        text:
+          "Recordings, regions and per-recording notes are unaffected. Detached notes stay recoverable until you save over them.",
+      }),
+    );
+
+    const cancelBtn = el("button", {
+      class: "lh-v6-confirm-cancel",
+      type: "button",
+      text: "Cancel",
+      onclick: () => settle(false),
+    });
+    const okBtn = el("button", {
+      class: "lh-v6-confirm-ok",
+      type: "button",
+      text: "Update grouping",
+      onclick: () => settle(true),
+    });
+
+    const dialog = el(
+      "div",
+      { class: "lh-v6-confirm-dialog lh-v6-repin-dialog", role: "alertdialog", "aria-labelledby": "lh-v6-repin-h" },
+      [
+        el("div", { class: "lh-v6-confirm-header" }, [
+          el("span", { class: "lh-v6-confirm-warning", text: "↻", "aria-hidden": "true" }),
+          el("h2", { id: "lh-v6-repin-h", class: "lh-v6-confirm-title", text: "Update groups to current view" }),
+        ]),
+        el("div", { class: "lh-v6-confirm-body" }, bodyChildren),
+        el("div", { class: "lh-v6-confirm-actions" }, [cancelBtn, okBtn]),
+      ],
+    );
+
+    const overlay = el(
+      "div",
+      {
+        class: "lh-v6-confirm-overlay",
+        onclick: (e) => { if (e.target === overlay) settle(false); },
+      },
+      dialog,
+    );
+    document.body.appendChild(overlay);
+    document.addEventListener("keydown", onKey);
+    okBtn.focus();
+  });
+}

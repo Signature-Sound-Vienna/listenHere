@@ -165,6 +165,10 @@ export function mountDrawer(parent) {
   // Solid auth state changes affect the Post-to-Solid button's gating
   // and the footer's logged-in/out switch.
   document.addEventListener("solid-auth-changed", render);
+  // Application grouping changes (tab switch / grouping-modal apply) affect
+  // the editor's "Update to current view" gate, which is computed from a
+  // live snapshot — re-render so it doesn't go stale.
+  document.addEventListener("lh-grouping-changed", render);
   render();
   return drawer;
 }
@@ -249,7 +253,7 @@ function _renderPublishBar(bar, ann) {
   } else if (missingUriFiles.length > 0) {
     disabled = true;
     tooltip =
-      "Set Linked Data URI prefix in Manage files first. Missing for: " +
+      "Set Linked Data URI prefix in Manage recordings first. Missing for: " +
       missingUriFiles.join(", ");
   } else if (!isLoggedIn) {
     disabled = true;

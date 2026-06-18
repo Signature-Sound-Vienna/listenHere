@@ -34,7 +34,10 @@
 //   "extract"                     — Extract
 //   "sel/<file>"                  — Selection for a recording
 //   "oa/track/<file>"             — track-level OA (per-recording note)
-//   "oa/group/<groupLabel>"       — group-level OA (group note)
+//   "oa/group/<groupId>"          — group-level OA (group note); keyed by the
+//                                   STABLE group id (dct:identifier in the LD),
+//                                   not the label, so a rename doesn't churn
+//                                   the pod resource
 //   "oa/cmp/<comparisonId>"       — comparison OA
 //   "oa/top"                      — top-level description OA
 
@@ -177,10 +180,11 @@ export function serialize(annotation, ctx) {
   // group AND (b) are attached to the annotation. Per-recording notes
   // are no longer required for a group note to be emitted.
   const attachedFiles = new Set(annotation.targets.map((t) => t.file));
-  const groupKeysByLabel = new Map();
+  const groupKeysById = new Map();
   if (annotation.pinnedGrouping && annotation.pinnedGrouping.groups) {
     annotation.pinnedGrouping.groups.forEach((g) => {
-      const noteText = annotation.groupNotes[g.label];
+      const gid = g.groupId || g.label;
+      const noteText = annotation.groupNotes[gid];
       if (!nonEmpty(noteText)) return;
       // Files in this group that are attached to the annotation. Prefer
       // pointing each item at the track-level OA when one exists (so the
@@ -197,14 +201,19 @@ export function serialize(annotation, ctx) {
         ],
         [nsp.OA + "hasScope"]: [linkTo("extract")],
       }));
-      const key = `oa/group/${g.label}`;
-      groupKeysByLabel.set(g.label, key);
+      // Resource key (and therefore pod URI) is derived from the STABLE
+      // group id, not the label — so renaming a group doesn't churn its pod
+      // resource. The id is also written as dct:identifier so deserialize
+      // can recover it on import.
+      const key = `oa/group/${gid}`;
+      groupKeysById.set(gid, key);
       const body = {
         "@type": [nsp.OA + "Annotation", nsp.SCHEMA + "Dataset"],
         [nsp.OA + "motivatedBy"]: [ref(nsp.SDA + "observing")],
         [nsp.OA + "hasBody"]: [textBody(noteText)],
         [nsp.OA + "hasTarget"]: items,
         [nsp.RDFS + "label"]: [lit(g.label)],
+        [nsp.DCT + "identifier"]: [lit(gid)],
       };
       templates.push({
         localKey: key,
@@ -223,8 +232,8 @@ export function serialize(annotation, ctx) {
   // ---- Comparison OAs (sda:comparing) ------------------------------------
   const comparisonKeys = [];
   annotation.comparisons.forEach((c) => {
-    const leftKey = groupKeysByLabel.get(c.leftLabel);
-    const rightKey = groupKeysByLabel.get(c.rightLabel);
+    const leftKey = groupKeysById.get(c.leftGroupId);
+    const rightKey = groupKeysById.get(c.rightGroupId);
     if (!leftKey || !rightKey) return; // UI guarantees both exist
     const items = [leftKey, rightKey].map((gk) => ({
       "@type": [nsp.OA + "SpecificResource"],
@@ -260,7 +269,7 @@ export function serialize(annotation, ctx) {
     const roots = _computeTopCommentingRoots(
       annotation,
       trackKeysByFile,
-      groupKeysByLabel,
+      groupKeysById,
       comparisonKeys,
     );
     const body = {
@@ -305,7 +314,7 @@ export function serialize(annotation, ctx) {
 function _computeTopCommentingRoots(
   annotation,
   trackKeysByFile,
-  groupKeysByLabel,
+  groupKeysById,
   comparisonKeys,
 ) {
   // Build reverse-coverage indexes:
@@ -314,7 +323,7 @@ function _computeTopCommentingRoots(
   const groupCoversTrack = new Map();
   if (annotation.pinnedGrouping && annotation.pinnedGrouping.groups) {
     annotation.pinnedGrouping.groups.forEach((g) => {
-      const gk = groupKeysByLabel.get(g.label);
+      const gk = groupKeysById.get(g.groupId || g.label);
       if (!gk) return;
       g.files.forEach((f) => {
         const tk = trackKeysByFile.get(f);
@@ -328,8 +337,8 @@ function _computeTopCommentingRoots(
   annotation.comparisons.forEach((c) => {
     const ck = `oa/cmp/${c.id}`;
     if (!comparisonKeys.includes(ck)) return;
-    [c.leftLabel, c.rightLabel].forEach((label) => {
-      const gk = groupKeysByLabel.get(label);
+    [c.leftGroupId, c.rightGroupId].forEach((gid) => {
+      const gk = groupKeysById.get(gid);
       if (!gk) return;
       if (!compCoversGroup.has(gk)) compCoversGroup.set(gk, []);
       compCoversGroup.get(gk).push(ck);
@@ -384,17 +393,19 @@ export function deserialize(graph, ctx) {
     ctx.mintRegionId ||
     (() => "rgn_imp_" + Date.now().toString(36) + "_" + ++_rcount);
 
-  const fileFromAudio =
-    ctx.resolveFileFromAudioUri ||
-    ((uri) => {
-      try {
-        const u = new URL(uri);
-        const seg = u.pathname.split("/").filter(Boolean).pop();
-        return seg || uri;
-      } catch (_) {
-        return uri;
-      }
-    });
+  // Bare last-path-segment of an audio URI — resolver-independent. Used as
+  // the fallback filename for selections the caller's resolver can't place
+  // (unloaded recordings), so group membership stays recoverable on import.
+  const bareFileFromAudio = (uri) => {
+    try {
+      const u = new URL(uri);
+      const seg = u.pathname.split("/").filter(Boolean).pop();
+      return seg || uri;
+    } catch (_) {
+      return uri;
+    }
+  };
+  const fileFromAudio = ctx.resolveFileFromAudioUri || bareFileFromAudio;
 
   const extractRef = _firstId(mm[nsp.MAO + "setting"]);
   const extract = extractRef ? graph[extractRef] : null;
@@ -411,6 +422,23 @@ export function deserialize(graph, ctx) {
   // V6 attempting to mutate them.
   const selRefs = (extract[nsp.FRBR + "embodiment"] || []).map((o) => o["@id"]);
   const allSelections = selRefs.map((uri) => ({ uri, body: graph[uri] })).filter((s) => s.body);
+
+  // Filename for EVERY selection — loaded or not — derived from the bare last
+  // path segment of its audio URI. Lets us reconstruct full group membership
+  // for an imported annotation whose recordings aren't all loaded locally,
+  // so the grouping is self-contained and survives the mismatch.
+  // Prefer the resolver's filename when it can place the recording (so it
+  // matches a loaded target), else fall back to the bare segment so unloaded
+  // recordings still get a stable filename.
+  const anyFileBySelUri = new Map();
+  for (const s of allSelections) {
+    const aboutUri = _firstId(s.body[nsp.SCHEMA + "about"]);
+    if (!aboutUri) continue;
+    const resolved = ctx.resolveFileFromAudioUri
+      ? ctx.resolveFileFromAudioUri(aboutUri)
+      : null;
+    anyFileBySelUri.set(s.uri, resolved || bareFileFromAudio(aboutUri));
+  }
 
   const preservedSelections = [];
   const selections = [];
@@ -468,9 +496,26 @@ export function deserialize(graph, ctx) {
   // OA layers: scan the graph for oa:Annotations targeting our resources.
   const annotationsInGraph = Object.values(graph).filter((r) => _hasType(r, nsp.OA + "Annotation"));
 
-  // Track-level (sda:observing targeting a Selection of this Extract)
+  // Track-OA URI → filename for EVERY track-level OA (loaded or not). A
+  // track-level OA targets a single Selection; resolve that Selection to a
+  // filename via anyFileBySelUri. Group OAs (whose hasTarget is a list of
+  // specificResources) are skipped here because _firstId returns null for a
+  // specificResource that carries no @id. Used to recover group membership
+  // that points at track OAs for recordings we haven't loaded.
+  const trackOaToFileAll = new Map();
+  for (const a of annotationsInGraph) {
+    if (!_hasMotivation(a, nsp.SDA + "observing")) continue;
+    const tgt = _firstId(a[nsp.OA + "hasTarget"]);
+    if (tgt && anyFileBySelUri.has(tgt) && a["@id"]) {
+      trackOaToFileAll.set(a["@id"], anyFileBySelUri.get(tgt));
+    }
+  }
+
+  // Track-level (sda:observing targeting a Selection of this Extract).
+  // Restores each loaded recording's per-recording note. Group membership is
+  // recovered separately via trackOaToFileAll/anyFileBySelUri, so we don't
+  // need a file→OA index here.
   const selUriSet = new Set(selections.map((s) => s.uri));
-  const trackOAByFile = new Map(); // file → OA resource
   for (const a of annotationsInGraph) {
     if (!_hasMotivation(a, nsp.SDA + "observing")) continue;
     const tgt = _firstId(a[nsp.OA + "hasTarget"]);
@@ -478,7 +523,6 @@ export function deserialize(graph, ctx) {
     const matchingTarget = targets.find((t) => t._selectionUri === tgt);
     if (!matchingTarget) continue;
     matchingTarget.description = _readBodyText(a, graph);
-    trackOAByFile.set(matchingTarget.file, a);
     if (matchingTarget.file && a["@id"]) {
       lastPostedUris["oa/track/" + matchingTarget.file] = a["@id"];
     }
@@ -504,28 +548,24 @@ export function deserialize(graph, ctx) {
       (t) => _firstId(t[nsp.OA + "hasScope"]) === extractRef,
     );
     if (!scopedToOurExtract) continue;
-    // Map source URIs back to files via either trackOAByFile (track-OA
-    // hasSource) or by matching the Selection URI directly.
-    const fileBySelectionUri = new Map(
-      targets.map((t) => [t._selectionUri, t.file]),
-    );
+    // Map source URIs back to files. A source is either a track-level OA or
+    // a Selection directly; resolve both via the all-selections maps so that
+    // members whose recordings aren't loaded are still recovered.
     const filesCovered = [];
     sourceUris.forEach((su) => {
-      for (const [file, oa] of trackOAByFile.entries()) {
-        if (oa["@id"] === su) {
-          filesCovered.push(file);
-          return;
-        }
-      }
-      const fileFromSel = fileBySelectionUri.get(su);
-      if (fileFromSel) filesCovered.push(fileFromSel);
+      const f = trackOaToFileAll.get(su) || anyFileBySelUri.get(su);
+      if (f) filesCovered.push(f);
     });
     if (filesCovered.length === 0) continue;
     const label = _firstValue(a[nsp.RDFS + "label"]) || "";
     if (!label) continue;
-    groupNotes[label] = _readBodyText(a, graph);
-    pinnedGroups.push({ label, color: "#94a3b8", files: filesCovered });
-    if (a["@id"]) lastPostedUris["oa/group/" + label] = a["@id"];
+    // Stable group id: prefer the explicit dct:identifier we now write;
+    // fall back to the label for resources posted before this change, which
+    // preserves their existing oa/group/<label> pod key on the next update.
+    const gid = _firstValue(a[nsp.DCT + "identifier"]) || label;
+    groupNotes[gid] = _readBodyText(a, graph);
+    pinnedGroups.push({ groupId: gid, label, color: "#94a3b8", files: filesCovered });
+    if (a["@id"]) lastPostedUris["oa/group/" + gid] = a["@id"];
   }
 
   // Comparisons (sda:comparing with compositeTarget over two group-level refs)
@@ -536,17 +576,18 @@ export function deserialize(graph, ctx) {
     if (!tgt || !_hasType(tgt, nsp.OA + "CompositeTarget")) continue;
     const items = tgt[nsp.OA + "items"] || [];
     if (items.length < 2) continue;
-    // Map item hasSource → group label via pinnedGroups built above.
-    const labels = items
+    // Map item hasSource (a group-level OA URI) → stable group id, matching
+    // how serialize keys comparison endpoints.
+    const gids = items
       .map((it) => _firstId(it[nsp.OA + "hasSource"]))
-      .map((srcUri) => _labelForGroupOaUri(srcUri, graph))
+      .map((srcUri) => _groupIdForGroupOaUri(srcUri, graph))
       .filter(Boolean);
-    if (labels.length < 2) continue;
+    if (gids.length < 2) continue;
     const cmpId = "cmp_imp_" + comparisons.length;
     comparisons.push({
       id: cmpId,
-      leftLabel: labels[0],
-      rightLabel: labels[1],
+      leftGroupId: gids[0],
+      rightGroupId: gids[1],
       text: _readBodyText(a, graph),
     });
     if (a["@id"]) lastPostedUris["oa/cmp/" + cmpId] = a["@id"];
@@ -654,10 +695,12 @@ function _readBodyText(oa, graph) {
   return "";
 }
 
-function _labelForGroupOaUri(uri, graph) {
+function _groupIdForGroupOaUri(uri, graph) {
   const r = graph[uri];
   if (!r) return null;
-  return _firstValue(r[nsp.RDFS + "label"]);
+  // Same id discipline as deserialize's group loop: explicit dct:identifier,
+  // else the label for resources posted before group ids existed.
+  return _firstValue(r[nsp.DCT + "identifier"]) || _firstValue(r[nsp.RDFS + "label"]);
 }
 
 function _parseMediaFragment(uri) {

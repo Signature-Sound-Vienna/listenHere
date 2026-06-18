@@ -8,19 +8,18 @@ import { test, expect } from '../support/fixtures';
 
 test.describe('18. Annotations & Solid', () => {
 
-  // 18.5 Solid drawer opens and shows login prompt
-  test('18.5 Solid drawer opens on button click', async ({ loadedPage: page }) => {
-    const drawerBtn = page.locator('#solid-drawer-btn');
-    await drawerBtn.click({ force: true });
-    await page.waitForTimeout(500);
+  // 18.5 Annotation drawer opens and reveals the Solid login surface
+  test('18.5 Load-from-Solid opens the drawer and shows the login surface', async ({ loadedPage: page }) => {
+    // While logged out, the ribbon's "Load from Solid" action opens the
+    // annotation drawer and surfaces the login controls in its footer.
+    await page.locator('.lh-v6-ribbon-load').click();
 
-    const drawer = page.locator('#solid-drawer');
-    // Drawer should no longer have .closed class
-    const isClosed = await drawer.evaluate(el => el.classList.contains('closed'));
-    expect(isClosed).toBe(false);
+    const drawer = page.locator('.lh-v6-drawer');
+    await expect(drawer).toHaveClass(/open/);
 
-    // Login prompt should be visible
-    await expect(page.locator('#solidLoginBtn')).toBeVisible();
+    // Logged-out footer shows the provider chooser + Connect button.
+    await expect(page.locator('.lh-v6-drawer-solid .lh-v6-solid-connect')).toBeVisible();
+    await expect(page.locator('.lh-v6-drawer-solid .lh-v6-solid-select')).toBeVisible();
   });
 
 });

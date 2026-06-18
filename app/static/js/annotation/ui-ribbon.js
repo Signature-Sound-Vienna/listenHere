@@ -16,16 +16,142 @@ import {
 import * as playback from "./playback.js";
 import { solid } from "../solid.js";
 
+// Pencil glyph mirroring the drawer pull-tab (ui-pull-tab.js), used as the
+// ribbon's leading "Annotations" affordance in place of the wordy label.
+const PENCIL_SVG =
+  '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+  ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<path d="M16.5 3.5l4 4-13 13H3.5v-4l13-13z"/><path d="M14 6l4 4"/></svg>';
+
 export function mountRibbon(parent) {
+  // Placeholder intentionally blank: the magnifying-glass icon (CSS
+  // background) communicates "filter", and the input collapses to roughly
+  // icon-width when unfocused, expanding on focus.
   const filterInput = el("input", {
     type: "text",
     class: "lh-v6-ribbon-filter",
-    placeholder: "Filter…",
+    placeholder: "",
+    title: "Filter annotations",
     "aria-label": "Filter annotations",
-    oninput: () => render(),
+    oninput: (e) => {
+      // Keep the field expanded while it holds a real (non-whitespace)
+      // query, even after focus leaves; CSS can't trim, so we toggle a class.
+      e.currentTarget.classList.toggle(
+        "has-query",
+        e.currentTarget.value.trim() !== "",
+      );
+      _updateFilterOverflow();
+      render();
+    },
+    // Enter / Escape always drop focus. When the field is empty it collapses
+    // back to its icon-only width; with a real query the .has-query class
+    // keeps it expanded, which is intended.
+    onkeydown: (e) => {
+      if (e.key === "Enter" || e.key === "Escape") {
+        e.preventDefault();
+        e.currentTarget.blur();
+      }
+    },
+  });
+
+  // The input is wrapped so we can lay edge-fade overlays over it (inputs
+  // can't host ::before/::after). _updateFilterOverflow() toggles ov-left /
+  // ov-right when the typed text scrolls past the visible area — mirroring
+  // the chip strip's can-left / can-right affordance below.
+  const filterFadeLeft = el("span", {
+    class: "lh-v6-ribbon-filter-fade left",
+    "aria-hidden": "true",
+  });
+  const filterFadeRight = el("span", {
+    class: "lh-v6-ribbon-filter-fade right",
+    "aria-hidden": "true",
+  });
+  const filterWrap = el("div", { class: "lh-v6-ribbon-filter-wrap" }, [
+    filterInput,
+    filterFadeLeft,
+    filterFadeRight,
+  ]);
+
+  function _updateFilterOverflow() {
+    const overflowing = filterInput.scrollWidth > filterInput.clientWidth + 1;
+    const canLeft = overflowing && filterInput.scrollLeft > 1;
+    const canRight =
+      overflowing &&
+      filterInput.scrollLeft + filterInput.clientWidth < filterInput.scrollWidth - 1;
+    filterWrap.classList.toggle("ov-left", canLeft);
+    filterWrap.classList.toggle("ov-right", canRight);
+  }
+
+  // Caret movement scrolls the text without firing `input`; recompute on
+  // scroll, and after the collapse/expand width transition settles.
+  filterInput.addEventListener("scroll", _updateFilterOverflow, { passive: true });
+  filterInput.addEventListener("transitionend", (e) => {
+    if (e.propertyName === "width") _updateFilterOverflow();
   });
 
   const chips = el("div", { class: "lh-v6-ribbon-chips" });
+
+  // Chevron buttons + wrapper give the scrolling chip strip a tidy,
+  // scrollbar-free overflow affordance. The native scrollbar is hidden in
+  // CSS (it stole vertical space inside the 40px ribbon and clipped chips);
+  // instead the wrapper gains .can-left / .can-right classes that fade the
+  // corresponding edge and reveal a chevron. _updateScrollAffordance()
+  // recomputes these from the strip's scroll position.
+  const scrollLeftBtn = el("button", {
+    class: "lh-v6-ribbon-chev lh-v6-ribbon-chev-left",
+    type: "button",
+    tabIndex: "-1",
+    "aria-hidden": "true",
+    title: "Scroll annotations left",
+    text: "‹",
+    onclick: () => _scrollChips(-1),
+  });
+  const scrollRightBtn = el("button", {
+    class: "lh-v6-ribbon-chev lh-v6-ribbon-chev-right",
+    type: "button",
+    tabIndex: "-1",
+    "aria-hidden": "true",
+    title: "Scroll annotations right",
+    text: "›",
+    onclick: () => _scrollChips(1),
+  });
+  // Slim scroll-position bar pinned to the strip's bottom edge: the thumb's
+  // width conveys how much of the full list is currently visible, its offset
+  // where we are within it. Non-interactive; shown only when overflowing.
+  const scrollThumb = el("div", { class: "lh-v6-ribbon-scrollpos-thumb" });
+  const scrollPos = el("div", { class: "lh-v6-ribbon-scrollpos" }, [scrollThumb]);
+  const chipsWrap = el(
+    "div",
+    { class: "lh-v6-ribbon-chips-wrap" },
+    [scrollLeftBtn, chips, scrollRightBtn, scrollPos],
+  );
+
+  function _scrollChips(dir) {
+    // Scroll by ~80% of the visible width so consecutive clicks march
+    // through the strip while keeping a sliver of context.
+    chips.scrollBy({ left: dir * chips.clientWidth * 0.8, behavior: "smooth" });
+  }
+
+  function _updateScrollAffordance() {
+    const canLeft = chips.scrollLeft > 1;
+    const canRight = chips.scrollLeft + chips.clientWidth < chips.scrollWidth - 1;
+    chipsWrap.classList.toggle("can-left", canLeft);
+    chipsWrap.classList.toggle("can-right", canRight);
+    // Position bar: thumb fraction = visible/total, offset = scroll progress.
+    const overflowing = chips.scrollWidth > chips.clientWidth + 1;
+    chipsWrap.classList.toggle("overflowing", overflowing);
+    if (overflowing) {
+      const frac = chips.clientWidth / chips.scrollWidth;
+      const maxScroll = chips.scrollWidth - chips.clientWidth;
+      const progress = maxScroll > 0 ? chips.scrollLeft / maxScroll : 0;
+      scrollThumb.style.width = (frac * 100).toFixed(2) + "%";
+      // left ranges 0 → (1 - frac) of the track as we scroll end to end.
+      scrollThumb.style.left = (progress * (1 - frac) * 100).toFixed(2) + "%";
+    }
+  }
+
+  chips.addEventListener("scroll", _updateScrollAffordance, { passive: true });
+  window.addEventListener("resize", _updateScrollAffordance);
 
   const newBtn = el("button", {
     class: "lh-v6-ribbon-new",
@@ -55,20 +181,44 @@ export function mountRibbon(parent) {
     [newBtn, loadBtn],
   );
 
+  // Count badge sits beside the label: shows the total number of
+  // annotations, or "n / total" while a filter is narrowing the list.
+  const countEl = el("span", {
+    class: "lh-v6-ribbon-count",
+    "aria-live": "polite",
+  });
+  const labelGroup = el("span", { class: "lh-v6-ribbon-labelgroup" }, [
+    el("span", {
+      class: "lh-v6-ribbon-label",
+      html: PENCIL_SVG,
+      title: "Annotations",
+      "aria-label": "Annotations",
+    }),
+    countEl,
+  ]);
+
   const ribbon = el(
     "div",
     { class: "lh-v6-ribbon", role: "toolbar", "aria-label": "Annotations" },
     [
-      el("span", {
-        class: "lh-v6-ribbon-label",
-        text: "Annotations",
-      }),
-      filterInput,
-      chips,
+      labelGroup,
+      filterWrap,
+      chipsWrap,
       actions,
     ],
   );
   parent.appendChild(ribbon);
+
+  // The ribbon's right edge slides via a CSS transition when the drawer
+  // opens/closes, changing the chip strip's width. Recompute the chevron /
+  // fade / position-bar state when that transition finishes — otherwise the
+  // affordance reflects the pre-transition width and only corrects itself on
+  // the next chip interaction.
+  ribbon.addEventListener("transitionend", (e) => {
+    if (e.target === ribbon && e.propertyName === "right") {
+      _updateScrollAffordance();
+    }
+  });
 
   function render() {
     clearChildren(chips);
@@ -77,6 +227,24 @@ export function mountRibbon(parent) {
     const filtered = q
       ? all.filter((a) => (a.label || "").toLowerCase().includes(q))
       : all;
+    // Count badge: bare total normally; "matches / total" while filtering.
+    if (all.length === 0) {
+      countEl.textContent = "";
+      countEl.title = "";
+    } else if (q) {
+      countEl.textContent = filtered.length + " / " + all.length;
+      countEl.title =
+        filtered.length +
+        " of " +
+        all.length +
+        " annotation" +
+        (all.length === 1 ? "" : "s") +
+        " match the current filter";
+    } else {
+      countEl.textContent = String(all.length);
+      countEl.title =
+        all.length + " annotation" + (all.length === 1 ? "" : "s");
+    }
     if (filtered.length === 0) {
       chips.appendChild(
         el("span", {
@@ -84,9 +252,11 @@ export function mountRibbon(parent) {
           text: q ? "No matches." : "No annotations yet.",
         }),
       );
+      _updateScrollAffordance();
       return;
     }
     filtered.forEach((a) => chips.appendChild(_chip(a)));
+    _updateScrollAffordance();
   }
 
   function _chip(a) {

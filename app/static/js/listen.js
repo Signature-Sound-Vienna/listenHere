@@ -4,6 +4,7 @@ export let versionDate = window.versionDate;
 
 import { initSolidAuth } from "./solid.js";
 import * as v6Playback from "./annotation/playback.js";
+import * as v6UiState from "./annotation/ui-state.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
@@ -2049,6 +2050,29 @@ function _nextGroupColour(groups) {
   return _GROUP_PALETTE[(groups || []).length % _GROUP_PALETTE.length];
 }
 
+/**
+ * Mint a stable, opaque group id. Used when a new group is created in the
+ * grouping modal so the V6 annotation layer can key group notes/comparisons
+ * on an identity that survives a later rename. Older groups without an id
+ * fall back to their name at snapshot time (see getActiveGroupingSnapshot).
+ */
+let _groupIdCounter = 0;
+function _mintGroupId() {
+  return "g_" + Date.now().toString(36) + "_" + _groupIdCounter++;
+}
+
+/**
+ * Notify listeners that the active application grouping changed (tab switch
+ * or grouping-modal apply). The V6 annotation drawer listens for this to
+ * re-render the open editor so its "Update to current view" gate reflects
+ * the live grouping rather than a stale render-time snapshot.
+ */
+function _emitGroupingChanged() {
+  try {
+    document.dispatchEvent(new CustomEvent("lh-grouping-changed"));
+  } catch (_) {}
+}
+
 /** Returns the localStorage key for the current context. */
 function _groupsStorageKey() {
   return _GROUPS_STORAGE_PREFIX + (window.location.pathname || "default");
@@ -2139,6 +2163,12 @@ export function getActiveGroupingSnapshot() {
       return false;
     });
     out.groups.push({
+      // Stable identity for the group, independent of its display label.
+      // Source groups created via the grouping modal carry a minted `id`;
+      // older groups (and the score foldout) fall back to their name. This
+      // id is what the V6 annotation layer keys group notes/comparisons on
+      // and what survives a group rename across a re-pin.
+      groupId: g.id || g.name || "",
       label: g.name || "",
       color: g.color || "#94a3b8",
       files,
@@ -3012,6 +3042,7 @@ function _switchActiveTab(tabName) {
 
   _changeCounter++;
   _updateDirtyState();
+  _emitGroupingChanged();
 }
 
 /** Find nav sidebar checkboxes corresponding to a content-pane file-group. */
@@ -3181,7 +3212,7 @@ function _wireListSelectors() {
 }
 
 // ---------------------------------------------------------------------------
-// Group Files modal
+// Group Recordings modal
 // ---------------------------------------------------------------------------
 
 /** Open the grouping modal. */
@@ -3206,9 +3237,85 @@ function _openGroupModal() {
     modalTabs.findIndex((t) => t.name === (h.activeTab || "Default")),
   );
 
+  // Expand any stored regex `pattern` into explicit file members so that every
+  // file in a group is individually removable. We only edit the modal clone;
+  // nothing is persisted until Apply. (Backwards-compat: older saved groups
+  // may carry a `pattern`; once expanded here we drop it.)
+  modalTabs.forEach((tab) => {
+    (tab.fileGroups || []).forEach((g) => {
+      if (g.pattern) {
+        try {
+          const re = new RegExp(g.pattern);
+          if (!g.files) g.files = [];
+          filenames.forEach((f) => {
+            if ((re.test(shortName(f)) || re.test(f)) && !g.files.includes(f)) {
+              g.files.push(f);
+            }
+          });
+        } catch (_) {
+          /* invalid regex — just drop it */
+        }
+        delete g.pattern;
+      }
+    });
+  });
+
+  // Baseline snapshot taken AFTER migration, so the pattern→files expansion
+  // doesn't count as a user edit. Used to detect unapplied changes on close.
+  const initialSnapshot = JSON.stringify(modalTabs);
+  function hasUnappliedChanges() {
+    return JSON.stringify(modalTabs) !== initialSnapshot;
+  }
+
   /** Convenience: current modal tab's groups array */
   function groups() {
     return modalTabs[modalActiveIdx].fileGroups;
+  }
+
+  // Multi-select state for the ungrouped list. Holds full filenames.
+  let selectedUngrouped = new Set();
+  // Index of the last clicked ungrouped item, for shift-click range select.
+  let lastUngroupedAnchor = -1;
+
+  // Recordings currently being dragged within the modal. Tracked here because
+  // dataTransfer is unreadable during dragover (only on drop), yet we need the
+  // payload to preview a hovered drop target.
+  let draggedFiles = [];
+
+  /** Remove any drag-hover previews and target highlights from all groups. */
+  function clearDragPreviews() {
+    groupsContainer
+      .querySelectorAll("li.gm-drag-preview")
+      .forEach((el) => el.remove());
+    groupsContainer
+      .querySelectorAll(".gm-drop-target")
+      .forEach((c) => c.classList.remove("gm-drop-target"));
+    groupsContainer
+      .querySelectorAll("li.gm-empty")
+      .forEach((el) => (el.style.display = ""));
+  }
+
+  // "Add by filename" mode: substring (default) or regular expression. Global
+  // preference, persisted across sessions.
+  let addByRegex = false;
+  try {
+    addByRegex = localStorage.getItem("listenTool_addByRegex") === "1";
+  } catch (_) {}
+
+  /** Does file `f` match the typed `term` under the current add-by mode? */
+  function addByMatches(f, term) {
+    if (!term) return false;
+    if (addByRegex) {
+      try {
+        // Case-insensitive by default, consistent with substring mode.
+        const re = new RegExp(term, "i");
+        return re.test(f.substring(f.lastIndexOf("/") + 1)) || re.test(f);
+      } catch (_) {
+        return false; // invalid regex matches nothing
+      }
+    }
+    const t = term.toLowerCase();
+    return f.substring(f.lastIndexOf("/") + 1).toLowerCase().includes(t);
   }
 
   // --- Build modal DOM ---
@@ -3222,11 +3329,11 @@ function _openGroupModal() {
   // Header
   const header = document.createElement("div");
   header.className = "gm-header";
-  header.innerHTML = `<h3>Group Files</h3>`;
+  header.innerHTML = `<h3>Group Recordings</h3>`;
   const closeBtn = document.createElement("button");
   closeBtn.className = "gm-close";
   closeBtn.innerHTML = "\u2715";
-  closeBtn.addEventListener("click", () => backdrop.remove());
+  // Close handler wired below (attemptClose) so it can guard unapplied changes.
   header.appendChild(closeBtn);
   modal.appendChild(header);
 
@@ -3242,12 +3349,39 @@ function _openGroupModal() {
   // Left pane: ungrouped files
   const leftPane = document.createElement("div");
   leftPane.className = "gm-pane gm-left";
-  leftPane.innerHTML = `<h4>Ungrouped Files</h4>`;
+  leftPane.innerHTML = `<h4>Ungrouped Recordings</h4>`;
   const ungroupedList = document.createElement("ul");
   ungroupedList.className = "gm-file-list";
   ungroupedList.id = "gm-ungrouped";
   leftPane.appendChild(ungroupedList);
   body.appendChild(leftPane);
+
+  // Make the ungrouped pane a drop target so files can be dragged back out of
+  // groups. Dropping here removes them from every group's explicit list.
+  leftPane.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    leftPane.classList.add("gm-drop-target");
+  });
+  leftPane.addEventListener("dragleave", (e) => {
+    if (!leftPane.contains(e.relatedTarget))
+      leftPane.classList.remove("gm-drop-target");
+  });
+  leftPane.addEventListener("drop", (e) => {
+    e.preventDefault();
+    leftPane.classList.remove("gm-drop-target");
+    const dropped = (e.dataTransfer.getData("text/plain") || "")
+      .split("\n")
+      .filter((f) => f && filenames.includes(f));
+    if (!dropped.length) return;
+    let changed = false;
+    groups().forEach((og) => {
+      const before = (og.files || []).length;
+      og.files = (og.files || []).filter((x) => !dropped.includes(x));
+      if (og.files.length !== before) changed = true;
+    });
+    if (changed) renderAll();
+  });
 
   // Right pane: groups
   const rightPane = document.createElement("div");
@@ -3260,6 +3394,7 @@ function _openGroupModal() {
   addGroupBtn.textContent = "+ New Group";
   addGroupBtn.addEventListener("click", () => {
     groups().push({
+      id: _mintGroupId(),
       name: "New Group",
       pattern: "",
       files: [],
@@ -3283,11 +3418,17 @@ function _openGroupModal() {
   footer.className = "gm-footer";
   const cancelBtn = document.createElement("button");
   cancelBtn.textContent = "Cancel";
-  cancelBtn.addEventListener("click", () => backdrop.remove());
+  cancelBtn.addEventListener("click", attemptClose);
   const applyBtn = document.createElement("button");
   applyBtn.className = "gm-apply";
   applyBtn.textContent = "Apply";
-  applyBtn.addEventListener("click", () => {
+  applyBtn.addEventListener("click", applyChanges);
+  footer.appendChild(cancelBtn);
+  footer.appendChild(applyBtn);
+  modal.appendChild(footer);
+
+  /** Persist modalTabs back to the alignment JSON and refresh the UI. */
+  function applyChanges() {
     // Write all tabs back to the alignment JSON header
     if (!loadedAlignmentJSON) loadedAlignmentJSON = {};
     if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
@@ -3308,18 +3449,89 @@ function _openGroupModal() {
     _renderSidebarFileList(fns);
     _renderGroupingTabPills();
     reloadWaveforms();
-  });
-  footer.appendChild(cancelBtn);
-  footer.appendChild(applyBtn);
-  modal.appendChild(footer);
+    _emitGroupingChanged();
+  }
+
+  /**
+   * Dismiss the modal via an ambiguous gesture (backdrop click or ✕). If there
+   * are unapplied changes, ask whether to apply or discard them first, so an
+   * accidental click doesn't silently throw away the user's work.
+   */
+  function attemptClose() {
+    if (!hasUnappliedChanges()) {
+      backdrop.remove();
+      return;
+    }
+    // Avoid stacking multiple confirm overlays.
+    if (modal.querySelector(".gm-confirm-overlay")) return;
+
+    const overlay = document.createElement("div");
+    overlay.className = "gm-confirm-overlay";
+    const box = document.createElement("div");
+    box.className = "gm-confirm-box";
+    const msg = document.createElement("p");
+    msg.className = "gm-confirm-msg";
+    msg.textContent = "You have unapplied changes to your file groups.";
+    box.appendChild(msg);
+
+    const btnRow = document.createElement("div");
+    btnRow.className = "gm-confirm-buttons";
+    const keepBtn = document.createElement("button");
+    keepBtn.textContent = "Keep editing";
+    keepBtn.addEventListener("click", () => overlay.remove());
+    const discardBtn = document.createElement("button");
+    discardBtn.className = "gm-confirm-discard";
+    discardBtn.textContent = "Discard";
+    discardBtn.addEventListener("click", () => backdrop.remove());
+    const applyConfirmBtn = document.createElement("button");
+    applyConfirmBtn.className = "gm-apply";
+    applyConfirmBtn.textContent = "Apply";
+    applyConfirmBtn.addEventListener("click", applyChanges);
+    btnRow.appendChild(keepBtn);
+    btnRow.appendChild(discardBtn);
+    btnRow.appendChild(applyConfirmBtn);
+    box.appendChild(btnRow);
+    overlay.appendChild(box);
+    modal.appendChild(overlay);
+    applyConfirmBtn.focus();
+  }
+
+  closeBtn.addEventListener("click", attemptClose);
 
   backdrop.appendChild(modal);
   document.body.appendChild(backdrop);
 
-  // Close on backdrop click
+  // Close on backdrop click (guards against discarding unapplied changes)
   backdrop.addEventListener("click", (e) => {
-    if (e.target === backdrop) backdrop.remove();
+    if (e.target === backdrop) attemptClose();
   });
+
+  // Esc closes the modal (with the same unapplied-changes guard), unless focus
+  // is in a text field — there Esc belongs to the field (e.g. cancel a rename).
+  function onModalKeydown(e) {
+    if (!document.body.contains(backdrop)) {
+      document.removeEventListener("keydown", onModalKeydown);
+      return;
+    }
+    if (e.key !== "Escape") return;
+    const ae = document.activeElement;
+    if (
+      ae &&
+      (ae.tagName === "INPUT" ||
+        ae.tagName === "TEXTAREA" ||
+        ae.isContentEditable)
+    )
+      return;
+    e.preventDefault();
+    // If the confirm overlay is up, Esc means "keep editing" (dismiss it).
+    const overlay = modal.querySelector(".gm-confirm-overlay");
+    if (overlay) {
+      overlay.remove();
+      return;
+    }
+    attemptClose();
+  }
+  document.addEventListener("keydown", onModalKeydown);
 
   // --- Tab bar rendering ---
   function renderTabBar() {
@@ -3430,19 +3642,11 @@ function _openGroupModal() {
     return f.substring(f.lastIndexOf("/") + 1);
   }
 
-  /** Compute which files are claimed by any group (explicit + pattern). */
+  /** Compute which files are claimed by any group (all explicit now). */
   function getGroupedSet() {
     const s = new Set();
     groups().forEach((g) => {
       (g.files || []).forEach((f) => s.add(f));
-      if (g.pattern) {
-        try {
-          const re = new RegExp(g.pattern);
-          filenames.forEach((f) => {
-            if (re.test(shortName(f)) || re.test(f)) s.add(f);
-          });
-        } catch (_) {}
-      }
     });
     return s;
   }
@@ -3451,24 +3655,85 @@ function _openGroupModal() {
     ungroupedList.innerHTML = "";
     const grouped = getGroupedSet();
     const ug = filenames.filter((f) => !grouped.has(f));
-    ug.forEach((f) => {
+    // Drop any stale selections (files that got grouped elsewhere).
+    selectedUngrouped.forEach((f) => {
+      if (!ug.includes(f)) selectedUngrouped.delete(f);
+    });
+    ug.forEach((f, idx) => {
       const li = document.createElement("li");
       li.className = "gm-file-item";
+      if (selectedUngrouped.has(f)) li.classList.add("gm-selected");
       li.draggable = true;
       li.dataset.file = f;
       li.textContent = shortName(f);
       li.title = f;
-      li.addEventListener("dragstart", (e) => {
-        e.dataTransfer.setData("text/plain", f);
-        e.dataTransfer.effectAllowed = "move";
-        li.classList.add("gm-dragging");
+
+      // Click to (multi-)select. Plain click selects just this item;
+      // Cmd/Ctrl-click toggles; Shift-click selects a contiguous range.
+      li.addEventListener("click", (e) => {
+        if (e.shiftKey && lastUngroupedAnchor >= 0) {
+          const lo = Math.min(lastUngroupedAnchor, idx);
+          const hi = Math.max(lastUngroupedAnchor, idx);
+          if (!e.metaKey && !e.ctrlKey) selectedUngrouped.clear();
+          for (let k = lo; k <= hi; k++) selectedUngrouped.add(ug[k]);
+        } else if (e.metaKey || e.ctrlKey) {
+          if (selectedUngrouped.has(f)) selectedUngrouped.delete(f);
+          else selectedUngrouped.add(f);
+          lastUngroupedAnchor = idx;
+        } else {
+          selectedUngrouped.clear();
+          selectedUngrouped.add(f);
+          lastUngroupedAnchor = idx;
+        }
+        renderUngrouped();
       });
-      li.addEventListener("dragend", () => li.classList.remove("gm-dragging"));
+
+      li.addEventListener("dragstart", (e) => {
+        // If dragging an unselected item, reduce selection to just it. Update
+        // the highlight in place — calling renderUngrouped() here would destroy
+        // the very element being dragged and cancel the drag (requiring a
+        // second attempt).
+        if (!selectedUngrouped.has(f)) {
+          selectedUngrouped.clear();
+          selectedUngrouped.add(f);
+          lastUngroupedAnchor = idx;
+          ungroupedList.querySelectorAll(".gm-file-item").forEach((el) => {
+            el.classList.toggle("gm-selected", el.dataset.file === f);
+          });
+        }
+        // Drag the whole current selection; one filename per line.
+        const payload = [...selectedUngrouped].join("\n");
+        draggedFiles = [...selectedUngrouped];
+        e.dataTransfer.setData("text/plain", payload);
+        e.dataTransfer.effectAllowed = "move";
+        // When dragging more than one file, show a count badge as the drag
+        // image so it's clear the whole selection is moving.
+        if (selectedUngrouped.size > 1) {
+          const ghost = document.createElement("div");
+          ghost.className = "gm-drag-ghost";
+          ghost.textContent = `${selectedUngrouped.size} files`;
+          document.body.appendChild(ghost);
+          e.dataTransfer.setDragImage(ghost, 10, 10);
+          // Remove the ghost once the browser has snapshotted it.
+          setTimeout(() => ghost.remove(), 0);
+        }
+        // Mark all selected items as dragging.
+        ungroupedList
+          .querySelectorAll(".gm-selected")
+          .forEach((el) => el.classList.add("gm-dragging"));
+      });
+      li.addEventListener("dragend", () => {
+        ungroupedList
+          .querySelectorAll(".gm-dragging")
+          .forEach((el) => el.classList.remove("gm-dragging"));
+        draggedFiles = [];
+        clearDragPreviews();
+      });
       ungroupedList.appendChild(li);
     });
     if (ug.length === 0) {
       ungroupedList.innerHTML =
-        '<li class="gm-empty">All files are grouped</li>';
+        '<li class="gm-empty">All recordings are grouped</li>';
     }
   }
 
@@ -3528,31 +3793,98 @@ function _openGroupModal() {
       gh.appendChild(delBtn);
       card.appendChild(gh);
 
-      // Regex pattern input
-      const patRow = document.createElement("div");
-      patRow.className = "gm-pattern-row";
-      const patLabel = document.createElement("label");
-      patLabel.textContent = "Regex:";
-      const patInput = document.createElement("input");
-      patInput.type = "text";
-      patInput.className = "gm-pattern-input";
-      patInput.placeholder = "e.g. ^VPO-";
-      patInput.value = g.pattern || "";
-      patInput.addEventListener("input", (e) => {
-        g.pattern = e.target.value;
-        const cursorPos = e.target.selectionStart;
+      // "Add by filename" bulk-add: pulls all ungrouped files whose name
+      // contains the typed text into this group as regular (removable) members.
+      const addRow = document.createElement("div");
+      addRow.className = "gm-addby-row";
+      const addLabel = document.createElement("label");
+      addLabel.textContent = "Add by filename:";
+      const addInput = document.createElement("input");
+      addInput.type = "text";
+      addInput.className = "gm-addby-input";
+      addInput.placeholder = addByRegex
+        ? "regex, e.g. ^Karajan"
+        : "type text, e.g. Karajan";
+
+      // Regex-mode toggle (VS Code-style ".*" icon). Off/grey by default.
+      const regexToggle = document.createElement("button");
+      regexToggle.type = "button";
+      regexToggle.className =
+        "gm-regex-toggle" + (addByRegex ? " gm-active" : "");
+      regexToggle.textContent = ".*";
+      regexToggle.title = "Use regular expressions when adding by filename";
+      regexToggle.setAttribute("aria-pressed", String(addByRegex));
+      regexToggle.addEventListener("click", () => {
+        addByRegex = !addByRegex;
+        try {
+          localStorage.setItem("listenTool_addByRegex", addByRegex ? "1" : "0");
+        } catch (_) {}
+        renderGroups();
+      });
+
+      const addBtn = document.createElement("button");
+      addBtn.className = "gm-addby-btn";
+      addBtn.textContent = "Add";
+
+      // Files that the current term would add (ungrouped + matching).
+      const previewMatches = () => {
+        const term = addInput.value.trim();
+        if (!term) return [];
+        const grouped = getGroupedSet();
+        return filenames.filter(
+          (f) => !grouped.has(f) && addByMatches(f, term),
+        );
+      };
+
+      const doAdd = () => {
+        const matches = previewMatches();
+        if (!matches.length) return;
+        if (!g.files) g.files = [];
+        matches.forEach((f) => {
+          if (!g.files.includes(f)) g.files.push(f);
+        });
+        addInput.value = "";
         renderAll();
-        // Restore focus to the same regex input after re-render
-        const restored =
-          groupsContainer.querySelectorAll(".gm-pattern-input")[i];
-        if (restored) {
-          restored.focus();
-          restored.setSelectionRange(cursorPos, cursorPos);
+      };
+      addBtn.addEventListener("click", doAdd);
+      addInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          doAdd();
         }
       });
-      patRow.appendChild(patLabel);
-      patRow.appendChild(patInput);
-      card.appendChild(patRow);
+      // Live preview: greyed-out entries showing what Enter/Add would pull in.
+      const renderPreview = () => {
+        fileUl.querySelectorAll("li.gm-preview").forEach((el) => el.remove());
+        let invalid = false;
+        const term = addInput.value.trim();
+        if (addByRegex && term) {
+          try {
+            new RegExp(term, "i");
+          } catch (_) {
+            invalid = true;
+          }
+        }
+        addInput.classList.toggle("gm-invalid", invalid);
+        const matches = previewMatches().sort();
+        // Hide the "Drag files here…" placeholder while previewing.
+        const empty = fileUl.querySelector("li.gm-empty");
+        if (empty) empty.style.display = matches.length ? "none" : "";
+        matches.forEach((f) => {
+          const li = document.createElement("li");
+          li.className = "gm-file-item gm-grouped gm-preview";
+          li.textContent = shortName(f);
+          li.title = f + " — press Add to include";
+          fileUl.appendChild(li);
+        });
+      };
+      addInput.addEventListener("input", renderPreview);
+
+      addRow.appendChild(addLabel);
+      addRow.appendChild(addInput);
+      addRow.appendChild(regexToggle);
+      addRow.appendChild(addBtn);
+      card.appendChild(addRow);
 
       // Colour picker row
       const colourRow = document.createElement("div");
@@ -3608,53 +3940,47 @@ function _openGroupModal() {
         card.querySelectorAll('label').forEach(l => { l.style.color = tc; });
       }
 
-      // File list (explicit + regex-matched)
+      // File list — every member is an explicit, removable file.
       const fileUl = document.createElement("ul");
       fileUl.className = "gm-group-files";
 
-      // Compute effective members
-      const members = new Set(g.files || []);
-      if (g.pattern) {
-        try {
-          const re = new RegExp(g.pattern);
-          filenames.forEach((f) => {
-            if (re.test(shortName(f)) || re.test(f)) members.add(f);
-          });
-        } catch (_) {}
-      }
-      const memberArr = [...members]
+      const memberArr = (g.files || [])
         .filter((f) => filenames.includes(f))
         .sort();
       memberArr.forEach((f) => {
         const li = document.createElement("li");
         li.className = "gm-file-item gm-grouped";
+        li.draggable = true;
+        li.dataset.file = f;
         li.textContent = shortName(f);
         li.title = f;
-        // Remove button (only for explicitly added files, not regex)
-        const isExplicit = (g.files || []).includes(f);
-        if (isExplicit) {
-          const rmBtn = document.createElement("button");
-          rmBtn.className = "gm-remove-file";
-          rmBtn.textContent = "\u2715";
-          rmBtn.title = "Remove from group";
-          rmBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            g.files = (g.files || []).filter((x) => x !== f);
-            renderAll();
-          });
-          li.appendChild(rmBtn);
-        } else {
-          // Matched by regex — show indicator
-          const tag = document.createElement("span");
-          tag.className = "gm-regex-tag";
-          tag.textContent = "(regex)";
-          li.appendChild(tag);
-        }
+        // Drag a grouped file to another group, or back to the ungrouped pane.
+        li.addEventListener("dragstart", (e) => {
+          e.dataTransfer.setData("text/plain", f);
+          draggedFiles = [f];
+          e.dataTransfer.effectAllowed = "move";
+          li.classList.add("gm-dragging");
+        });
+        li.addEventListener("dragend", () => {
+          li.classList.remove("gm-dragging");
+          draggedFiles = [];
+          clearDragPreviews();
+        });
+        const rmBtn = document.createElement("button");
+        rmBtn.className = "gm-remove-file";
+        rmBtn.textContent = "\u2715";
+        rmBtn.title = "Remove from group";
+        rmBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          g.files = (g.files || []).filter((x) => x !== f);
+          renderAll();
+        });
+        li.appendChild(rmBtn);
         fileUl.appendChild(li);
       });
       if (memberArr.length === 0) {
         fileUl.innerHTML =
-          '<li class="gm-empty">Drag files here or set a regex</li>';
+          '<li class="gm-empty">Drag recordings here, or add by filename above</li>';
       }
 
       // Drop zone
@@ -3662,21 +3988,52 @@ function _openGroupModal() {
         e.preventDefault();
         e.dataTransfer.dropEffect = "move";
         card.classList.add("gm-drop-target");
+        // Preview the recordings this drop would add (greyed-out), unless
+        // they're already members. Rendered once per hover.
+        if (!fileUl.querySelector("li.gm-drag-preview")) {
+          const toAdd = draggedFiles.filter(
+            (f) => filenames.includes(f) && !(g.files || []).includes(f),
+          );
+          if (toAdd.length) {
+            const empty = fileUl.querySelector("li.gm-empty");
+            if (empty) empty.style.display = "none";
+            toAdd.sort().forEach((f) => {
+              const pli = document.createElement("li");
+              pli.className = "gm-file-item gm-grouped gm-drag-preview";
+              pli.textContent = shortName(f);
+              pli.title = f;
+              fileUl.appendChild(pli);
+            });
+          }
+        }
       });
-      card.addEventListener("dragleave", () =>
-        card.classList.remove("gm-drop-target"),
-      );
+      card.addEventListener("dragleave", (e) => {
+        // Ignore leave events fired when moving onto a child element.
+        if (card.contains(e.relatedTarget)) return;
+        card.classList.remove("gm-drop-target");
+        fileUl.querySelectorAll("li.gm-drag-preview").forEach((el) =>
+          el.remove(),
+        );
+        const empty = fileUl.querySelector("li.gm-empty");
+        if (empty) empty.style.display = "";
+      });
       card.addEventListener("drop", (e) => {
         e.preventDefault();
         card.classList.remove("gm-drop-target");
-        const file = e.dataTransfer.getData("text/plain");
-        if (file && filenames.includes(file)) {
-          // Remove from any other group's explicit list
-          grps.forEach((og) => {
-            og.files = (og.files || []).filter((x) => x !== file);
+        const dropped = (e.dataTransfer.getData("text/plain") || "")
+          .split("\n")
+          .filter((f) => f && filenames.includes(f));
+        if (dropped.length) {
+          dropped.forEach((file) => {
+            // Remove from any other group's explicit list
+            grps.forEach((og) => {
+              og.files = (og.files || []).filter((x) => x !== file);
+            });
+            if (!g.files) g.files = [];
+            if (!g.files.includes(file)) g.files.push(file);
           });
-          if (!g.files) g.files = [];
-          if (!g.files.includes(file)) g.files.push(file);
+          selectedUngrouped.clear();
+          lastUngroupedAnchor = -1;
           renderAll();
         }
       });
@@ -3685,9 +4042,45 @@ function _openGroupModal() {
       groupsContainer.appendChild(card);
     });
 
-    if (grps.length === 0) {
-      groupsContainer.innerHTML = `<p class="gm-empty">No groups yet. Click <strong>+ New Group</strong> to create one.</p>`;
-    }
+    // Drag-to-create target at the bottom (also serves as the empty state):
+    // dropping files here mints a new group containing them — no need to click
+    // "+ New Group" first.
+    const dropNew = document.createElement("div");
+    dropNew.className = "gm-newgroup-dropzone";
+    dropNew.textContent =
+      grps.length === 0
+        ? "No groups yet — drag recordings here to create one (or click + New Group)"
+        : "Drag recordings here to create a new group (or click + New Group)";
+    dropNew.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      dropNew.classList.add("gm-drop-target");
+    });
+    dropNew.addEventListener("dragleave", () =>
+      dropNew.classList.remove("gm-drop-target"),
+    );
+    dropNew.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropNew.classList.remove("gm-drop-target");
+      const dropped = (e.dataTransfer.getData("text/plain") || "")
+        .split("\n")
+        .filter((f) => f && filenames.includes(f));
+      if (!dropped.length) return;
+      // Pull the files out of any group they were in, then mint a new group.
+      grps.forEach((og) => {
+        og.files = (og.files || []).filter((x) => !dropped.includes(x));
+      });
+      grps.push({
+        id: _mintGroupId(),
+        name: "New Group",
+        files: dropped,
+        color: _nextGroupColour(grps),
+      });
+      selectedUngrouped.clear();
+      lastUngroupedAnchor = -1;
+      renderAll();
+    });
+    groupsContainer.appendChild(dropNew);
   }
 
   function renderAll() {
@@ -4629,9 +5022,20 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     wavesurfers[filename].on("seeking", () => {
       _updateMarkBtnTooltip();
     });
-    wavesurfers[filename].on("play", () => _updateTransportIcons(true));
-    wavesurfers[filename].on("pause", () => _updateTransportIcons(false));
-    wavesurfers[filename].on("finish", () => _updateTransportIcons(false));
+    // Only the active waveform drives the transport icon. The two media
+    // backends emit play/pause with different timing (WindowedAudioPlayer
+    // synchronously, native HTML audio asynchronously), so during a swap a
+    // stale, out-of-order event from the outgoing waveform could otherwise
+    // overwrite the icon set by the incoming one.
+    wavesurfers[filename].on("play", () => {
+      if (filename === currentAudioIx) _updateTransportIcons(true);
+    });
+    wavesurfers[filename].on("pause", () => {
+      if (filename === currentAudioIx) _updateTransportIcons(false);
+    });
+    wavesurfers[filename].on("finish", () => {
+      if (filename === currentAudioIx) _updateTransportIcons(false);
+    });
 
     wavesurfers[filename].on("audioprocess", () => {
       // continually update timer region when opened but not yet closed
@@ -5067,6 +5471,43 @@ async function _buildAndPrepareSynthWaveform(
 
 export let loadedAlignmentJSON = null; // Full alignment object for download
 
+// Number of waveforms to auto-load when the alignment JSON lacks
+// precalculated peaks (loading each one then requires decoding the audio,
+// so we limit the default to keep initial load responsive).
+const DEFAULT_WAVEFORM_LOAD_COUNT = 5;
+
+/**
+ * Automatically load waveforms when the listen interface first loads.
+ *
+ * If the alignment JSON shipped precalculated peaks for every recording,
+ * rendering a waveform is cheap (no audio decode needed), so we load all of
+ * them — as if the user had clicked the "All" button. Otherwise we load only
+ * the first few recordings to keep the initial load responsive.
+ *
+ * Loading is triggered by programmatically clicking each unchecked checkbox,
+ * mirroring the "All" list-selector so the exact same load path runs.
+ */
+function _autoLoadDefaultWaveforms(filenames) {
+  if (!filenames.length) return;
+  const hasPrecalculatedPeaks = filenames.every(
+    (fn) =>
+      _waveformPeaks[fn] &&
+      Array.isArray(_waveformPeaks[fn].peaks) &&
+      _waveformPeaks[fn].peaks.length > 0,
+  );
+  const toLoad = hasPrecalculatedPeaks
+    ? filenames
+    : filenames.slice(0, DEFAULT_WAVEFORM_LOAD_COUNT);
+  console.log(
+    `Auto-loading ${toLoad.length} waveform(s) on load ` +
+      `(precalculated peaks: ${hasPrecalculatedPeaks})`,
+  );
+  toLoad.forEach((fn) => {
+    const cb = document.getElementById("checkbox-" + fn);
+    if (cb && !cb.checked) cb.click();
+  });
+}
+
 async function setGrids(grids) {
   console.log("received grids: ", grids);
   loadedAlignmentJSON = grids;
@@ -5226,6 +5667,10 @@ async function setGrids(grids) {
     );
   }
 
+  // Auto-load waveforms: all of them if the alignment JSON has precalculated
+  // peaks, otherwise just the first few. Uses the same sorted filename list
+  // already rendered into the sidebar above.
+  _autoLoadDefaultWaveforms(filenames);
 }
 
 // ---------------------------------------------------------------------------
@@ -5349,13 +5794,24 @@ function _initSettingsDrawer() {
 
   openBtn.addEventListener("click", () => {
     drawer.classList.toggle("closed");
+    const isOpen = !drawer.classList.contains("closed");
     // Highlight the button when drawer is open
-    openBtn.classList.toggle("active", !drawer.classList.contains("closed"));
+    openBtn.classList.toggle("active", isOpen);
+    // Mutual exclusion: opening settings closes the annotation drawer.
+    if (isOpen) v6UiState.setDrawerOpen(false);
   });
 
   closeBtn.addEventListener("click", () => {
     drawer.classList.add("closed");
     openBtn.classList.remove("active");
+  });
+
+  // Mutual exclusion: opening the annotation drawer closes settings.
+  v6UiState.subscribe(() => {
+    if (v6UiState.getDrawerOpen() && !drawer.classList.contains("closed")) {
+      drawer.classList.add("closed");
+      openBtn.classList.remove("active");
+    }
   });
 
   // Theme radio buttons — reflect persisted state, then wire change handler
@@ -7645,7 +8101,7 @@ function showFilePickerIfNeeded() {
         (k) => k !== SYNTH_MEI_KEY,
       );
     }
-    // Show the "Manage files" button and wire it to reopen the overlay
+    // Show the "Manage recordings" button and wire it to reopen the overlay
     const manageBtn = document.getElementById("manage-files-btn");
     if (manageBtn && !manageBtn._wired) {
       manageBtn._wired = true;

@@ -13,6 +13,9 @@ export const AUDIO_C = 'audio-c.mp3';
 export const AUDIO_SHORT = 'audio-short.mp3';
 export const ALIGNMENT_JSON = 'alignment.json';
 export const ALIGNMENT_MALFORMED = 'alignment-malformed.json';
+// Alignment with 6 recordings and NO precalculated peaks — exercises the
+// "auto-load only the first 5 waveforms" default path.
+export const ALIGNMENT_NO_PEAKS = 'alignment-no-peaks.json';
 
 // ---------------------------------------------------------------------------
 // Custom fixture types

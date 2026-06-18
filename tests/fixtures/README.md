@@ -28,6 +28,8 @@ Place the following files in this directory before running the test suite.
 | File | Description |
 |---|---|
 | `alignment-malformed.json` | Invalid JSON structure — used for error-handling tests. Committed to the repo. |
+| `alignment-no-peaks.json` | Alignment of six recordings (`audio-1.mp3` … `audio-6.mp3`) with **no** precalculated peaks. Exercises the default "auto-load only the first 5 waveforms" path. No score/MEI, so the test stays offline. Committed to the repo. |
+| `audio-1.mp3` … `audio-6.mp3` | Six small recordings (copies of `audio-short.mp3`) referenced by `alignment-no-peaks.json`. Small and uniform so all five auto-loaded waveforms decode quickly. Committed to the repo. |
 
 ## Flask static serving
 

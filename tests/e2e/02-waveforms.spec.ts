@@ -1,5 +1,5 @@
-import { test, expect, AUDIO_A, AUDIO_B, AUDIO_C } from '../support/fixtures';
-import { loadLocalAlignment, showWaveform, hideWaveform } from '../support/helpers';
+import { test, expect, AUDIO_A, AUDIO_B, AUDIO_C, AUDIO_SHORT, ALIGNMENT_NO_PEAKS } from '../support/fixtures';
+import { loadLocalAlignment, showWaveform, hideWaveform, waitForWaveformsReady } from '../support/helpers';
 
 // ---------------------------------------------------------------------------
 // Section 2 — Waveform Display & Loading
@@ -7,21 +7,28 @@ import { loadLocalAlignment, showWaveform, hideWaveform } from '../support/helpe
 
 test.describe('2. Waveform Display & Loading', () => {
 
-  // 2.1 Default display — only score waveform shown on load
-  test('2.1 only score waveform visible by default', async ({ listenPage: page }) => {
-    // Score waveform should be visible (if MEI/score alignment exists)
-    const scoreWf = page.locator('#waveforms .waveform[data-ix="Score (synthesised from MEI)"]');
-    // Recording waveforms should not be rendered yet
-    const recordingWfs = page.locator(`#waveforms .waveform:not([data-ix="Score (synthesised from MEI)"])`);
-    // Either score is visible or no waveforms at all (if no MEI)
-    const scoreVisible = await scoreWf.count() > 0;
-    if (scoreVisible) {
-      await expect(scoreWf).toBeVisible();
+  // 2.1 Default display — when the alignment JSON ships precalculated peaks,
+  // all recording waveforms auto-load on interface load (the fixture has peaks
+  // for every recording, so all four become visible without user interaction).
+  test('2.1 all waveforms auto-load when alignment has precalculated peaks', async ({ listenPage: page }) => {
+    await waitForWaveformsReady(page);
+    for (const fn of [AUDIO_A, AUDIO_B, AUDIO_C, AUDIO_SHORT]) {
+      await expect(page.locator(`#waveforms .waveform[data-ix="${fn}"]`)).toBeVisible();
     }
-    // Recording waveforms should not be visible
-    for (const wf of await recordingWfs.all()) {
-      await expect(wf).not.toBeVisible();
+  });
+
+  // 2.1c Default display — when the alignment JSON has NO precalculated peaks,
+  // only the first five recordings auto-load (the no-peaks fixture has six,
+  // named audio-1.mp3 … audio-6.mp3, so audio-6 must stay unloaded).
+  test('2.1c only first five waveforms auto-load when alignment lacks peaks', async ({ page }) => {
+    await loadLocalAlignment(page, ALIGNMENT_NO_PEAKS);
+    await page.waitForLoadState('networkidle');
+    await waitForWaveformsReady(page);
+    for (const fn of ['audio-1.mp3', 'audio-2.mp3', 'audio-3.mp3', 'audio-4.mp3', 'audio-5.mp3']) {
+      await expect(page.locator(`#waveforms .waveform[data-ix="${fn}"]`)).toBeVisible();
     }
+    // The sixth recording is beyond the first-five default and must not load.
+    await expect(page.locator(`#waveforms .waveform[data-ix="audio-6.mp3"]`)).not.toBeVisible();
   });
 
   // 2.1b Selecting a waveform in the nav bar triggers render

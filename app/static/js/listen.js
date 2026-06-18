@@ -3,8 +3,8 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { initSolidAuth } from "./solid.js";
-import * as v6Playback from "./annotation/playback.js";
 import * as v6UiState from "./annotation/ui-state.js";
+import * as v6State from "./annotation/state.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
@@ -20,6 +20,7 @@ import {
   commitAnnotationsToAlignment,
   loadAnnotationsFromAlignment,
   maybeSyncV6Regions,
+  setActiveRegionStart,
 } from "./annotation/index.js";
 
 let markers = [];
@@ -116,7 +117,18 @@ let closeListeningMode = false;
 // jumpToTarget mode: show numbered overlays on on-screen waveforms
 let _jumpToTargetActive = false;
 let _jumpToTargetWaveforms = []; // snapshot of badged waveforms for the current session
+// The active close-listening "jump target" is EITHER a marker OR an
+// active-annotation region start. At most one of these is non-null at a time:
+//   activeMarkerIx     — index into markers[] when the target is a marker
+//   _activeRegionStart — { annId, regionId } when the target is a region start
 let activeMarkerIx = null; // index into markers[] array
+let _activeRegionStart = null; // { annId, regionId } | null
+
+/** Set/clear the active region-start target and its left-border indicator. */
+function _setActiveRegionStart(ref) {
+  _activeRegionStart = ref || null;
+  setActiveRegionStart(_activeRegionStart);
+}
 
 function getOrigin(url) {
   try {
@@ -1559,12 +1571,15 @@ window.addEventListener("resize", () => {
 
 function enterCloseListeningMode(markerArrayIndex) {
   closeListeningMode = true;
-  if (markers.length > 0) {
-    activeMarkerIx =
-      markerArrayIndex != null ? markerArrayIndex : findClosestMarkerIndex();
+  if (markerArrayIndex != null) {
+    // Explicit marker entry (e.g. clicking a marker): activate that marker.
+    activeMarkerIx = markerArrayIndex;
+    _setActiveRegionStart(null);
     seekToActiveMarker();
   } else {
-    activeMarkerIx = null;
+    // General entry: activate the closest jump target (marker or active-
+    // annotation region start) at or before the current playback position.
+    _activateClosestJumpTargetBehind();
   }
   redrawAllMarkers();
   updateCloseListeningBadge();
@@ -1574,70 +1589,226 @@ function enterCloseListeningMode(markerArrayIndex) {
 function exitCloseListeningMode() {
   closeListeningMode = false;
   activeMarkerIx = null;
+  _setActiveRegionStart(null);
   _updateMarkBtnTooltip();
-  // Reset clip-path on the active waveform so the waveform isn't clipped
-  // from a prior seekToActiveMarker() call (score-only page bug).
-  if (currentAudioIx && wavesurfers[currentAudioIx]) {
-    wavesurfers[currentAudioIx].seekTo(0);
-  }
+  // Leave the playhead exactly where it is on exit (whether playing or paused).
+  // We deliberately do NOT seekTo(0) here: that old clip-path reset would jump
+  // the position back to the start; keeping the playhead put is what's wanted.
   redrawAllMarkers();
   updateCloseListeningBadge();
 }
 
+/**
+ * Activate the close-listening jump target (marker or active-annotation region
+ * start) closest to and at/before the current playback position, seeking to
+ * it. Falls back to the earliest target if none lies before the playhead.
+ */
+function _activateClosestJumpTargetBehind() {
+  activeMarkerIx = null;
+  _setActiveRegionStart(null);
+  // Focus fix: fall back to the first loaded waveform if none is current.
+  if (!currentAudioIx || !wavesurfers[currentAudioIx]) {
+    const keys = Object.keys(wavesurfers);
+    if (keys.length === 0) return;
+    currentAudioIx = keys[0];
+  }
+  const stops = _getCloseListeningStops();
+  if (!stops.length) return;
+  const currentTime = wavesurfers[currentAudioIx].getCurrentTime();
+  let chosen = null;
+  for (const s of stops) {
+    if (s.time <= currentTime + 1e-6) chosen = s;
+  }
+  if (!chosen) chosen = stops[0];
+  _activateJumpTarget(chosen);
+}
+
+/** Make a jump-target stop active (updating marker/region indicators) and seek to it. */
+function _activateJumpTarget(stop) {
+  if (stop.markerIx != null) {
+    activeMarkerIx = stop.markerIx;
+    _setActiveRegionStart(null);
+    redrawAllMarkers();
+    seekToActiveMarker();
+  } else {
+    activeMarkerIx = null;
+    _setActiveRegionStart(stop.regionRef);
+    redrawAllMarkers();
+    _seekCloseListeningTo(stop.time);
+  }
+}
+
 function seekToActiveMarker() {
   if (activeMarkerIx == null || !currentAudioIx) return;
-  const alignIx = markers[activeMarkerIx];
-  const t = getCorrespondingTime(currentAudioIx, alignIx);
+  _seekCloseListeningTo(getCorrespondingTime(currentAudioIx, markers[activeMarkerIx]));
+  _updateMarkBtnTooltip();
+}
+
+/**
+ * Seek the current waveform to time `t` (seconds) and, when zoomed, scroll it
+ * into view if it isn't already. Shared by active-marker seeks and the
+ * close-listening jump-to-region-start navigation.
+ */
+function _seekCloseListeningTo(t) {
+  if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
   const duration = wavesurfers[currentAudioIx].getDuration();
   wavesurfers[currentAudioIx].seekTo(t / duration);
-  // At zoom: only scroll if the marker is outside the visible viewport
+  // At zoom: only scroll if the target is outside the visible viewport
   if (_currentZoomLevel > 1) {
     const ws = wavesurfers[currentAudioIx];
     const fullW = _getZoomedWidth(currentAudioIx);
     const scrollLeft = ws.getScroll();
     const scrollContainer = _getScrollContainer(currentAudioIx);
     const viewW = scrollContainer ? scrollContainer.clientWidth : fullW;
-    const markerPx = (t / duration) * fullW;
-    const inView = markerPx >= scrollLeft && markerPx <= scrollLeft + viewW;
+    const targetPx = (t / duration) * fullW;
+    const inView = targetPx >= scrollLeft && targetPx <= scrollLeft + viewW;
     if (!inView) {
       ws.setScrollTime(t);
       _syncOverlayScroll(currentAudioIx);
       _syncAllWaveformScrolls(currentAudioIx);
     }
   }
-  _updateMarkBtnTooltip();
 }
 
-function findClosestMarkerIndex() {
-  // Find the closest marker at or before current playback position.
-  // If none, use the closest marker in the future.
-  if (markers.length === 0) return null;
-  // Ensure we have a valid currentAudioIx (focus fix)
-  if (!currentAudioIx || !wavesurfers[currentAudioIx]) {
-    const keys = Object.keys(wavesurfers);
-    if (keys.length === 0) return 0;
-    currentAudioIx = keys[0];
+/**
+ * Play an annotation from the beginning of its first region. Called when an
+ * annotation card (chip) is clicked: activate the annotation, pick a target
+ * waveform (the current one if it's attached, else the first loaded target),
+ * seek to that region's start, and start playback.
+ *
+ * In close-listening mode the region start also becomes the active jump
+ * target, so the region loops back on itself at its end (see
+ * _maybeLoopActiveRegion). Outside close-listening, playback runs on past the
+ * region end as normal.
+ */
+export function playAnnotation(annId) {
+  v6State.setActiveAnnotation(annId);
+  const ann = v6State.getById(annId);
+  if (!ann || !Array.isArray(ann.targets) || ann.targets.length === 0) return;
+  // Pick a target waveform: prefer the current one, else the first loaded.
+  let target = ann.targets.find((t) => t.file === currentAudioIx && wavesurfers[t.file]);
+  if (!target) target = ann.targets.find((t) => wavesurfers[t.file]);
+  if (!target) return;
+  // First region by start time among those with extent on this target.
+  const first = (ann.regions || [])
+    .map((r) => {
+      const rt = target.regionTimes[r.id];
+      return rt && rt.end > rt.start ? { id: r.id, start: rt.start } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.start - b.start)[0];
+  if (!first) return;
+  // Make the target the active waveform (swap carries position; we re-seek next).
+  if (target.file !== currentAudioIx) swapCurrentAudio(target.file);
+  // In close-listening, the region start becomes the active jump target so the
+  // region loops; redraw markers to clear any previously-active marker.
+  if (closeListeningMode) {
+    activeMarkerIx = null;
+    _setActiveRegionStart({ annId, regionId: first.id });
+    redrawAllMarkers();
   }
-  const currentAlignIx = getClosestAlignmentIx();
-  // Build sorted array of {markerArrayIndex, alignmentIx}
-  const sorted = markers.map((m, i) => ({ i, m })).sort((a, b) => a.m - b.m);
-  // Find closest at or before current position
-  let best = null;
-  for (const entry of sorted) {
-    if (entry.m <= currentAlignIx) best = entry;
-  }
-  if (best != null) return best.i;
-  // No marker in the past; use closest in the future
-  return sorted[0].i;
+  _seekCloseListeningTo(first.start);
+  const ws = wavesurfers[currentAudioIx];
+  const r = ws && ws.play();
+  if (r && typeof r.catch === "function") r.catch(() => {});
 }
 
-function getSortedMarkerIndices() {
-  // Returns indices into markers[] sorted by their alignment grid position
-  return markers
-    .map((m, i) => ({ i, m }))
-    .sort((a, b) => a.m - b.m)
-    .map((x) => x.i);
+/**
+ * Close-listening region loop: when the active jump target is a region start,
+ * loop that region back to its start upon reaching its end. Gated on
+ * closeListeningMode (live) — switching close-listening off mid-playback lets
+ * playback continue past the region end as normal. Called from the active
+ * waveform's audioprocess handler.
+ */
+function _maybeLoopActiveRegion(filename) {
+  if (!closeListeningMode || !_activeRegionStart || filename !== currentAudioIx) return;
+  const ann = v6State.getById(_activeRegionStart.annId);
+  if (!ann || !Array.isArray(ann.targets)) return;
+  const target = ann.targets.find((t) => t.file === filename);
+  const rt = target && target.regionTimes[_activeRegionStart.regionId];
+  if (!rt || !(rt.end > rt.start)) return;
+  const ws = wavesurfers[filename];
+  if (ws && ws.getCurrentTime() >= rt.end) _seekCloseListeningTo(rt.start);
 }
+
+/**
+ * Build the ordered list of close-listening "stops" on the current waveform:
+ * every marker, plus the start of each region of the *currently-active*
+ * annotation (other annotations' regions are ignored). Each entry is
+ * { time, markerIx }, where time is in seconds on the current waveform and
+ * markerIx is the markers[] index, or null for a region start.
+ */
+function _getCloseListeningStops() {
+  const stops = [];
+  for (let i = 0; i < markers.length; i++) {
+    stops.push({
+      time: getCorrespondingTime(currentAudioIx, markers[i]),
+      markerIx: i,
+      regionRef: null,
+    });
+  }
+  const ann = v6State.getById(v6State.getActiveId());
+  if (ann && Array.isArray(ann.targets)) {
+    const target = ann.targets.find((t) => t.file === currentAudioIx);
+    if (target && target.regionTimes) {
+      (ann.regions || []).forEach((r) => {
+        const rt = target.regionTimes[r.id];
+        if (rt && rt.end > rt.start) {
+          stops.push({
+            time: rt.start,
+            markerIx: null,
+            regionRef: { annId: ann.id, regionId: r.id },
+          });
+        }
+      });
+    }
+  }
+  return stops.sort((a, b) => a.time - b.time);
+}
+
+/**
+ * Close-listening plain-arrow navigation: jump to the previous (dir < 0) or
+ * next (dir > 0) stop relative to the current playback position. Returns true
+ * if it handled the key (there were stops to navigate), false otherwise so the
+ * caller can fall back to normal-mode seeking.
+ *
+ * The backward window is 800ms: after a leftward jump,
+ * playback advances, so a too-tight window would re-select the just-reached
+ * stop on a quick second press instead of stepping to the prior one.
+ */
+function _jumpCloseListening(dir) {
+  if (!currentAudioIx || !wavesurfers[currentAudioIx]) return false;
+  const stops = _getCloseListeningStops();
+  if (!stops.length) return false;
+  const currentTime = wavesurfers[currentAudioIx].getCurrentTime();
+  let target = null;
+  if (dir < 0) {
+    for (let j = stops.length - 1; j >= 0; j--) {
+      if (stops[j].time < currentTime - 0.8) {
+        target = stops[j];
+        break;
+      }
+    }
+    if (target == null) {
+      // Nothing far enough in the past — jump to start of file.
+      wavesurfers[currentAudioIx].seekTo(0);
+      return true;
+    }
+  } else {
+    for (let j = 0; j < stops.length; j++) {
+      if (stops[j].time > currentTime + 0.1) {
+        target = stops[j];
+        break;
+      }
+    }
+    if (target == null) return true; // nothing ahead; stay put
+  }
+  // Region-start targets keep activeMarkerIx null, so cross-waveform position
+  // carry follows the playhead rather than a stale marker.
+  _activateJumpTarget(target);
+  return true;
+}
+
 
 function updateCloseListeningBadge() {
   const cb = document.getElementById("close-listening-cb");
@@ -1822,13 +1993,6 @@ export function swapCurrentAudio(newAudio) {
     // no need to swap
     return;
   }
-  // Heads-up to the V6 playback engine BEFORE we pause the outgoing
-  // wavesurfer. This sets a "swapping" flag so the imminent pause event
-  // is interpreted correctly, and (if the incoming waveform is also a
-  // target of the playing annotation) re-binds the loop's listeners to
-  // the new wavesurfer. The pause-then-play below then drives the audio
-  // transition transparently.
-  v6Playback.notifySwap(newAudio);
   if (currentAudioIx) {
     console.log("Pausing current: ", currentAudioIx);
     console.log(
@@ -4341,6 +4505,16 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     waveform.appendChild(handle);
     waveform.draggable = true;
     waveform.addEventListener("dragstart", (ev) => {
+      // In draw mode the gesture belongs to WaveSurfer's region creation, not
+      // a native reorder drag. The CSS `-webkit-user-drag: none` guard is
+      // WebKit-only, so cancel the native drag here too — otherwise dragstart
+      // fires, adds `dragging`, and (since the drag is consumed by region
+      // drawing) no dragend arrives to remove it, leaving the waveform stuck
+      // at opacity 0.6 once edit mode's override is gone.
+      if (_drawModeActive) {
+        ev.preventDefault();
+        return;
+      }
       ev.dataTransfer.setData("text/plain", filename);
       ev.currentTarget.classList.add("dragging");
     });
@@ -5038,6 +5212,8 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     });
 
     wavesurfers[filename].on("audioprocess", () => {
+      // Close-listening single-region loop (active jump target is a region start).
+      _maybeLoopActiveRegion(filename);
       // continually update timer region when opened but not yet closed
       if (timerFrom === timerTo && timerFrom > 0) {
         _timerRegions[filename].setOptions({
@@ -5991,9 +6167,9 @@ document.addEventListener("DOMContentLoaded", () => {
   if (closeListeningCb) {
     closeListeningCb.addEventListener("change", () => {
       if (closeListeningCb.checked) {
-        enterCloseListeningMode(
-          markers.length > 0 ? findClosestMarkerIndex() : null,
-        );
+        // null → activate the closest jump target (marker or active-annotation
+        // region start) at/before the playhead.
+        enterCloseListeningMode(null);
       } else {
         exitCloseListeningMode();
       }
@@ -7253,88 +7429,18 @@ document.addEventListener("DOMContentLoaded", () => {
         break;
       }
       case "ArrowLeft": {
-        if (closeListeningMode && activeMarkerIx != null) {
-          if (e.shiftKey) {
-            // Nudge active marker left by constant time: Shift+Alt = 20ms, Shift = 100ms
-            const delta = e.altKey ? smallMarkerNudge : bigMarkerNudge;
-            const currentTime = getCorrespondingTime(
-              currentAudioIx,
-              markers[activeMarkerIx],
-            );
-            const targetTime = currentTime - delta;
-            if (targetTime >= 0) {
-              const newIx = getClosestAlignmentIx(targetTime, currentAudioIx);
-              // Only update if actually different from current position
-              if (newIx !== markers[activeMarkerIx]) {
-                const oldIx = markers[activeMarkerIx];
-                markers[activeMarkerIx] = newIx;
-                _persistMarkers();
-                _pushUndo(
-                  {
-                    type: "marker-move",
-                    markerArrayIx: activeMarkerIx,
-                    oldAlignIx: oldIx,
-                    newAlignIx: newIx,
-                  },
-                  true,
-                );
-                redrawAllMarkers();
-                seekToActiveMarker();
-              }
-            }
-          } else {
-            // Jump to the closest marker more than 100ms before current position.
-            // This avoids getting "stuck" on the current marker after a recent jump.
-            const currentTime = wavesurfers[currentAudioIx].getCurrentTime();
-            const sorted = getSortedMarkerIndices();
-            let target = null;
-            for (let j = sorted.length - 1; j >= 0; j--) {
-              const mTime = getCorrespondingTime(
-                currentAudioIx,
-                markers[sorted[j]],
-              );
-              if (mTime < currentTime - 0.1) {
-                target = sorted[j];
-                break;
-              }
-            }
-            if (target != null) {
-              activeMarkerIx = target;
-              redrawAllMarkers();
-              seekToActiveMarker();
-            } else {
-              // No marker far enough in the past — jump to start of file
-              const ws = wavesurfers[currentAudioIx];
-              ws.seekTo(0);
-            }
-          }
-        } else {
-          // Normal mode: seek backwards
-          // plain=10s, Shift=5s, Shift+Alt=1s
-          const delta = e.shiftKey ? (e.altKey ? 1 : 5) : 10;
-          const ws = wavesurfers[currentAudioIx];
-          const dur = ws.getDuration();
-          if (dur > 0) {
-            const newTime = Math.max(0, ws.getCurrentTime() - delta);
-            ws.seekTo(newTime / dur);
-          }
-        }
-        break;
-      }
-      case "ArrowRight": {
-        if (closeListeningMode && activeMarkerIx != null) {
-          if (e.shiftKey) {
-            // Nudge active marker right by constant time: Shift+Alt = 20ms, Shift = 100ms
-            const delta = e.altKey ? smallMarkerNudge : bigMarkerNudge;
-            const currentTime = getCorrespondingTime(
-              currentAudioIx,
-              markers[activeMarkerIx],
-            );
-            const gridLength = alignmentGrids[currentAudioIx].length;
-            const targetTime = currentTime + delta;
+        if (closeListeningMode && e.shiftKey && activeMarkerIx != null) {
+          // Nudge active marker left by constant time: Shift+Alt = 20ms, Shift = 100ms
+          const delta = e.altKey ? smallMarkerNudge : bigMarkerNudge;
+          const currentTime = getCorrespondingTime(
+            currentAudioIx,
+            markers[activeMarkerIx],
+          );
+          const targetTime = currentTime - delta;
+          if (targetTime >= 0) {
             const newIx = getClosestAlignmentIx(targetTime, currentAudioIx);
-            // Only update if actually different and in bounds
-            if (newIx !== markers[activeMarkerIx] && newIx < gridLength) {
+            // Only update if actually different from current position
+            if (newIx !== markers[activeMarkerIx]) {
               const oldIx = markers[activeMarkerIx];
               markers[activeMarkerIx] = newIx;
               _persistMarkers();
@@ -7350,28 +7456,52 @@ document.addEventListener("DOMContentLoaded", () => {
               redrawAllMarkers();
               seekToActiveMarker();
             }
-          } else {
-            // Jump to the closest marker more than 100ms ahead of current position,
-            // or if we're more than 100ms before the current active marker, re-seek it.
-            const currentTime = wavesurfers[currentAudioIx].getCurrentTime();
-            const sorted = getSortedMarkerIndices();
-            let target = null;
-            for (let j = 0; j < sorted.length; j++) {
-              const mTime = getCorrespondingTime(
-                currentAudioIx,
-                markers[sorted[j]],
-              );
-              if (mTime > currentTime + 0.1) {
-                target = sorted[j];
-                break;
-              }
-            }
-            if (target != null) {
-              activeMarkerIx = target;
-              redrawAllMarkers();
-              seekToActiveMarker();
-            }
           }
+        } else if (closeListeningMode && _jumpCloseListening(-1)) {
+          // Jumped to the previous stop (marker or active-annotation region start).
+        } else {
+          // Normal mode: seek backwards
+          // plain=10s, Shift=5s, Shift+Alt=1s
+          const delta = e.shiftKey ? (e.altKey ? 1 : 5) : 10;
+          const ws = wavesurfers[currentAudioIx];
+          const dur = ws.getDuration();
+          if (dur > 0) {
+            const newTime = Math.max(0, ws.getCurrentTime() - delta);
+            ws.seekTo(newTime / dur);
+          }
+        }
+        break;
+      }
+      case "ArrowRight": {
+        if (closeListeningMode && e.shiftKey && activeMarkerIx != null) {
+          // Nudge active marker right by constant time: Shift+Alt = 20ms, Shift = 100ms
+          const delta = e.altKey ? smallMarkerNudge : bigMarkerNudge;
+          const currentTime = getCorrespondingTime(
+            currentAudioIx,
+            markers[activeMarkerIx],
+          );
+          const gridLength = alignmentGrids[currentAudioIx].length;
+          const targetTime = currentTime + delta;
+          const newIx = getClosestAlignmentIx(targetTime, currentAudioIx);
+          // Only update if actually different and in bounds
+          if (newIx !== markers[activeMarkerIx] && newIx < gridLength) {
+            const oldIx = markers[activeMarkerIx];
+            markers[activeMarkerIx] = newIx;
+            _persistMarkers();
+            _pushUndo(
+              {
+                type: "marker-move",
+                markerArrayIx: activeMarkerIx,
+                oldAlignIx: oldIx,
+                newAlignIx: newIx,
+              },
+              true,
+            );
+            redrawAllMarkers();
+            seekToActiveMarker();
+          }
+        } else if (closeListeningMode && _jumpCloseListening(1)) {
+          // Jumped to the next stop (marker or active-annotation region start).
         } else {
           // Normal mode: seek forwards
           // plain=10s, Shift=5s, Shift+Alt=1s
@@ -7471,10 +7601,10 @@ document.addEventListener("DOMContentLoaded", () => {
         // Toggle close-listening mode
         if (closeListeningMode) {
           exitCloseListeningMode();
-        } else if (markers.length > 0) {
-          // Enter with closest marker to current playback position
-          const closestIdx = findClosestMarkerIndex();
-          enterCloseListeningMode(closestIdx);
+        } else {
+          // Enter with the closest jump target (marker or active-annotation
+          // region start) at/before the current playback position.
+          enterCloseListeningMode(null);
         }
         break;
       }

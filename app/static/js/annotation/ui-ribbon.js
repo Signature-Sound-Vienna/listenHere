@@ -7,13 +7,12 @@
 import * as state from "./state.js";
 import * as uiState from "./ui-state.js";
 import { el, clearChildren, setStatusText, confirmDeleteFromPod } from "./ui-common.js";
-import { getActiveGroupingSnapshot } from "../listen.js";
+import { getActiveGroupingSnapshot, playAnnotation } from "../listen.js";
 import {
   deleteAnnotationFromPod,
   listAnnotationsForLoadedAudios,
   loadAnnotationFromMM,
 } from "./solid-load.js";
-import * as playback from "./playback.js";
 import { solid } from "../solid.js";
 
 // Pencil glyph mirroring the drawer pull-tab (ui-pull-tab.js), used as the
@@ -261,43 +260,22 @@ export function mountRibbon(parent) {
 
   function _chip(a) {
     const isActive = a.id === state.getActiveId();
-    const playingNow = playback.isPlaying(a.id);
-    // The play/pause overlay only appears on the active chip; click toggles.
-    // On non-active chips, clicking the chip body sets it active and the
-    // overlay appears in its "ready to play" state.
-    const overlay = isActive
-      ? el("button", {
-          class: "lh-v6-chip-play" + (playingNow ? " playing" : ""),
-          type: "button",
-          title: playingNow ? "Pause looped playback" : "Play this annotation on loop",
-          "aria-label": playingNow ? "Pause" : "Play",
-          // Stop propagation so we don't re-fire the chip's setActive click.
-          onclick: (e) => { e.stopPropagation(); playback.toggle(a.id); },
-          text: playingNow ? "❚❚" : "▶",
-        })
-      : null;
+    // Clicking a chip activates the annotation and plays it from the start of
+    // its first region (listen.js owns waveform pick, seek, play, and the
+    // close-listening loop). No per-card play/pause control any more.
+    const activateAndPlay = () => playAnnotation(a.id);
     return el(
       "div",
       {
-        class:
-          "lh-v6-chip" +
-          (isActive ? " active" : "") +
-          (playingNow ? " playing" : ""),
+        class: "lh-v6-chip" + (isActive ? " active" : ""),
         role: "button",
         tabIndex: "0",
         title: a.label || "Untitled annotation",
-        onclick: () => {
-          if (!isActive) {
-            // Switching annotations: stop any current playback, then activate.
-            playback.stop();
-            state.setActiveAnnotation(a.id);
-          }
-        },
+        onclick: activateAndPlay,
         onkeydown: (e) => {
-          if ((e.key === "Enter" || e.key === " ") && !isActive) {
+          if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            playback.stop();
-            state.setActiveAnnotation(a.id);
+            activateAndPlay();
           }
         },
       },
@@ -320,13 +298,11 @@ export function mountRibbon(parent) {
               "aria-label": "Posted to Solid",
             })
           : null,
-        overlay,
       ],
     );
   }
 
   state.subscribe(render);
-  playback.subscribe(render);
   render();
   return ribbon;
 }

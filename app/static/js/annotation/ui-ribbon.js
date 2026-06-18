@@ -230,10 +230,20 @@ export function mountRibbon(parent) {
     // Count badge: bare total normally; "matches / total" while filtering.
     if (all.length === 0) {
       countEl.textContent = "";
+      countEl.title = "";
     } else if (q) {
       countEl.textContent = filtered.length + " / " + all.length;
+      countEl.title =
+        filtered.length +
+        " of " +
+        all.length +
+        " annotation" +
+        (all.length === 1 ? "" : "s") +
+        " match the current filter";
     } else {
       countEl.textContent = String(all.length);
+      countEl.title =
+        all.length + " annotation" + (all.length === 1 ? "" : "s");
     }
     if (filtered.length === 0) {
       chips.appendChild(

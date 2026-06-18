@@ -206,7 +206,7 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
           missing.length +
           " recording(s) that aren't loaded locally:\n\n" +
           missing.map((m) => "  • " + m).join("\n") +
-          "\n\nLoad these audio files (and set their Linked Data URIs in Manage files) before loading the annotation.",
+          "\n\nLoad these audio files (and set their Linked Data URIs in Manage recordings) before loading the annotation.",
       );
     }
   }

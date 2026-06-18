@@ -398,7 +398,7 @@ function _resolveAudioUris(ann) {
     const audioUri = getAudioLinkedDataUri(t.file);
     if (!audioUri || !/^https?:\/\//i.test(audioUri)) {
       throw new Error(
-        `${t.file} has no Linked Data URI. Set one in Manage files → Linked Data URIs first.`,
+        `${t.file} has no Linked Data URI. Set one in Manage recordings → Linked Data URIs first.`,
       );
     }
     out[t.file] = _normaliseIri(audioUri);

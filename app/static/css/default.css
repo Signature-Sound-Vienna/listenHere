@@ -3670,15 +3670,70 @@ body.marker-dragging * {
 }
 
 .gm-modal {
+  position: relative;
   background: var(--color-surface, #fff);
   color: var(--color-text, #1e293b);
   border-radius: 10px;
   width: min(90vw, 900px);
+  height: 85vh;
   max-height: 85vh;
   display: flex;
   flex-direction: column;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3);
   overflow: hidden;
+}
+
+/* Unapplied-changes confirmation overlay (shown on accidental dismiss) */
+.gm-confirm-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.45);
+  border-radius: 10px;
+}
+
+.gm-confirm-box {
+  background: var(--color-surface, #fff);
+  color: var(--color-text, #1e293b);
+  border-radius: 8px;
+  padding: 20px 22px;
+  max-width: 420px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+
+.gm-confirm-msg {
+  margin: 0 0 16px;
+  font-size: 0.95em;
+}
+
+.gm-confirm-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.gm-confirm-buttons button {
+  border-radius: 4px;
+  padding: 5px 14px;
+  font-size: 0.85em;
+  cursor: pointer;
+  border: 1px solid var(--color-border, #cbd5e1);
+  background: var(--color-surface, #fff);
+  color: var(--color-text, #1e293b);
+}
+
+.gm-confirm-buttons .gm-confirm-discard {
+  color: var(--color-danger, #ef4444);
+  border-color: var(--color-danger, #ef4444);
+}
+
+.gm-confirm-buttons .gm-apply {
+  background: var(--color-link, #2563eb);
+  color: #fff;
+  border-color: var(--color-link, #2563eb);
 }
 
 .gm-header {
@@ -3955,8 +4010,32 @@ body.marker-dragging * {
   background: var(--color-surface-alt, #f1f5f9);
 }
 
+.gm-file-item.gm-selected {
+  background: var(--color-link, #2563eb);
+  color: #fff;
+}
+
+.gm-file-item.gm-selected:hover {
+  background: var(--color-link-hover, #1d4ed8);
+}
+
 .gm-file-item.gm-dragging {
   opacity: 0.4;
+}
+
+/* Custom drag image shown when dragging a multi-file selection */
+.gm-drag-ghost {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  padding: 4px 12px 4px 30px;
+  border-radius: 4px;
+  background: var(--color-link, #2563eb);
+  color: #fff;
+  font-size: 0.85em;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .gm-empty {
@@ -3978,6 +4057,27 @@ body.marker-dragging * {
 
 .gm-group-card.gm-drop-target {
   box-shadow: inset 0 0 0 2px var(--color-link, #2563eb);
+}
+
+/* Drag-to-create "New Group" target at the bottom of the groups list */
+.gm-newgroup-dropzone {
+  border: 2px dashed var(--color-border, #cbd5e1);
+  border-radius: 6px;
+  padding: 14px 10px;
+  margin-top: 4px;
+  text-align: center;
+  font-size: 0.82em;
+  font-style: italic;
+  color: var(--color-text-subtle, #94a3b8);
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.gm-newgroup-dropzone.gm-drop-target {
+  border-color: var(--color-link, #2563eb);
+  color: var(--color-link, #2563eb);
+  background: var(--color-surface-alt, #f1f5f9);
+  font-style: normal;
+  font-weight: 600;
 }
 
 .gm-group-header {
@@ -4040,6 +4140,90 @@ body.marker-dragging * {
   font-family: monospace;
   background: var(--color-surface, #fff);
   color: var(--color-text, #1e293b);
+}
+
+/* "Add by filename" bulk-add row in group cards */
+.gm-addby-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.gm-addby-row label {
+  font-size: 0.82em;
+  color: var(--color-text-secondary, #475569);
+  white-space: nowrap;
+}
+
+.gm-addby-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--color-border, #cbd5e1);
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 0.82em;
+  background: var(--color-surface, #fff);
+  color: var(--color-text, #1e293b);
+}
+
+.gm-addby-input.gm-invalid {
+  border-color: var(--color-danger, #ef4444);
+}
+
+.gm-addby-btn {
+  flex: 0 0 auto;
+  background: var(--color-link, #2563eb);
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 12px;
+  font-size: 0.82em;
+  cursor: pointer;
+}
+
+.gm-addby-btn:hover {
+  background: var(--color-link-hover, #1d4ed8);
+}
+
+/* Regex-mode toggle (VS Code-style ".*" icon) */
+.gm-regex-toggle {
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: none;
+  color: var(--color-text-subtle, #94a3b8);
+  font-family: monospace;
+  font-size: 0.9em;
+  font-weight: 700;
+  line-height: 1;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
+.gm-regex-toggle:hover {
+  color: var(--color-text, #334155);
+  background: var(--color-surface-alt, #f1f5f9);
+}
+
+.gm-regex-toggle.gm-active {
+  color: #fff;
+  background: var(--color-link, #2563eb);
+  border-color: var(--color-link, #2563eb);
+}
+
+/* Greyed-out preview of recordings a term ("Add by filename") or a hovered
+   drag would add to a group */
+.gm-group-files .gm-file-item.gm-preview,
+.gm-group-files .gm-file-item.gm-drag-preview {
+  opacity: 0.5;
+  font-style: italic;
+}
+
+/* Left (ungrouped) pane highlighted as a drop target */
+.gm-pane.gm-left.gm-drop-target {
+  box-shadow: inset 0 0 0 2px var(--color-link, #2563eb);
+  border-radius: 6px;
 }
 
 /* Colour picker row in group modal */

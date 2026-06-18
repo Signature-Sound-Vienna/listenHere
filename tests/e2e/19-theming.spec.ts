@@ -132,7 +132,7 @@ test.describe('19. Theming', () => {
     expect(color).toBe('rgb(34, 34, 34)');
 
     // Labels inside the card should also carry the dark text override
-    const labelColor = await card.locator('.gm-pattern-row label').evaluate(
+    const labelColor = await card.locator('.gm-addby-row label').evaluate(
       (el: HTMLElement) => el.style.color
     );
     expect(labelColor).toBe('rgb(34, 34, 34)');

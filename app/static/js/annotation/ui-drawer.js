@@ -253,7 +253,7 @@ function _renderPublishBar(bar, ann) {
   } else if (missingUriFiles.length > 0) {
     disabled = true;
     tooltip =
-      "Set Linked Data URI prefix in Manage files first. Missing for: " +
+      "Set Linked Data URI prefix in Manage recordings first. Missing for: " +
       missingUriFiles.join(", ");
   } else if (!isLoggedIn) {
     disabled = true;

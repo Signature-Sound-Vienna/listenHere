@@ -5085,6 +5085,43 @@ async function _buildAndPrepareSynthWaveform(
 
 export let loadedAlignmentJSON = null; // Full alignment object for download
 
+// Number of waveforms to auto-load when the alignment JSON lacks
+// precalculated peaks (loading each one then requires decoding the audio,
+// so we limit the default to keep initial load responsive).
+const DEFAULT_WAVEFORM_LOAD_COUNT = 5;
+
+/**
+ * Automatically load waveforms when the listen interface first loads.
+ *
+ * If the alignment JSON shipped precalculated peaks for every recording,
+ * rendering a waveform is cheap (no audio decode needed), so we load all of
+ * them — as if the user had clicked the "All" button. Otherwise we load only
+ * the first few recordings to keep the initial load responsive.
+ *
+ * Loading is triggered by programmatically clicking each unchecked checkbox,
+ * mirroring the "All" list-selector so the exact same load path runs.
+ */
+function _autoLoadDefaultWaveforms(filenames) {
+  if (!filenames.length) return;
+  const hasPrecalculatedPeaks = filenames.every(
+    (fn) =>
+      _waveformPeaks[fn] &&
+      Array.isArray(_waveformPeaks[fn].peaks) &&
+      _waveformPeaks[fn].peaks.length > 0,
+  );
+  const toLoad = hasPrecalculatedPeaks
+    ? filenames
+    : filenames.slice(0, DEFAULT_WAVEFORM_LOAD_COUNT);
+  console.log(
+    `Auto-loading ${toLoad.length} waveform(s) on load ` +
+      `(precalculated peaks: ${hasPrecalculatedPeaks})`,
+  );
+  toLoad.forEach((fn) => {
+    const cb = document.getElementById("checkbox-" + fn);
+    if (cb && !cb.checked) cb.click();
+  });
+}
+
 async function setGrids(grids) {
   console.log("received grids: ", grids);
   loadedAlignmentJSON = grids;
@@ -5244,6 +5281,10 @@ async function setGrids(grids) {
     );
   }
 
+  // Auto-load waveforms: all of them if the alignment JSON has precalculated
+  // peaks, otherwise just the first few. Uses the same sorted filename list
+  // already rendered into the sidebar above.
+  _autoLoadDefaultWaveforms(filenames);
 }
 
 // ---------------------------------------------------------------------------

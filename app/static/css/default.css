@@ -5318,12 +5318,55 @@ body.lh-v6-drawer-open .drawer-btns { right: 380px; }
   cursor: pointer;
   padding: 2px 0;
 }
+.lh-v6-detached-hint {
+  margin: 4px 0 2px;
+  font-size: 11px;
+  color: var(--color-text-secondary, var(--color-text));
+  opacity: 0.85;
+}
 .lh-v6-detached-tile {
   margin: 6px 0;
   padding: 6px 8px;
   border: 1px solid var(--color-border-light);
   border-radius: 5px;
   background: var(--color-bg);
+  cursor: grab;
+}
+.lh-v6-detached-tile:active { cursor: grabbing; }
+.lh-v6-detached-dragging { opacity: 0.5; }
+.lh-v6-detached-grip {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--color-text-secondary, var(--color-text));
+  cursor: grab;
+  user-select: none;
+}
+.lh-v6-detached-copy {
+  margin-left: auto;
+  padding: 1px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 3px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-secondary, var(--color-text));
+  cursor: pointer;
+}
+.lh-v6-detached-copy:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+.lh-v6-detached-copy:disabled { opacity: 0.7; cursor: default; }
+/* When a detached note has a copy button, the discard '×' shouldn't also
+   grab the auto-margin — reset it so both sit at the right in order. */
+.lh-v6-detached-tile .lh-v6-detached-discard { margin-left: 6px; }
+/* Highlight any annotation text field while a detached note is dragged over
+   it (title, description, per-recording note, group note, comparison). */
+.lh-v6-drop-target {
+  outline: 2px dashed var(--color-accent);
+  outline-offset: -1px;
+  background: var(--color-accent-light);
 }
 .lh-v6-detached-text {
   margin: 4px 0 0;

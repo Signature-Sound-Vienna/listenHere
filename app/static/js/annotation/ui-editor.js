@@ -14,6 +14,43 @@ import * as state from "./state.js";
 import { el, confirmRemoveIfTextful, confirmRepin } from "./ui-common.js";
 import { getActiveGroupingSnapshot } from "../listen.js";
 
+// Custom drag MIME for transferring a detached (removed-group) note onto a
+// group note. Scoping to our own type means group-note textareas only
+// intercept OUR drags — native text drag-and-drop into the textarea still
+// works as usual.
+const DETACHED_MIME = "application/x-lh-detached-note";
+
+/** Join dropped text onto existing field content (blank-line, or space for single-line inputs). */
+function _joinNote(cur, text, singleLine) {
+  if (!cur || !cur.trim()) return text;
+  return cur.replace(/\s*$/, "") + (singleLine ? " " : "\n\n") + text;
+}
+
+/**
+ * Wire an <input>/<textarea> as a detached-note drop target. `append(text)`
+ * is invoked with the dropped note text on a successful drop. We only react
+ * to our own MIME, so native text drag-and-drop into the field still works.
+ */
+function _wireNoteDrop(node, append) {
+  const carries = (e) =>
+    Array.from(e.dataTransfer.types || []).includes(DETACHED_MIME);
+  node.addEventListener("dragover", (e) => {
+    if (!carries(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    node.classList.add("lh-v6-drop-target");
+  });
+  node.addEventListener("dragleave", () => node.classList.remove("lh-v6-drop-target"));
+  node.addEventListener("drop", (e) => {
+    if (!carries(e)) return;
+    e.preventDefault();
+    node.classList.remove("lh-v6-drop-target");
+    const text =
+      e.dataTransfer.getData(DETACHED_MIME) || e.dataTransfer.getData("text/plain");
+    if (text) append(text);
+  });
+}
+
 export function renderEditor(ann) {
   const root = el("div", { class: "lh-v6-editor" });
   root.appendChild(_identitySection(ann));
@@ -122,6 +159,19 @@ function _identitySection(ann) {
   sec.appendChild(
     el("h3", { class: "lh-v6-section-title", text: "Identity" }),
   );
+  const titleInput = el("input", {
+    type: "text",
+    class: "lh-v6-title-input",
+    placeholder: "Annotation title",
+    value: ann.label,
+    "data-v6-key": "title",
+    oninput: (e) =>
+      state.updateAnnotationField(ann.id, "label", e.target.value),
+  });
+  _wireNoteDrop(titleInput, (text) => {
+    const cur = state.getById(ann.id)?.label || "";
+    state.updateAnnotationField(ann.id, "label", _joinNote(cur, text, true));
+  });
   sec.appendChild(
     el("div", { class: "lh-v6-identity-row" }, [
       el("input", {
@@ -133,15 +183,7 @@ function _identitySection(ann) {
         oninput: (e) =>
           state.updateAnnotationField(ann.id, "color", e.target.value),
       }),
-      el("input", {
-        type: "text",
-        class: "lh-v6-title-input",
-        placeholder: "Annotation title",
-        value: ann.label,
-        "data-v6-key": "title",
-        oninput: (e) =>
-          state.updateAnnotationField(ann.id, "label", e.target.value),
-      }),
+      titleInput,
       el("button", {
         class: "lh-v6-delete-btn",
         type: "button",
@@ -163,17 +205,20 @@ function _descriptionSection(ann) {
   sec.appendChild(
     el("h3", { class: "lh-v6-section-title", text: "Description" }),
   );
-  sec.appendChild(
-    el("textarea", {
-      class: "lh-v6-description-textarea",
-      placeholder: "Overall description — what this annotation is about.",
-      rows: "3",
-      value: ann.description,
-      "data-v6-key": "description",
-      oninput: (e) =>
-        state.updateAnnotationField(ann.id, "description", e.target.value),
-    }),
-  );
+  const ta = el("textarea", {
+    class: "lh-v6-description-textarea",
+    placeholder: "Overall description — what this annotation is about.",
+    rows: "3",
+    value: ann.description,
+    "data-v6-key": "description",
+    oninput: (e) =>
+      state.updateAnnotationField(ann.id, "description", e.target.value),
+  });
+  _wireNoteDrop(ta, (text) => {
+    const cur = state.getById(ann.id)?.description || "";
+    state.updateAnnotationField(ann.id, "description", _joinNote(cur, text));
+  });
+  sec.appendChild(ta);
   return sec;
 }
 
@@ -233,15 +278,7 @@ function _recordingTile(ann, target) {
         },
       }),
     ]),
-    el("textarea", {
-      class: "lh-v6-recording-note",
-      placeholder: "Notes on this recording in this annotation…",
-      rows: "2",
-      value: target.description || "",
-      "data-v6-key": "tgt-note-" + target.file,
-      oninput: (e) =>
-        state.updateTargetNote(ann.id, target.file, e.target.value),
-    }),
+    _recordingNoteTextarea(ann, target),
   ];
   // Per-target region list. Each row shows times in this recording's
   // own timescale + duration, with a trash that removes the region
@@ -254,6 +291,25 @@ function _recordingTile(ann, target) {
     children.push(list);
   }
   return el("div", { class: "lh-v6-recording-tile" }, children);
+}
+
+function _recordingNoteTextarea(ann, target) {
+  const ta = el("textarea", {
+    class: "lh-v6-recording-note",
+    placeholder: "Notes on this recording in this annotation…",
+    rows: "2",
+    value: target.description || "",
+    "data-v6-key": "tgt-note-" + target.file,
+    oninput: (e) =>
+      state.updateTargetNote(ann.id, target.file, e.target.value),
+  });
+  _wireNoteDrop(ta, (text) => {
+    const cur =
+      state.getById(ann.id)?.targets.find((t) => t.file === target.file)
+        ?.description || "";
+    state.updateTargetNote(ann.id, target.file, _joinNote(cur, text));
+  });
+  return ta;
 }
 
 function _groupLabelForFile(ann, file) {
@@ -273,21 +329,24 @@ function _groupingSection(ann) {
   const sec = el("section", { class: "lh-v6-section" });
 
   // Header row: title + the deliberate "re-pin to current view" action.
-  // Enabled whenever a grouping is loaded — we intentionally do NOT gate on a
-  // render-time diff, because the editor re-renders on annotation-state
-  // changes but not when the *application* grouping changes, so a diff
-  // computed here would go stale (and read as an inverted enabled state).
-  // The diff is computed fresh on click instead; _doRepin no-ops with an
-  // "already matches" notice when nothing has changed.
+  // Disabled when the pinned grouping already matches the current view. This
+  // render-time diff stays accurate because the drawer re-renders the editor
+  // on `lh-grouping-changed` (dispatched by listen.js on tab switch / grouping
+  // apply) as well as on annotation-state changes. _doRepin recomputes the
+  // diff fresh on click as a belt-and-braces guard.
   const snapshot = getActiveGroupingSnapshot();
+  const diff = snapshot ? state.diffGrouping(ann, snapshot) : null;
+  const canRepin = !!(diff && diff.changed);
   const repinBtn = el("button", {
     class: "lh-v6-group-repin",
     type: "button",
     text: "↻ Update to current view",
-    disabled: !snapshot,
-    title: snapshot
-      ? "Adopt the current application grouping into this annotation"
-      : "No grouping available — load an alignment with groups first.",
+    disabled: !canRepin,
+    title: !snapshot
+      ? "No grouping available — load an alignment with groups first."
+      : canRepin
+        ? "Adopt the current application grouping into this annotation"
+        : "Grouping already matches the current view",
     onclick: () => _doRepin(ann),
   });
   sec.appendChild(
@@ -349,20 +408,32 @@ function _groupNoteTile(ann, g, disabledReason) {
         el("span", { class: "lh-v6-group-tile-label", text: g.label }),
         el("span", { class: "lh-v6-group-tile-count", text: countText }),
       ]),
-      el("textarea", {
-        class: "lh-v6-group-note-textarea",
-        placeholder: disabledReason
-          ? disabledReason
-          : "Notes about this group in this annotation…",
-        title: disabledReason || "",
-        rows: "2",
-        value: ann.groupNotes[g.groupId] || "",
-        disabled: !!disabledReason,
-        "data-v6-key": "group-note-" + g.groupId,
-        oninput: (e) => state.setGroupNote(ann.id, g.groupId, e.target.value),
-      }),
+      _groupNoteTextarea(ann, g, disabledReason),
     ],
   );
+}
+
+function _groupNoteTextarea(ann, g, disabledReason) {
+  const ta = el("textarea", {
+    class: "lh-v6-group-note-textarea",
+    placeholder: disabledReason
+      ? disabledReason
+      : "Notes about this group in this annotation…",
+    title: disabledReason || "",
+    rows: "2",
+    value: ann.groupNotes[g.groupId] || "",
+    disabled: !!disabledReason,
+    "data-v6-key": "group-note-" + g.groupId,
+    oninput: (e) => state.setGroupNote(ann.id, g.groupId, e.target.value),
+  });
+  // Drop target for detached-note transfer (enabled group notes only).
+  if (!disabledReason) {
+    _wireNoteDrop(ta, (text) => {
+      const cur = state.getById(ann.id)?.groupNotes[g.groupId] || "";
+      state.setGroupNote(ann.id, g.groupId, _joinNote(cur, text));
+    });
+  }
+  return ta;
 }
 
 // Collapsible strip of notes whose group is no longer in the pinned set.
@@ -375,33 +446,82 @@ function _detachedNotesStrip(ann) {
       text:
         "Notes from removed groups (" + ann.detachedNotes.length + ")",
     }),
+    el("p", {
+      class: "lh-v6-detached-hint",
+      text:
+        "Drag a note onto any note field above to copy its text there, or use Copy. Notes stay here until you discard them.",
+    }),
   ]);
   for (const d of ann.detachedNotes) {
-    wrap.appendChild(
-      el("div", { class: "lh-v6-detached-tile" }, [
-        el("div", { class: "lh-v6-group-tile-header" }, [
-          el("span", {
-            class: "lh-v6-group-tile-swatch",
-            style: { background: d.color || "#94a3b8" },
-          }),
-          el("span", { class: "lh-v6-group-tile-label", text: d.label || "(untitled)" }),
-          el("button", {
-            class: "lh-v6-detached-discard",
-            type: "button",
-            title: "Discard this detached note",
-            "aria-label": "Discard detached note",
-            text: "×",
-            onclick: () => {
-              if (window.confirm('Discard the detached note for "' + (d.label || "this group") + '"?'))
-                state.discardDetachedNote(ann.id, d.groupId);
-            },
-          }),
-        ]),
-        el("p", { class: "lh-v6-detached-text", text: d.text }),
-      ]),
-    );
+    wrap.appendChild(_detachedTile(ann, d));
   }
   return wrap;
+}
+
+function _detachedTile(ann, d) {
+  const tile = el("div", { class: "lh-v6-detached-tile", draggable: "true" }, [
+    el("div", { class: "lh-v6-group-tile-header" }, [
+      el("span", {
+        class: "lh-v6-detached-grip",
+        title: "Drag onto a group note to copy its text there",
+        "aria-hidden": "true",
+        text: "⠿",
+      }),
+      el("span", {
+        class: "lh-v6-group-tile-swatch",
+        style: { background: d.color || "#94a3b8" },
+      }),
+      el("span", { class: "lh-v6-group-tile-label", text: d.label || "(untitled)" }),
+      el("button", {
+        class: "lh-v6-detached-copy",
+        type: "button",
+        title: "Copy this note's text to the clipboard",
+        text: "Copy",
+        onclick: (e) => _copyDetached(e.currentTarget, d.text),
+      }),
+      el("button", {
+        class: "lh-v6-detached-discard",
+        type: "button",
+        title: "Discard this detached note",
+        "aria-label": "Discard detached note",
+        text: "×",
+        onclick: () => {
+          if (window.confirm('Discard the detached note for "' + (d.label || "this group") + '"?'))
+            state.discardDetachedNote(ann.id, d.groupId);
+        },
+      }),
+    ]),
+    el("p", { class: "lh-v6-detached-text", text: d.text }),
+  ]);
+  tile.addEventListener("dragstart", (e) => {
+    e.dataTransfer.setData(DETACHED_MIME, d.text);
+    e.dataTransfer.setData("text/plain", d.text);
+    e.dataTransfer.effectAllowed = "copy";
+    tile.classList.add("lh-v6-detached-dragging");
+  });
+  tile.addEventListener("dragend", () => tile.classList.remove("lh-v6-detached-dragging"));
+  return tile;
+}
+
+// Copy to clipboard with brief in-button feedback. Falls back silently if the
+// Clipboard API is unavailable (e.g. insecure context).
+function _copyDetached(btn, text) {
+  const done = () => {
+    const prev = btn.textContent;
+    btn.textContent = "Copied";
+    btn.disabled = true;
+    setTimeout(() => {
+      btn.textContent = prev;
+      btn.disabled = false;
+    }, 1200);
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, () => {});
+    }
+  } catch (_) {
+    /* no-op */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -500,15 +620,25 @@ function _comparisonTile(ann, c, allGroups) {
           onclick: () => state.removeComparison(ann.id, c.id),
         }),
       ]),
-      el("textarea", {
-        class: "lh-v6-comparison-textarea",
-        placeholder: "What's different between these two groups?",
-        rows: "2",
-        value: c.text || "",
-        "data-v6-key": "cmp-" + c.id + "-text",
-        oninput: (e) =>
-          state.updateComparison(ann.id, c.id, { text: e.target.value }),
-      }),
+      _comparisonTextarea(ann, c),
     ],
   );
+}
+
+function _comparisonTextarea(ann, c) {
+  const ta = el("textarea", {
+    class: "lh-v6-comparison-textarea",
+    placeholder: "What's different between these two groups?",
+    rows: "2",
+    value: c.text || "",
+    "data-v6-key": "cmp-" + c.id + "-text",
+    oninput: (e) =>
+      state.updateComparison(ann.id, c.id, { text: e.target.value }),
+  });
+  _wireNoteDrop(ta, (text) => {
+    const cur =
+      state.getById(ann.id)?.comparisons.find((x) => x.id === c.id)?.text || "";
+    state.updateComparison(ann.id, c.id, { text: _joinNote(cur, text) });
+  });
+  return ta;
 }

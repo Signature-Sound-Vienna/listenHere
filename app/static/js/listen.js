@@ -2060,6 +2060,18 @@ function _mintGroupId() {
   return "g_" + Date.now().toString(36) + "_" + _groupIdCounter++;
 }
 
+/**
+ * Notify listeners that the active application grouping changed (tab switch
+ * or grouping-modal apply). The V6 annotation drawer listens for this to
+ * re-render the open editor so its "Update to current view" gate reflects
+ * the live grouping rather than a stale render-time snapshot.
+ */
+function _emitGroupingChanged() {
+  try {
+    document.dispatchEvent(new CustomEvent("lh-grouping-changed"));
+  } catch (_) {}
+}
+
 /** Returns the localStorage key for the current context. */
 function _groupsStorageKey() {
   return _GROUPS_STORAGE_PREFIX + (window.location.pathname || "default");
@@ -3029,6 +3041,7 @@ function _switchActiveTab(tabName) {
 
   _changeCounter++;
   _updateDirtyState();
+  _emitGroupingChanged();
 }
 
 /** Find nav sidebar checkboxes corresponding to a content-pane file-group. */
@@ -3326,6 +3339,7 @@ function _openGroupModal() {
     _renderSidebarFileList(fns);
     _renderGroupingTabPills();
     reloadWaveforms();
+    _emitGroupingChanged();
   });
   footer.appendChild(cancelBtn);
   footer.appendChild(applyBtn);

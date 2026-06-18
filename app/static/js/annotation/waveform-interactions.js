@@ -154,10 +154,11 @@ export function setActiveRegionStart(ref) {
 
 function _applyActiveRegionStyling() {
   const ref = _activeRegionRef;
-  // Only mark the active region when it belongs to the currently-active
-  // annotation — switching annotations clears a stale border automatically.
-  const refIsActiveAnn = !!ref && ref.annId === state.getActiveId();
-  const ann = refIsActiveAnn ? state.getById(ref.annId) : null;
+  // The active jump target can be any annotation's region start (not only the
+  // currently-active annotation's), so paint the border using that region's
+  // own annotation colour. The border is cleared whenever the active target
+  // changes or close-listening exits (listen.js calls setActiveRegionStart).
+  const ann = ref ? state.getById(ref.annId) : null;
   const color = ann ? ann.color : null;
   for (const file of Object.keys(_regionsPlugins)) {
     const plugin = _regionsPlugins[file];

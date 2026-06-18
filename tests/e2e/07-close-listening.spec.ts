@@ -363,4 +363,56 @@ test.describe('7. Close Listening Mode', () => {
     expect(await ct(page)).toBeGreaterThan(end); // continued past the end, no loop
   });
 
+  // 7.16 Every annotation's region starts are navigable stops, not just the
+  // active annotation's. Two annotations; the SECOND is active, but entering
+  // close-listening at the start activates the FIRST (non-active) annotation's
+  // region start (the earliest stop), and ArrowRight steps to the second.
+  test('7.16 a non-active annotation region start is a navigable stop', async ({ loadedPage: page }) => {
+    await newAnnotationWithRegion(page); // ann1
+    await newAnnotationWithRegion(page); // ann2 (active)
+    const { ann1Start, ann2Start } = await page.evaluate((file) => {
+      const v = (window as any).__annotationV6;
+      const anns = v.state.getAll();
+      const [a1, a2] = anns;
+      v.state.updateRegionTime(a1.id, file, a1.regions[0].id, { start: 1.0, end: 2.0 });
+      v.state.updateRegionTime(a2.id, file, a2.regions[0].id, { start: 3.0, end: 4.0 });
+      v.state.setActiveAnnotation(a2.id); // ann2 is the active annotation
+      return { ann1Start: 1.0, ann2Start: 3.0 };
+    }, AUDIO_A);
+
+    // Park at the start; entering activates the earliest stop — ann1's region
+    // start — even though ann1 is not the active annotation.
+    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
+    await page.waitForTimeout(200);
+    await page.locator('#close-listening-cb').check({ force: true });
+    await page.waitForTimeout(300);
+    expect(Math.abs((await playhead(page)) - ann1Start)).toBeLessThan(1.0);
+
+    // ArrowRight steps to the active annotation's region start.
+    await page.keyboard.press('ArrowRight');
+    await page.waitForTimeout(300);
+    expect(Math.abs((await playhead(page)) - ann2Start)).toBeLessThan(1.0);
+  });
+
+  // 7.17 Annotation cards highlight while a region of theirs plays, distinct
+  // from the "active" card shown in the editor.
+  test('7.17 annotation cards highlight while their region plays', async ({ loadedPage: page }) => {
+    await newAnnotationWithShortRegion(page, 1.0, 2.5);
+    const chip = page.locator('.lh-v6-chip').first();
+    // Not playing yet — no playing highlight.
+    expect(await chip.evaluate((el) => el.classList.contains('playing'))).toBe(false);
+
+    // Click to play from the region start; the playhead enters the region.
+    await chip.click();
+    await page.waitForTimeout(400);
+    expect(await chip.evaluate((el) => el.classList.contains('playing'))).toBe(true);
+    // The playing cue is separate from (and coexists with) the active cue.
+    expect(await chip.evaluate((el) => el.classList.contains('active'))).toBe(true);
+
+    // Pausing clears the playing highlight.
+    await pause(page);
+    await page.waitForTimeout(250);
+    expect(await chip.evaluate((el) => el.classList.contains('playing'))).toBe(false);
+  });
+
 });

@@ -5474,6 +5474,8 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
   white-space: nowrap;
   cursor: pointer;
   flex-shrink: 0;
+  /* Drives the playing-highlight fade-in (class added) and fade-out (removed). */
+  transition: background-color 0.7s ease;
 }
 
 .lh-v6-chip:hover {
@@ -5484,6 +5486,35 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
   border-color: var(--color-link);
   background: var(--color-accent-light);
   box-shadow: 0 0 0 2px var(--color-link-shadow);
+}
+
+/* "Playing" = a region of this annotation is currently under the playhead
+   during playback. Deliberately distinct from .active (the single annotation
+   open in the editor, marked with the blue link-coloured ring above, which is
+   left untouched here): the playing cue is a gentle pulsing colour wash over
+   the card itself. Several cards can pulse at once when regions overlap. */
+/* While a region of this annotation is under the playhead, the card is washed
+   with the annotation's own colour (--lh-chip-color, set per chip in
+   ui-ribbon.js) blended over the surface so it stays opaque. The base chip's
+   background-color transition fades this in when the class is added and back
+   out to white (surface) when it's removed. The blue .active ring is left
+   untouched. */
+.lh-v6-chip.playing {
+  background-color: color-mix(
+    in srgb,
+    var(--lh-chip-color, var(--color-surface)) 35%,
+    var(--color-surface)
+  );
+}
+
+/* Active + playing: same tint, but blended over the active card's accent fill
+   rather than the plain surface so the active styling isn't lost. */
+.lh-v6-chip.active.playing {
+  background-color: color-mix(
+    in srgb,
+    var(--lh-chip-color, var(--color-accent-light)) 35%,
+    var(--color-accent-light)
+  );
 }
 
 .lh-v6-chip-swatch {

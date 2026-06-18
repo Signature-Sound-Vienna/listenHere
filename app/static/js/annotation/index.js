@@ -6,7 +6,7 @@
 import * as state from "./state.js";
 import * as adapter from "./mao-adapter.js";
 import * as uiState from "./ui-state.js";
-import { mountRibbon } from "./ui-ribbon.js";
+import { mountRibbon, setPlayingAnnotations } from "./ui-ribbon.js";
 import { mountDrawer } from "./ui-drawer.js";
 import { mountPullTab } from "./ui-pull-tab.js";
 import {
@@ -15,7 +15,7 @@ import {
   setActiveRegionStart,
 } from "./waveform-interactions.js";
 
-export { setActiveRegionStart };
+export { setActiveRegionStart, setPlayingAnnotations };
 import {
   postAnnotationToSolid,
   prewarmCaches,

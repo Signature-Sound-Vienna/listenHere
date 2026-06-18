@@ -146,6 +146,8 @@
   /* named group          */
   --color-group-ungrouped-bg: rgba(241, 245, 249, 0.50);
   /* ungrouped section    */
+  --color-ribbon-bg: #e2e8f0;
+  /* annotation ribbon (opaque) */
 
   /* Waveform drag handle and marker label */
   --color-wf-drag-handle: linear-gradient(180deg, rgba(96, 108, 56, 0.12), rgba(96, 108, 56, 0.06));
@@ -234,6 +236,7 @@
   --color-score-band: #6090f8;
   --color-group-bg: rgba(51, 65, 85, 0.60);
   --color-group-ungrouped-bg: rgba(30, 41, 59, 0.50);
+  --color-ribbon-bg: #334155;
   --color-wf-drag-handle: linear-gradient(180deg, rgba(138, 154, 86, 0.2), rgba(138, 154, 86, 0.1));
   --color-marker-label-bg: rgba(30, 41, 59, 0.80);
   --color-overlay-bg: rgba(15, 23, 42, 0.85);
@@ -4686,7 +4689,7 @@ body.lh-v6-edit-active .waveform:not(.lh-v6-selected):hover::before {
   /* Float as a card, like .file-group: gap from the control bar and the
      content pane's right edge; sits flush with the screen bottom. */
   margin: 0 8px;
-  background: var(--color-group-bg, rgba(226, 232, 240, 0.50));
+  background: var(--color-ribbon-bg, #e2e8f0);
   border-radius: 6px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
   display: flex;
@@ -5516,39 +5519,6 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
 .lh-v6-chip-tick {
   font-size: 10px;
   color: #22c55e;
-}
-
-.lh-v6-chip-play {
-  /* Overlay sitting centered over the chip; only on the active chip.
-     `pointer-events: none` while invisible so clicks pass through to the
-     chip body — otherwise tapping an active chip would silently trigger
-     playback even though no button was visible. */
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  font-size: 11px;
-  letter-spacing: 1px;
-  cursor: pointer;
-  border-radius: inherit;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
-.lh-v6-chip:hover .lh-v6-chip-play,
-.lh-v6-chip.playing .lh-v6-chip-play,
-.lh-v6-chip-play:focus-visible {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.lh-v6-chip.playing {
-  box-shadow: 0 0 0 2px var(--color-link, #2563eb);
 }
 
 .lh-v6-chip {

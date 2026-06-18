@@ -132,6 +132,47 @@ function syncRegions() {
   } finally {
     _syncingRegions = false;
   }
+  // Region elements are (re)created during reconciliation, so re-apply the
+  // active close-listening region-start border afterwards.
+  _applyActiveRegionStyling();
+}
+
+// ---------------------------------------------------------------------------
+// Active close-listening jump target (region-start variant)
+// ---------------------------------------------------------------------------
+// When close-listening's active jump target is a region start (rather than a
+// marker), it's indicated with a left border on the region, matching the
+// marker thickness (2px) and coloured to the annotation. listen.js owns the
+// active-target selection and calls setActiveRegionStart to paint/clear it.
+
+let _activeRegionRef = null; // { annId, regionId } | null
+
+export function setActiveRegionStart(ref) {
+  _activeRegionRef = ref || null;
+  _applyActiveRegionStyling();
+}
+
+function _applyActiveRegionStyling() {
+  const ref = _activeRegionRef;
+  // Only mark the active region when it belongs to the currently-active
+  // annotation — switching annotations clears a stale border automatically.
+  const refIsActiveAnn = !!ref && ref.annId === state.getActiveId();
+  const ann = refIsActiveAnn ? state.getById(ref.annId) : null;
+  const color = ann ? ann.color : null;
+  for (const file of Object.keys(_regionsPlugins)) {
+    const plugin = _regionsPlugins[file];
+    if (!plugin) continue;
+    for (const r of plugin.getRegions()) {
+      if (!r.id || !r.id.startsWith(V6_REGION_PREFIX) || !r.element) continue;
+      const meta = r._v6Meta;
+      const isActive =
+        !!color &&
+        meta &&
+        meta.annId === ref.annId &&
+        meta.regionId === ref.regionId;
+      r.element.style.borderLeft = isActive ? `2px solid ${color}` : "";
+    }
+  }
 }
 
 function _computeSpecsByFile(annotations, activeId) {

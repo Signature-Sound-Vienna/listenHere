@@ -12,7 +12,10 @@ import { mountPullTab } from "./ui-pull-tab.js";
 import {
   initWaveformInteractions,
   syncWaveformRegions,
+  setActiveRegionStart,
 } from "./waveform-interactions.js";
+
+export { setActiveRegionStart };
 import {
   postAnnotationToSolid,
   prewarmCaches,

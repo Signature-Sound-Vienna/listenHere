@@ -21,6 +21,7 @@ import {
   loadAnnotationsFromAlignment,
   maybeSyncV6Regions,
   setActiveRegionStart,
+  setPlayingAnnotations,
 } from "./annotation/index.js";
 
 let markers = [];
@@ -1731,12 +1732,57 @@ function _maybeLoopActiveRegion(filename) {
   if (ws && ws.getCurrentTime() >= rt.end) _seekCloseListeningTo(rt.start);
 }
 
+// --- Playing-annotation card highlights ---
+//
+// While audio plays, light the ribbon chip of every annotation whose region on
+// the current waveform contains the playhead. Several can be lit at once
+// (regions overlap) and this is independent of the single "active" annotation
+// shown in the editor. Recomputed each audioprocess frame, but only pushed to
+// the ribbon when the lit set actually changes (key compare) so the DOM isn't
+// touched ~60×/s.
+let _playingAnnKey = "";
+
+function _updatePlayingAnnotationHighlights() {
+  const ids = _annotationsAtPlayhead();
+  const key = ids.join(",");
+  if (key === _playingAnnKey) return;
+  _playingAnnKey = key;
+  setPlayingAnnotations(ids);
+}
+
+/** Sorted IDs of annotations with a region containing the playhead on the current waveform. */
+function _annotationsAtPlayhead() {
+  const ws = currentAudioIx && wavesurfers[currentAudioIx];
+  if (!ws) return [];
+  const t = ws.getCurrentTime();
+  const ids = [];
+  for (const ann of v6State.getAll()) {
+    if (!Array.isArray(ann.targets)) continue;
+    const target = ann.targets.find((tg) => tg.file === currentAudioIx);
+    if (!target || !target.regionTimes) continue;
+    const hit = (ann.regions || []).some((r) => {
+      const rt = target.regionTimes[r.id];
+      return rt && rt.end > rt.start && t >= rt.start && t < rt.end;
+    });
+    if (hit) ids.push(ann.id);
+  }
+  return ids.sort();
+}
+
+/** Clear all playing-card highlights (called when playback stops). */
+function _clearPlayingAnnotationHighlights() {
+  if (_playingAnnKey === "") return;
+  _playingAnnKey = "";
+  setPlayingAnnotations([]);
+}
+
 /**
  * Build the ordered list of close-listening "stops" on the current waveform:
- * every marker, plus the start of each region of the *currently-active*
- * annotation (other annotations' regions are ignored). Each entry is
- * { time, markerIx }, where time is in seconds on the current waveform and
- * markerIx is the markers[] index, or null for a region start.
+ * every marker, plus the start of each region of *every* annotation that has
+ * extent on the current waveform (not just the active annotation). Each entry
+ * is { time, markerIx, regionRef }, where time is in seconds on the current
+ * waveform; markerIx is the markers[] index, or null for a region start; and
+ * regionRef is { annId, regionId }, or null for a marker.
  */
 function _getCloseListeningStops() {
   const stops = [];
@@ -1747,21 +1793,20 @@ function _getCloseListeningStops() {
       regionRef: null,
     });
   }
-  const ann = v6State.getById(v6State.getActiveId());
-  if (ann && Array.isArray(ann.targets)) {
+  for (const ann of v6State.getAll()) {
+    if (!Array.isArray(ann.targets)) continue;
     const target = ann.targets.find((t) => t.file === currentAudioIx);
-    if (target && target.regionTimes) {
-      (ann.regions || []).forEach((r) => {
-        const rt = target.regionTimes[r.id];
-        if (rt && rt.end > rt.start) {
-          stops.push({
-            time: rt.start,
-            markerIx: null,
-            regionRef: { annId: ann.id, regionId: r.id },
-          });
-        }
-      });
-    }
+    if (!target || !target.regionTimes) continue;
+    (ann.regions || []).forEach((r) => {
+      const rt = target.regionTimes[r.id];
+      if (rt && rt.end > rt.start) {
+        stops.push({
+          time: rt.start,
+          markerIx: null,
+          regionRef: { annId: ann.id, regionId: r.id },
+        });
+      }
+    });
   }
   return stops.sort((a, b) => a.time - b.time);
 }
@@ -5205,15 +5250,23 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       if (filename === currentAudioIx) _updateTransportIcons(true);
     });
     wavesurfers[filename].on("pause", () => {
-      if (filename === currentAudioIx) _updateTransportIcons(false);
+      if (filename === currentAudioIx) {
+        _updateTransportIcons(false);
+        _clearPlayingAnnotationHighlights();
+      }
     });
     wavesurfers[filename].on("finish", () => {
-      if (filename === currentAudioIx) _updateTransportIcons(false);
+      if (filename === currentAudioIx) {
+        _updateTransportIcons(false);
+        _clearPlayingAnnotationHighlights();
+      }
     });
 
     wavesurfers[filename].on("audioprocess", () => {
       // Close-listening single-region loop (active jump target is a region start).
       _maybeLoopActiveRegion(filename);
+      // Light the ribbon cards of annotations whose regions contain the playhead.
+      if (filename === currentAudioIx) _updatePlayingAnnotationHighlights();
       // continually update timer region when opened but not yet closed
       if (timerFrom === timerTo && timerFrom > 0) {
         _timerRegions[filename].setOptions({

@@ -22,6 +22,29 @@ const PENCIL_SVG =
   ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
   '<path d="M16.5 3.5l4 4-13 13H3.5v-4l13-13z"/><path d="M14 6l4 4"/></svg>';
 
+// Annotations whose regions are currently under the playhead. Distinct from
+// the single "active" annotation (shown in the editor): several can be lit at
+// once when regions overlap. listen.js drives this from playback events via
+// setPlayingAnnotations; we keep the set at module scope so it survives chip
+// re-renders, and toggle the class directly to avoid a full re-render per frame.
+let _chipsContainer = null;
+let _playingIds = new Set();
+
+/**
+ * Mark the chips of `ids` (an iterable of annotation IDs) as currently
+ * playing. Toggles the `.playing` class on existing chip elements without a
+ * re-render; the set is also consulted in _chip so the highlight reapplies if
+ * the ribbon re-renders while playback continues.
+ */
+export function setPlayingAnnotations(ids) {
+  _playingIds = new Set(ids || []);
+  if (!_chipsContainer) return;
+  for (const chip of _chipsContainer.querySelectorAll(".lh-v6-chip")) {
+    const id = chip.dataset.annId;
+    chip.classList.toggle("playing", !!id && _playingIds.has(id));
+  }
+}
+
 export function mountRibbon(parent) {
   // Placeholder intentionally blank: the magnifying-glass icon (CSS
   // background) communicates "filter", and the input collapses to roughly
@@ -89,6 +112,7 @@ export function mountRibbon(parent) {
   });
 
   const chips = el("div", { class: "lh-v6-ribbon-chips" });
+  _chipsContainer = chips;
 
   // Chevron buttons + wrapper give the scrolling chip strip a tidy,
   // scrollbar-free overflow affordance. The native scrollbar is hidden in
@@ -260,16 +284,21 @@ export function mountRibbon(parent) {
 
   function _chip(a) {
     const isActive = a.id === state.getActiveId();
+    const isPlaying = _playingIds.has(a.id);
     // Clicking a chip activates the annotation and plays it from the start of
     // its first region (listen.js owns waveform pick, seek, play, and the
     // close-listening loop). No per-card play/pause control any more.
     const activateAndPlay = () => playAnnotation(a.id);
-    return el(
+    const chip = el(
       "div",
       {
-        class: "lh-v6-chip" + (isActive ? " active" : ""),
+        class:
+          "lh-v6-chip" +
+          (isActive ? " active" : "") +
+          (isPlaying ? " playing" : ""),
         role: "button",
         tabIndex: "0",
+        "data-ann-id": a.id,
         title: a.label || "Untitled annotation",
         onclick: activateAndPlay,
         onkeydown: (e) => {
@@ -300,6 +329,11 @@ export function mountRibbon(parent) {
           : null,
       ],
     );
+    // Drive the playing-pulse tint from the annotation's own colour. Custom
+    // properties must be set via setProperty (the el() style-object path uses
+    // Object.assign, which doesn't apply CSS variables).
+    if (a.color) chip.style.setProperty("--lh-chip-color", a.color);
+    return chip;
   }
 
   state.subscribe(render);

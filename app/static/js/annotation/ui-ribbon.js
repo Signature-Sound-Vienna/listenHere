@@ -604,36 +604,66 @@ export function _openLoadModal(opts = {}) {
   }
 
   // Default flow: auto-list annotations for loaded recordings.
-  _autoListForLoaded(defaultStatus, defaultResults, defaultAllLink, entryByUri, _onToggle, _onDelete);
+  _autoListForLoaded(defaultStatus, defaultResults, defaultAllLink, entryByUri, _onToggle, _onDelete, selection);
 }
 
-async function _autoListForLoaded(status, results, allLink, entryByUri, onToggle, onDelete) {
+async function _autoListForLoaded(status, results, allLink, entryByUri, onToggle, onDelete, selection) {
   _setStatus(status, "Checking your pod for annotations involving the loaded recordings…");
-  try {
-    const entries = await listAnnotationsForLoadedAudios();
-    if (entries.length === 0) {
-      _setStatus(
-        status,
-        "No annotations on your pod reference the currently loaded recordings. Use the section below to browse a different audio.",
-      );
-      return;
-    }
-    _setStatus(status, "Found " + entries.length + " annotation(s):");
-    // Sort by created date desc (newest first), then label.
-    entries.sort((a, b) => {
+
+  // Sort by created date desc (newest first), then label.
+  const sortEntries = (entries) =>
+    entries.slice().sort((a, b) => {
       const ta = a.created ? Date.parse(a.created) || 0 : 0;
       const tb = b.created ? Date.parse(b.created) || 0 : 0;
       if (ta !== tb) return tb - ta;
       return (a.label || "").localeCompare(b.label || "");
     });
-    entries.forEach((entry) => {
+
+  // Full re-render from a snapshot: coverage pills and the score flag
+  // aggregate across sources, so a later-resolving source can enrich an
+  // already-shown row — appending would leave those stale. Checkbox state is
+  // restored from the persistent `selection` Set, so re-rendering mid-load
+  // doesn't drop the user's picks.
+  const render = (entries) => {
+    clearChildren(results);
+    entryByUri.clear();
+    for (const entry of sortEntries(entries)) {
       entryByUri.set(entry.mmUri, entry);
-      results.appendChild(_resultRow(entry, onToggle, onDelete));
+      results.appendChild(
+        _resultRow(entry, onToggle, onDelete, selection.has(entry.mmUri)),
+      );
+    }
+    allLink.style.display = entries.length > 0 ? "" : "none";
+  };
+
+  try {
+    const { entries, errors } = await listAnnotationsForLoadedAudios({
+      onProgress: (label) => _setStatus(status, label),
+      onSnapshot: (snap) => render(snap.entries),
     });
-    allLink.style.display = "";
+    render(entries);
+    _setStatus(status, _discoverySummary(entries.length, errors.length));
   } catch (err) {
     _setStatus(status, "Couldn't list: " + (err.message || err));
   }
+}
+
+// Terminal status line for discovery, distinguishing an empty pod from one we
+// couldn't fully reach.
+function _discoverySummary(found, errorCount) {
+  if (found === 0) {
+    return errorCount > 0
+      ? "Couldn't reach your pod for " +
+          errorCount +
+          " source(s); no annotations found from the rest. Use the section below to browse a different audio."
+      : "No annotations on your pod reference the currently loaded recordings. Use the section below to browse a different audio.";
+  }
+  let msg = "Found " + found + " annotation(s):";
+  if (errorCount > 0) {
+    msg +=
+      " (couldn't reach " + errorCount + " source(s) — list may be incomplete)";
+  }
+  return msg;
 }
 
 function _selectAllInto(resultsEl) {
@@ -645,7 +675,7 @@ function _selectAllInto(resultsEl) {
   });
 }
 
-function _resultRow(entry, onToggle, onDelete) {
+function _resultRow(entry, onToggle, onDelete, checked) {
   const title = entry.label || "(untitled)";
   const sub = el("span", { class: "lh-v6-load-sub" });
   const subParts = [];
@@ -679,6 +709,7 @@ function _resultRow(entry, onToggle, onDelete) {
     "aria-label": "Select " + title,
     onchange: (e) => onToggle(entry.mmUri, e.target.checked),
   });
+  checkbox.checked = !!checked;
   const row = el("div", { class: "lh-v6-load-row-result" }, [
     checkbox,
     el("div", { class: "lh-v6-load-meta" }, metaChildren),

@@ -84,7 +84,14 @@ export async function listAnnotationsForAudio(audioUri) {
  * current workspace. Audios with no discovery resource on the pod (404)
  * are silently skipped.
  */
-export async function listAnnotationsForLoadedAudios() {
+export async function listAnnotationsForLoadedAudios(opts = {}) {
+  const onProgress = opts.onProgress || (() => {});
+  // Called as each source (recording / score) resolves, with a fresh
+  // deduped snapshot so the UI can render rows progressively instead of
+  // waiting for the whole fan-out. `errors` lets the UI distinguish an
+  // unreachable pod from a genuinely empty result.
+  const onSnapshot = opts.onSnapshot || (() => {});
+
   const session = solid.getDefaultSession();
   if (!session || !session.info || !session.info.isLoggedIn) {
     throw new Error("Sign in to your Solid pod first.");
@@ -96,51 +103,59 @@ export async function listAnnotationsForLoadedAudios() {
   // alongside the audios so score-only annotations surface in the same
   // list, marked with a "score" pill by the result-row renderer.
   const scoreUri = (typeof meiUri === "string" && meiUri) ? _normaliseIri(meiUri) : null;
-  if (audios.length === 0 && !scoreUri) return [];
+  if (audios.length === 0 && !scoreUri) return { entries: [], errors: [] };
 
-  const perSource = await Promise.all([
-    ...audios.map(async (audioUri) => {
-      try {
-        const entries = await listAnnotationsForAudio(audioUri);
-        return { kind: "audio", file: reverseMap.get(audioUri), entries };
-      } catch (_) {
-        return { kind: "audio", file: reverseMap.get(audioUri), entries: [] };
-      }
-    }),
-    scoreUri
-      ? (async () => {
-          try {
-            const entries = await listAnnotationsForAudio(scoreUri);
-            return { kind: "score", file: null, entries };
-          } catch (_) {
-            return { kind: "score", file: null, entries: [] };
-          }
-        })()
-      : Promise.resolve(null),
-  ]);
+  const sources = [
+    ...audios.map((audioUri) => ({
+      kind: "audio",
+      file: reverseMap.get(audioUri),
+      uri: audioUri,
+    })),
+    ...(scoreUri ? [{ kind: "score", file: null, uri: scoreUri }] : []),
+  ];
 
-  // De-dupe by mmUri; record which loaded files each annotation covers
-  // and whether it surfaced from the score's discovery resource.
+  // De-dupe by mmUri; record which loaded files each annotation covers and
+  // whether it surfaced from the score's discovery resource. Built up
+  // incrementally so each resolved source can emit a progress snapshot.
   const byMm = new Map();
-  for (const result of perSource) {
-    if (!result) continue;
-    for (const entry of result.entries) {
-      if (!byMm.has(entry.mmUri)) {
-        byMm.set(entry.mmUri, {
-          ...entry,
-          coveredFiles: new Set(),
-          aboutsScore: false,
-        });
+  const errors = [];
+  const total = sources.length;
+  let done = 0;
+  onProgress("Checking " + total + " source" + (total === 1 ? "" : "s") + " on your pod…");
+
+  const snapshot = () =>
+    [...byMm.values()].map((e) => ({
+      ...e,
+      coveredFiles: [...e.coveredFiles].sort(),
+    }));
+
+  await Promise.all(
+    sources.map(async (src) => {
+      let entries = [];
+      try {
+        entries = await listAnnotationsForAudio(src.uri);
+      } catch (err) {
+        errors.push({ kind: src.kind, file: src.file, error: err });
       }
-      const agg = byMm.get(entry.mmUri);
-      if (result.kind === "audio" && result.file) agg.coveredFiles.add(result.file);
-      if (result.kind === "score") agg.aboutsScore = true;
-    }
-  }
-  return [...byMm.values()].map((e) => ({
-    ...e,
-    coveredFiles: [...e.coveredFiles].sort(),
-  }));
+      for (const entry of entries) {
+        if (!byMm.has(entry.mmUri)) {
+          byMm.set(entry.mmUri, {
+            ...entry,
+            coveredFiles: new Set(),
+            aboutsScore: false,
+          });
+        }
+        const agg = byMm.get(entry.mmUri);
+        if (src.kind === "audio" && src.file) agg.coveredFiles.add(src.file);
+        if (src.kind === "score") agg.aboutsScore = true;
+      }
+      done++;
+      onProgress("Checked " + done + " of " + total + " — found " + byMm.size + " so far…");
+      onSnapshot({ entries: snapshot(), errors: [...errors], done, total });
+    }),
+  );
+
+  return { entries: snapshot(), errors };
 }
 
 /**
@@ -703,8 +718,77 @@ async function _purgeDeletedFromDiscovery(audioUri, deletedSet) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Resilient read: retry transient failures (network errors, 5xx, 429) with
+// backoff, and abort a hung request after a timeout rather than spinning
+// forever. Non-transient statuses (incl. 404) are returned as-is for the
+// caller to interpret. Reads previously had no retry/timeout at all, so a
+// single blip surfaced as "(unreadable)" or a silently-empty list.
+const READ_RETRIES = 2; // total attempts = READ_RETRIES + 1
+const READ_TIMEOUT_MS = 15000;
+const READ_BACKOFF_MS = 400;
+
+function _sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function _solidFetchResilient(uri, init = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= READ_RETRIES; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), READ_TIMEOUT_MS);
+    try {
+      const resp = await solid.fetch(uri, { ...init, signal: ctrl.signal });
+      clearTimeout(timer);
+      if ((resp.status >= 500 || resp.status === 429) && attempt < READ_RETRIES) {
+        lastErr = new Error("GET " + uri + " failed: " + resp.status);
+        await _sleep(READ_BACKOFF_MS * (attempt + 1));
+        continue;
+      }
+      return resp;
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      if (attempt < READ_RETRIES) {
+        await _sleep(READ_BACKOFF_MS * (attempt + 1));
+        continue;
+      }
+      throw lastErr;
+    }
+  }
+  throw lastErr;
+}
+
+// Session-caching JSON-LD document loader. The default loader re-fetches a
+// resource's remote @context on EVERY expand call; for compact third-party
+// resources (e.g. mei-friend's) that meant a network round trip per resource,
+// adding latency and a failure surface (context host slow/down → expansion
+// throws → we fall back to raw → full-IRI keys don't match → "(unreadable)").
+// Wrapping the default xhr loader with an in-memory cache fetches each context
+// at most once per session.
+let _cachingDocumentLoader = null;
+function _getDocumentLoader() {
+  if (_cachingDocumentLoader) return _cachingDocumentLoader;
+  const jsonld = globalThis.jsonld;
+  if (
+    !jsonld ||
+    !jsonld.documentLoaders ||
+    typeof jsonld.documentLoaders.xhr !== "function"
+  ) {
+    return null;
+  }
+  const base = jsonld.documentLoaders.xhr();
+  const cache = new Map();
+  _cachingDocumentLoader = async (url) => {
+    if (cache.has(url)) return cache.get(url);
+    const doc = await base(url);
+    cache.set(url, doc);
+    return doc;
+  };
+  return _cachingDocumentLoader;
+}
+
 async function _fetchJsonLd(uri) {
-  const resp = await solid.fetch(uri, {
+  const resp = await _solidFetchResilient(uri, {
     headers: { Accept: "application/ld+json" },
   });
   if (!resp.ok) {
@@ -720,7 +804,11 @@ async function _fetchJsonLd(uri) {
   let expanded;
   try {
     if (typeof globalThis.jsonld !== "undefined") {
-      expanded = await globalThis.jsonld.expand(raw);
+      const loader = _getDocumentLoader();
+      expanded = await globalThis.jsonld.expand(
+        raw,
+        loader ? { documentLoader: loader } : undefined,
+      );
     }
   } catch (err) {
     console.warn("[annotation/v6] JSON-LD expansion failed for " + uri + "; using raw body.", err);
@@ -778,15 +866,21 @@ function _iriVariantsForLookup(uri) {
  * resolve (e.g. all 404).
  */
 async function _readFirstDiscovery(uriVariants) {
+  let nonMissingErr = null;
   for (const variant of uriVariants) {
     const discoveryUri = await _discoveryUriFor(variant);
     if (!discoveryUri) continue;
     try {
       return await _fetchJsonLd(discoveryUri);
-    } catch (_) {
-      // 404 (or other) on this variant — try the next.
+    } catch (err) {
+      // A missing discovery (404) just means "no annotations for this
+      // variant" — try the next. Anything else (network error, 5xx after
+      // retries, 403) is a real failure we surface to the caller rather
+      // than silently treating an unreachable pod as an empty result.
+      if (!_isMissingResourceError(err)) nonMissingErr = err;
     }
   }
+  if (nonMissingErr) throw nonMissingErr;
   return null;
 }
 

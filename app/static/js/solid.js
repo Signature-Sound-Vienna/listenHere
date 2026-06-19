@@ -236,31 +236,53 @@ export async function establishResource(uri, resource) {
   return resp;
 }
 
+// Session-scoped cache for the resolved storage root, keyed by webId. The
+// pod's storage root is constant for a logged-in session, but discovery used
+// to re-derive it (profile fetch + jsonld.expand) once per audio AND per URI
+// variant. Keyed by webId so an in-page account switch invalidates naturally.
+let _storageCache = { webId: null, storage: null };
+
 export async function getSolidStorage() {
-  return getProfile().then(async (profile) => {
-    if (nsp.PIM + "storage" in profile) {
-      let storage = Array.isArray(profile[nsp.PIM + "storage"])
-        ? profile[nsp.PIM + "storage"][0] // TODO what if more than one storage?
-        : profile[nsp.PIM + "storage"];
-      if (typeof storage === "object") {
-        if ("@id" in storage) {
-          storage = storage["@id"];
-        } else {
-          console.warn(
-            "Unexpected pim:storage object in your Solid Pod profile: ",
-            profile,
-          );
-        }
-      }
-      return storage;
-    } else {
-      log(
-        "Sorry, couldn't establish storage location from your Solid Pod's profile ",
-        profile,
-      );
-      throw Error(profile);
-    }
-  });
+  const webId = solid.getDefaultSession().info.webId;
+  if (_storageCache.webId === webId && _storageCache.storage) {
+    return _storageCache.storage;
+  }
+  const profile = await getProfile();
+  if (!profile) {
+    throw new Error(
+      "Couldn't read your Solid pod profile to determine its storage location.",
+    );
+  }
+  // Collect EVERY pim:storage value across the (merged) profile, normalise to
+  // string URIs, and de-dupe. Legacy NSS / solidcommunity.net cards describe
+  // the WebID across several nodes; the storage triple may sit on a node other
+  // than the first — taking `[0]` blindly (the old behaviour) could miss it
+  // entirely and leave every pod URI 404ing.
+  const raw = profile[nsp.PIM + "storage"];
+  const storages = [
+    ...new Set(
+      (Array.isArray(raw) ? raw : raw == null ? [] : [raw])
+        .map((s) => (s && typeof s === "object" ? s["@id"] : s))
+        .filter((s) => typeof s === "string" && s.length > 0),
+    ),
+  ];
+  if (storages.length === 0) {
+    log(
+      "Sorry, couldn't establish storage location from your Solid Pod's profile ",
+      profile,
+    );
+    throw new Error(
+      "Couldn't determine your Solid pod's storage location: no pim:storage in your WebID profile.",
+    );
+  }
+  if (storages.length > 1) {
+    console.warn(
+      "WebID profile lists multiple pim:storage values; using the first:",
+      storages,
+    );
+  }
+  _storageCache = { webId, storage: storages[0] };
+  return storages[0];
 }
 
 export async function establishContainerResource(container) {
@@ -655,38 +677,60 @@ export async function populateSolidDrawer() {
   );
 }
 
+// Session-scoped profile cache, keyed by webId (see getSolidStorage).
+let _profileCache = { webId: null, profile: null };
+
 export async function getProfile() {
   const webId = solid.getDefaultSession().info.webId;
-  const profile = await solid
-    .fetch(webId, {
-      headers: {
-        Accept: "application/ld+json",
-      },
-    })
-    .then((resp) => resp.json())
-    .then((json) => jsonld.expand(json))
-    .then((profile) => {
-      let me = Array.from(profile).filter(
-        (e) => "@id" in e && e["@id"] === webId,
-      );
-      if (me.length) {
-        if (me.length > 1) {
-          console.warn(
-            "User profile contains multiple entries for webId: ",
-            me,
-          );
-        }
-        return me[0];
-      } else {
-        // TODO proper error handling
-        console.warn(
-          "User profile contains no entry matching their webId: ",
-          profile,
-          webId,
-        );
-      }
-    });
+  if (_profileCache.webId === webId && _profileCache.profile) {
+    return _profileCache.profile;
+  }
+  const resp = await solid.fetch(webId, {
+    headers: { Accept: "application/ld+json" },
+  });
+  const json = await resp.json();
+  const expanded = await jsonld.expand(json);
+  // A WebID document can describe its subject across MORE THAN ONE node
+  // (public card + extended profile, owl:sameAs, multiple @context blocks —
+  // common on legacy NSS / solidcommunity.net, which is why those accounts
+  // logged the "multiple entries for webId" warning). Picking the first match
+  // silently drops triples (e.g. pim:storage) asserted on a sibling node, so
+  // merge every node whose @id is the webId into one, accumulating each
+  // predicate's values.
+  const mine = Array.from(expanded).filter(
+    (e) => "@id" in e && e["@id"] === webId,
+  );
+  if (mine.length === 0) {
+    // TODO proper error handling
+    console.warn(
+      "User profile contains no entry matching their webId: ",
+      expanded,
+      webId,
+    );
+    return null;
+  }
+  const profile = _mergeNodes(mine);
+  _profileCache = { webId, profile };
   return profile;
+}
+
+// Merge expanded JSON-LD nodes (all sharing one @id) into a single node,
+// concatenating each predicate's values. Expanded values are already arrays,
+// so the result keeps the standard expanded shape downstream code expects.
+function _mergeNodes(nodes) {
+  const merged = { "@id": nodes[0]["@id"] };
+  for (const node of nodes) {
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "@id") continue;
+      const acc = merged[k]
+        ? Array.isArray(merged[k])
+          ? merged[k]
+          : [merged[k]]
+        : [];
+      merged[k] = acc.concat(v);
+    }
+  }
+  return merged;
 }
 
 /**

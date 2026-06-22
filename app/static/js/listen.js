@@ -1732,6 +1732,22 @@ function _maybeLoopActiveRegion(filename) {
   if (ws && ws.getCurrentTime() >= rt.end) _seekCloseListeningTo(rt.start);
 }
 
+/**
+ * Start time (seconds) of the region referenced by `ref` ({ annId, regionId })
+ * on `file`, or null if that region has no extent on that file. Used when
+ * swapping waveforms with a region start as the active close-listening jump
+ * target, so playback restarts at the equivalent region start on the new
+ * waveform rather than carrying the playhead position across.
+ */
+function _regionStartTimeOnFile(ref, file) {
+  if (!ref) return null;
+  const ann = v6State.getById(ref.annId);
+  if (!ann || !Array.isArray(ann.targets)) return null;
+  const target = ann.targets.find((t) => t.file === file);
+  const rt = target && target.regionTimes && target.regionTimes[ref.regionId];
+  return rt && rt.end > rt.start ? rt.start : null;
+}
+
 // --- Playing-annotation card highlights ---
 //
 // While audio plays, light the ribbon chip of every annotation whose region on
@@ -2086,10 +2102,22 @@ export function swapCurrentAudio(newAudio) {
       left: 0,
       behavior: "smooth",
     });
-    // seek to new (corresponding) position
-    let correspondingPosition = currentGrid[closestAlignmentIx];
-    let newPosition =
-      correspondingPosition / wavesurfers[currentAudioIx].getDuration();
+    // seek to new (corresponding) position. When the active close-listening
+    // jump target is a region start (not a marker), restart at the equivalent
+    // region start on the new waveform if that region exists there; otherwise
+    // fall back to carrying the playhead position via the alignment grid.
+    const regionStartT =
+      closeListeningMode && activeMarkerIx == null && _activeRegionStart
+        ? _regionStartTimeOnFile(_activeRegionStart, currentAudioIx)
+        : null;
+    let newPosition;
+    if (regionStartT != null) {
+      newPosition = regionStartT / wavesurfers[currentAudioIx].getDuration();
+    } else {
+      let correspondingPosition = currentGrid[closestAlignmentIx];
+      newPosition =
+        correspondingPosition / wavesurfers[currentAudioIx].getDuration();
+    }
     wavesurfers[currentAudioIx].seekTo(newPosition);
     // At zoom: the new waveform is already scroll-synced via
     // _syncAllWaveformScrolls, so don't reposition — just sync overlays.

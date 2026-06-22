@@ -1,4 +1,4 @@
-import { test, expect, AUDIO_A } from '../support/fixtures';
+import { test, expect, AUDIO_A, AUDIO_B } from '../support/fixtures';
 import { play, pause } from '../support/helpers';
 import { type Page } from '@playwright/test';
 
@@ -90,6 +90,10 @@ const seekTo = (page: Page, time: number) =>
     const t = (window as any)._listenTest;
     t.wavesurfers[t.currentAudioIx].setTime(s);
   }, time);
+
+/** The currently-active waveform index (filename). */
+const currentIx = (page: Page) =>
+  page.evaluate(() => (window as any)._listenTest.currentAudioIx);
 
 test.describe('7. Close Listening Mode', () => {
 
@@ -413,6 +417,78 @@ test.describe('7. Close Listening Mode', () => {
     await pause(page);
     await page.waitForTimeout(250);
     expect(await chip.evaluate((el) => el.classList.contains('playing'))).toBe(false);
+  });
+
+  // 7.18 Switching waveforms with a region start as the active jump target
+  // restarts at the equivalent region start on the new waveform — mirroring how
+  // a marker jump target re-seeks on switch, rather than carrying the playhead
+  // across "seamlessly". Regression test for the region-start swap bug.
+  test('7.18 switching waveforms restarts at the equivalent region start', async ({ loadedPage: page }) => {
+    await newAnnotationWithRegion(page); // active annotation, region on AUDIO_A
+    // Known extents on both waveforms. AUDIO_B's start (1.0) is far from where
+    // carrying the AUDIO_A playhead (~6s) across via the alignment grid (~6.5s)
+    // would land, so the two behaviours are clearly distinguishable.
+    await page.evaluate(
+      ({ a, b }) => {
+        const v = (window as any).__annotationV6;
+        const id = v.state.getActiveId();
+        const rid = v.state.getById(id).regions[0].id;
+        v.state.updateRegionTime(id, a, rid, { start: 3.0, end: 8.0 });
+        v.state.addTarget(id, b, { regionTimes: { [rid]: { start: 1.0, end: 5.0 } } });
+      },
+      { a: AUDIO_A, b: AUDIO_B },
+    );
+
+    // Park at the start, enter close-listening → the AUDIO_A region start is the
+    // active jump target (playhead jumps to ~3.0; indicator shown).
+    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
+    await page.waitForTimeout(200);
+    await page.locator('#close-listening-cb').check({ force: true });
+    await page.waitForTimeout(300);
+    expect(await regionBorder(page)).toMatch(/2px solid/);
+
+    // Move the playhead to the RIGHT of the region start (still on AUDIO_A).
+    await seekTo(page, 6.0);
+    await page.waitForTimeout(100);
+
+    // Switch to the next waveform (AUDIO_B).
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(300);
+    expect(await currentIx(page)).toBe(AUDIO_B);
+
+    // Restarted at AUDIO_B's equivalent region start (~1.0), NOT the carried
+    // playhead position (~6.5 via the alignment grid).
+    expect(Math.abs((await playhead(page)) - 1.0)).toBeLessThan(0.5);
+  });
+
+  // 7.19 When the region has no extent on the new waveform, switching falls back
+  // to carrying the playhead position across (no spurious region seek).
+  test('7.19 switching carries the playhead when the region is absent on the new waveform', async ({ loadedPage: page }) => {
+    await newAnnotationWithRegion(page);
+    await page.evaluate(
+      ({ a }) => {
+        const v = (window as any).__annotationV6;
+        const id = v.state.getActiveId();
+        const rid = v.state.getById(id).regions[0].id;
+        v.state.updateRegionTime(id, a, rid, { start: 3.0, end: 8.0 });
+        // No AUDIO_B target: the region does not exist on the next waveform.
+      },
+      { a: AUDIO_A },
+    );
+
+    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
+    await page.waitForTimeout(200);
+    await page.locator('#close-listening-cb').check({ force: true });
+    await page.waitForTimeout(300);
+    await seekTo(page, 6.0);
+    await page.waitForTimeout(100);
+
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(300);
+    expect(await currentIx(page)).toBe(AUDIO_B);
+    // No equivalent region on AUDIO_B → playhead carries across (~6.5s via the
+    // alignment grid) rather than snapping back to a region start.
+    expect(await playhead(page)).toBeGreaterThan(3.0);
   });
 
 });

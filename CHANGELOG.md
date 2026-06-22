@@ -4,6 +4,7 @@
 * Solid annotation discovery improvements (#30)
 * Allow reloading of discovery process
 * "Load from Solid" while signed out now waits up to 5 minutes for sign-in to complete (was a few seconds), auto-opening the load modal as soon as login finishes. Button icons adjusted to communicate intent ('click on connect'), ('wait for completion'). Also added test coverage for this behaviour.
+* Fix annotation playback during close-listening: correctly jump to start-of-region when switching waveforms (rather than switching seamlessly)
 
 ### 0.23.0
 * Rename Group / Manage files to Group / Manage recordings to avoid confusion (recordings: in app, files: in filesystem)

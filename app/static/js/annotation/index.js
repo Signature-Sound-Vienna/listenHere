@@ -173,9 +173,10 @@ export function initAnnotationV6() {
   //       modal pre-pointed at the given MM once auth completes. Survives
   //       bookmark sharing.
   //   (b) Load-intent resume: if the user clicked Load-from-Solid while
-  //       logged out and then signed in within the last 15s (the window
-  //       in ui-ribbon.js), we re-open the modal automatically with a
-  //       small "Signed in — resuming…" banner.
+  //       logged out and then signed in within the window defined in
+  //       ui-ribbon.js (5 min) without interacting elsewhere first, we
+  //       re-open the modal automatically with a small "Signed in —
+  //       resuming…" banner.
   // Both are checked on `solid-auth-changed`. The URL-param path takes
   // priority because it carries a specific target.
   let _autoloadConsumed = false;

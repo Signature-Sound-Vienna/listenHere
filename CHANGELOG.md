@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.24.0
+* Solid annotation discovery improvements (#30)
+* Allow reloading of discovery process
+* "Load from Solid" while signed out now waits up to 5 minutes for sign-in to complete (was a few seconds), auto-opening the load modal as soon as login finishes. Button icons adjusted to communicate intent ('click on connect'), ('wait for completion'). Also added test coverage for this behaviour.
+
 ### 0.23.0
 * Rename Group / Manage files to Group / Manage recordings to avoid confusion (recordings: in app, files: in filesystem)
 * Comprehensive improvements to group recordings modal UI: multi-select, make regex less cryptic, drag between groups, drag to create groups, prompt user when exiting modal with unapplied changes

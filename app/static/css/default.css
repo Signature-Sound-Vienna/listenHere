@@ -4997,6 +4997,58 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
   color: var(--color-accent);
 }
 
+/* Two-phase waiting affordance after a logged-out "Load from Solid" click:
+   - --waiting: a → at the end of the label nudges rightward, gesturing
+     toward the Solid login footer (which opens to the ribbon's right).
+     Reads as "your move" rather than "the system is busy".
+   - --connecting: once the user clicks Connect and the OAuth exchange is in
+     flight, the arrow gives way to a spinner — now the app is the one
+     working, so a busy indicator is the honest signal.
+   Both clear on login, on the first interaction elsewhere, or when the
+   5-minute window elapses. */
+.lh-v6-ribbon-load-arrow,
+.lh-v6-ribbon-load-spinner {
+  display: none;
+}
+.lh-v6-ribbon-load--waiting .lh-v6-ribbon-load-arrow {
+  display: inline-block;
+  margin-left: 5px;
+  animation: lh-v6-ribbon-load-nudge 1s ease-in-out infinite;
+}
+.lh-v6-ribbon-load--connecting .lh-v6-ribbon-load-spinner {
+  display: inline-block;
+  margin-left: 6px;
+  width: 9px;
+  height: 9px;
+  vertical-align: -1px;
+  border: 2px solid var(--color-border-light, #e2e8f0);
+  border-top-color: var(--color-accent, #7c3aed);
+  border-radius: 50%;
+  animation: lh-v6-ribbon-load-spin 0.7s linear infinite;
+}
+@keyframes lh-v6-ribbon-load-nudge {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  55% {
+    transform: translateX(5px);
+  }
+}
+@keyframes lh-v6-ribbon-load-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Respect reduced-motion: keep the indicators visible (they still signal
+   the wait) but hold them still. */
+@media (prefers-reduced-motion: reduce) {
+  .lh-v6-ribbon-load--waiting .lh-v6-ribbon-load-arrow,
+  .lh-v6-ribbon-load--connecting .lh-v6-ribbon-load-spinner {
+    animation: none;
+  }
+}
+
 /* --- Load-from-Solid modal ------------------------------------------- */
 .lh-v6-load-overlay {
   position: fixed;
@@ -5109,6 +5161,36 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
   color: var(--color-text-secondary, var(--color-text-muted));
   text-transform: uppercase;
   letter-spacing: 0.4px;
+}
+
+/* Title row for the auto-discovery section: title on the left, manual
+   reload control pushed to the right. */
+.lh-v6-load-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.lh-v6-load-reload {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--color-text-secondary, var(--color-text-muted));
+  cursor: pointer;
+}
+
+.lh-v6-load-reload:hover:not(:disabled) {
+  background: var(--color-hover-bg, rgba(0, 0, 0, 0.04));
+  color: var(--color-text);
+}
+
+.lh-v6-load-reload:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Inherits .group-all (text-decoration:underline, muted colour, pointer). */

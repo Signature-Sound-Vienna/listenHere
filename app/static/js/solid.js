@@ -752,6 +752,37 @@ function getCleanRedirectUrl() {
 
 /** Reference to the login popup window (if open). */
 let _loginPopup = null;
+/** Interval id polling for a popup the user closed without finishing login. */
+let _loginPopupPoll = null;
+
+/**
+ * Poll for the login popup being closed before it posts a result. The
+ * success and IdP-error paths both null out `_loginPopup` as their message
+ * arrives, so a still-set reference whose window has `closed === true` can
+ * only mean the user dismissed the popup. Treat that as a cancelled login:
+ * clear the pending flag and dispatch the usual not-logged-in auth change.
+ */
+function _watchPopupClose() {
+  if (_loginPopupPoll) {
+    clearInterval(_loginPopupPoll);
+    _loginPopupPoll = null;
+  }
+  _loginPopupPoll = setInterval(() => {
+    if (!_loginPopup) {
+      clearInterval(_loginPopupPoll);
+      _loginPopupPoll = null;
+      return;
+    }
+    if (_loginPopup.closed) {
+      clearInterval(_loginPopupPoll);
+      _loginPopupPoll = null;
+      _loginPopup = null;
+      console.log("Solid login popup closed before completing login");
+      try { localStorage.removeItem("solidLoginPending"); } catch (_) {}
+      populateSolidDrawer();
+    }
+  }, 500);
+}
 
 /**
  * Listen for postMessage from the login popup.
@@ -858,6 +889,12 @@ export async function loginAndFetch(provider) {
 
   localStorage.setItem("solidProvider", provider);
 
+  // Signal that a login attempt is now underway (covers both the popup and
+  // redirect-fallback paths below). Listeners use this to switch from a
+  // "your move — sign in" affordance to an "in progress" one, since the app
+  // is genuinely waiting on the OAuth exchange from here on.
+  document.dispatchEvent(new CustomEvent("solid-login-started"));
+
   // The callback URL that the IdP will redirect the popup to.
   // The popup callback page captures this URL and posts it back.
   const popupCallbackUrl = window.location.origin + "/solid-popup-callback";
@@ -885,6 +922,12 @@ export async function loginAndFetch(provider) {
     return;
   }
 
+  // Watch for the user dismissing the popup without completing login: in
+  // that case the popup posts no message (only IdP success/error do), so
+  // we'd otherwise never learn the attempt ended. Surfaces a normal
+  // "not logged in" auth change when it happens.
+  _watchPopupClose();
+
   // Call solid.login() with handleRedirect — the library prepares the
   // OIDC auth request (stores code_verifier etc. in localStorage) and
   // then calls our callback with the full IdP authorization URL instead
@@ -904,6 +947,16 @@ export async function solidLogout() {
   return solid.logout().then(() => {
     localStorage.removeItem("solidProvider");
     storage.removeItem("restoreSolidSession"); // legacy cleanup
+    _clearSessionCaches();
     populateSolidDrawer();
   });
+}
+
+// Drop the per-session profile/storage caches. Called on logout so a
+// subsequent login (or anonymous browsing) never reads another session's
+// resolved storage root. The cached values aren't secret (a storage URI), but
+// clearing them on logout is the correct hygiene.
+function _clearSessionCaches() {
+  _profileCache = { webId: null, profile: null };
+  _storageCache = { webId: null, storage: null };
 }

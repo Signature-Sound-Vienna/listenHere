@@ -8,3 +8,38 @@ node_modules/
 tests/report/
 playwright-report/
 test-results/
+
+# ---------------------------------------------------------------------------
+# Local-only working artifacts — kept on disk for posterity, never committed.
+# ---------------------------------------------------------------------------
+# Saved Claude chat transcripts
+*-chat.json
+/chat.json
+# Stray empty scratch files
+/1.
+/1.1
+# Design handoffs, plans, personal docs
+/Implementation Plan
+/claude-design_annotation-rework.zip
+/design_handoff_v6_annotation_panel/
+/docs/solid-io-handoff.md
+/docs/tempo-curve-algorithm.md
+/docs/museum-exhibit-architecture.md
+# Unclear provenance — kept local pending review
+/app/static/DEMO.md
+/chanda/
+# Deprecated / scratch alignment exports (ad-hoc loading superseded these)
+/alignment.json
+/alignment-correction.json
+/annotation-creation-phase1.json
+/annotation-creation-phases1_and_2.json
+/app/static/align/alignment.json
+/app/static/align/kaiser-peaks.json
+/app/static/align/new-score-align-test.json
+/app/static/align/optimised-score-align.json
+/app/static/align/perpetuum-peaks.json
+/app/static/align/pizzi-peaks.json
+/app/static/align/score-align-test.json
+/app/static/align/sphaeren-peaks.json
+/app/static/align/scoreAlign/KW-realign-primal.json
+/app/static/align/TISMIR/

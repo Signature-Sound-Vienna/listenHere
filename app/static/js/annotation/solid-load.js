@@ -51,15 +51,30 @@ export async function listAnnotationsForAudio(audioUri) {
   const discovery = await _readFirstDiscovery(_iriVariantsForLookup(audioUri));
   if (!discovery) return [];
   const dataset = _asArray(discovery[nsp.SCHEMA + "dataset"]);
-  const mmUrls = dataset
-    .filter((entry) => {
-      const t = _firstId(_asArray(entry?.[nsp.SCHEMA + "additionalType"]));
-      return t === nsp.MAO + "MusicalMaterial";
-    })
-    .map((entry) => _firstId(_asArray(entry?.[nsp.SCHEMA + "url"])))
-    .filter(Boolean);
+  const mmEntries = dataset.filter((entry) => {
+    const t = _firstId(_asArray(entry?.[nsp.SCHEMA + "additionalType"]));
+    return t === nsp.MAO + "MusicalMaterial";
+  });
 
-  const out = await _mapLimit(mmUrls, READ_CONCURRENCY, async (url) => {
+  // §3 fast path: discovery entries written by current Listen Here carry
+  // denormalised schema:name + schema:dateCreated, so the picker row is built
+  // straight from the (single, already-fetched) discovery resource — no per-MM
+  // GET. Entries lacking them — annotations posted by older LH, or by
+  // mei-friend, which doesn't denormalise — fall back to fetching the MM.
+  // schema:dateCreated is the denormalisation sentinel: we always write it for
+  // new entries (a title may be empty, but a creation date never is).
+  const out = await _mapLimit(mmEntries, READ_CONCURRENCY, async (entry) => {
+    const url = _firstId(_asArray(entry?.[nsp.SCHEMA + "url"]));
+    if (!url) return null;
+    const inlineCreated = _firstValueOrText(entry?.[nsp.SCHEMA + "dateCreated"]);
+    const inlineName = _firstValueOrText(entry?.[nsp.SCHEMA + "name"]);
+    if (inlineCreated !== null || inlineName !== null) {
+      return {
+        mmUri: url,
+        label: inlineName || "(untitled)",
+        created: inlineCreated || null,
+      };
+    }
     try {
       const mm = await _fetchJsonLd(url);
       return {
@@ -71,7 +86,7 @@ export async function listAnnotationsForAudio(audioUri) {
       return { mmUri: url, label: "(unreadable)", created: null };
     }
   });
-  return out;
+  return out.filter(Boolean);
 }
 
 /**

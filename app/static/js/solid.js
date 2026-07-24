@@ -13,7 +13,21 @@ import { nsp, politeness } from "./linked-data.js";
 import { storage, versionString } from "./listen.js";
 import { ensureRelativeURL } from "./utils.js";
 
-export const solid = solidClientAuthentication.default;
+// The Solid auth bundle (vendor/solid-client-authn.bundle.js) is a classic
+// script that sets this global synchronously, before this module evaluates.
+// If it fails to initialise — e.g. an older browser choking inside the bundle
+// (observed on aging Chrome as an uncaught error in the bundle plus an "unload
+// is not allowed" permissions-policy warning) — the global is left undefined.
+// Guard the deref so THIS module still evaluates: otherwise a top-level throw
+// here cascades, via listen.js's static import of this module, into listen.js
+// never running at all — which silently kills the entire listen UI (including
+// the local-file "Manage recordings" modal, which has no Solid dependency).
+// When unavailable, `solid` is null and Solid features degrade to no-ops.
+export const solid =
+  (typeof solidClientAuthentication !== "undefined" &&
+    solidClientAuthentication &&
+    solidClientAuthentication.default) ||
+  null;
 
 // mei-friend resource containers (internal path within Solid storage)
 export const friendContainer = "at.ac.mdw.mei-friend/";
@@ -842,6 +856,14 @@ function _setupPopupMessageListener() {
  * future login attempts.
  */
 export async function initSolidAuth() {
+  if (!solid) {
+    console.warn(
+      "Solid authentication unavailable (auth library failed to initialise); " +
+        "Solid features are disabled for this session. Local-file listening is unaffected.",
+    );
+    return;
+  }
+
   // Set up the listener for popup-based logins
   _setupPopupMessageListener();
 
@@ -878,6 +900,10 @@ export async function initSolidAuth() {
  * @param {string} [provider] – OIDC issuer URL; if omitted, reads from #providerSelect
  */
 export async function loginAndFetch(provider) {
+  if (!solid) {
+    console.warn("Solid login unavailable: auth library failed to initialise.");
+    return;
+  }
   if (!provider) {
     const providerEl = document.getElementById("providerSelect");
     if (!providerEl) {

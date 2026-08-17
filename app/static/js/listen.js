@@ -16,6 +16,11 @@ import {
   _seekAnalysis,
 } from "./engine/normalization.js";
 import {
+  _updateTransportIcons,
+  _seekBy,
+  playpause,
+} from "./engine/transport.js";
+import {
   initAlignPanel,
   configure as configureAlign,
   setVerovioPromise,
@@ -746,15 +751,6 @@ export function _refreshWfBg(filename) {
 }
 
 /** Toggle play/pause icons in the transport bar. */
-function _updateTransportIcons(playing) {
-  const pp = document.getElementById("playpause");
-  if (!pp) return;
-  const iconPlay = pp.querySelector(".icon-play");
-  const iconPause = pp.querySelector(".icon-pause");
-  if (iconPlay) iconPlay.style.display = playing ? "none" : "";
-  if (iconPause) iconPause.style.display = playing ? "" : "none";
-}
-
 // ---------------------------------------------------------------------------
 // Time-axis tick marks
 // ---------------------------------------------------------------------------
@@ -3131,7 +3127,7 @@ function _persistMarkers() {
  * Update the Mark button tooltip: "Remove marker" when paused at a marker,
  * "Place marker" otherwise.
  */
-function _updateMarkBtnTooltip() {
+export function _updateMarkBtnTooltip() {
   const btn = document.getElementById("mark");
   if (!btn) return;
   let atMarker = false;
@@ -6863,16 +6859,6 @@ document.addEventListener("DOMContentLoaded", () => {
     })
     .catch((err) => console.warn("Couldn't load colormap:", err));
   // --- Transport controls ---
-  function _seekBy(delta) {
-    if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
-    const ws = wavesurfers[currentAudioIx];
-    const dur = ws.getDuration();
-    if (dur > 0) {
-      const newTime = Math.max(0, Math.min(dur, ws.getCurrentTime() + delta));
-      ws.seekTo(newTime / dur);
-    }
-  }
-
   // Play/pause
   document.getElementById("playpause").addEventListener("click", function () {
     playpause();
@@ -7464,22 +7450,6 @@ document.addEventListener("DOMContentLoaded", () => {
     _measureDragState = null;
   });
 });
-
-function playpause() {
-  if (currentAudioIx) {
-    if (wavesurfers[currentAudioIx].isPlaying())
-      wavesurfers[currentAudioIx].pause();
-    else wavesurfers[currentAudioIx].play();
-  } else {
-    // if there is at least one waveform loaded, make it active and play it
-    let firstWs = document.querySelector(".waveform");
-    if (firstWs) {
-      swapCurrentAudio(firstWs.dataset.ix);
-      wavesurfers[currentAudioIx].play();
-    }
-  }
-  _updateMarkBtnTooltip();
-}
 
 function updateRenderTimer() {
   Object.keys(wavesurfers).forEach((ws) => {

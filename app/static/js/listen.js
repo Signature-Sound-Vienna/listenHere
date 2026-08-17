@@ -53,10 +53,21 @@ import {
   _pageScrollIfNeeded,
   _syncAllWaveformScrolls,
 } from "./engine/zoom-scroll.js";
+import { DataSession } from "./engine/data-session.js";
 // Preserve the public API: _overlayWrappers was declared here before the
 // Phase-1 zoom/scroll extraction and is imported by
 // annotation/waveform-interactions.js.
 export { _overlayWrappers };
+
+// ---------------------------------------------------------------------------
+// The one DataSession for this screen.
+//
+// Listen Here is the single-session, single-viewport reference application, so
+// there is exactly one. State migrated into it (see engine/data-session.js) is
+// aliased below under its historical name and re-exported unchanged, keeping
+// this module's public API — and therefore every sibling module — untouched.
+// ---------------------------------------------------------------------------
+const session = new DataSession();
 
 let markers = [];
 export let loaded = new Set();
@@ -81,9 +92,11 @@ const bigMarkerNudge = 0.1;
 export let storage;
 export let meiUri;
 export let wavesurfers = {};
-export const _regionsPlugins = {}; // filename -> RegionsPlugin instance
-const _timerRegions = {}; // filename -> timer Region object
-export const _waveformPeaks = {}; // filename -> { peaks: number[], duration: number } when pre-computed
+// Owned by the DataSession (Wave A). Reference-stable: never rebound, so these
+// aliases stay valid for every call site and every importing module.
+export const _regionsPlugins = session.view.regionsPlugins; // filename -> RegionsPlugin instance
+const _timerRegions = session.view.timerRegions; // filename -> timer Region object
+export const _waveformPeaks = session.waveformPeaks; // filename -> { peaks: number[], duration: number } when pre-computed
 
 // Audio normalization + windowed-player lifecycle extracted to
 // ./engine/normalization.js (Phase 1 refactor). _seekAnalysis is imported above
@@ -132,7 +145,7 @@ let _fromAlignmentHandoff = false;
 // Synthesised MEI waveform: key used in wavesurfers / alignmentGrids for the synth track
 const SYNTH_MEI_KEY = "Score (synthesised from MEI)";
 // Maps SYNTH_MEI_KEY -> blob URL once synthesis is done, or the sentinel '__pending__'
-const _synthBlobUrls = new Map();
+const _synthBlobUrls = session.synthBlobUrls; // DataSession-owned (Wave A)
 
 // HTTP Basic Auth: scoped per-origin to avoid leaking credentials
 // Maps origin string -> fetchParams objects: { headers: { Authorization: 'Basic ...' } }
@@ -257,10 +270,11 @@ function redrawAllMarkers() {
 let _resizeDebounce = null;
 
 // Per-waveform closures that repaint the position indicator on every canvas.
-// Registered in each waveform's "ready" handler.
-const _positionUpdaters = {};
+// Registered in each waveform's "ready" handler. DataSession-owned (Wave A),
+// per-viewport in the target model.
+const _positionUpdaters = session.view.positionUpdaters;
 // Per-waveform closures that redraw the alignment grid canvas.
-export const _gridRedrawers = {};
+export const _gridRedrawers = session.view.gridRedrawers;
 
 // ---------------------------------------------------------------------------
 // Zoom & scroll state

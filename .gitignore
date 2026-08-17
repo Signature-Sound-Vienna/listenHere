@@ -43,3 +43,5 @@ test-results/
 /app/static/align/sphaeren-peaks.json
 /app/static/align/scoreAlign/KW-realign-primal.json
 /app/static/align/TISMIR/
+# Phase-0 de-risking spikes (throwaway probes, local-only)
+/app/static/spikes/

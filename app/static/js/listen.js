@@ -110,8 +110,6 @@ export let scoreAlignment = session.scoreAlignment; // score tstamp to ref tstam
 let mei = session.mei; // MEI XML
 let meiDOM = session.meiDOM; // MEI DOM
 let referenceAudioIx = session.referenceAudioIx;
-let timerFrom = session.timerFrom;
-let timerTo = session.timerTo;
 export let tk = session.tk; // verovio toolkit — exported so V6's loader can project score-element IDs to ref-audio times when loading score annotations.
 
 function setCurrentAudioIx(v) {
@@ -132,12 +130,6 @@ function setMeiDOM(v) {
 function setReferenceAudioIx(v) {
   return (referenceAudioIx = session.referenceAudioIx = v);
 }
-function setTimerFrom(v) {
-  return (timerFrom = session.timerFrom = v);
-}
-function setTimerTo(v) {
-  return (timerTo = session.timerTo = v);
-}
 function setTk(v) {
   return (tk = session.tk = v);
 }
@@ -151,8 +143,6 @@ function _syncMirrorsFromSession() {
   meiDOM = session.meiDOM;
   referenceAudioIx = session.referenceAudioIx;
   activeMarkerIx = session.activeMarkerIx;
-  timerFrom = session.timerFrom;
-  timerTo = session.timerTo;
   tk = session.tk;
   storage = session.storage;
   meiUri = session.meiUri;
@@ -175,7 +165,6 @@ export const wavesurfers = session.view.wavesurfers; // filename -> WaveSurfer r
 // Owned by the DataSession (Wave A). Reference-stable: never rebound, so these
 // aliases stay valid for every call site and every importing module.
 export const regionsPlugins = session.view.regionsPlugins; // filename -> RegionsPlugin instance
-const _timerRegions = session.view.timerRegions; // filename -> timer Region object
 export const waveformPeaks = session.waveformPeaks; // filename -> { peaks: number[], duration: number } when pre-computed
 
 // Audio normalization + windowed-player lifecycle extracted to
@@ -839,13 +828,12 @@ export function refreshWfBg(filename) {
 
 const REGION_NAV_BUFFER_FRAC = 0.05; // 5% of viewport width
 
-/** Collect all currently-visible region times on a waveform (skips the timer). */
+/** Collect all currently-visible region times on a waveform. */
 function _collectAllRegionTimes(filename) {
   const plugin = regionsPlugins[filename];
   if (!plugin) return [];
   return plugin
     .getRegions()
-    .filter((r) => r.id !== "timer")
     .map((r) => ({ start: r.start, end: r.end }));
 }
 
@@ -4057,7 +4045,6 @@ function reloadWaveforms() {
   prevLoaded.forEach((ws) => {
     wavesurfers[ws].destroy();
     delete regionsPlugins[ws];
-    delete _timerRegions[ws];
     teardownNormGainNode(ws);
   });
   clearMap(wavesurfers);
@@ -4227,16 +4214,6 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     // Region create/update events are handled by the V6 module's listeners
     // wired in annotation/waveform-interactions.js — listen.js doesn't need
     // its own.
-
-    // Add timer region and any annotated regions to the shared RegionsPlugin
-    _timerRegions[filename] = _regPlugin.addRegion({
-      id: "timer",
-      start: 0,
-      end: 0,
-      drag: false,
-      resize: false, // timer shouldn't be resized
-      color: "rgba(255, 0, 100, 0.3)",
-    });
 
     // Start loading (deferred for synth entries until the blob URL is available)
     const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
@@ -4865,13 +4842,6 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       _maybeLoopActiveRegion(filename);
       // Light the ribbon cards of annotations whose regions contain the playhead.
       if (filename === currentAudioIx) _updatePlayingAnnotationHighlights();
-      // continually update timer region when opened but not yet closed
-      if (timerFrom === timerTo && timerFrom > 0) {
-        _timerRegions[filename].setOptions({
-          end: wavesurfers[filename].getCurrentTime(),
-        });
-        updateRenderTimer();
-      }
       // Zoom scroll: only act on the playing waveform.
       // Use isPlaying() instead of filename===currentAudioIx to handle edge
       // cases where currentAudioIx hasn't been set yet (e.g. first playback
@@ -5489,7 +5459,6 @@ function _pruneWaveformsWithoutGrids() {
     }
     delete wavesurfers[fn];
     delete regionsPlugins[fn];
-    delete _timerRegions[fn];
     delete gridRedrawers[fn];
     delete _positionUpdaters[fn];
     delete wfBgCache[fn];
@@ -7408,7 +7377,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     let handled = true;
-    let updateTimer = false;
 
     switch (e.code) {
       case "ArrowUp": {
@@ -7611,23 +7579,6 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         break;
       }
-      case "KeyT":
-        // HACK FOR DH 2023 temporarily disable in this branch
-        return false;
-        if (timerFrom > 0 && timerFrom === timerTo) {
-          setTimerTo(wavesurfers[currentAudioIx].getCurrentTime());
-        } else {
-          setTimerFrom(wavesurfers[currentAudioIx].getCurrentTime());
-          setTimerTo(timerFrom);
-        }
-        updateTimer = true;
-        break;
-      case "KeyX":
-        // release timer
-        setTimerFrom(0);
-        setTimerTo(0);
-        updateTimer = true;
-        break;
       case "Space":
         playpause();
         break;
@@ -7636,18 +7587,6 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     if (handled) e.preventDefault();
-
-    if (updateTimer) {
-      Object.keys(wavesurfers).forEach((ws) => {
-        const wsFrom = getCorrespondingTime(
-          ws,
-          getClosestAlignmentIx(timerFrom),
-        );
-        const wsTo = getCorrespondingTime(ws, getClosestAlignmentIx(timerTo));
-        _timerRegions[ws].setOptions({ start: wsFrom, end: wsTo });
-      });
-      updateRenderTimer();
-    }
   });
 
   // Alt keyup: exit alt mode and clear number badges
@@ -7743,18 +7682,6 @@ document.addEventListener("DOMContentLoaded", () => {
     _measureDragState = null;
   });
 });
-
-function updateRenderTimer() {
-  Object.keys(wavesurfers).forEach((ws) => {
-    const timer = _timerRegions[ws];
-    if (!timer) return;
-    const timeDelta = timer.end - timer.start;
-    // Note: injecting a label into the timer region element is not supported
-    // in WaveSurfer v7 (shadow DOM). The region is rendered automatically;
-    // a future implementation could overlay a label div on the container.
-    console.log("timer:", timer.start, timer.end, "delta:", timeDelta);
-  });
-}
 
 /**
  * Push every annotation's regions onto every waveform via the V6 module,

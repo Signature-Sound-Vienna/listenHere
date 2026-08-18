@@ -152,10 +152,6 @@ export class DataSession {
     /** Index into markers[] of the active marker. */
     this.activeMarkerIx = null;
 
-    /** Timer region bounds, in reference-audio seconds. */
-    this.timerFrom = 0;
-    this.timerTo = 0;
-
     // --- Not piece-scoped, so untouched by reset(): the Verovio toolkit is
     // expensive to build and reusable, and storage is just a localStorage
     // handle. HTTP auth is per origin, not per piece.
@@ -174,8 +170,6 @@ export class DataSession {
       wavesurfers: {},
       /** filename -> RegionsPlugin instance (one per renderer). */
       regionsPlugins: {},
-      /** filename -> timer Region object. */
-      timerRegions: {},
       /** filename -> closure redrawing the alignment grid canvas. */
       gridRedrawers: {},
       /** filename -> closure repainting the position indicator. */
@@ -230,8 +224,6 @@ export class DataSession {
     this.meiDOM = null;
     this.referenceAudioIx = undefined;
     this.activeMarkerIx = null;
-    this.timerFrom = 0;
-    this.timerTo = 0;
 
     for (const m of Object.values(this.view)) clearMap(m);
   }

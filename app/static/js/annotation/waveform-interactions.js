@@ -525,7 +525,6 @@ function _setUpDragMode(ann) {
     const onCreated = (region) => {
       const id = region && region.id;
       if (id && id.startsWith(V6_REGION_PREFIX)) return; // programmatic
-      if (id === "timer") return;
       if (id && id.startsWith("anno_region_")) return; // legacy
       if (id && id.startsWith("draft_")) return; // legacy
       // User-drawn drag selection. Capture times, drop the ephemeral region,

@@ -45,3 +45,6 @@ test-results/
 /app/static/align/TISMIR/
 # Phase-0 de-risking spikes (throwaway probes, local-only)
 /app/static/spikes/
+
+# Throwaway repro harnesses (local-only; promote to a numbered scenario if kept)
+/tests/e2e/zz-*.spec.ts

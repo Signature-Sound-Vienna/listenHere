@@ -53,7 +53,12 @@ import {
   _pageScrollIfNeeded,
   _syncAllWaveformScrolls,
 } from "./engine/zoom-scroll.js";
-import { DataSession } from "./engine/data-session.js";
+import {
+  DataSession,
+  refillArray,
+  clearMap,
+  gridFingerprint,
+} from "./engine/data-session.js";
 // Preserve the public API: _overlayWrappers was declared here before the
 // Phase-1 zoom/scroll extraction and is imported by
 // annotation/waveform-interactions.js.
@@ -69,29 +74,95 @@ export { _overlayWrappers };
 // ---------------------------------------------------------------------------
 const session = new DataSession();
 
-let markers = [];
-export let loaded = new Set();
-let alignmentGrids = {};
-export let scoreAlignment; // score tstamp to ref tstamp maps for onset and offset
-let timemap = []; // verovio timemap
-let mei = null; // MEI XML
-let meiDOM = null; // MEI DOM
+// Owned by the DataSession (Wave B). Rebinds became in-place resets, so the
+// aliases stay valid for every call site and every importing module.
+const markers = session.markers;
+export const loaded = session.loaded;
+const timemap = session.timemap; // verovio timemap
 let parser = new DOMParser(); // XML parser for MEI
 let ref;
-export let currentAudioIx = "";
-let referenceAudioIx;
 let colorMap;
-let timerFrom = 0;
-let timerTo = 0;
-export let tk; // verovio toolkit — exported so V6's loader can project score-element IDs to ref-audio times when loading score annotations.
+
+// ---------------------------------------------------------------------------
+// Wave C mirrors of DataSession primitives.
+//
+// A primitive can't be aliased by reference, and several of these are imported
+// by sibling modules as ESM live bindings, so each is MIRRORED here: `session`
+// is the store, these bindings are the read path, and every write goes through
+// the matching setter below (grep-verified: no bare assignments remain). Keeping
+// the mirrors means all ~250 read sites and every importer stay untouched.
+//
+// The mirrors are scaffolding. When call sites take a session explicitly
+// (multi-viewport), they disappear and reads become session.x.
+// ---------------------------------------------------------------------------
+export let currentAudioIx = session.currentAudioIx;
+let alignmentGrids = session.alignmentGrids;
+export let scoreAlignment = session.scoreAlignment; // score tstamp to ref tstamp maps for onset and offset
+let mei = session.mei; // MEI XML
+let meiDOM = session.meiDOM; // MEI DOM
+let referenceAudioIx = session.referenceAudioIx;
+let timerFrom = session.timerFrom;
+let timerTo = session.timerTo;
+export let tk = session.tk; // verovio toolkit — exported so V6's loader can project score-element IDs to ref-audio times when loading score annotations.
+
+function setCurrentAudioIx(v) {
+  return (currentAudioIx = session.currentAudioIx = v);
+}
+function setAlignmentGrids(v) {
+  return (alignmentGrids = session.alignmentGrids = v);
+}
+function setScoreAlignment(v) {
+  return (scoreAlignment = session.scoreAlignment = v);
+}
+function setMei(v) {
+  return (mei = session.mei = v);
+}
+function setMeiDOM(v) {
+  return (meiDOM = session.meiDOM = v);
+}
+function setReferenceAudioIx(v) {
+  return (referenceAudioIx = session.referenceAudioIx = v);
+}
+function setTimerFrom(v) {
+  return (timerFrom = session.timerFrom = v);
+}
+function setTimerTo(v) {
+  return (timerTo = session.timerTo = v);
+}
+function setTk(v) {
+  return (tk = session.tk = v);
+}
+
+/** Re-read every mirror from the session. Needed after session.reset(). */
+function _syncMirrorsFromSession() {
+  currentAudioIx = session.currentAudioIx;
+  alignmentGrids = session.alignmentGrids;
+  scoreAlignment = session.scoreAlignment;
+  mei = session.mei;
+  meiDOM = session.meiDOM;
+  referenceAudioIx = session.referenceAudioIx;
+  activeMarkerIx = session.activeMarkerIx;
+  timerFrom = session.timerFrom;
+  timerTo = session.timerTo;
+  tk = session.tk;
+  storage = session.storage;
+  meiUri = session.meiUri;
+  loadedAlignmentJSON = session.loadedAlignmentJSON;
+}
 
 // seconds by which to nudge markers when arrow keys pressed in close-listening mode
 const smallMarkerNudge = 0.02;
 const bigMarkerNudge = 0.1;
 
-export let storage;
-export let meiUri;
-export let wavesurfers = {};
+export let storage = session.storage;
+export let meiUri = session.meiUri;
+function setStorage(v) {
+  return (storage = session.storage = v);
+}
+function setMeiUri(v) {
+  return (meiUri = session.meiUri = v);
+}
+export const wavesurfers = session.view.wavesurfers; // filename -> WaveSurfer renderer
 // Owned by the DataSession (Wave A). Reference-stable: never rebound, so these
 // aliases stay valid for every call site and every importing module.
 export const _regionsPlugins = session.view.regionsPlugins; // filename -> RegionsPlugin instance
@@ -137,8 +208,8 @@ export function getAudioLinkedDataUri(filename) {
 }
 
 // File picker: maps alignment audio keys to blob URLs from user-selected files
-let fileBlobUrls = new Map();
-export let fileBlobs = new Map(); // alignment audio keys -> File/Blob objects
+const fileBlobUrls = session.fileBlobUrls;
+export const fileBlobs = session.fileBlobs; // alignment audio keys -> File/Blob objects
 let useFilesMode = false;
 let _fromAlignmentHandoff = false;
 
@@ -149,8 +220,8 @@ const _synthBlobUrls = session.synthBlobUrls; // DataSession-owned (Wave A)
 
 // HTTP Basic Auth: scoped per-origin to avoid leaking credentials
 // Maps origin string -> fetchParams objects: { headers: { Authorization: 'Basic ...' } }
-let authByOrigin = new Map();
-let authPromptedOrigins = new Set();
+const authByOrigin = session.authByOrigin;
+const authPromptedOrigins = session.authPromptedOrigins;
 
 // Close-listening mode state
 let closeListeningMode = false;
@@ -162,7 +233,10 @@ let _jumpToTargetWaveforms = []; // snapshot of badged waveforms for the current
 // active-annotation region start. At most one of these is non-null at a time:
 //   activeMarkerIx     — index into markers[] when the target is a marker
 //   _activeRegionStart — { annId, regionId } when the target is a region start
-let activeMarkerIx = null; // index into markers[] array
+let activeMarkerIx = session.activeMarkerIx; // index into markers[] array
+function setActiveMarkerIx(v) {
+  return (activeMarkerIx = session.activeMarkerIx = v);
+}
 let _activeRegionStart = null; // { annId, regionId } | null
 
 /** Set/clear the active region-start target and its left-border indicator. */
@@ -216,7 +290,7 @@ function reloadWaveformsForOrigin(authedOrigin) {
 }
 
 try {
-  storage = window.localStorage;
+  setStorage(window.localStorage);
 } catch (err) {
   console.warn("unable to access local storage: ", err);
 }
@@ -1222,7 +1296,7 @@ function _onMarkerClick(filename, markerEl) {
   const markerArrayIx = markers.indexOf(alignmentIx);
   if (markerArrayIx > -1) {
     if (closeListeningMode) {
-      activeMarkerIx = markerArrayIx;
+      setActiveMarkerIx(markerArrayIx);
       redrawAllMarkers();
       seekToActiveMarker();
     } else {
@@ -1284,7 +1358,7 @@ function enterCloseListeningMode(markerArrayIndex) {
   closeListeningMode = true;
   if (markerArrayIndex != null) {
     // Explicit marker entry (e.g. clicking a marker): activate that marker.
-    activeMarkerIx = markerArrayIndex;
+    setActiveMarkerIx(markerArrayIndex);
     _setActiveRegionStart(null);
     seekToActiveMarker();
   } else {
@@ -1299,7 +1373,7 @@ function enterCloseListeningMode(markerArrayIndex) {
 
 function exitCloseListeningMode() {
   closeListeningMode = false;
-  activeMarkerIx = null;
+  setActiveMarkerIx(null);
   _setActiveRegionStart(null);
   _updateMarkBtnTooltip();
   // Leave the playhead exactly where it is on exit (whether playing or paused).
@@ -1315,13 +1389,13 @@ function exitCloseListeningMode() {
  * it. Falls back to the earliest target if none lies before the playhead.
  */
 function _activateClosestJumpTargetBehind() {
-  activeMarkerIx = null;
+  setActiveMarkerIx(null);
   _setActiveRegionStart(null);
   // Focus fix: fall back to the first loaded waveform if none is current.
   if (!currentAudioIx || !wavesurfers[currentAudioIx]) {
     const keys = Object.keys(wavesurfers);
     if (keys.length === 0) return;
-    currentAudioIx = keys[0];
+    setCurrentAudioIx(keys[0]);
   }
   const stops = _getCloseListeningStops();
   if (!stops.length) return;
@@ -1337,12 +1411,12 @@ function _activateClosestJumpTargetBehind() {
 /** Make a jump-target stop active (updating marker/region indicators) and seek to it. */
 function _activateJumpTarget(stop) {
   if (stop.markerIx != null) {
-    activeMarkerIx = stop.markerIx;
+    setActiveMarkerIx(stop.markerIx);
     _setActiveRegionStart(null);
     redrawAllMarkers();
     seekToActiveMarker();
   } else {
-    activeMarkerIx = null;
+    setActiveMarkerIx(null);
     _setActiveRegionStart(stop.regionRef);
     redrawAllMarkers();
     _seekCloseListeningTo(stop.time);
@@ -1414,7 +1488,7 @@ export function playAnnotation(annId) {
   // In close-listening, the region start becomes the active jump target so the
   // region loops; redraw markers to clear any previously-active marker.
   if (closeListeningMode) {
-    activeMarkerIx = null;
+    setActiveMarkerIx(null);
     _setActiveRegionStart({ annId, regionId: first.id });
     redrawAllMarkers();
   }
@@ -1647,6 +1721,10 @@ function getClosestAlignmentIx(
   console.log("Get closest alignment Ix: ", time, audioIx);
   // return alignment index closest to supplied time (default: current playback position)
   let currentGrid = alignmentGrids[audioIx];
+  if (!currentGrid) {
+    _warnMissingGrid("getClosestAlignmentIx", audioIx);
+    return 0;
+  }
   // find the last grid entry at or below target time
   const lower = currentGrid.filter((t) => t <= time);
   const belowIx = lower.length - 1; // last index at or below time
@@ -1663,7 +1741,26 @@ export function getCorrespondingTime(audioIx, alignmentIx) {
   // get time position corresponding to current position of current audio,
   // in the alternative audio with index audioIx
   let grid = alignmentGrids[audioIx];
+  if (!grid) {
+    // A waveform outliving its alignment grid means state got mixed (#32).
+    // Degrade instead of throwing, and name the key so it stays diagnosable.
+    _warnMissingGrid("getCorrespondingTime", audioIx);
+    return undefined;
+  }
   return grid[alignmentIx];
+}
+
+// Missing-grid warnings, one per key, so a repeating render loop can't flood
+// the console while still reporting every distinct offender.
+const _warnedMissingGrids = new Set();
+function _warnMissingGrid(where, audioIx) {
+  const key = where + "|" + audioIx;
+  if (_warnedMissingGrids.has(key)) return;
+  _warnedMissingGrids.add(key);
+  console.warn(
+    `${where}: no alignment grid for "${audioIx}" — ` +
+      `known keys: ${Object.keys(alignmentGrids).join(", ")}`,
+  );
 }
 
 function onClickRenditionName(e) {
@@ -1756,7 +1853,7 @@ export function setCurrentAudioInactive(filename) {
   }
   const wfEl = document.getElementById(`waveform-${filename}-wav`);
   if (wfEl) wfEl.classList.remove("active");
-  currentAudioIx = "";
+  setCurrentAudioIx("");
 }
 
 export function swapCurrentAudio(newAudio) {
@@ -1794,7 +1891,7 @@ export function swapCurrentAudio(newAudio) {
     if (oldScrollEl) oldScrollEl.scrollLeft = savedScroll;
     _scrollSyncLock = false;
     // swap to new audio and alignment grid
-    currentAudioIx = newAudio;
+    setCurrentAudioIx(newAudio);
     console.log("new audio ix: ", currentAudioIx);
     let currentGrid = alignmentGrids[currentAudioIx];
     console.log("new audio grid: ", alignmentGrids[currentAudioIx]);
@@ -1836,7 +1933,7 @@ export function swapCurrentAudio(newAudio) {
     }
     if (wasPlaying) wavesurfers[currentAudioIx].play();
   } else {
-    currentAudioIx = newAudio;
+    setCurrentAudioIx(newAudio);
     const newActiveWaveform = document.getElementById(
       `waveform-${currentAudioIx}` + "-wav",
     );
@@ -3377,7 +3474,7 @@ function _openGroupModal() {
   /** Persist modalTabs back to the alignment JSON and refresh the UI. */
   function applyChanges() {
     // Write all tabs back to the alignment JSON header
-    if (!loadedAlignmentJSON) loadedAlignmentJSON = {};
+    if (!loadedAlignmentJSON) setLoadedAlignmentJSON({});
     if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
     loadedAlignmentJSON.header.groupingTabs = modalTabs;
     // Keep activeTab unchanged (modal does not switch content pane live)
@@ -4056,7 +4153,7 @@ function reloadWaveforms() {
     delete _timerRegions[ws];
     _teardownNormGainNode(ws);
   });
-  wavesurfers = {};
+  clearMap(wavesurfers);
   // forget waveform elements (and spectorgrams)
   document.getElementById("waveforms").replaceChildren();
   // re-create previously loaded waveforms
@@ -4825,7 +4922,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         loadedAlignmentJSON.header &&
         Array.isArray(loadedAlignmentJSON.header.markers)
       ) {
-        markers = [...loadedAlignmentJSON.header.markers];
+        refillArray(markers, loadedAlignmentJSON.header.markers);
         // markers are rendered by the "redrawcomplete" handler
       }
     });
@@ -5292,7 +5389,10 @@ async function _buildAndPrepareSynthWaveform(
   }
 }
 
-export let loadedAlignmentJSON = null; // Full alignment object for download
+export let loadedAlignmentJSON = session.loadedAlignmentJSON; // Full alignment object for download
+function setLoadedAlignmentJSON(v) {
+  return (loadedAlignmentJSON = session.loadedAlignmentJSON = v);
+}
 
 // Number of waveforms to auto-load when the alignment JSON lacks
 // precalculated peaks (loading each one then requires decoding the audio,
@@ -5331,9 +5431,235 @@ function _autoLoadDefaultWaveforms(filenames) {
   });
 }
 
+/**
+ * Audio keys an incoming alignment object declares, across the three formats
+ * setGrids accepts (final, pre-final dev, and bare-grids legacy).
+ */
+function _incomingAudioKeys(grids) {
+  if (!grids || typeof grids !== "object") return [];
+  const src = grids.body?.audio || grids.body || grids;
+  return Object.keys(src).filter((k) => k !== SYNTH_MEI_KEY);
+}
+
+/**
+ * The time arrays an incoming alignment declares, keyed by recording. Handles
+ * all three accepted shapes (final `{times, peaks, duration}`, pre-final dev,
+ * bare-grids legacy) and skips anything that isn't a time array.
+ */
+function _incomingGridTimes(grids) {
+  if (!grids || typeof grids !== "object") return {};
+  const src = grids.body?.audio || grids.body || grids;
+  const out = {};
+  for (const [k, v] of Object.entries(src)) {
+    if (k === SYNTH_MEI_KEY) continue;
+    const times = Array.isArray(v)
+      ? v
+      : Array.isArray(v?.times)
+        ? v.times
+        : null;
+    if (times) out[k] = times;
+  }
+  return out;
+}
+
+/**
+ * Tear down everything belonging to the currently loaded piece.
+ *
+ * Issue #32: setGrids() used to swap the alignment data while the previous
+ * piece's renderers, loaded set, markers and caches survived, so any read of
+ * alignmentGrids[staleKey] returned undefined. Order matters here — leave the
+ * modes that hold indices into the outgoing piece first, destroy renderers
+ * while their state still exists, then clear.
+ *
+ * @param {string[]} keepAudioKeys keys of the incoming piece. The file picker
+ *   registers the new piece's blobs BEFORE setGrids runs, so those entries must
+ *   survive; everything else is dropped and its object URL revoked.
+ */
+function resetSession(keepAudioKeys = []) {
+  const keep = new Set(keepAudioKeys);
+
+  // 1. Leave transient modes that reference the outgoing piece
+  if (closeListeningMode) exitCloseListeningMode();
+  _clearMeasureVisuals();
+  _jumpToTargetActive = false;
+  _jumpToTargetWaveforms = [];
+  _setActiveRegionStart(null);
+  _playingAnnKey = "";
+
+  // 2. Destroy the renderers (same teardown reloadWaveforms performs)
+  Object.keys(wavesurfers).forEach((fn) => {
+    _teardownNormGainNode(fn);
+    try {
+      wavesurfers[fn].destroy();
+    } catch (e) {
+      console.warn("resetSession: destroy failed for", fn, e);
+    }
+  });
+  _seekAnalysis.clear();
+
+  // 3. Release object URLs we minted for the outgoing piece
+  for (const url of session.synthBlobUrls.values()) {
+    if (url && url !== "__pending__") URL.revokeObjectURL(url);
+  }
+  for (const [k, url] of session.fileBlobUrls) {
+    if (!keep.has(k)) URL.revokeObjectURL(url);
+  }
+
+  // 4. Piece-scoped state living outside the DataSession
+  _preparing.clear();
+  clearMap(_wfBgCache);
+  clearMap(_overlayWrappers);
+  clearMap(_tempoRawCache);
+  clearMap(_tempoCurveRedrawers);
+  _tempoYRange = null;
+  clearMap(_alignOriginalGrids);
+  _undoStack.length = 0;
+  _redoStack.length = 0;
+  _changeCounter = 0;
+  _savedAtCounter = 0;
+  setAnnoChangesPending(false);
+  v6State.replaceAll([]); // V6 annotations belong to the outgoing piece
+
+  // 5. The DataSession, then the mirrors that shadow it. The picker maps are
+  //    the *input* to the next load, so prune rather than clear them.
+  const keptBlobs = [...session.fileBlobs].filter(([k]) => keep.has(k));
+  const keptUrls = [...session.fileBlobUrls].filter(([k]) => keep.has(k));
+  session.reset();
+  for (const [k, v] of keptBlobs) session.fileBlobs.set(k, v);
+  for (const [k, v] of keptUrls) session.fileBlobUrls.set(k, v);
+  _syncMirrorsFromSession();
+
+  // 6. Waveform stack. The sidebar file list, grouping pills and LD URI
+  //    section are re-rendered from the new alignment by setGrids.
+  document.getElementById("waveforms").replaceChildren();
+}
+
+/**
+ * Destroy any created waveform whose alignment grid is not in the incoming
+ * alignment. Without this, a recording that the new alignment simply doesn't
+ * mention keeps its renderer, and every projection through its grid throws
+ * (#32). Covers the cases the different-piece prompt can't judge on its own:
+ * two pieces aligned over the same recordings, or the same piece re-loaded with
+ * fewer of them.
+ *
+ * @returns {string[]} keys dropped
+ */
+function _pruneWaveformsWithoutGrids() {
+  const valid = new Set(Object.keys(alignmentGrids));
+  const dropped = [];
+  Object.keys(wavesurfers).forEach((fn) => {
+    if (valid.has(fn)) return;
+    dropped.push(fn);
+    _teardownNormGainNode(fn);
+    try {
+      wavesurfers[fn].destroy();
+    } catch (e) {
+      console.warn("prune: destroy failed for", fn, e);
+    }
+    delete wavesurfers[fn];
+    delete _regionsPlugins[fn];
+    delete _timerRegions[fn];
+    delete _gridRedrawers[fn];
+    delete _positionUpdaters[fn];
+    delete _wfBgCache[fn];
+    delete _waveformPeaks[fn];
+    delete _tempoRawCache[fn];
+    delete _tempoCurveRedrawers[fn];
+    delete _alignOriginalGrids[fn];
+    loaded.delete(fn);
+    _preparing.delete(fn);
+    if (currentAudioIx === fn) setCurrentAudioIx("");
+    // The overlay wrapper, when present, contains the waveform element
+    const ow = _overlayWrappers[fn];
+    const el = document.getElementById("waveform-" + fn + "-wav");
+    (ow?.wrapper || el)?.remove();
+    delete _overlayWrappers[fn];
+  });
+  if (dropped.length) {
+    console.warn(
+      "dropped waveform(s) absent from the new alignment:",
+      dropped.join(", "),
+    );
+    _tempoYRange = null;
+  }
+  return dropped;
+}
+
+/**
+ * Guard for setGrids: an alignment whose recordings don't overlap the loaded
+ * ones is a *different piece*, and layering it on top is issue #32. Ask, then
+ * either reset or abandon the load. Overlapping keys mean the user is managing
+ * the current piece's recordings, which stays a no-op.
+ *
+ * @returns {boolean} whether the load should proceed
+ */
+function _maybeResetForNewPiece(grids) {
+  const current = Object.keys(alignmentGrids).filter((k) => k !== SYNTH_MEI_KEY);
+  if (!current.length) return true; // nothing loaded yet
+  const incoming = _incomingAudioKeys(grids);
+  if (!incoming.length) return true; // nothing to compare; normal path reports it
+  // Recordings alone don't identify a piece: in this corpus filenames name the
+  // ALBUM, so several pieces are aligned over the SAME recordings and a shared
+  // key set is no evidence of sameness. Two signals settle it, in order.
+  //
+  // 1. A different score.
+  const incomingMeiUri = grids?.header?.meiUri;
+  const differentScore =
+    !!incomingMeiUri && !!meiUri && incomingMeiUri !== meiUri;
+
+  // 2. A different warped time sequence for a recording we already hold. This
+  //    is what carries audio-only alignments, which have no score to compare.
+  //    Fingerprints are the as-loaded ones, so in-session corrections don't
+  //    register as a different piece.
+  const incomingTimes = _incomingGridTimes(grids);
+  const shared = incoming.filter((k) => current.includes(k));
+  let differentTimes = false;
+  let evidence = "";
+  for (const k of shared) {
+    const stored = session.gridFingerprints[k];
+    if (!stored || !incomingTimes[k]) continue; // nothing to compare
+    if (gridFingerprint(incomingTimes[k]) !== stored) {
+      differentTimes = true;
+      evidence = k;
+      break;
+    }
+  }
+
+  if (!differentScore && !differentTimes && shared.length) {
+    return true; // same piece: managing its recordings
+  }
+  console.log(
+    "setGrids: incoming alignment looks like a different piece —",
+    differentScore
+      ? "different score"
+      : differentTimes
+        ? `different alignment times for "${evidence}"`
+        : "no recordings in common",
+  );
+  const why = differentScore
+    ? "it uses a different score"
+    : differentTimes
+      ? "its alignment times differ from the loaded ones"
+      : "none of its recordings match the ones loaded";
+  const ok = confirm(
+    `This alignment appears to be for a different piece — ${why}.\n\n` +
+      "Replace the loaded piece?\n\n" +
+      "Markers, annotations and alignment corrections that have not been " +
+      "saved will be discarded.",
+  );
+  if (!ok) return false;
+  resetSession(incoming);
+  return true;
+}
+
 async function setGrids(grids) {
   console.log("received grids: ", grids);
-  loadedAlignmentJSON = grids;
+  // Replacing the loaded piece requires a full teardown first (issue #32)
+  if (!_maybeResetForNewPiece(grids)) {
+    console.log("setGrids: user declined replacing the loaded piece");
+    return;
+  }
+  setLoadedAlignmentJSON(grids);
   // V6 hook: load any persisted V6 annotations out of the alignment JSON
   // into the in-memory state. No-op when V6 is inactive.
   loadAnnotationsFromAlignment(grids);
@@ -5344,7 +5670,7 @@ async function setGrids(grids) {
       // stashing inline {peaks, duration} into _waveformPeaks. Crucially, do
       // NOT mutate grids.body.audio — loadedAlignmentJSON aliases the same
       // object and the inline peaks/duration must survive a Save Data round-trip.
-      alignmentGrids = {};
+      setAlignmentGrids({});
       for (const [key, val] of Object.entries(grids.body.audio)) {
         if (val && !Array.isArray(val) && Array.isArray(val.times)) {
           _waveformPeaks[key] = { peaks: val.peaks, duration: val.duration };
@@ -5355,8 +5681,8 @@ async function setGrids(grids) {
       }
       if ("header" in grids) {
         if ("meiUri" in grids.header && "score" in grids.body) {
-          meiUri = grids.header.meiUri;
-          scoreAlignment = grids.body.score;
+          setMeiUri(grids.header.meiUri);
+          setScoreAlignment(grids.body.score);
           // Reserve a slot in alignmentGrids for the synth waveform (filled later)
           if (scoreAlignment) {
             alignmentGrids[SYNTH_MEI_KEY] = []; // placeholder; computed in _buildAndPrepareSynthWaveform
@@ -5365,10 +5691,13 @@ async function setGrids(grids) {
           await fetch(meiUri)
             .then((response) => response.text())
             .then((meiXml) => {
-              mei = meiXml;
-              meiDOM = parser.parseFromString(mei, "application/xml");
+              setMei(meiXml);
+              setMeiDOM(parser.parseFromString(mei, "application/xml"));
               tk.loadData(mei, {});
-              timemap = tk.renderToTimemap({ includeMeasures: true });
+              refillArray(
+                timemap,
+                tk.renderToTimemap({ includeMeasures: true }),
+              );
               // Invalidate tempo cache so it picks up timemap qstamp values
               for (const k of Object.keys(_tempoRawCache))
                 delete _tempoRawCache[k];
@@ -5381,7 +5710,7 @@ async function setGrids(grids) {
           console.log("MEI fetched: ", meiUri);
         }
         if ("ref" in grids.header) {
-          referenceAudioIx = grids.header.ref;
+          setReferenceAudioIx(grids.header.ref);
         }
       } else {
         console.error(
@@ -5391,22 +5720,30 @@ async function setGrids(grids) {
       }
     } else {
       // pre-final dev version of alignment json
-      alignmentGrids = grids.body;
+      setAlignmentGrids(grids.body);
     }
   } else {
     // old version of alignment json
-    alignmentGrids = grids;
+    setAlignmentGrids(grids);
   }
   console.log("setting grids: ", grids);
+
+  // Any waveform the new alignment doesn't mention must go before anything
+  // tries to project through its (now absent) grid — see #32.
+  _pruneWaveformsWithoutGrids();
 
   // Invalidate tempo curve cache (alignment data changed)
   for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
   _tempoYRange = null;
 
-  // Capture original alignment grids for the "Revert all" feature
+  // Capture original alignment grids for the "Revert all" feature, and
+  // fingerprint them as the loaded piece's identity (see gridFingerprint).
+  clearMap(_alignOriginalGrids);
+  clearMap(session.gridFingerprints);
   for (const [key, grid] of Object.entries(alignmentGrids)) {
     if (key !== SYNTH_MEI_KEY && Array.isArray(grid)) {
       _alignOriginalGrids[key] = grid.slice();
+      session.gridFingerprints[key] = gridFingerprint(grid);
     }
   }
 
@@ -5508,7 +5845,7 @@ function onAlignmentComplete(alignmentResult, files) {
   });
   useFilesMode = true;
   _fromAlignmentHandoff = true;
-  loadedAlignmentJSON = alignmentResult;
+  setLoadedAlignmentJSON(alignmentResult);
   workId = "in-browser-alignment";
 
   // Update URL to reflect listen mode (so Solid redirects return here, not to align)
@@ -5723,11 +6060,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // set up Verovio
   const _verovioReady = new Promise((resolve) => {
     if (typeof verovio !== "undefined" && verovio.module.calledRun) {
-      tk = new verovio.toolkit();
+      setTk(new verovio.toolkit());
       resolve(tk);
     } else if (typeof verovio !== "undefined") {
       verovio.module.onRuntimeInitialized = () => {
-        tk = new verovio.toolkit();
+        setTk(new verovio.toolkit());
         console.log("Have Verovio toolkit:", tk);
         resolve(tk);
       };
@@ -5758,6 +6095,14 @@ document.addEventListener("DOMContentLoaded", () => {
       // hasUnsavedChanges flags, which in turn pushes the central indicator
       // clean via setAnnoChangesPending(false).
       commitAnnotationsToAlignment(loadedAlignmentJSON);
+      // The saved file carries the current (possibly corrected) times, so
+      // re-fingerprint from them — otherwise re-loading what we just wrote
+      // would look like a different piece (#32).
+      for (const [key, grid] of Object.entries(alignmentGrids)) {
+        if (key !== SYNTH_MEI_KEY && Array.isArray(grid)) {
+          session.gridFingerprints[key] = gridFingerprint(grid);
+        }
+      }
       const blob = new Blob([JSON.stringify(loadedAlignmentJSON, null, 2)], {
         type: "application/json",
       });
@@ -5906,7 +6251,7 @@ document.addEventListener("DOMContentLoaded", () => {
           bestIx = i;
         }
       }
-      activeMarkerIx = bestIx;
+      setActiveMarkerIx(bestIx);
       redrawAllMarkers();
       seekToActiveMarker();
     }
@@ -5943,9 +6288,8 @@ document.addEventListener("DOMContentLoaded", () => {
             if (markers.length === 0) {
               exitCloseListeningMode();
             } else {
-              activeMarkerIx = Math.min(
-                activeMarkerIx || 0,
-                markers.length - 1,
+              setActiveMarkerIx(
+                Math.min(activeMarkerIx || 0, markers.length - 1),
               );
             }
           }
@@ -5964,7 +6308,7 @@ document.addEventListener("DOMContentLoaded", () => {
           markerArrayIx: insertIx,
         });
         if (closeListeningMode) {
-          activeMarkerIx = insertIx;
+          setActiveMarkerIx(insertIx);
         }
         redrawAllMarkers();
         break;
@@ -6031,9 +6375,8 @@ document.addEventListener("DOMContentLoaded", () => {
             if (markers.length === 0) {
               exitCloseListeningMode();
             } else {
-              activeMarkerIx = Math.min(
-                activeMarkerIx || 0,
-                markers.length - 1,
+              setActiveMarkerIx(
+                Math.min(activeMarkerIx || 0, markers.length - 1),
               );
             }
           }
@@ -6066,7 +6409,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     // Also restore markers to saved state
     if (loadedAlignmentJSON?.header?.markers) {
-      markers = [...loadedAlignmentJSON.header.markers];
+      refillArray(markers, loadedAlignmentJSON.header.markers);
     } else {
       markers.length = 0;
     }
@@ -6300,12 +6643,12 @@ document.addEventListener("DOMContentLoaded", () => {
       enterCloseListeningMode(nearby.markerArrayIx);
     } else if (!_dragMarkersEnabled) {
       // Not dragging — select this marker and seek to it
-      activeMarkerIx = nearby.markerArrayIx;
+      setActiveMarkerIx(nearby.markerArrayIx);
       redrawAllMarkers();
       seekToActiveMarker();
     } else {
       // Drag enabled — just select the marker (no seek/jump)
-      activeMarkerIx = nearby.markerArrayIx;
+      setActiveMarkerIx(nearby.markerArrayIx);
       redrawAllMarkers();
     }
 
@@ -7218,7 +7561,7 @@ document.addEventListener("DOMContentLoaded", () => {
         );
         if (closeListeningMode) {
           // Make the newly added marker active
-          activeMarkerIx = markers.length - 1;
+          setActiveMarkerIx(markers.length - 1);
           redrawAllMarkers();
           seekToActiveMarker();
         } else {
@@ -7255,17 +7598,17 @@ document.addEventListener("DOMContentLoaded", () => {
         // HACK FOR DH 2023 temporarily disable in this branch
         return false;
         if (timerFrom > 0 && timerFrom === timerTo) {
-          timerTo = wavesurfers[currentAudioIx].getCurrentTime();
+          setTimerTo(wavesurfers[currentAudioIx].getCurrentTime());
         } else {
-          timerFrom = wavesurfers[currentAudioIx].getCurrentTime();
-          timerTo = timerFrom;
+          setTimerFrom(wavesurfers[currentAudioIx].getCurrentTime());
+          setTimerTo(timerFrom);
         }
         updateTimer = true;
         break;
       case "KeyX":
         // release timer
-        timerFrom = 0;
-        timerTo = 0;
+        setTimerFrom(0);
+        setTimerTo(0);
         updateTimer = true;
         break;
       case "Space":
@@ -7559,7 +7902,7 @@ function initFilePicker() {
           // Set workId from the JSON filename
           workId = jsonFiles[0].name;
           // Temporarily set loadedAlignmentJSON so LD URI section can read header
-          loadedAlignmentJSON = data;
+          setLoadedAlignmentJSON(data);
           renderFileList();
           populateLdUriSection();
         } else {
@@ -7916,6 +8259,11 @@ initGlobalJsonDrop();
 window._listenTest = {
   get wavesurfers() { return wavesurfers; },
   get currentAudioIx() { return currentAudioIx; },
+  get alignmentGrids() { return alignmentGrids; },
+  get loaded() { return [...loaded]; },
+  get markers() { return [...markers]; },
+  /** The DataSession itself — state ownership is migrating into it (item 13). */
+  get session() { return session; },
   /**
    * Inject a synthetic region directly onto each named waveform's regions
    * plugin. Bypasses V6 state (which is the intended path in production)

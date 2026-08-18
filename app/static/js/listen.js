@@ -1025,6 +1025,16 @@ window.addEventListener("resize", () => {
   // Show spinners; WaveSurfer v7's built-in ResizeObserver triggers rerenders per
   // waveform, each of which hides its own overlay in its "redrawcomplete" handler.
   showWaveformOverlays();
+  // Those rerenders are not enough on their own: applyZoom fits a waveform with
+  // ws.zoom(containerWidth / duration), which PINS minPxPerSec to the width it saw
+  // at the time. WaveSurfer then keeps rerendering at that pinned rate, so after a
+  // resize the content holds its old width — at zoom 1 it overflows its container,
+  // the scroll container stays scrollable, and a parked scrollLeft can leave the
+  // waveform showing a slice that was never rendered (blank waveform, working
+  // playback). Re-applying the current zoom recomputes the rate for the new width.
+  // Debounced: a drag-resize fires this continuously (see spec 28).
+  clearTimeout(_resizeDebounce);
+  _resizeDebounce = setTimeout(() => applyZoom(currentZoomLevel), 150);
 });
 
 // --- Close-listening mode ---
@@ -4159,7 +4169,15 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           const savedSL = sc ? sc.scrollLeft : 0;
           _scrollSyncLock = true;
           wavesurfers[filename].seekTo(0);
-          if (sc) sc.scrollLeft = savedSL;
+          // Clamp on the way back in: a position captured before a resize or a
+          // zoom-out can exceed the new maximum, and restoring it verbatim would
+          // re-park the waveform on every redraw, so the bad state never healed.
+          if (sc) {
+            sc.scrollLeft = Math.min(
+              savedSL,
+              Math.max(0, sc.scrollWidth - sc.clientWidth),
+            );
+          }
           _scrollSyncLock = false;
         }
         if (currentAudioIx && _positionUpdaters[currentAudioIx]) {

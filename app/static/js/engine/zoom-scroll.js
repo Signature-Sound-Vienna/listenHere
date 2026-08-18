@@ -11,7 +11,7 @@
 //    are the seed of the future DataSession; they are imported here (a circular
 //    but eval-safe import — every borrowed binding is used only inside function
 //    bodies, never at module top level).
-//  - `_currentZoomLevel` / `_scrollMode` / `_sharedTimeAxis` are exported as live
+//  - `currentZoomLevel` / `scrollMode` / `sharedTimeAxis` are exported as live
 //    bindings so listen.js keeps reading the current value; the few writes that
 //    still live in listen.js's DOMContentLoaded wiring go through the setters
 //    below (ESM importers cannot assign to a live binding directly).
@@ -22,38 +22,38 @@
 import {
   wavesurfers,
   loaded,
-  _wfBgCache,
-  _refreshWfBg,
-  _gridRedrawers,
+  wfBgCache,
+  refreshWfBg,
+  gridRedrawers,
   getClosestAlignmentIx,
   getCorrespondingTime,
-  _updateAllRegionNavArrows,
+  updateAllRegionNavArrows,
 } from "../listen.js";
 
 // ---------------------------------------------------------------------------
 // Zoom state (owned here)
 // ---------------------------------------------------------------------------
 export const ZOOM_LEVELS = [1, 2, 5, 10, 20, 50];
-export let _currentZoomLevel = 1; // multiplier (1 = no zoom)
-export let _scrollMode = "page"; // "follow" | "page" | "manual"
-export let _sharedTimeAxis = false; // when true, all waveforms use same px/sec
-export const _overlayWrappers = {}; // filename → { wrapper, inner }
+export let currentZoomLevel = 1; // multiplier (1 = no zoom)
+export let scrollMode = "page"; // "follow" | "page" | "manual"
+export let sharedTimeAxis = false; // when true, all waveforms use same px/sec
+export const overlayWrappers = {}; // filename → { wrapper, inner }
 
 // Setters for the writes that still originate in listen.js's UI wiring
 // (live-binding imports are read-only for the importer).
 export function setScrollMode(mode) {
-  _scrollMode = mode;
+  scrollMode = mode;
 }
 export function setSharedTimeAxis(on) {
-  _sharedTimeAxis = on;
+  sharedTimeAxis = on;
 }
 /** Set the zoom level without side effects (used by form-restore). */
 export function setCurrentZoomLevel(level) {
-  _currentZoomLevel = level;
+  currentZoomLevel = level;
 }
 
 /** Get the shadow-DOM scroll container for a WaveSurfer instance. */
-export function _getScrollContainer(filename) {
+export function getScrollContainer(filename) {
   const ws = wavesurfers[filename];
   if (!ws) return null;
   // ws.getWrapper() returns the .wrapper div; its parent is the .scroll div
@@ -61,10 +61,10 @@ export function _getScrollContainer(filename) {
 }
 
 /** Get the full rendered width of the waveform (accounts for zoom). */
-export function _getZoomedWidth(filename) {
+export function getZoomedWidth(filename) {
   const ws = wavesurfers[filename];
   if (!ws) return 0;
-  if (_currentZoomLevel <= 1) {
+  if (currentZoomLevel <= 1) {
     const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
     return wfEl ? wfEl.clientWidth : 0;
   }
@@ -73,7 +73,7 @@ export function _getZoomedWidth(filename) {
 }
 
 /** Create the overlay wrapper structure for a waveform. */
-export function _createOverlayWrapper(wfEl, height) {
+export function createOverlayWrapper(wfEl, height) {
   const wrapper = document.createElement("div");
   wrapper.className = "wf-overlays";
   wrapper.style.height = height + "px";
@@ -87,8 +87,8 @@ export function _createOverlayWrapper(wfEl, height) {
 }
 
 /** Ensure a sticky filename label exists on the waveform overlay (not in the scrolling inner). */
-export function _ensureWfLabel(filename) {
-  const ow = _overlayWrappers[filename];
+export function ensureWfLabel(filename) {
+  const ow = overlayWrappers[filename];
   const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
   const parent = ow ? ow.wrapper : wfEl;
   if (!parent) return;
@@ -100,12 +100,12 @@ export function _ensureWfLabel(filename) {
   lbl.textContent = filename;
   parent.appendChild(lbl);
   // Match background to the waveform's effective background colour
-  lbl.style.backgroundColor = _wfBgCache[filename] || _refreshWfBg(filename);
+  lbl.style.backgroundColor = wfBgCache[filename] || refreshWfBg(filename);
 }
 
 /** Sync overlay scroll transform to match WaveSurfer's scroll position. */
-export function _syncOverlayScroll(filename) {
-  const ow = _overlayWrappers[filename];
+export function syncOverlayScroll(filename) {
+  const ow = overlayWrappers[filename];
   if (!ow) return;
   const scrollLeft = wavesurfers[filename]
     ? wavesurfers[filename].getScroll()
@@ -114,15 +114,15 @@ export function _syncOverlayScroll(filename) {
 }
 
 /** Configure WaveSurfer autoScroll/autoCenter for a waveform based on scroll mode. */
-export function _applyScrollMode(filename) {
+export function applyScrollMode(filename) {
   const ws = wavesurfers[filename];
   if (!ws) return;
-  if (_currentZoomLevel <= 1) {
+  if (currentZoomLevel <= 1) {
     ws.options.autoScroll = false;
     ws.options.autoCenter = false;
     return;
   }
-  switch (_scrollMode) {
+  switch (scrollMode) {
     case "follow":
       ws.options.autoScroll = true;
       ws.options.autoCenter = true;
@@ -137,7 +137,7 @@ export function _applyScrollMode(filename) {
 
 /** Apply zoom level to all loaded waveforms. */
 export function applyZoom(level) {
-  _currentZoomLevel = level;
+  currentZoomLevel = level;
   const label = document.getElementById("zoom-label");
   if (label) label.textContent = level + "x";
   const scrollControls = document.getElementById("scroll-mode-controls");
@@ -146,7 +146,7 @@ export function applyZoom(level) {
   // For shared time axis, compute a common pxPerSec from the longest duration
   let sharedPxPerSec = null;
   let maxDuration = 0;
-  if (_sharedTimeAxis) {
+  if (sharedTimeAxis) {
     Object.keys(wavesurfers).forEach((fn) => {
       if (!loaded.has(fn)) return;
       const d = wavesurfers[fn].getDuration();
@@ -157,7 +157,7 @@ export function applyZoom(level) {
   // When toggling shared time axis, first reset all widths synchronously so
   // layout settles before we call ws.zoom(). This avoids WaveSurfer's
   // ResizeObserver racing with our zoom calls.
-  if (_sharedTimeAxis && maxDuration > 0 && level <= 1) {
+  if (sharedTimeAxis && maxDuration > 0 && level <= 1) {
     Object.keys(wavesurfers).forEach((filename) => {
       if (!loaded.has(filename)) return;
       const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
@@ -165,7 +165,7 @@ export function applyZoom(level) {
       const fraction = wavesurfers[filename].getDuration() / maxDuration;
       wfEl.style.width = Math.max(fraction * 100, 5) + "%"; // min 5% to avoid collapse
     });
-  } else if (!_sharedTimeAxis) {
+  } else if (!sharedTimeAxis) {
     Object.keys(wavesurfers).forEach((filename) => {
       const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
       if (wfEl) wfEl.style.width = "";
@@ -173,7 +173,7 @@ export function applyZoom(level) {
   }
 
   // Compute shared pxPerSec once from a reference container (after widths settle)
-  if (_sharedTimeAxis && maxDuration > 0 && level > 1) {
+  if (sharedTimeAxis && maxDuration > 0 && level > 1) {
     // Reset widths first, then compute from parent container
     Object.keys(wavesurfers).forEach((filename) => {
       const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
@@ -192,7 +192,7 @@ export function applyZoom(level) {
 
     try {
       const duration = ws.getDuration();
-      if (_sharedTimeAxis && maxDuration > 0) {
+      if (sharedTimeAxis && maxDuration > 0) {
         if (level <= 1) {
           // Explicit pxPerSec instead of ws.zoom(0) — the latter can be a
           // no-op in v7 when fillParent is already active, leaving the wrapper
@@ -212,16 +212,16 @@ export function applyZoom(level) {
     } catch (e) {
       console.warn("Zoom error for", filename, e);
     }
-    _applyScrollMode(filename);
+    applyScrollMode(filename);
     // redrawcomplete will fire and handle overlay resize + marker redraw
   });
-  _updateAllRegionNavArrows();
+  updateAllRegionNavArrows();
 }
 
 /** Page-scroll the active waveform if playhead is about to leave visible area. */
-export function _pageScrollIfNeeded(filename) {
+export function pageScrollIfNeeded(filename) {
   const ws = wavesurfers[filename];
-  const scrollContainer = _getScrollContainer(filename);
+  const scrollContainer = getScrollContainer(filename);
   if (!ws || !scrollContainer) return;
   const currentTime = ws.getCurrentTime();
   const duration = ws.getDuration();
@@ -234,13 +234,13 @@ export function _pageScrollIfNeeded(filename) {
   if (playheadPx > visibleEnd - margin || playheadPx < currentScroll) {
     const newScroll = Math.max(0, playheadPx - visibleWidth * 0.1);
     ws.setScroll(newScroll);
-    _syncOverlayScroll(filename);
+    syncOverlayScroll(filename);
   }
 }
 
 /** Sync all waveform scroll positions to match the source waveform's center time. */
-export function _syncAllWaveformScrolls(sourceFilename) {
-  if (_currentZoomLevel <= 1) return;
+export function syncAllWaveformScrolls(sourceFilename) {
+  if (currentZoomLevel <= 1) return;
   const sourceWs = wavesurfers[sourceFilename];
   if (!sourceWs) return;
   const sourceWrapper = sourceWs.getWrapper();
@@ -251,7 +251,7 @@ export function _syncAllWaveformScrolls(sourceFilename) {
   const sourceScroll = sourceWs.getScroll();
   const sourceDuration = sourceWs.getDuration();
 
-  if (_sharedTimeAxis) {
+  if (sharedTimeAxis) {
     // Shared time axis: all waveforms share the same pxPerSec, so same
     // scrollLeft aligns to the same absolute time.
     Object.keys(wavesurfers).forEach((targetFilename) => {
@@ -260,8 +260,8 @@ export function _syncAllWaveformScrolls(sourceFilename) {
       const targetWs = wavesurfers[targetFilename];
       if (!targetWs) return;
       targetWs.setScroll(sourceScroll);
-      _syncOverlayScroll(targetFilename);
-      if (_gridRedrawers[targetFilename]) _gridRedrawers[targetFilename]();
+      syncOverlayScroll(targetFilename);
+      if (gridRedrawers[targetFilename]) gridRedrawers[targetFilename]();
     });
     return;
   }
@@ -289,8 +289,8 @@ export function _syncAllWaveformScrolls(sourceFilename) {
     const targetCenterPx = targetFraction * targetTotalWidth;
     const targetScroll = Math.max(0, targetCenterPx - targetVisibleWidth / 2);
     targetWs.setScroll(targetScroll);
-    _syncOverlayScroll(targetFilename);
+    syncOverlayScroll(targetFilename);
     // Redraw viewport-based canvases for this target
-    if (_gridRedrawers[targetFilename]) _gridRedrawers[targetFilename]();
+    if (gridRedrawers[targetFilename]) gridRedrawers[targetFilename]();
   });
 }

@@ -13,11 +13,11 @@ import {
   wavesurfers,
   currentAudioIx,
   swapCurrentAudio,
-  _updateMarkBtnTooltip,
+  updateMarkBtnTooltip,
 } from "../listen.js";
 
 /** Swap the play/pause button between its play and pause glyphs. */
-export function _updateTransportIcons(playing) {
+export function updateTransportIcons(playing) {
   const pp = document.getElementById("playpause");
   if (!pp) return;
   const iconPlay = pp.querySelector(".icon-play");
@@ -27,7 +27,7 @@ export function _updateTransportIcons(playing) {
 }
 
 /** Seek the active recording by `delta` seconds, clamped to its duration. */
-export function _seekBy(delta) {
+export function seekBy(delta) {
   if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
   const ws = wavesurfers[currentAudioIx];
   const dur = ws.getDuration();
@@ -51,5 +51,5 @@ export function playpause() {
       wavesurfers[currentAudioIx].play();
     }
   }
-  _updateMarkBtnTooltip();
+  updateMarkBtnTooltip();
 }

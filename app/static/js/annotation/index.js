@@ -27,11 +27,11 @@ import {
   listAnnotationsForAudio,
   listAnnotationsForLoadedAudios,
 } from "./solid-load.js";
-import { _openLoadModal, consumeLoadIntent } from "./ui-ribbon.js";
+import { openLoadModal, consumeLoadIntent } from "./ui-ribbon.js";
 import { solid } from "../solid.js";
 import {
   setAnnoChangesPending,
-  _regionsPlugins,
+  regionsPlugins,
   getAudioLinkedDataUri,
   loadedAlignmentJSON,
 } from "../listen.js";
@@ -150,14 +150,14 @@ export function initAnnotationV6() {
   // Push V6 dirty state into the central Save-data indicator on every change.
   state.subscribe(() => setAnnoChangesPending(state.isAnyDirty()));
 
-  // Expose state + adapter + uiState + the live _regionsPlugins map for
+  // Expose state + adapter + uiState + the live regionsPlugins map for
   // devtools inspection.
   window.__annotationV6 = {
     active: true,
     state,
     adapter,
     uiState,
-    _regionsPlugins,
+    regionsPlugins,
     commitAnnotationsToAlignment,
     loadAnnotationsFromAlignment,
     postAnnotationToSolid,
@@ -201,12 +201,12 @@ export function initAnnotationV6() {
       _autoloadConsumed = true;
       // The presetMm path bypasses the resumed banner — the user landed
       // here via a shared link, not an in-session intent.
-      _openLoadModal({ presetMm: _pendingMm });
+      openLoadModal({ presetMm: _pendingMm });
       return;
     }
     const intent = consumeLoadIntent();
     if (intent) {
-      _openLoadModal({ resumed: true });
+      openLoadModal({ resumed: true });
     }
   }
 

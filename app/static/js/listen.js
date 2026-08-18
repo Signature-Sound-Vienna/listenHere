@@ -10,18 +10,18 @@ import WaveSurfer from "../vendor/wavesurfer.esm.js";
 import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
 import {
-  _maybeBuildWindowedPlayer,
-  _setupNormGainNode,
-  _teardownNormGainNode,
-  _applyNormGain,
-  _seekAnalysis,
+  maybeBuildWindowedPlayer,
+  setupNormGainNode,
+  teardownNormGainNode,
+  applyNormGain,
+  seekAnalysis,
 } from "./engine/normalization.js";
 import {
-  _updateTransportIcons,
-  _seekBy,
+  updateTransportIcons,
+  seekBy,
   playpause,
 } from "./engine/transport.js";
-import { _drawTimeTicks } from "./engine/time-axis.js";
+import { drawTimeTicks } from "./engine/time-axis.js";
 import {
   initAlignPanel,
   configure as configureAlign,
@@ -37,22 +37,22 @@ import {
 } from "./annotation/index.js";
 import {
   ZOOM_LEVELS,
-  _currentZoomLevel,
-  _scrollMode,
-  _sharedTimeAxis,
-  _overlayWrappers,
+  currentZoomLevel,
+  scrollMode,
+  sharedTimeAxis,
+  overlayWrappers,
   setScrollMode,
   setSharedTimeAxis,
   setCurrentZoomLevel,
   applyZoom,
-  _getScrollContainer,
-  _getZoomedWidth,
-  _createOverlayWrapper,
-  _ensureWfLabel,
-  _syncOverlayScroll,
-  _applyScrollMode,
-  _pageScrollIfNeeded,
-  _syncAllWaveformScrolls,
+  getScrollContainer,
+  getZoomedWidth,
+  createOverlayWrapper,
+  ensureWfLabel,
+  syncOverlayScroll,
+  applyScrollMode,
+  pageScrollIfNeeded,
+  syncAllWaveformScrolls,
 } from "./engine/zoom-scroll.js";
 import {
   DataSession,
@@ -62,16 +62,16 @@ import {
 } from "./engine/data-session.js";
 import {
   redrawAllMarkers,
-  _clearMarkers,
-  _addMarker,
-  _updateMarkerDraggableClass,
+  clearMarkers,
+  addMarker,
+  updateMarkerDraggableClass,
   seekToActiveMarker,
-  _persistMarkers,
+  persistMarkers,
 } from "./engine/markers.js";
-// Preserve the public API: _overlayWrappers was declared here before the
+// Preserve the public API: overlayWrappers was declared here before the
 // Phase-1 zoom/scroll extraction and is imported by
 // annotation/waveform-interactions.js.
-export { _overlayWrappers };
+export { overlayWrappers };
 
 // ---------------------------------------------------------------------------
 // The one DataSession for this screen.
@@ -174,18 +174,18 @@ function setMeiUri(v) {
 export const wavesurfers = session.view.wavesurfers; // filename -> WaveSurfer renderer
 // Owned by the DataSession (Wave A). Reference-stable: never rebound, so these
 // aliases stay valid for every call site and every importing module.
-export const _regionsPlugins = session.view.regionsPlugins; // filename -> RegionsPlugin instance
+export const regionsPlugins = session.view.regionsPlugins; // filename -> RegionsPlugin instance
 const _timerRegions = session.view.timerRegions; // filename -> timer Region object
-export const _waveformPeaks = session.waveformPeaks; // filename -> { peaks: number[], duration: number } when pre-computed
+export const waveformPeaks = session.waveformPeaks; // filename -> { peaks: number[], duration: number } when pre-computed
 
 // Audio normalization + windowed-player lifecycle extracted to
-// ./engine/normalization.js (Phase 1 refactor). _seekAnalysis is imported above
+// ./engine/normalization.js (Phase 1 refactor). seekAnalysis is imported above
 // for the reload-time .clear(); other norm state is private to that module.
 const _preparing = new Set(); // filenames mid-(async)-prepareWaveform, to avoid double-create
 
 /** Return the pre-computed peak data for a filename, or null if unavailable. */
 export function getWaveformPeaks(filename) {
-  const p = _waveformPeaks[filename];
+  const p = waveformPeaks[filename];
   return p && p.peaks ? p : null;
 }
 
@@ -338,17 +338,17 @@ let _resizeDebounce = null;
 // per-viewport in the target model.
 const _positionUpdaters = session.view.positionUpdaters;
 // Per-waveform closures that redraw the alignment grid canvas.
-export const _gridRedrawers = session.view.gridRedrawers;
+export const gridRedrawers = session.view.gridRedrawers;
 
 // ---------------------------------------------------------------------------
 // Zoom & scroll state
 // ---------------------------------------------------------------------------
-// Zoom state (ZOOM_LEVELS, _currentZoomLevel, _scrollMode, _sharedTimeAxis,
-// _overlayWrappers) moved to ./engine/zoom-scroll.js and imported below.
+// Zoom state (ZOOM_LEVELS, currentZoomLevel, scrollMode, sharedTimeAxis,
+// overlayWrappers) moved to ./engine/zoom-scroll.js and imported below.
 // _scrollSyncLock stays here: it coordinates the scroll event handlers wired in
 // prepareWaveform/swapCurrentAudio and is never touched by the zoom module.
 let _scrollSyncLock = false; // prevents infinite loop in cross-waveform scroll sync
-export const _wfBgCache = {}; // filename → cached tick background colour string
+export const wfBgCache = {}; // filename → cached tick background colour string
 
 // ---------------------------------------------------------------------------
 // Tempo curve state
@@ -801,7 +801,7 @@ function _blendOver({ r: fr, g: fg, b: fb, a }, { r: br, g: bg, b: bb }) {
  * Active waveforms blend --color-waveform-active over --color-bg;
  * non-active waveforms use --color-bg directly.
  */
-export function _refreshWfBg(filename) {
+export function refreshWfBg(filename) {
   const wfEl = document.querySelector(
     `.waveform[data-ix='${CSS.escape(filename)}']`,
   );
@@ -817,12 +817,12 @@ export function _refreshWfBg(filename) {
   }
   const bg = `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, 0.90)`;
 
-  _wfBgCache[filename] = bg;
+  wfBgCache[filename] = bg;
   // Sync the wf-label element
   const lbl =
     wfEl &&
     (
-      (_overlayWrappers[filename] && _overlayWrappers[filename].wrapper) ||
+      (overlayWrappers[filename] && overlayWrappers[filename].wrapper) ||
       wfEl
     ).querySelector(".wf-label");
   if (lbl) lbl.style.backgroundColor = bg;
@@ -841,7 +841,7 @@ const REGION_NAV_BUFFER_FRAC = 0.05; // 5% of viewport width
 
 /** Collect all currently-visible region times on a waveform (skips the timer). */
 function _collectAllRegionTimes(filename) {
-  const plugin = _regionsPlugins[filename];
+  const plugin = regionsPlugins[filename];
   if (!plugin) return [];
   return plugin
     .getRegions()
@@ -851,7 +851,7 @@ function _collectAllRegionTimes(filename) {
 
 /** Create left/right region-nav arrow buttons inside the waveform's overlay wrapper. */
 function _createRegionNavArrows(filename) {
-  const ow = _overlayWrappers[filename];
+  const ow = overlayWrappers[filename];
   if (!ow) return;
   if (ow.wrapper.querySelector(".wf-region-nav-left")) return; // already created
 
@@ -886,7 +886,7 @@ function _createRegionNavArrows(filename) {
     btn.addEventListener(
       "wheel",
       (e) => {
-        const sc = _getScrollContainer(filename);
+        const sc = getScrollContainer(filename);
         if (!sc) return;
         e.preventDefault();
         sc.scrollLeft += e.deltaX || e.deltaY || 0;
@@ -903,11 +903,11 @@ function _createRegionNavArrows(filename) {
 /** Scroll the waveform so that the nearest off-screen region on the given side is fully in view. */
 function _jumpToOffscreenRegion(filename, side) {
   const ws = wavesurfers[filename];
-  if (!ws || _currentZoomLevel <= 1) return;
+  if (!ws || currentZoomLevel <= 1) return;
   const duration = ws.getDuration();
   if (!duration) return;
-  const fullW = _getZoomedWidth(filename);
-  const scrollContainer = _getScrollContainer(filename);
+  const fullW = getZoomedWidth(filename);
+  const scrollContainer = getScrollContainer(filename);
   if (!scrollContainer || !fullW) return;
   const viewW = scrollContainer.clientWidth;
   const scrollLeft = ws.getScroll();
@@ -940,29 +940,29 @@ function _jumpToOffscreenRegion(filename, side) {
   }
   newScroll = Math.max(0, Math.min(newScroll, fullW - viewW));
   ws.setScroll(newScroll);
-  _syncOverlayScroll(filename);
-  if (_gridRedrawers[filename]) _gridRedrawers[filename]();
-  _syncAllWaveformScrolls(filename);
-  _updateAllRegionNavArrows();
+  syncOverlayScroll(filename);
+  if (gridRedrawers[filename]) gridRedrawers[filename]();
+  syncAllWaveformScrolls(filename);
+  updateAllRegionNavArrows();
 }
 
 /** Update arrow visibility + badge count on a single waveform. */
 function _updateRegionNavArrows(filename) {
-  const ow = _overlayWrappers[filename];
+  const ow = overlayWrappers[filename];
   if (!ow) return;
   const left = ow.wrapper.querySelector(".wf-region-nav-left");
   const right = ow.wrapper.querySelector(".wf-region-nav-right");
   if (!left || !right) return;
 
   const ws = wavesurfers[filename];
-  if (!ws || _currentZoomLevel <= 1) {
+  if (!ws || currentZoomLevel <= 1) {
     left.style.display = "none";
     right.style.display = "none";
     return;
   }
   const duration = ws.getDuration();
-  const fullW = _getZoomedWidth(filename);
-  const scrollContainer = _getScrollContainer(filename);
+  const fullW = getZoomedWidth(filename);
+  const scrollContainer = getScrollContainer(filename);
   if (!duration || !fullW || !scrollContainer) {
     left.style.display = "none";
     right.style.display = "none";
@@ -990,8 +990,8 @@ function _updateRegionNavArrows(filename) {
 }
 
 /** Update region-nav arrows on all loaded waveforms. */
-export function _updateAllRegionNavArrows() {
-  Object.keys(_overlayWrappers).forEach((fn) => _updateRegionNavArrows(fn));
+export function updateAllRegionNavArrows() {
+  Object.keys(overlayWrappers).forEach((fn) => _updateRegionNavArrows(fn));
 }
 
 // ---------------------------------------------------------------------------
@@ -1021,10 +1021,10 @@ function _showMarkerDurations() {
   Object.keys(wavesurfers).forEach((filename) => {
     if (!loaded.has(filename)) return;
     const ws = wavesurfers[filename];
-    const ow = _overlayWrappers[filename];
+    const ow = overlayWrappers[filename];
     if (!ws || !ow) return;
     const dur = ws.getDuration();
-    const fullW = _getZoomedWidth(filename);
+    const fullW = getZoomedWidth(filename);
 
     for (let i = 0; i < sorted.length - 1; i++) {
       const t1 = getCorrespondingTime(filename, sorted[i].alignIx);
@@ -1077,10 +1077,10 @@ function _drawMeasureSpan(startAlignIx, endAlignIx) {
   Object.keys(wavesurfers).forEach((filename) => {
     if (!loaded.has(filename)) return;
     const ws = wavesurfers[filename];
-    const ow = _overlayWrappers[filename];
+    const ow = overlayWrappers[filename];
     if (!ws || !ow) return;
     const dur = ws.getDuration();
-    const fullW = _getZoomedWidth(filename);
+    const fullW = getZoomedWidth(filename);
     const t1 = getCorrespondingTime(filename, ix1);
     const t2 = getCorrespondingTime(filename, ix2);
     const x1 = (t1 / dur) * fullW;
@@ -1147,7 +1147,7 @@ const _ALIGN_RADIUS_WIDE = 90;
 // Current radius selection (set from UI)
 let _alignRadius = _ALIGN_RADIUS_MEDIUM;
 // Drag markers: whether markers are currently draggable
-export let _dragMarkersEnabled = false;
+export let dragMarkersEnabled = false;
 // Drag mode: 'move' or 'fix'
 let _dragMode = "move";
 // Track whether pulse hints have been shown (first-time tooltips)
@@ -1272,7 +1272,7 @@ function _hideAltNumbers() {
 window.addEventListener("resize", () => {
   if (Object.keys(wavesurfers).length === 0) return;
   // Clear custom markers immediately (positions shift when container width changes).
-  Object.keys(wavesurfers).forEach((ws) => _clearMarkers(ws));
+  Object.keys(wavesurfers).forEach((ws) => clearMarkers(ws));
   // Show spinners; WaveSurfer v7's built-in ResizeObserver triggers rerenders per
   // waveform, each of which hides its own overlay in its "redrawcomplete" handler.
   showWaveformOverlays();
@@ -1294,14 +1294,14 @@ export function enterCloseListeningMode(markerArrayIndex) {
   }
   redrawAllMarkers();
   updateCloseListeningBadge();
-  _updateMarkBtnTooltip();
+  updateMarkBtnTooltip();
 }
 
 function exitCloseListeningMode() {
   closeListeningMode = false;
   setActiveMarkerIx(null);
   _setActiveRegionStart(null);
-  _updateMarkBtnTooltip();
+  updateMarkBtnTooltip();
   // Leave the playhead exactly where it is on exit (whether playing or paused).
   // We deliberately do NOT seekTo(0) here: that old clip-path reset would jump
   // the position back to the start; keeping the playhead put is what's wanted.
@@ -1345,7 +1345,7 @@ function _activateJumpTarget(stop) {
     setActiveMarkerIx(null);
     _setActiveRegionStart(stop.regionRef);
     redrawAllMarkers();
-    _seekCloseListeningTo(stop.time);
+    seekCloseListeningTo(stop.time);
   }
 }
 
@@ -1354,23 +1354,23 @@ function _activateJumpTarget(stop) {
  * into view if it isn't already. Shared by active-marker seeks and the
  * close-listening jump-to-region-start navigation.
  */
-export function _seekCloseListeningTo(t) {
+export function seekCloseListeningTo(t) {
   if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
   const duration = wavesurfers[currentAudioIx].getDuration();
   wavesurfers[currentAudioIx].seekTo(t / duration);
   // At zoom: only scroll if the target is outside the visible viewport
-  if (_currentZoomLevel > 1) {
+  if (currentZoomLevel > 1) {
     const ws = wavesurfers[currentAudioIx];
-    const fullW = _getZoomedWidth(currentAudioIx);
+    const fullW = getZoomedWidth(currentAudioIx);
     const scrollLeft = ws.getScroll();
-    const scrollContainer = _getScrollContainer(currentAudioIx);
+    const scrollContainer = getScrollContainer(currentAudioIx);
     const viewW = scrollContainer ? scrollContainer.clientWidth : fullW;
     const targetPx = (t / duration) * fullW;
     const inView = targetPx >= scrollLeft && targetPx <= scrollLeft + viewW;
     if (!inView) {
       ws.setScrollTime(t);
-      _syncOverlayScroll(currentAudioIx);
-      _syncAllWaveformScrolls(currentAudioIx);
+      syncOverlayScroll(currentAudioIx);
+      syncAllWaveformScrolls(currentAudioIx);
     }
   }
 }
@@ -1412,7 +1412,7 @@ export function playAnnotation(annId) {
     _setActiveRegionStart({ annId, regionId: first.id });
     redrawAllMarkers();
   }
-  _seekCloseListeningTo(first.start);
+  seekCloseListeningTo(first.start);
   const ws = wavesurfers[currentAudioIx];
   const r = ws && ws.play();
   if (r && typeof r.catch === "function") r.catch(() => {});
@@ -1433,7 +1433,7 @@ function _maybeLoopActiveRegion(filename) {
   const rt = target && target.regionTimes[_activeRegionStart.regionId];
   if (!rt || !(rt.end > rt.start)) return;
   const ws = wavesurfers[filename];
-  if (ws && ws.getCurrentTime() >= rt.end) _seekCloseListeningTo(rt.start);
+  if (ws && ws.getCurrentTime() >= rt.end) seekCloseListeningTo(rt.start);
 }
 
 /**
@@ -1589,11 +1589,11 @@ function _updateDragFieldsetState() {
   // Drag markers is always available (not gated on close-listening)
   if (dragFieldset) dragFieldset.disabled = false;
   if (radiusFieldset)
-    radiusFieldset.disabled = !(_dragMarkersEnabled && _dragMode === "fix");
+    radiusFieldset.disabled = !(dragMarkersEnabled && _dragMode === "fix");
   // Update marker visual classes
-  _updateMarkerDraggableClass();
+  updateMarkerDraggableClass();
   // Update correction overlay pointer-events
-  const corrActive = _dragMarkersEnabled && _dragMode === "fix";
+  const corrActive = dragMarkersEnabled && _dragMode === "fix";
   if (corrActive !== _alignCorrectionMode) {
     _alignCorrectionMode = corrActive;
     _applyCorrectionOverlayPointerEvents();
@@ -1733,7 +1733,7 @@ function onClickRenditionCheckbox(e) {
   // Redraw tempo curves if scope depends on displayed files
   if (_tempoScopeDisplayedOnly && _tempoCurveVisible) {
     _tempoYRange = null;
-    Object.values(_gridRedrawers).forEach((fn) => fn());
+    Object.values(gridRedrawers).forEach((fn) => fn());
   }
 }
 
@@ -1755,7 +1755,7 @@ export function setCurrentAudioInactive(filename) {
     // scroll-sync lock so the waveform doesn't visibly jump. Mirrors the
     // demoted-waveform dance in swapCurrentAudio.
     try {
-      const scrollEl = _getScrollContainer(filename);
+      const scrollEl = getScrollContainer(filename);
       const savedScroll = scrollEl ? scrollEl.scrollLeft : 0;
       _scrollSyncLock = true;
       ws.seekTo(0);
@@ -1797,7 +1797,7 @@ export function swapCurrentAudio(newAudio) {
     // CSS ::part(progress) hides the progress overlay on inactive waveforms,
     // but the clip-path persists and makes the beginning appear blank).
     // Save & restore scroll position so the seekTo(0) doesn't visibly jump.
-    const oldScrollEl = _getScrollContainer(currentAudioIx);
+    const oldScrollEl = getScrollContainer(currentAudioIx);
     const savedScroll = oldScrollEl ? oldScrollEl.scrollLeft : 0;
     _scrollSyncLock = true;
     wavesurfers[currentAudioIx].seekTo(0);
@@ -1840,9 +1840,9 @@ export function swapCurrentAudio(newAudio) {
     }
     wavesurfers[currentAudioIx].seekTo(newPosition);
     // At zoom: the new waveform is already scroll-synced via
-    // _syncAllWaveformScrolls, so don't reposition — just sync overlays.
-    if (_currentZoomLevel > 1) {
-      _syncOverlayScroll(currentAudioIx);
+    // syncAllWaveformScrolls, so don't reposition — just sync overlays.
+    if (currentZoomLevel > 1) {
+      syncOverlayScroll(currentAudioIx);
     }
     if (wasPlaying) wavesurfers[currentAudioIx].play();
   } else {
@@ -1856,10 +1856,10 @@ export function swapCurrentAudio(newAudio) {
   }
   // Redraw grids for old and new waveforms so tick backgrounds reflect active state
   // Refresh cached backgrounds and redraw grids so tick colours match active state
-  _refreshWfBg(prevAudio);
-  _refreshWfBg(currentAudioIx);
-  if (_gridRedrawers[prevAudio]) _gridRedrawers[prevAudio]();
-  if (_gridRedrawers[currentAudioIx]) _gridRedrawers[currentAudioIx]();
+  refreshWfBg(prevAudio);
+  refreshWfBg(currentAudioIx);
+  if (gridRedrawers[prevAudio]) gridRedrawers[prevAudio]();
+  if (gridRedrawers[currentAudioIx]) gridRedrawers[currentAudioIx]();
 }
 
 function generateCheckboxList(list, isDraggable = false) {
@@ -2625,8 +2625,8 @@ function _applyNavOrderToContentPanel(animate = true) {
     // re-render (especially when zoomed — shadow DOM can go blank).
     Object.keys(wavesurfers).forEach((fn) => {
       if (!loaded.has(fn)) return;
-      _syncOverlayScroll(fn);
-      if (_gridRedrawers[fn]) _gridRedrawers[fn]();
+      syncOverlayScroll(fn);
+      if (gridRedrawers[fn]) gridRedrawers[fn]();
     });
     redrawAllMarkers();
   }
@@ -2994,7 +2994,7 @@ function _switchActiveTab(tabName) {
   // Redraw tempo curves — group membership may have changed
   if (_tempoScopeWithinGroup && _tempoCurveVisible) {
     _tempoYRange = null;
-    Object.values(_gridRedrawers).forEach((fn) => fn());
+    Object.values(gridRedrawers).forEach((fn) => fn());
   }
 
   _changeCounter++;
@@ -3064,7 +3064,7 @@ function _updateDirtyState() {
  * Update the Mark button tooltip: "Remove marker" when paused at a marker,
  * "Place marker" otherwise.
  */
-export function _updateMarkBtnTooltip() {
+export function updateMarkBtnTooltip() {
   const btn = document.getElementById("mark");
   if (!btn) return;
   let atMarker = false;
@@ -4056,9 +4056,9 @@ function reloadWaveforms() {
   // destroy current wavesurfers
   prevLoaded.forEach((ws) => {
     wavesurfers[ws].destroy();
-    delete _regionsPlugins[ws];
+    delete regionsPlugins[ws];
     delete _timerRegions[ws];
-    _teardownNormGainNode(ws);
+    teardownNormGainNode(ws);
   });
   clearMap(wavesurfers);
   // forget waveform elements (and spectorgrams)
@@ -4070,9 +4070,9 @@ function reloadWaveforms() {
 function visualiseAlignments() {
   // go through all wavesurfers, throw out user-defined markers, and instead draw in alignment positions as markers
   Object.keys(wavesurfers).forEach((ws) => {
-    _clearMarkers(ws);
+    clearMarkers(ws);
     alignmentGrids[ws].forEach((t) => {
-      _addMarker(ws, { time: t, color: "red" });
+      addMarker(ws, { time: t, color: "red" });
     });
   });
 }
@@ -4198,13 +4198,13 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         return label;
       },
     });
-    _regionsPlugins[filename] = _regPlugin;
+    regionsPlugins[filename] = _regPlugin;
 
     // For frame-stream formats (VBR MP3 / ADTS AAC), hand WaveSurfer a windowed
     // Web-Audio media object so seeking is sample-accurate. Returns null for
     // formats that seek fine natively (CBR MP3, WAV, …) → default <audio> path.
-    const _windowedPlayer = await _maybeBuildWindowedPlayer(filename);
-    const _wpPeaks = _windowedPlayer ? _waveformPeaks[filename] : null;
+    const _windowedPlayer = await maybeBuildWindowedPlayer(filename);
+    const _wpPeaks = _windowedPlayer ? waveformPeaks[filename] : null;
     wavesurfers[filename] = WaveSurfer.create({
       container: `#${CSS.escape("waveform-" + filename) + "-wav"}`,
       ...(_waveformColors()),
@@ -4251,7 +4251,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     } else if (_audioBlob || _audioUrl) {
       // If pre-computed peaks are available, pass them to load() so WaveSurfer
       // can render the waveform shape immediately (before full audio decode).
-      const _peakInfo = _waveformPeaks[filename];
+      const _peakInfo = waveformPeaks[filename];
       if (_audioBlob) {
         wavesurfers[filename].loadBlob(
           _audioBlob,
@@ -4314,7 +4314,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         if (!file || !wavesurfers[file]) return;
         const ctx = c.getContext("2d");
         const duration = wavesurfers[file].getDuration();
-        const fullW = _getZoomedWidth(file);
+        const fullW = getZoomedWidth(file);
         const scrollLeft = wavesurfers[file].getScroll();
         ctx.clearRect(0, 0, c.width, c.height);
         if (!visrelalign) return;
@@ -4361,7 +4361,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     });
     wavesurfers[filename].on("ready", () => {
       // Wire up Web Audio GainNode for volume normalization
-      _setupNormGainNode(filename);
+      setupNormGainNode(filename);
       // signal file is ready in filename list
       loaded.add(filename);
       _updateGroupCounts();
@@ -4377,8 +4377,8 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // --- Overlay wrapper structure ---
       // Canvases sit on .wf-overlays (viewport-sized, no transform).
       // Markers sit on .wf-overlays-inner (full zoom width, translateX'd).
-      const ow = _createOverlayWrapper(readyWfContainer, WAVE_HEIGHT);
-      _overlayWrappers[filename] = ow;
+      const ow = createOverlayWrapper(readyWfContainer, WAVE_HEIGHT);
+      overlayWrappers[filename] = ow;
       _createRegionNavArrows(filename);
 
       const gridCanvas = document.createElement("canvas");
@@ -4418,7 +4418,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         // Update overlay wrapper height
         ow.wrapper.style.height = h + "px";
         // Update inner wrapper width to match zoomed waveform width
-        const fullW = _getZoomedWidth(filename);
+        const fullW = getZoomedWidth(filename);
         ow.inner.style.width = fullW + "px";
 
         const ctx = gridCanvas.getContext("2d");
@@ -4487,11 +4487,11 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         }
 
         // Draw time ticks
-        const tickBg = _wfBgCache[filename] || _refreshWfBg(filename);
+        const tickBg = wfBgCache[filename] || refreshWfBg(filename);
         const _dttStyle = getComputedStyle(document.documentElement);
         const tickText = _dttStyle.getPropertyValue("--color-text-muted").trim() || "rgba(60,60,60,0.7)";
         const tickColor = _dttStyle.getPropertyValue("--color-waveform-tick").trim() || "#505050";
-        _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg, tickText, tickColor);
+        drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg, tickText, tickColor);
 
         // Draw tempo curve
         drawTempoCurve();
@@ -4515,7 +4515,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
         const smoothed = _smoothTempo(raw, _tempoCurveSmoothing);
         const dur = wavesurfers[filename].getDuration();
-        const fullW = _getZoomedWidth(filename);
+        const fullW = getZoomedWidth(filename);
         const scrollLeft = wavesurfers[filename].getScroll();
         const ctx = tempoCanvas.getContext("2d");
 
@@ -4688,7 +4688,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // after resize (the updater reads currentTime from this file's wavesurfer
       // and repaints every position-indicator canvas).
       _positionUpdaters[filename] = updatePositionIndicator;
-      _gridRedrawers[filename] = drawAlignmentGrid;
+      gridRedrawers[filename] = drawAlignmentGrid;
       _tempoCurveRedrawers[filename] = drawTempoCurve;
 
       // --- Alignment correction overlay canvas ---
@@ -4707,11 +4707,11 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       const _corrCanvasRef = corrCanvas;
 
       // Wire scroll listener on WaveSurfer's shadow-DOM scroll container
-      const _wsScrollContainer = _getScrollContainer(filename);
+      const _wsScrollContainer = getScrollContainer(filename);
       let _scrollRedrawRaf = false;
       if (_wsScrollContainer) {
         _wsScrollContainer.addEventListener("scroll", () => {
-          _syncOverlayScroll(filename);
+          syncOverlayScroll(filename);
           // Redraw viewport-based canvases (throttled)
           if (!_scrollRedrawRaf) {
             _scrollRedrawRaf = true;
@@ -4722,31 +4722,31 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
                 _positionUpdaters[currentAudioIx]();
               }
               // Cross-waveform scroll sync
-              if (!_scrollSyncLock && _currentZoomLevel > 1) {
+              if (!_scrollSyncLock && currentZoomLevel > 1) {
                 _scrollSyncLock = true;
-                _syncAllWaveformScrolls(filename);
+                syncAllWaveformScrolls(filename);
                 requestAnimationFrame(() => {
                   _scrollSyncLock = false;
                 });
               }
-              _updateAllRegionNavArrows();
+              updateAllRegionNavArrows();
             });
           }
         });
       }
 
       // Apply current zoom level if waveform loads after zoom has been set
-      if (_currentZoomLevel > 1) {
+      if (currentZoomLevel > 1) {
         const containerWidth = readyWfContainer.clientWidth;
         const duration = wavesurfers[filename].getDuration();
         wavesurfers[filename].zoom(
-          (_currentZoomLevel * containerWidth) / duration,
+          (currentZoomLevel * containerWidth) / duration,
         );
       }
       // Always sync scroll mode on ready — browser may have restored the
       // "follow" radio before wavesurfers exist, so the pageshow handler
-      // couldn't apply it.  _applyScrollMode checks zoom level internally.
-      _applyScrollMode(filename);
+      // couldn't apply it.  applyScrollMode checks zoom level internally.
+      applyScrollMode(filename);
 
       // Initial draw
       drawAlignmentGrid();
@@ -4768,15 +4768,15 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           _corrCanvasRef.height = wavesurfers[filename].options.height || 128;
         }
         // Sync overlay scroll position after redraw
-        _syncOverlayScroll(filename);
+        syncOverlayScroll(filename);
         // Restore markers (canvas has been redrawn, marker positions must refresh).
-        _clearMarkers(filename);
-        _ensureWfLabel(filename);
+        clearMarkers(filename);
+        ensureWfLabel(filename);
         markers.forEach((m, i) => {
           const t = getCorrespondingTime(filename, m);
           const color =
             closeListeningMode && activeMarkerIx === i ? "#8b0000" : "red";
-          _addMarker(filename, { time: t, color, alignIx: m });
+          addMarker(filename, { time: t, color, alignIx: m });
         });
 
         // Reveal this waveform once its canvas, alignment grid, and position
@@ -4789,7 +4789,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         // playback position; the ::part(progress) CSS hides the progress bar
         // but does not clear the clip-path, leaving the beginning blank.
         if (filename !== currentAudioIx) {
-          const sc = _getScrollContainer(filename);
+          const sc = getScrollContainer(filename);
           const savedSL = sc ? sc.scrollLeft : 0;
           _scrollSyncLock = true;
           wavesurfers[filename].seekTo(0);
@@ -4804,7 +4804,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         updateRenderAnnoRegions();
         // Ensure newly-created marker elements inherit the draggable class
         // so that drag works without re-toggling the checkbox.
-        _updateMarkerDraggableClass();
+        updateMarkerDraggableClass();
         // No _resizeQueue needed: v7 rerenders each waveform independently.
       });
       let listItem = document.getElementById(filename);
@@ -4837,7 +4837,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       if (filename !== currentAudioIx) swapCurrentAudio(filename);
     });
     wavesurfers[filename].on("seeking", () => {
-      _updateMarkBtnTooltip();
+      updateMarkBtnTooltip();
     });
     // Only the active waveform drives the transport icon. The two media
     // backends emit play/pause with different timing (WindowedAudioPlayer
@@ -4845,17 +4845,17 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     // stale, out-of-order event from the outgoing waveform could otherwise
     // overwrite the icon set by the incoming one.
     wavesurfers[filename].on("play", () => {
-      if (filename === currentAudioIx) _updateTransportIcons(true);
+      if (filename === currentAudioIx) updateTransportIcons(true);
     });
     wavesurfers[filename].on("pause", () => {
       if (filename === currentAudioIx) {
-        _updateTransportIcons(false);
+        updateTransportIcons(false);
         _clearPlayingAnnotationHighlights();
       }
     });
     wavesurfers[filename].on("finish", () => {
       if (filename === currentAudioIx) {
-        _updateTransportIcons(false);
+        updateTransportIcons(false);
         _clearPlayingAnnotationHighlights();
       }
     });
@@ -4877,13 +4877,13 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // cases where currentAudioIx hasn't been set yet (e.g. first playback
       // on the Score synth without switching waveforms first).
       const isActive = wavesurfers[filename].isPlaying();
-      if (_currentZoomLevel > 1 && isActive && _scrollMode === "page") {
-        _pageScrollIfNeeded(filename);
+      if (currentZoomLevel > 1 && isActive && scrollMode === "page") {
+        pageScrollIfNeeded(filename);
       }
       // Cross-waveform scroll sync during playback — BEFORE position indicator
       // so that non-active waveforms have correct scroll positions for drawing.
-      if (_currentZoomLevel > 1 && isActive) {
-        _syncAllWaveformScrolls(filename);
+      if (currentZoomLevel > 1 && isActive) {
+        syncAllWaveformScrolls(filename);
       }
       // Update position indicator AFTER scroll sync
       updatePositionIndicator();
@@ -5321,9 +5321,9 @@ function _autoLoadDefaultWaveforms(filenames) {
   if (!filenames.length) return;
   const hasPrecalculatedPeaks = filenames.every(
     (fn) =>
-      _waveformPeaks[fn] &&
-      Array.isArray(_waveformPeaks[fn].peaks) &&
-      _waveformPeaks[fn].peaks.length > 0,
+      waveformPeaks[fn] &&
+      Array.isArray(waveformPeaks[fn].peaks) &&
+      waveformPeaks[fn].peaks.length > 0,
   );
   const toLoad = hasPrecalculatedPeaks
     ? filenames
@@ -5417,14 +5417,14 @@ function resetSession(keepAudioKeys = []) {
 
   // 2. Destroy the renderers (same teardown reloadWaveforms performs)
   Object.keys(wavesurfers).forEach((fn) => {
-    _teardownNormGainNode(fn);
+    teardownNormGainNode(fn);
     try {
       wavesurfers[fn].destroy();
     } catch (e) {
       console.warn("resetSession: destroy failed for", fn, e);
     }
   });
-  _seekAnalysis.clear();
+  seekAnalysis.clear();
 
   // 3. Release object URLs we minted for the outgoing piece. Renderers are
   //    destroyed by now, so the sweep below can revoke everything it holds.
@@ -5438,8 +5438,8 @@ function resetSession(keepAudioKeys = []) {
 
   // 4. Piece-scoped state living outside the DataSession
   _preparing.clear();
-  clearMap(_wfBgCache);
-  clearMap(_overlayWrappers);
+  clearMap(wfBgCache);
+  clearMap(overlayWrappers);
   clearMap(_tempoRawCache);
   clearMap(_tempoCurveRedrawers);
   _tempoYRange = null;
@@ -5481,19 +5481,19 @@ function _pruneWaveformsWithoutGrids() {
   Object.keys(wavesurfers).forEach((fn) => {
     if (valid.has(fn)) return;
     dropped.push(fn);
-    _teardownNormGainNode(fn);
+    teardownNormGainNode(fn);
     try {
       wavesurfers[fn].destroy();
     } catch (e) {
       console.warn("prune: destroy failed for", fn, e);
     }
     delete wavesurfers[fn];
-    delete _regionsPlugins[fn];
+    delete regionsPlugins[fn];
     delete _timerRegions[fn];
-    delete _gridRedrawers[fn];
+    delete gridRedrawers[fn];
     delete _positionUpdaters[fn];
-    delete _wfBgCache[fn];
-    delete _waveformPeaks[fn];
+    delete wfBgCache[fn];
+    delete waveformPeaks[fn];
     delete _tempoRawCache[fn];
     delete _tempoCurveRedrawers[fn];
     delete _alignOriginalGrids[fn];
@@ -5501,10 +5501,10 @@ function _pruneWaveformsWithoutGrids() {
     _preparing.delete(fn);
     if (currentAudioIx === fn) setCurrentAudioIx("");
     // The overlay wrapper, when present, contains the waveform element
-    const ow = _overlayWrappers[fn];
+    const ow = overlayWrappers[fn];
     const el = document.getElementById("waveform-" + fn + "-wav");
     (ow?.wrapper || el)?.remove();
-    delete _overlayWrappers[fn];
+    delete overlayWrappers[fn];
   });
   if (dropped.length) {
     console.warn(
@@ -5680,13 +5680,13 @@ async function setGrids(grids) {
     if ("audio" in grids.body) {
       // final version of alignment json
       // Build alignmentGrids as a fresh map of filename → bare time array,
-      // stashing inline {peaks, duration} into _waveformPeaks. Crucially, do
+      // stashing inline {peaks, duration} into waveformPeaks. Crucially, do
       // NOT mutate grids.body.audio — loadedAlignmentJSON aliases the same
       // object and the inline peaks/duration must survive a Save Data round-trip.
       setAlignmentGrids({});
       for (const [key, val] of Object.entries(grids.body.audio)) {
         if (val && !Array.isArray(val) && Array.isArray(val.times)) {
-          _waveformPeaks[key] = { peaks: val.peaks, duration: val.duration };
+          waveformPeaks[key] = { peaks: val.peaks, duration: val.duration };
           alignmentGrids[key] = val.times;
         } else {
           alignmentGrids[key] = val;
@@ -5926,11 +5926,11 @@ function _applyTheme(theme) {
 
   // Refresh label backgrounds (clears cache so next draw picks up new theme)
   for (const filename of Object.keys(wavesurfers)) {
-    delete _wfBgCache[filename];
-    _refreshWfBg(filename);
+    delete wfBgCache[filename];
+    refreshWfBg(filename);
   }
   // Redraw time axes and alignment grids with new tick/label colours
-  for (const redraw of Object.values(_gridRedrawers)) redraw();
+  for (const redraw of Object.values(gridRedrawers)) redraw();
   // Redraw markers and position indicators with new theme colours
   redrawAllMarkers();
   const _firstPosUpdater = Object.values(_positionUpdaters)[0];
@@ -6188,14 +6188,14 @@ document.addEventListener("DOMContentLoaded", () => {
   // --- Drag markers checkbox ---
   if (dragMarkersCb) {
     // Sync initial state from (possibly browser-cached) form value
-    _dragMarkersEnabled = dragMarkersCb.checked;
-    if (dragModeMove) dragModeMove.disabled = !_dragMarkersEnabled;
-    if (dragModeFix) dragModeFix.disabled = !_dragMarkersEnabled;
+    dragMarkersEnabled = dragMarkersCb.checked;
+    if (dragModeMove) dragModeMove.disabled = !dragMarkersEnabled;
+    if (dragModeFix) dragModeFix.disabled = !dragMarkersEnabled;
     dragMarkersCb.addEventListener("change", () => {
-      _dragMarkersEnabled = dragMarkersCb.checked;
+      dragMarkersEnabled = dragMarkersCb.checked;
       // Enable/disable the drag-mode radio buttons
-      if (dragModeMove) dragModeMove.disabled = !_dragMarkersEnabled;
-      if (dragModeFix) dragModeFix.disabled = !_dragMarkersEnabled;
+      if (dragModeMove) dragModeMove.disabled = !dragMarkersEnabled;
+      if (dragModeFix) dragModeFix.disabled = !dragMarkersEnabled;
       _updateDragFieldsetState();
     });
   }
@@ -6246,7 +6246,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const deletedAlignIx = markers[activeMarkerIx];
     const deletedArrayIx = activeMarkerIx;
     markers.splice(activeMarkerIx, 1);
-    _persistMarkers();
+    persistMarkers();
     _pushUndo(
       {
         type: "marker-delete",
@@ -6287,7 +6287,7 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         alignmentGrids[entry.filename] = entry.grid;
         _syncGridToJSON(entry.filename);
-        if (_gridRedrawers[entry.filename]) _gridRedrawers[entry.filename]();
+        if (gridRedrawers[entry.filename]) gridRedrawers[entry.filename]();
         break;
       }
       case "marker-add": {
@@ -6295,7 +6295,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const ix = markers.indexOf(entry.alignIx);
         if (ix > -1) {
           markers.splice(ix, 1);
-          _persistMarkers();
+          persistMarkers();
           _redoStack.push({
             type: "marker-add",
             alignIx: entry.alignIx,
@@ -6318,7 +6318,7 @@ document.addEventListener("DOMContentLoaded", () => {
         // Undo delete = re-insert the marker
         const insertIx = Math.min(entry.markerArrayIx, markers.length);
         markers.splice(insertIx, 0, entry.alignIx);
-        _persistMarkers();
+        persistMarkers();
         _redoStack.push({
           type: "marker-delete",
           alignIx: entry.alignIx,
@@ -6333,7 +6333,7 @@ document.addEventListener("DOMContentLoaded", () => {
       case "marker-move": {
         // Undo move = restore old position
         markers[entry.markerArrayIx] = entry.oldAlignIx;
-        _persistMarkers();
+        persistMarkers();
         _redoStack.push({
           type: "marker-move",
           markerArrayIx: entry.markerArrayIx,
@@ -6361,14 +6361,14 @@ document.addEventListener("DOMContentLoaded", () => {
         });
         alignmentGrids[entry.filename] = entry.grid;
         _syncGridToJSON(entry.filename);
-        if (_gridRedrawers[entry.filename]) _gridRedrawers[entry.filename]();
+        if (gridRedrawers[entry.filename]) gridRedrawers[entry.filename]();
         break;
       }
       case "marker-add": {
         // Redo add = re-insert
         const insertIx = Math.min(entry.markerArrayIx, markers.length);
         markers.splice(insertIx, 0, entry.alignIx);
-        _persistMarkers();
+        persistMarkers();
         _undoStack.push({
           type: "marker-add",
           alignIx: entry.alignIx,
@@ -6382,7 +6382,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const ix = markers.indexOf(entry.alignIx);
         if (ix > -1) {
           markers.splice(ix, 1);
-          _persistMarkers();
+          persistMarkers();
           _undoStack.push({
             type: "marker-delete",
             alignIx: entry.alignIx,
@@ -6403,7 +6403,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       case "marker-move": {
         markers[entry.markerArrayIx] = entry.newAlignIx;
-        _persistMarkers();
+        persistMarkers();
         _undoStack.push({
           type: "marker-move",
           markerArrayIx: entry.markerArrayIx,
@@ -6422,7 +6422,7 @@ document.addEventListener("DOMContentLoaded", () => {
     for (const [filename, original] of Object.entries(_alignOriginalGrids)) {
       alignmentGrids[filename] = original.slice();
       _syncGridToJSON(filename);
-      if (_gridRedrawers[filename]) _gridRedrawers[filename]();
+      if (gridRedrawers[filename]) gridRedrawers[filename]();
     }
     // Also restore markers to saved state
     if (loadedAlignmentJSON?.header?.markers) {
@@ -6651,14 +6651,14 @@ document.addEventListener("DOMContentLoaded", () => {
     const nearby = _findNearbyMarker(wfEl, e.clientX);
     if (!nearby) {
       // Clicked away from markers — if drag mode is on, hint to disable it
-      if (_dragMarkersEnabled) _showDisableDragPulse();
+      if (dragMarkersEnabled) _showDisableDragPulse();
       return;
     }
 
     // If close-listening not active, enter it with this marker
     if (!closeListeningMode) {
       enterCloseListeningMode(nearby.markerArrayIx);
-    } else if (!_dragMarkersEnabled) {
+    } else if (!dragMarkersEnabled) {
       // Not dragging — select this marker and seek to it
       setActiveMarkerIx(nearby.markerArrayIx);
       redrawAllMarkers();
@@ -6670,7 +6670,7 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     // If drag markers not enabled, show pulse hint
-    if (!_dragMarkersEnabled) {
+    if (!dragMarkersEnabled) {
       _showDragMarkerPulse();
       return;
     }
@@ -6731,7 +6731,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const { filename, markerArrayIx, startX, wfEl, fixMode } = _markerDragState;
     const dur = wavesurfers[filename]?.getDuration() || 1;
     const rect = wfEl.getBoundingClientRect();
-    const _zoomedW = _getZoomedWidth(filename) || rect.width;
+    const _zoomedW = getZoomedWidth(filename) || rect.width;
 
     if (fixMode) {
       // Fix alignment mode: morph the grid
@@ -6755,7 +6755,7 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       // Show the dragged marker at its morphed position
       const morphedTime = morphed[_markerDragState.jCenter];
-      const _fullW = _getZoomedWidth(filename);
+      const _fullW = getZoomedWidth(filename);
       const leftPx =
         dur > 0
           ? Math.max(0, Math.min(_fullW, (morphedTime / dur) * _fullW))
@@ -6827,7 +6827,7 @@ document.addEventListener("DOMContentLoaded", () => {
       _markerDragState;
     const dur = wavesurfers[filename]?.getDuration() || 1;
     const rect = wfEl.getBoundingClientRect();
-    const _zoomedW = _getZoomedWidth(filename) || rect.width;
+    const _zoomedW = getZoomedWidth(filename) || rect.width;
 
     if (fixMode) {
       const dtDrag = (e.clientX - startX) / (_zoomedW / dur);
@@ -6851,7 +6851,7 @@ document.addEventListener("DOMContentLoaded", () => {
         );
         alignmentGrids[filename] = morphed;
         _syncGridToJSON(filename);
-        if (_gridRedrawers[filename]) _gridRedrawers[filename]();
+        if (gridRedrawers[filename]) gridRedrawers[filename]();
         if (_markerDragState.isGlobal) {
           for (const fn of Object.keys(alignmentGrids)) {
             if (
@@ -6877,7 +6877,7 @@ document.addEventListener("DOMContentLoaded", () => {
             );
             alignmentGrids[fn] = localMorphed;
             _syncGridToJSON(fn);
-            if (_gridRedrawers[fn]) _gridRedrawers[fn]();
+            if (gridRedrawers[fn]) gridRedrawers[fn]();
           }
         }
         // Commit: clear redo stack
@@ -6898,7 +6898,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const newAlignIx = getClosestAlignmentIx(newTime, filename);
       if (newAlignIx !== startAlignIx) {
         markers[markerArrayIx] = newAlignIx;
-        _persistMarkers();
+        persistMarkers();
         _pushUndo(
           {
             type: "marker-move",
@@ -6950,7 +6950,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const grid = alignmentGrids[filename];
     if (!grid || grid.length === 0) return;
     const dur = wavesurfers[filename]?.getDuration() || 1;
-    const fullW = _getZoomedWidth(filename) || viewW;
+    const fullW = getZoomedWidth(filename) || viewW;
     const scrollLeft = wavesurfers[filename]?.getScroll() || 0;
     // mouseX is viewport-relative; convert to full-width coordinate for time lookup
     const mouseTime = ((mouseX + scrollLeft) / fullW) * dur;
@@ -6987,7 +6987,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const h = canvas.height;
     ctx.clearRect(0, 0, viewW, h);
     const dur = wavesurfers[filename]?.getDuration() || 1;
-    const fullW = _getZoomedWidth(filename) || viewW;
+    const fullW = getZoomedWidth(filename) || viewW;
     const scrollLeft = wavesurfers[filename]?.getScroll() || 0;
     // Dynamic extent band: highlight all entries with displacement > 0.5% of peak
     if (_markerDragState && _markerDragState.fixMode && origGrid) {
@@ -7165,12 +7165,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Rewind 10s
   document.getElementById("seek-back").addEventListener("click", function () {
-    _seekBy(-10);
+    seekBy(-10);
   });
 
   // Forward 10s
   document.getElementById("seek-fwd").addEventListener("click", function () {
-    _seekBy(10);
+    seekBy(10);
   });
 
   // Skip to end
@@ -7184,21 +7184,21 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("mark").addEventListener("click", function (e) {
     if (this.dataset.mode === "remove") {
       _deleteActiveMarker();
-      _updateMarkBtnTooltip();
+      updateMarkBtnTooltip();
       return;
     }
     if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
     let toMark = getClosestAlignmentIx();
     const arrIx = markers.length;
     markers.push(toMark);
-    _persistMarkers();
+    persistMarkers();
     _pushUndo(
       { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
       true,
     );
     Object.keys(wavesurfers).forEach((ws) => {
       const t = getCorrespondingTime(ws, toMark);
-      _addMarker(ws, { time: t, color: "red", alignIx: toMark });
+      addMarker(ws, { time: t, color: "red", alignIx: toMark });
     });
   });
   // normalize audio checkbox
@@ -7210,12 +7210,12 @@ document.addEventListener("DOMContentLoaded", () => {
       ws.setOptions({ normalize: norm }),
     );
     // Audio: adjust GainNode so quieter recordings play at equal volume
-    _applyNormGain(norm);
+    applyNormGain(norm);
   });
   // visualize alignment checkbox — redraw grids to show/hide alignment lines
   document.getElementById("visalign").checked = false;
   document.getElementById("visalign").addEventListener("click", () => {
-    Object.values(_gridRedrawers).forEach((fn) => fn());
+    Object.values(gridRedrawers).forEach((fn) => fn());
   });
   // show relative position checkbox — redraw immediately when toggled while paused
   document.getElementById("visrelalign").addEventListener("click", () => {
@@ -7228,14 +7228,14 @@ document.addEventListener("DOMContentLoaded", () => {
     .getElementById("shared-time-axis")
     .addEventListener("change", (e) => {
       setSharedTimeAxis(e.target.checked);
-      applyZoom(_currentZoomLevel);
+      applyZoom(currentZoomLevel);
     });
 
   // --- Tempo curve controls ---
   const tempoCheckbox = document.getElementById("show-tempo-curve");
   const tempoOptions = document.getElementById("tempo-curve-options");
   function _redrawAllTempoCurves() {
-    Object.values(_gridRedrawers).forEach((fn) => fn());
+    Object.values(gridRedrawers).forEach((fn) => fn());
   }
   if (tempoCheckbox) {
     tempoCheckbox.addEventListener("change", (e) => {
@@ -7332,7 +7332,7 @@ document.addEventListener("DOMContentLoaded", () => {
     (e) => {
       if (!e.ctrlKey && !e.metaKey) return; // plain scroll = normal scroll
       e.preventDefault();
-      const currentIdx = ZOOM_LEVELS.indexOf(_currentZoomLevel);
+      const currentIdx = ZOOM_LEVELS.indexOf(currentZoomLevel);
       const newIdx =
         e.deltaY < 0
           ? Math.min(currentIdx + 1, ZOOM_LEVELS.length - 1)
@@ -7350,15 +7350,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (radio.checked) setScrollMode(radio.value);
     radio.addEventListener("change", (e) => {
       setScrollMode(e.target.value);
-      Object.keys(wavesurfers).forEach((fn) => _applyScrollMode(fn));
+      Object.keys(wavesurfers).forEach((fn) => applyScrollMode(fn));
     });
   });
   // Belt-and-suspenders: some browsers restore form state after DOMContentLoaded
   window.addEventListener("pageshow", () => {
     scrollRadios.forEach((radio) => {
-      if (radio.checked && radio.value !== _scrollMode) {
+      if (radio.checked && radio.value !== scrollMode) {
         setScrollMode(radio.value);
-        Object.keys(wavesurfers).forEach((fn) => _applyScrollMode(fn));
+        Object.keys(wavesurfers).forEach((fn) => applyScrollMode(fn));
       }
     });
   });
@@ -7440,7 +7440,7 @@ document.addEventListener("DOMContentLoaded", () => {
             if (newIx !== markers[activeMarkerIx]) {
               const oldIx = markers[activeMarkerIx];
               markers[activeMarkerIx] = newIx;
-              _persistMarkers();
+              persistMarkers();
               _pushUndo(
                 {
                   type: "marker-move",
@@ -7484,7 +7484,7 @@ document.addEventListener("DOMContentLoaded", () => {
           if (newIx !== markers[activeMarkerIx] && newIx < gridLength) {
             const oldIx = markers[activeMarkerIx];
             markers[activeMarkerIx] = newIx;
-            _persistMarkers();
+            persistMarkers();
             _pushUndo(
               {
                 type: "marker-move",
@@ -7571,7 +7571,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const toMark = getClosestAlignmentIx();
         const arrIx = markers.length;
         markers.push(toMark);
-        _persistMarkers();
+        persistMarkers();
         _pushUndo(
           { type: "marker-add", alignIx: toMark, markerArrayIx: arrIx },
           true,
@@ -7584,7 +7584,7 @@ document.addEventListener("DOMContentLoaded", () => {
         } else {
           Object.keys(wavesurfers).forEach((ws) => {
             const t = getCorrespondingTime(ws, toMark);
-            _addMarker(ws, { time: t, color: "red", alignIx: toMark });
+            addMarker(ws, { time: t, color: "red", alignIx: toMark });
           });
         }
         break;
@@ -7690,10 +7690,10 @@ document.addEventListener("DOMContentLoaded", () => {
     const ws = wavesurfers[filename];
     if (!ws || !loaded.has(filename)) return null;
     const dur = ws.getDuration();
-    const fullW = _getZoomedWidth(filename);
+    const fullW = getZoomedWidth(filename);
     if (fullW <= 0 || dur <= 0) return null;
     // Get x relative to the overlay inner (accounts for scroll)
-    const ow = _overlayWrappers[filename];
+    const ow = overlayWrappers[filename];
     if (!ow) return null;
     const rect = ow.inner.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -7762,7 +7762,7 @@ function updateRenderTimer() {
  */
 export function updateRenderAnnoRegions() {
   maybeSyncV6Regions();
-  _updateAllRegionNavArrows();
+  updateAllRegionNavArrows();
 }
 
 // --- File picker logic for ?useFiles mode ---
@@ -7933,7 +7933,7 @@ function initFilePicker() {
           // retireFileBlobs (not .clear()) so the outgoing URLs keep a handle
           // and can be revoked once nothing renders them.
           session.retireFileBlobs();
-          _seekAnalysis.clear();
+          seekAnalysis.clear();
           expectedAudioKeys = Object.keys(data.body.audio).filter(
             (k) => k !== SYNTH_MEI_KEY,
           );
@@ -8320,7 +8320,7 @@ window._listenTest = {
    */
   injectTestRegion(overridesByWaveform, selection = "test-region") {
     Object.keys(overridesByWaveform).forEach((filename) => {
-      const plugin = _regionsPlugins[filename];
+      const plugin = regionsPlugins[filename];
       if (!plugin) return;
       const { start, end } = overridesByWaveform[filename];
       plugin.addRegion({
@@ -8335,8 +8335,8 @@ window._listenTest = {
     updateRenderAnnoRegions();
   },
   clearTestRegions() {
-    Object.keys(_regionsPlugins).forEach((filename) => {
-      const plugin = _regionsPlugins[filename];
+    Object.keys(regionsPlugins).forEach((filename) => {
+      const plugin = regionsPlugins[filename];
       if (!plugin) return;
       plugin
         .getRegions()

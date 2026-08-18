@@ -30,7 +30,7 @@ function _formatTickTime(t) {
  * @param {number} dur    duration in seconds
  * @param {number} scrollLeft  current scroll offset in px
  */
-export function _drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor, textColor, tickColor) {
+export function drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, bgColor, textColor, tickColor) {
   if (dur <= 0 || fullW <= 0) return;
   const pxPerSec = fullW / dur;
   const visibleSec = viewW / pxPerSec;

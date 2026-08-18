@@ -11,9 +11,9 @@
 //
 // Extracted from listen.js (Phase 1 refactor, increment 13). Behaviour-preserving.
 //
-// Deliberately left in listen.js: _seekCloseListeningTo (shared with region-start
+// Deliberately left in listen.js: seekCloseListeningTo (shared with region-start
 // navigation), enterCloseListeningMode/exitCloseListeningMode (their own cluster),
-// _updateMarkBtnTooltip (transport button, already part of the public API), the
+// updateMarkBtnTooltip (transport button, already part of the public API), the
 // nudge constants (used by the keyboard handler), and _showMarkerDurations (it
 // feeds _measureElements, so it belongs to the Shift-measure cluster).
 
@@ -24,17 +24,17 @@ import {
   activeMarkerIx,
   setActiveMarkerIx,
   closeListeningMode,
-  _dragMarkersEnabled,
+  dragMarkersEnabled,
   loadedAlignmentJSON,
   getCorrespondingTime,
   enterCloseListeningMode,
-  _seekCloseListeningTo,
-  _updateMarkBtnTooltip,
+  seekCloseListeningTo,
+  updateMarkBtnTooltip,
 } from "../listen.js";
 import {
-  _ensureWfLabel,
-  _getZoomedWidth,
-  _overlayWrappers,
+  ensureWfLabel,
+  getZoomedWidth,
+  overlayWrappers,
 } from "./zoom-scroll.js";
 
 // Redraws all markers on all wavesurfers, highlighting the active marker in close-listening mode
@@ -43,25 +43,25 @@ export function redrawAllMarkers() {
   const markerColor       = _style.getPropertyValue("--color-marker").trim()        || "red";
   const markerActiveColor = _style.getPropertyValue("--color-marker-active").trim() || "#8b0000";
   Object.keys(wavesurfers).forEach((ws) => {
-    _clearMarkers(ws);
-    _ensureWfLabel(ws);
+    clearMarkers(ws);
+    ensureWfLabel(ws);
     markers.forEach((m, i) => {
       const t = getCorrespondingTime(ws, m);
       const color = closeListeningMode && activeMarkerIx === i ? markerActiveColor : markerColor;
-      _addMarker(ws, { time: t, color, alignIx: m });
+      addMarker(ws, { time: t, color, alignIx: m });
     });
   });
   // Re-apply draggable visual class after DOM recreation
-  _updateMarkerDraggableClass();
+  updateMarkerDraggableClass();
 }
 
-export function _clearMarkers(filename) {
+export function clearMarkers(filename) {
   const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
   if (!wfEl) return;
   wfEl.querySelectorAll(".ws-marker").forEach((el) => el.remove());
 }
 
-export function _addMarker(
+export function addMarker(
   filename,
   { time, label, color = "red", position = "bottom", alignIx } = {},
 ) {
@@ -71,7 +71,7 @@ export function _addMarker(
   const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
   if (!wfEl) return null;
   // Use pixel positioning on the full-width overlay inner div
-  const fullW = _getZoomedWidth(filename);
+  const fullW = getZoomedWidth(filename);
   const leftPx =
     duration > 0 ? Math.max(0, Math.min(fullW, (time / duration) * fullW)) : 0;
   const marker = document.createElement("div");
@@ -92,18 +92,19 @@ export function _addMarker(
     _onMarkerClick(filename, marker);
   });
   // Append to the overlay inner div (scrolls with the waveform)
-  const overlayInner = _overlayWrappers[filename]?.inner;
+  const overlayInner = overlayWrappers[filename]?.inner;
   (overlayInner || wfEl).appendChild(marker);
   return marker;
 }
 
-export function _onMarkerClick(filename, markerEl) {
+// Private to this module: the only caller is the click handler addMarker wires up.
+function _onMarkerClick(filename, markerEl) {
   if (markerEl.dataset.position === "top") return;
   const alignIxStr = markerEl.dataset.alignIx;
   if (alignIxStr == null) return;
   // If drag markers is enabled, let the mousedown handler on #waveforms
   // handle it (start a drag instead of seeking/entering close-listening).
-  if (_dragMarkersEnabled) return;
+  if (dragMarkersEnabled) return;
   const alignmentIx = parseInt(alignIxStr);
   const markerArrayIx = markers.indexOf(alignmentIx);
   if (markerArrayIx > -1) {
@@ -121,18 +122,18 @@ export function _onMarkerClick(filename, markerEl) {
 
 export function seekToActiveMarker() {
   if (activeMarkerIx == null || !currentAudioIx) return;
-  _seekCloseListeningTo(getCorrespondingTime(currentAudioIx, markers[activeMarkerIx]));
-  _updateMarkBtnTooltip();
+  seekCloseListeningTo(getCorrespondingTime(currentAudioIx, markers[activeMarkerIx]));
+  updateMarkBtnTooltip();
 }
 
-export function _updateMarkerDraggableClass() {
-  const draggable = _dragMarkersEnabled;
+export function updateMarkerDraggableClass() {
+  const draggable = dragMarkersEnabled;
   document.querySelectorAll(".ws-marker[data-align-ix]").forEach((el) => {
     el.classList.toggle("draggable", draggable);
   });
 }
 
-export function _persistMarkers() {
+export function persistMarkers() {
   if (!loadedAlignmentJSON) return;
   if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
   loadedAlignmentJSON.header.markers = [...markers];

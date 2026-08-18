@@ -641,13 +641,3 @@ export function markDirty(annId) {
   a.hasUnsavedChanges = true;
   _emit();
 }
-
-// ----- test helper --------------------------------------------------------
-
-export function _resetForTests() {
-  _annotations = [];
-  _activeId = null;
-  _colorIx = 0;
-  _nextLocalId = 1;
-  _listeners.clear();
-}

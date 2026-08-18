@@ -30,8 +30,8 @@ import * as uiState from "./ui-state.js";
 import { fmtRegionRange, fmtRegionDuration } from "./ui-editor.js";
 import { confirmRemoveIfTextful } from "./ui-common.js";
 import {
-  _regionsPlugins,
-  _overlayWrappers,
+  regionsPlugins,
+  overlayWrappers,
   wavesurfers,
   setDrawModeActive,
   setCurrentAudioInactive,
@@ -123,8 +123,8 @@ function syncRegions() {
     const annotations = state.getAll();
     const activeId = state.getActiveId();
     const specsByFile = _computeSpecsByFile(annotations, activeId);
-    for (const file of Object.keys(_regionsPlugins)) {
-      const plugin = _regionsPlugins[file];
+    for (const file of Object.keys(regionsPlugins)) {
+      const plugin = regionsPlugins[file];
       if (!plugin) continue;
       _ensureHooked(plugin, file);
       _reconcileForFile(plugin, file, specsByFile[file] || []);
@@ -160,8 +160,8 @@ function _applyActiveRegionStyling() {
   // changes or close-listening exits (listen.js calls setActiveRegionStart).
   const ann = ref ? state.getById(ref.annId) : null;
   const color = ann ? ann.color : null;
-  for (const file of Object.keys(_regionsPlugins)) {
-    const plugin = _regionsPlugins[file];
+  for (const file of Object.keys(regionsPlugins)) {
+    const plugin = regionsPlugins[file];
     if (!plugin) continue;
     for (const r of plugin.getRegions()) {
       if (!r.id || !r.id.startsWith(V6_REGION_PREFIX) || !r.element) continue;
@@ -514,8 +514,8 @@ function _setUpDragMode(ann) {
   // interpreted as a drag and create an accidental thin region. Intentional
   // drags clear this easily; jittered clicks fall back to the click handler.
   const DRAG_THRESHOLD_PX = 10;
-  for (const file of Object.keys(_regionsPlugins)) {
-    const plugin = _regionsPlugins[file];
+  for (const file of Object.keys(regionsPlugins)) {
+    const plugin = regionsPlugins[file];
     if (!plugin) continue;
     const cleanup = plugin.enableDragSelection(
       { color: dragColor },
@@ -611,8 +611,8 @@ function _appendDurationLabel(parent, midX, text, kind) {
 
 function _showRegionDurations() {
   _clearRegionDurations();
-  for (const file of Object.keys(_regionsPlugins)) {
-    const plugin = _regionsPlugins[file];
+  for (const file of Object.keys(regionsPlugins)) {
+    const plugin = regionsPlugins[file];
     if (!plugin) continue;
     const v6Regions = plugin
       .getRegions()
@@ -620,7 +620,7 @@ function _showRegionDurations() {
       .slice()
       .sort((a, b) => a.start - b.start);
     if (v6Regions.length === 0) continue;
-    const ow = _overlayWrappers[file];
+    const ow = overlayWrappers[file];
     const ws = wavesurfers[file];
     if (!ow || !ow.inner || !ws) continue;
     const dur = ws.getDuration();
@@ -692,7 +692,7 @@ function syncSelectionOverlays() {
     document.body.classList.toggle("lh-v6-edit-active", editing);
   }
 
-  for (const file of Object.keys(_regionsPlugins)) {
+  for (const file of Object.keys(regionsPlugins)) {
     const wfEl = document.querySelector(
       ".waveform[data-ix='" +
         (window.CSS && CSS.escape ? CSS.escape(file) : file) +

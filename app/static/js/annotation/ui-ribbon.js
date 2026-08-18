@@ -202,7 +202,7 @@ export function mountRibbon(parent) {
       class: "lh-v6-ribbon-load",
       type: "button",
       title: "Browse, load, or delete annotations on your Solid pod",
-      onclick: () => _openLoadModal(),
+      onclick: () => openLoadModal(),
     },
     [
       el("span", { text: "Load from Solid" }),
@@ -381,7 +381,7 @@ let _loadIntentAbort = null; // failed/cancelled-login handler: spinner → arro
  * Exposed for the URL-param autoload too: callers can pass a presetMm to
  * skip the browse step and load a specific MM straight away.
  */
-export function _openLoadModal(opts = {}) {
+export function openLoadModal(opts = {}) {
   const sess = solid.getDefaultSession && solid.getDefaultSession();
   if (!sess || !sess.info || !sess.info.isLoggedIn) {
     // Open the drawer (if it isn't already) and pulse the Solid section

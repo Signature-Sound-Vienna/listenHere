@@ -27,8 +27,8 @@ import {
   gridRedrawers,
   getClosestAlignmentIx,
   getCorrespondingTime,
-  updateAllRegionNavArrows,
 } from "../listen.js";
+import { updateAllRegionNavArrows } from "./region-nav.js";
 
 // ---------------------------------------------------------------------------
 // Zoom state (owned here)

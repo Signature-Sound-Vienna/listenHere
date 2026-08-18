@@ -17,11 +17,18 @@ import {
   seekAnalysis,
 } from "./engine/normalization.js";
 import {
-  updateTransportIcons,
   seekBy,
   playpause,
 } from "./engine/transport.js";
 import { drawTimeTicks } from "./engine/time-axis.js";
+import {
+  createWaveformOverlays,
+  drawAlignmentGrid,
+  updatePositionIndicator,
+  disposeWaveformView,
+  clearWaveformViews,
+} from "./engine/waveform-view.js";
+import { wireWaveformEvents } from "./engine/waveform-events.js";
 import {
   initAlignPanel,
   configure as configureAlign,
@@ -51,7 +58,6 @@ import {
   ensureWfLabel,
   syncOverlayScroll,
   applyScrollMode,
-  pageScrollIfNeeded,
   syncAllWaveformScrolls,
 } from "./engine/zoom-scroll.js";
 import {
@@ -113,7 +119,7 @@ let colorMap;
 // (multi-viewport), they disappear and reads become session.x.
 // ---------------------------------------------------------------------------
 export let currentAudioIx = session.currentAudioIx;
-let alignmentGrids = session.alignmentGrids;
+export let alignmentGrids = session.alignmentGrids;
 export let scoreAlignment = session.scoreAlignment; // score tstamp to ref tstamp maps for onset and offset
 let mei = session.mei; // MEI XML
 let meiDOM = session.meiDOM; // MEI DOM
@@ -356,7 +362,6 @@ let _tempoCurveSmoothing = 0; // 0–10 window size for Gaussian smoothing
 let _tempoScopeWithinGroup = false; // true = within group, false = across groups
 let _tempoScopeDisplayedOnly = false; // true = restrict to displayed files
 const _tempoRawCache = {}; // filename → [{time, tempo}] (unsmoothed)
-const _tempoCurveRedrawers = {}; // filename → redraw function
 let _tempoYRange = null; // {min, max} — uniform across waveforms, recomputed on scope/mode change
 
 // Outlier threshold: values deviating from the median by more than this
@@ -736,6 +741,32 @@ function _recomputeTempoYRange() {
 }
 
 /**
+ * Everything the tempo-curve renderer needs, or null when there is nothing to
+ * draw. The derivation — raw cache, smoothing, scope, corpus mean, and the
+ * shared Y-range — stays here because it is still in flux; engine/waveform-view
+ * consumes only this snapshot, so a later tempo rework need not touch it.
+ */
+export function getTempoDrawModel(filename) {
+  if (!_tempoCurveVisible || filename === SYNTH_MEI_KEY) return null;
+  const raw = _getRawTempo(filename);
+  if (!raw.length) return null;
+
+  // Ensure Y-range is computed
+  if (!_tempoYRange) _recomputeTempoYRange();
+  if (!_tempoYRange) return null;
+
+  const smoothed = _smoothTempo(raw, _tempoCurveSmoothing);
+
+  // In relative mode, compute per-file deviation from scope-based corpus mean
+  let corpusMean = null;
+  if (_tempoCurveMode === "relative") {
+    const scopeFiles = _getTempoScopeFiles(filename);
+    corpusMean = _computeCorpusMeanTempo(scopeFiles, _tempoCurveSmoothing);
+  }
+  return { mode: _tempoCurveMode, yRange: _tempoYRange, smoothed, corpusMean };
+}
+
+/**
  * Look up the tempo value at a given time for a file.
  * Returns { tempo, label } or null if tempo curve is not available.
  * In relative mode, label shows "±X% avg." ; in absolute mode, "X QPM".
@@ -772,7 +803,7 @@ function _getTempoAtTime(filename, time) {
 }
 
 /** Parse a CSS colour string ("rgba(…)", "#rrggbb", "#rgb") into {r,g,b,a} or null. */
-function _parseCssColor(str) {
+export function parseCssColor(str) {
   str = (str || "").trim();
   const m = str.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)/);
   if (m) return { r: +m[1], g: +m[2], b: +m[3], a: m[4] != null ? +m[4] : 1 };
@@ -803,11 +834,11 @@ export function refreshWfBg(filename) {
     `.waveform[data-ix='${CSS.escape(filename)}']`,
   );
   const style = getComputedStyle(document.documentElement);
-  const baseBg = _parseCssColor(style.getPropertyValue("--color-bg")) ?? { r: 255, g: 255, b: 255, a: 1 };
+  const baseBg = parseCssColor(style.getPropertyValue("--color-bg")) ?? { r: 255, g: 255, b: 255, a: 1 };
 
   let rgb;
   if (wfEl?.classList.contains("active")) {
-    const activeFg = _parseCssColor(style.getPropertyValue("--color-waveform-active"));
+    const activeFg = parseCssColor(style.getPropertyValue("--color-waveform-active"));
     rgb = activeFg ? _blendOver(activeFg, baseBg) : baseBg;
   } else {
     rgb = baseBg;
@@ -1101,7 +1132,7 @@ export function seekCloseListeningTo(t) {
  *
  * In close-listening mode the region start also becomes the active jump
  * target, so the region loops back on itself at its end (see
- * _maybeLoopActiveRegion). Outside close-listening, playback runs on past the
+ * maybeLoopActiveRegion). Outside close-listening, playback runs on past the
  * region end as normal.
  */
 export function playAnnotation(annId) {
@@ -1143,7 +1174,7 @@ export function playAnnotation(annId) {
  * playback continue past the region end as normal. Called from the active
  * waveform's audioprocess handler.
  */
-function _maybeLoopActiveRegion(filename) {
+export function maybeLoopActiveRegion(filename) {
   if (!closeListeningMode || !_activeRegionStart || filename !== currentAudioIx) return;
   const ann = v6State.getById(_activeRegionStart.annId);
   if (!ann || !Array.isArray(ann.targets)) return;
@@ -1180,7 +1211,7 @@ function _regionStartTimeOnFile(ref, file) {
 // touched ~60×/s.
 let _playingAnnKey = "";
 
-function _updatePlayingAnnotationHighlights() {
+export function updatePlayingAnnotationHighlights() {
   const ids = _annotationsAtPlayhead();
   const key = ids.join(",");
   if (key === _playingAnnKey) return;
@@ -1208,7 +1239,7 @@ function _annotationsAtPlayhead() {
 }
 
 /** Clear all playing-card highlights (called when playback stops). */
-function _clearPlayingAnnotationHighlights() {
+export function clearPlayingAnnotationHighlights() {
   if (_playingAnnKey === "") return;
   _playingAnnKey = "";
   setPlayingAnnotations([]);
@@ -3996,76 +4027,6 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         }
       }
     });
-    function updatePositionIndicator() {
-      // work out current alignment grid index via binary search
-      const grid = alignmentGrids[filename];
-      const currentTime = wavesurfers[filename].getCurrentTime();
-      let lo = 0,
-        hi = grid.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi) >> 1;
-        if (grid[mid] <= currentTime) lo = mid + 1;
-        else hi = mid;
-      }
-      let currentGridIx = Math.max(0, lo - 1);
-      if (currentGridIx <= 0 && currentTime > grid[grid.length - 1]) {
-        currentGridIx = grid.length - 1;
-      }
-      // iterate through all positionIndicatorCanvases, drawing in current ix position
-      const canvases = document.getElementsByClassName("position-indicator");
-      const visrelalign = document.getElementById("visrelalign").checked;
-      Array.from(canvases).forEach((c) => {
-        const file =
-          c.closest(".wf-overlays")?.parentElement?.dataset["ix"] ||
-          c.closest(".waveform")?.dataset["ix"];
-        if (!file || !wavesurfers[file]) return;
-        const ctx = c.getContext("2d");
-        const duration = wavesurfers[file].getDuration();
-        const fullW = getZoomedWidth(file);
-        const scrollLeft = wavesurfers[file].getScroll();
-        ctx.clearRect(0, 0, c.width, c.height);
-        if (!visrelalign) return;
-
-        if (file === filename) {
-          // Playing waveform: simple vertical line at current playback position
-          const x = (currentTime / duration) * fullW - scrollLeft;
-          const _piC = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-alignment-playhead").trim()) || { r: 100, g: 100, b: 200 };
-          ctx.beginPath();
-          ctx.lineWidth = 2;
-          ctx.strokeStyle = `rgba(${_piC.r},${_piC.g},${_piC.b},0.7)`;
-          ctx.moveTo(x, 0);
-          ctx.lineTo(x, c.height);
-          ctx.stroke();
-        } else {
-          // Non-playing waveform: vertical section at the corresponding
-          // aligned position, with slanted top/bottom pointing toward
-          // the playing waveform's indicator position (so all slant tips
-          // form a continuous vertical line across stacked waveforms).
-          const correspondingSeconds = alignmentGrids[file][currentGridIx];
-          const alignedX =
-            (correspondingSeconds / duration) * fullW - scrollLeft;
-          // playingX: project the playing file's absolute time onto this
-          // file's time axis, so the slant shows the temporal offset
-          // between the playing file's clock time and the aligned position.
-          const playingX = (currentTime / duration) * fullW - scrollLeft;
-          const diffMapped = Math.floor((255 * (playingX - alignedX)) / 100);
-          ctx.beginPath();
-          ctx.lineWidth = 2;
-          ctx.moveTo(playingX, 0);
-          ctx.lineTo(alignedX, c.height / 6);
-          ctx.lineTo(alignedX, 5 * (c.height / 6));
-          ctx.lineTo(playingX, c.height);
-          ctx.strokeStyle =
-            diffMapped < 0
-              ? `rgb(${-1 * diffMapped} 100 100)`
-              : `rgb(100 100 ${diffMapped})`;
-          ctx.stroke();
-        }
-      });
-    }
-    wavesurfers[filename].on("interaction", () => {
-      updatePositionIndicator();
-    });
     wavesurfers[filename].on("ready", () => {
       // Wire up Web Audio GainNode for volume normalization
       setupNormGainNode(filename);
@@ -4088,315 +4049,13 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       overlayWrappers[filename] = ow;
       createRegionNavArrows(filename);
 
-      const gridCanvas = document.createElement("canvas");
-      const gridStyle = gridCanvas.style;
-      const positionIndicatorCanvas = document.createElement("canvas");
-      const positionIndicatorStyle = positionIndicatorCanvas.style;
-      gridCanvas.classList.add("alignment-grid");
-      gridCanvas.width = readyWfContainer.clientWidth;
-      gridCanvas.height = WAVE_HEIGHT;
-      gridStyle.pointerEvents = "none";
-      positionIndicatorCanvas.classList.add("position-indicator");
-      positionIndicatorCanvas.width = readyWfContainer.clientWidth;
-      positionIndicatorCanvas.height = WAVE_HEIGHT;
-      positionIndicatorStyle.pointerEvents = "none";
-      // Tempo curve canvas (viewport-sized, between grid and position indicator)
-      const tempoCanvas = document.createElement("canvas");
-      tempoCanvas.classList.add("tempo-curve");
-      tempoCanvas.width = readyWfContainer.clientWidth;
-      tempoCanvas.height = WAVE_HEIGHT;
-      tempoCanvas.style.pointerEvents = "none";
-
-      // Canvases go on the wrapper (viewport-fixed, not transformed)
-      ow.wrapper.insertBefore(positionIndicatorCanvas, ow.inner);
-      ow.wrapper.insertBefore(tempoCanvas, positionIndicatorCanvas);
-      ow.wrapper.insertBefore(gridCanvas, tempoCanvas);
-
-      // Function to draw (or redraw) the alignment grid and time ticks.
-      // At zoom, draws only the visible viewport portion offset by scroll.
-      function drawAlignmentGrid() {
-        if (!readyWfContainer || !readyWfContainer.isConnected) return;
-        const viewW = readyWfContainer.clientWidth;
-        const h = wavesurfers[filename].options.height || 128;
-        gridCanvas.width = viewW;
-        gridCanvas.height = h;
-        positionIndicatorCanvas.width = viewW;
-        positionIndicatorCanvas.height = h;
-        // Update overlay wrapper height
-        ow.wrapper.style.height = h + "px";
-        // Update inner wrapper width to match zoomed waveform width
-        const fullW = getZoomedWidth(filename);
-        ow.inner.style.width = fullW + "px";
-
-        const ctx = gridCanvas.getContext("2d");
-        ctx.clearRect(0, 0, viewW, h);
-        const dur = wavesurfers[filename].getDuration();
-        const scrollLeft = wavesurfers[filename].getScroll();
-
-        // Draw alignment grid lines first (so time ticks render on top)
-        const visalignEl = document.getElementById("visalign");
-        if (visalignEl && visalignEl.checked) {
-          const grid = alignmentGrids[filename];
-          const gridLen = grid.length;
-          if (gridLen > 0) {
-            ctx.lineWidth = 1;
-            const minPixelStep = 4;
-            const pxPerIdx = fullW / gridLen;
-
-            // Compute a deterministic stride so the same grid indices are
-            // selected on every frame regardless of scroll position.  This
-            // prevents flickering caused by different indices passing a
-            // distance filter as scrollLeft changes between frames.
-            const stride = Math.max(1, Math.round(minPixelStep / pxPerIdx));
-
-            // Visible range of grid indices (with margin for angled lines)
-            const margin = 10;
-            // Align loIdx to stride boundary so selection is scroll-independent
-            let loIdx = Math.max(
-              0,
-              Math.floor(((scrollLeft - margin) / fullW) * gridLen),
-            );
-            loIdx = loIdx - (loIdx % stride); // snap down to stride boundary
-            let hiIdx = Math.min(
-              gridLen - 1,
-              Math.ceil(((scrollLeft + viewW + margin) / fullW) * gridLen),
-            );
-
-            // Draw solid lines for the top and bottom sections
-            const _agC = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-alignment").trim()) || { r: 140, g: 90, b: 90 };
-            const _agRgb = `${_agC.r},${_agC.g},${_agC.b}`;
-            ctx.beginPath();
-            ctx.setLineDash([]);
-            ctx.strokeStyle = `rgba(${_agRgb},0.55)`;
-            for (let gridIx = loIdx; gridIx <= hiIdx; gridIx += stride) {
-              const absoluteX = gridIx * pxPerIdx - scrollLeft;
-              const relativeX = (grid[gridIx] / dur) * fullW - scrollLeft;
-              ctx.moveTo(absoluteX, 0);
-              ctx.lineTo(relativeX, h / 6);
-              ctx.moveTo(relativeX, 5 * (h / 6));
-              ctx.lineTo(absoluteX, h);
-            }
-            ctx.stroke();
-
-            // Draw sparsely dotted lines over the waveform section
-            ctx.beginPath();
-            ctx.strokeStyle = `rgba(${_agRgb},0.3)`;
-            ctx.setLineDash([2, 1]);
-            for (let gridIx = loIdx; gridIx <= hiIdx; gridIx += stride) {
-              const relativeX = (grid[gridIx] / dur) * fullW - scrollLeft;
-              if (relativeX > viewW + margin || relativeX < -margin) continue;
-              ctx.moveTo(relativeX, h / 6);
-              ctx.lineTo(relativeX, 5 * (h / 6));
-            }
-            ctx.stroke();
-            ctx.setLineDash([]);
-          }
-        }
-
-        // Draw time ticks
-        const tickBg = wfBgCache[filename] || refreshWfBg(filename);
-        const _dttStyle = getComputedStyle(document.documentElement);
-        const tickText = _dttStyle.getPropertyValue("--color-text-muted").trim() || "rgba(60,60,60,0.7)";
-        const tickColor = _dttStyle.getPropertyValue("--color-waveform-tick").trim() || "#505050";
-        drawTimeTicks(ctx, viewW, h, fullW, dur, scrollLeft, tickBg, tickText, tickColor);
-
-        // Draw tempo curve
-        drawTempoCurve();
-      }
-
-      // --- Tempo curve drawing ---
-      function drawTempoCurve() {
-        if (!readyWfContainer || !readyWfContainer.isConnected) return;
-        const viewW = readyWfContainer.clientWidth;
-        const h = wavesurfers[filename].options.height || 128;
-        tempoCanvas.width = viewW;
-        tempoCanvas.height = h;
-
-        if (!_tempoCurveVisible || filename === SYNTH_MEI_KEY) return;
-        const raw = _getRawTempo(filename);
-        if (!raw.length) return;
-
-        // Ensure Y-range is computed
-        if (!_tempoYRange) _recomputeTempoYRange();
-        if (!_tempoYRange) return;
-
-        const smoothed = _smoothTempo(raw, _tempoCurveSmoothing);
-        const dur = wavesurfers[filename].getDuration();
-        const fullW = getZoomedWidth(filename);
-        const scrollLeft = wavesurfers[filename].getScroll();
-        const ctx = tempoCanvas.getContext("2d");
-
-        // Read theme colours for tempo curve once per draw
-        const _tcStyle = getComputedStyle(document.documentElement);
-        const _tcBase = _parseCssColor(_tcStyle.getPropertyValue("--color-tempo").trim()) || { r: 30, g: 80, b: 140 };
-        const _tcRgb = `${_tcBase.r},${_tcBase.g},${_tcBase.b}`;
-        const _outlierBase = _parseCssColor(_tcStyle.getPropertyValue("--color-outlier").trim()) || { r: 180, g: 60, b: 60 };
-        const _outlierRgb = `${_outlierBase.r},${_outlierBase.g},${_outlierBase.b}`;
-
-        // In relative mode, compute per-file deviation from scope-based corpus mean
-        let corpusMean = null;
-        if (_tempoCurveMode === "relative") {
-          const scopeFiles = _getTempoScopeFiles(filename);
-          corpusMean = _computeCorpusMeanTempo(
-            scopeFiles,
-            _tempoCurveSmoothing,
-          );
-        }
-
-        // Map tempo value to Y coordinate (top = high, bottom = low)
-        // Use middle 70% of canvas height (leave room for grid and ticks)
-        const yTop = h * 0.1;
-        const yBot = h * 0.85;
-        const yRange = _tempoYRange.max - _tempoYRange.min;
-        function valToY(val) {
-          if (yRange <= 0) return (yTop + yBot) / 2;
-          const frac = (val - _tempoYRange.min) / yRange;
-          return yBot - frac * (yBot - yTop); // inverted: high values at top
-        }
-
-        // Build screen-space points, tracking which are clipped
-        const pts = [];
-        for (let i = 0; i < smoothed.length; i++) {
-          const x = (smoothed[i].time / dur) * fullW - scrollLeft;
-          let val = smoothed[i].tempo;
-          if (_tempoCurveMode === "relative" && corpusMean) {
-            const key = Math.round(smoothed[i].scoreTime * 1e6) / 1e6;
-            const ref = corpusMean.get(key);
-            val = ref && ref > 0 ? ((smoothed[i].tempo - ref) / ref) * 100 : 0;
-          }
-          // Track clipping direction: -1 = below, +1 = above, 0 = within range
-          let clipped = 0;
-          if (val > _tempoYRange.max) clipped = 1;
-          else if (val < _tempoYRange.min) clipped = -1;
-          val = Math.max(_tempoYRange.min, Math.min(_tempoYRange.max, val));
-          pts.push({ x, y: valToY(val), clipped });
-        }
-
-        // Cull to viewport with one-point margin on each side
-        let startIdx = 0,
-          endIdx = pts.length - 1;
-        while (startIdx < pts.length - 1 && pts[startIdx + 1].x < -10)
-          startIdx++;
-        while (endIdx > 0 && pts[endIdx - 1].x > viewW + 10) endIdx--;
-        if (startIdx > 0) startIdx--;
-        if (endIdx < pts.length - 1) endIdx++;
-
-        if (startIdx >= endIdx) return;
-
-        // Draw shaded area under curve
-        const zeroY = _tempoCurveMode === "relative" ? valToY(0) : yBot;
-        ctx.beginPath();
-        ctx.moveTo(pts[startIdx].x, zeroY);
-        for (let i = startIdx; i <= endIdx; i++) ctx.lineTo(pts[i].x, pts[i].y);
-        ctx.lineTo(pts[endIdx].x, zeroY);
-        ctx.closePath();
-        ctx.fillStyle =
-          _tempoCurveMode === "relative"
-            ? `rgba(${_tcRgb},0.22)`
-            : `rgba(${_tcRgb},0.25)`;
-        ctx.fill();
-
-        // Draw the curve line
-        ctx.beginPath();
-        ctx.moveTo(pts[startIdx].x, pts[startIdx].y);
-        for (let i = startIdx + 1; i <= endIdx; i++)
-          ctx.lineTo(pts[i].x, pts[i].y);
-        ctx.strokeStyle = `rgba(${_tcRgb},0.9)`;
-        ctx.lineWidth = 1.75;
-        ctx.stroke();
-
-        // In relative mode, draw zero line
-        if (_tempoCurveMode === "relative") {
-          ctx.beginPath();
-          ctx.moveTo(0, zeroY);
-          ctx.lineTo(viewW, zeroY);
-          ctx.strokeStyle = `rgba(${_tcRgb},0.5)`;
-          ctx.lineWidth = 1;
-          ctx.setLineDash([4, 3]);
-          ctx.stroke();
-          ctx.setLineDash([]);
-        }
-
-        // --- Y-axis labels ---
-        const yAxisNiceSteps =
-          _tempoCurveMode === "relative"
-            ? [1, 2, 5, 10, 20, 25, 50, 100]
-            : [5, 10, 20, 25, 50, 100, 200, 500];
-        const targetTicks = 4;
-        const rawStep = yRange / targetTicks;
-        let yStep = yAxisNiceSteps[yAxisNiceSteps.length - 1];
-        for (const s of yAxisNiceSteps) {
-          if (s >= rawStep) {
-            yStep = s;
-            break;
-          }
-        }
-        ctx.font = "9px sans-serif";
-        ctx.textBaseline = "middle";
-        ctx.textAlign = "left";
-        // Start from a round number at or above yRange min
-        const firstTick = Math.ceil(_tempoYRange.min / yStep) * yStep;
-        for (let v = firstTick; v <= _tempoYRange.max; v += yStep) {
-          const y = valToY(v);
-          if (y < 2 || y > h - 2) continue;
-          // Tick line
-          ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(4, y);
-          ctx.strokeStyle = `rgba(${_tcRgb},0.7)`;
-          ctx.lineWidth = 1;
-          ctx.stroke();
-          // Label
-          let tickLabel;
-          if (_tempoCurveMode === "relative") {
-            tickLabel = (v >= 0 ? "+" : "") + v + "%";
-          } else {
-            tickLabel = String(Math.round(v));
-          }
-          ctx.fillStyle = `rgba(${_tcRgb},0.95)`;
-          ctx.fillText(tickLabel, 5, y);
-        }
-        // Unit label at top
-        ctx.fillStyle = `rgba(${_tcRgb},0.75)`;
-        ctx.font = "8px sans-serif";
-        ctx.textBaseline = "bottom";
-        ctx.fillText(
-          _tempoCurveMode === "relative" ? "% avg." : "QPM",
-          5,
-          yTop - 1,
-        );
-
-        // --- Clipped-value indicators (small triangles at top/bottom edge) ---
-        ctx.fillStyle = `rgba(${_outlierRgb},0.85)`;
-        const triH = 5,
-          triW = 4;
-        for (let i = startIdx; i <= endIdx; i++) {
-          if (!pts[i].clipped) continue;
-          const px = pts[i].x;
-          if (px < -triW || px > viewW + triW) continue;
-          ctx.beginPath();
-          if (pts[i].clipped > 0) {
-            // Arrow pointing up at top edge
-            ctx.moveTo(px, yTop);
-            ctx.lineTo(px - triW, yTop + triH);
-            ctx.lineTo(px + triW, yTop + triH);
-          } else {
-            // Arrow pointing down at bottom edge
-            ctx.moveTo(px, yBot);
-            ctx.lineTo(px - triW, yBot - triH);
-            ctx.lineTo(px + triW, yBot - triH);
-          }
-          ctx.closePath();
-          ctx.fill();
-        }
-      }
+      createWaveformOverlays(filename, readyWfContainer, WAVE_HEIGHT, ow);
 
       // Register this waveform's position-updater so it can be called
       // after resize (the updater reads currentTime from this file's wavesurfer
       // and repaints every position-indicator canvas).
-      _positionUpdaters[filename] = updatePositionIndicator;
-      gridRedrawers[filename] = drawAlignmentGrid;
-      _tempoCurveRedrawers[filename] = drawTempoCurve;
+      _positionUpdaters[filename] = () => updatePositionIndicator(filename);
+      gridRedrawers[filename] = () => drawAlignmentGrid(filename);
 
       // --- Alignment correction overlay canvas ---
       const corrCanvas = document.createElement("canvas");
@@ -4424,7 +4083,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
             _scrollRedrawRaf = true;
             requestAnimationFrame(() => {
               _scrollRedrawRaf = false;
-              drawAlignmentGrid();
+              drawAlignmentGrid(filename);
               if (currentAudioIx && _positionUpdaters[currentAudioIx]) {
                 _positionUpdaters[currentAudioIx]();
               }
@@ -4456,7 +4115,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       applyScrollMode(filename);
 
       // Initial draw
-      drawAlignmentGrid();
+      drawAlignmentGrid(filename);
 
       // Hide the initial-load overlay
       const readyWfEl = document.querySelector(
@@ -4468,7 +4127,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       // initial load and on any automatic resize triggered by its ResizeObserver.
       wavesurfers[filename].on("redrawcomplete", () => {
         // Resize our overlay canvases and repaint grid lines.
-        drawAlignmentGrid();
+        drawAlignmentGrid(filename);
         // Resize correction overlay (viewport-sized)
         if (_corrCanvasRef && readyWfContainer.isConnected) {
           _corrCanvasRef.width = readyWfContainer.clientWidth;
@@ -4540,64 +4199,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         // markers are rendered by the "redrawcomplete" handler
       }
     });
-    wavesurfers[filename].on("interaction", () => {
-      if (filename !== currentAudioIx) swapCurrentAudio(filename);
-    });
-    wavesurfers[filename].on("seeking", () => {
-      updateMarkBtnTooltip();
-    });
-    // Only the active waveform drives the transport icon. The two media
-    // backends emit play/pause with different timing (WindowedAudioPlayer
-    // synchronously, native HTML audio asynchronously), so during a swap a
-    // stale, out-of-order event from the outgoing waveform could otherwise
-    // overwrite the icon set by the incoming one.
-    wavesurfers[filename].on("play", () => {
-      if (filename === currentAudioIx) updateTransportIcons(true);
-    });
-    wavesurfers[filename].on("pause", () => {
-      if (filename === currentAudioIx) {
-        updateTransportIcons(false);
-        _clearPlayingAnnotationHighlights();
-      }
-    });
-    wavesurfers[filename].on("finish", () => {
-      if (filename === currentAudioIx) {
-        updateTransportIcons(false);
-        _clearPlayingAnnotationHighlights();
-      }
-    });
-
-    wavesurfers[filename].on("audioprocess", () => {
-      // Close-listening single-region loop (active jump target is a region start).
-      _maybeLoopActiveRegion(filename);
-      // Light the ribbon cards of annotations whose regions contain the playhead.
-      if (filename === currentAudioIx) _updatePlayingAnnotationHighlights();
-      // Zoom scroll: only act on the playing waveform.
-      // Use isPlaying() instead of filename===currentAudioIx to handle edge
-      // cases where currentAudioIx hasn't been set yet (e.g. first playback
-      // on the Score synth without switching waveforms first).
-      const isActive = wavesurfers[filename].isPlaying();
-      if (currentZoomLevel > 1 && isActive && scrollMode === "page") {
-        pageScrollIfNeeded(filename);
-      }
-      // Cross-waveform scroll sync during playback — BEFORE position indicator
-      // so that non-active waveforms have correct scroll positions for drawing.
-      if (currentZoomLevel > 1 && isActive) {
-        syncAllWaveformScrolls(filename);
-      }
-      // Update position indicator AFTER scroll sync
-      updatePositionIndicator();
-      // Reset mark button while playing (position is moving)
-      const markBtn = document.getElementById("mark");
-      if (markBtn && markBtn.dataset.mode !== "place") {
-        markBtn.title = "Place a marker at the current playback position";
-        markBtn.dataset.mode = "place";
-        const im = markBtn.querySelector(".icon-mark");
-        const imx = markBtn.querySelector(".icon-mark-x");
-        if (im) im.style.display = "";
-        if (imx) imx.style.display = "none";
-      }
-    });
+    wireWaveformEvents(filename);
 
     // render anno regions
     updateRenderAnnoRegions();
@@ -5140,8 +4742,8 @@ function resetSession(keepAudioKeys = []) {
   _preparing.clear();
   clearMap(wfBgCache);
   clearMap(overlayWrappers);
+  clearWaveformViews();
   clearMap(_tempoRawCache);
-  clearMap(_tempoCurveRedrawers);
   _tempoYRange = null;
   clearMap(_alignOriginalGrids);
   _undoStack.length = 0;
@@ -5194,7 +4796,6 @@ function _pruneWaveformsWithoutGrids() {
     delete wfBgCache[fn];
     delete waveformPeaks[fn];
     delete _tempoRawCache[fn];
-    delete _tempoCurveRedrawers[fn];
     delete _alignOriginalGrids[fn];
     loaded.delete(fn);
     _preparing.delete(fn);
@@ -5204,6 +4805,7 @@ function _pruneWaveformsWithoutGrids() {
     const el = document.getElementById("waveform-" + fn + "-wav");
     (ow?.wrapper || el)?.remove();
     delete overlayWrappers[fn];
+    disposeWaveformView(fn);
   });
   if (dropped.length) {
     console.warn(
@@ -6662,7 +6264,7 @@ document.addEventListener("DOMContentLoaded", () => {
         jCenter = j;
       }
     }
-    const _izC = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
+    const _izC = parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
     const _izRgb = `${_izC.r},${_izC.g},${_izC.b}`;
     ctx.fillStyle = `rgba(${_izRgb},0.12)`;
     const cutoff = Math.ceil(sigma * 3);
@@ -6707,7 +6309,7 @@ document.addEventListener("DOMContentLoaded", () => {
         if (jMin <= jMax) {
           const xMin = (morphedGrid[jMin] / dur) * fullW - scrollLeft;
           const xMax = (morphedGrid[jMax] / dur) * fullW - scrollLeft;
-          const _mpBand = _parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
+          const _mpBand = parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
           ctx.fillStyle = `rgba(${_mpBand.r},${_mpBand.g},${_mpBand.b},0.08)`;
           ctx.fillRect(xMin, 0, xMax - xMin, h);
         }

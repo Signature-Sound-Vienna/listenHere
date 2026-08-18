@@ -87,14 +87,41 @@ function makeAudioOnly(opts: { warp?: number; keep?: string[] } = {}): string {
   return out;
 }
 
-async function pickFiles(page: Page, files: string[]) {
+const CONFIRM = '.lh-v6-confirm-overlay';
+
+/** Answer the styled replacement prompt (shares the annotation dialogs' shell). */
+async function answerReplacePrompt(page: Page, action: 'replace' | 'keep') {
+  await expect(page.locator(CONFIRM)).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.lh-v6-confirm-title')).toHaveText('Replace the loaded piece?');
+  await page
+    .locator(action === 'replace' ? '.lh-v6-confirm-ok' : '.lh-v6-confirm-cancel')
+    .click();
+  await expect(page.locator(CONFIRM)).toHaveCount(0);
+}
+
+/** Assert the prompt does NOT appear (the incoming alignment is the same piece). */
+async function expectNoReplacePrompt(page: Page) {
+  await page.waitForTimeout(1500);
+  await expect(page.locator(CONFIRM)).toHaveCount(0);
+}
+
+/** Choose files in the picker. The replacement prompt (if any) fires on read. */
+async function setPickerFiles(page: Page, files: string[]) {
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
     page.click('#file-picker-files-btn'),
   ]);
   await chooser.setFiles(files);
+}
+
+async function clickContinue(page: Page) {
   await expect(page.locator('#file-picker-continue')).toBeVisible({ timeout: 15_000 });
   await page.click('#file-picker-continue');
+}
+
+async function pickFiles(page: Page, files: string[]) {
+  await setPickerFiles(page, files);
+  await clickContinue(page);
 }
 
 async function loadPieceA(page: Page) {
@@ -112,10 +139,14 @@ async function loadPieceA(page: Page) {
     .toBeGreaterThan(0);
 }
 
-/** Load another alignment over the loaded one via "Manage recordings". */
-async function loadOver(page: Page, json: string, audioKeys: string[] = B_KEYS) {
+/**
+ * Offer another alignment via "Manage recordings" — stops after the files are
+ * read, which is when a different piece triggers the prompt. Callers answer it
+ * (answerReplacePrompt / expectNoReplacePrompt), then clickContinue.
+ */
+async function offerOver(page: Page, json: string, audioKeys: string[] = B_KEYS) {
   await page.click('#manage-files-btn');
-  await pickFiles(page, [json, ...audioKeys.map((k) => path.join(FIXTURES_DIR, k))]);
+  await setPickerFiles(page, [json, ...audioKeys.map((k) => path.join(FIXTURES_DIR, k))]);
 }
 
 const readState = (page: Page) =>
@@ -126,6 +157,9 @@ const readState = (page: Page) =>
       grids: Object.keys(t.alignmentGrids),
       loaded: t.loaded,
       currentAudioIx: t.currentAudioIx,
+      headerRef: t.alignmentHeaderRef,
+      expectedAudioKeys: t.expectedAudioKeys,
+      retiredBlobUrlCount: t.retiredBlobUrlCount,
     };
   });
 
@@ -137,8 +171,16 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
     page.on('pageerror', (e) => typeErrors.push(e.message));
 
     await loadPieceA(page);
-    page.on('dialog', (d) => d.accept());
-    await loadOver(page, bJson);
+    // Remember the outgoing piece's object URLs so we can prove they are
+    // revoked rather than stranded in the document's object-URL store.
+    const outgoingUrls: string[] = await page.evaluate(
+      () => (window as any)._listenTest.fileBlobUrlValues,
+    );
+    expect(outgoingUrls.length).toBeGreaterThan(0);
+
+    await offerOver(page, bJson);
+    await answerReplacePrompt(page, 'replace');
+    await clickContinue(page);
 
     await expect
       .poll(async () => (await readState(page)).grids.filter((k) => k !== SYNTH).sort().join(), {
@@ -157,6 +199,23 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
     if (state.currentAudioIx) {
       expect([...B_KEYS, SYNTH]).toContain(state.currentAudioIx);
     }
+    // The outgoing piece's object URLs were revoked, not stranded in the
+    // document's object-URL store with no handle left to revoke them. A revoked
+    // blob URL no longer resolves, so fetching it must fail.
+    expect(state.retiredBlobUrlCount).toBe(0);
+    const stillResolvable = await page.evaluate(async (urls: string[]) => {
+      const alive: string[] = [];
+      for (const u of urls) {
+        try {
+          const r = await fetch(u);
+          if (r.ok) alive.push(u);
+        } catch {
+          /* revoked — expected */
+        }
+      }
+      return alive;
+    }, outgoingUrls);
+    expect(stillResolvable).toEqual([]);
     expect(typeErrors).toEqual([]);
   });
 
@@ -168,14 +227,29 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
 
     await loadPieceA(page);
     const before = await readState(page);
-    page.on('dialog', (d) => d.dismiss());
-    await loadOver(page, bJson);
+    await offerOver(page, bJson);
+    await answerReplacePrompt(page, 'keep');
     await page.waitForTimeout(2000);
 
     const after = await readState(page);
     expect(after.grids.sort()).toEqual(before.grids.sort());
     for (const k of B_KEYS) expect(after.grids).not.toContain(k);
     expect(after.currentAudioIx).toBe(before.currentAudioIx);
+
+    // The app and the "Manage recordings" dialog must still describe the SAME
+    // piece: declining used to leave loadedAlignmentJSON and the picker's
+    // expected keys pointing at the piece that was never loaded.
+    expect(after.headerRef).toBe(before.headerRef);
+    expect(after.expectedAudioKeys.sort()).toEqual(before.expectedAudioKeys.sort());
+    for (const k of B_KEYS) expect(after.expectedAudioKeys).not.toContain(k);
+    await expect(page.locator('#file-picker-json-status')).toContainText('Kept the loaded piece');
+
+    // …and closing the dialog afterwards must not apply it either
+    await page.click('#file-picker-continue');
+    await page.waitForTimeout(1500);
+    const closed = await readState(page);
+    expect(closed.grids.sort()).toEqual(before.grids.sort());
+    expect(closed.headerRef).toBe(before.headerRef);
     expect(typeErrors).toEqual([]);
   });
   // 25.3 replacement while zoomed and playing — the cross-waveform scroll sync
@@ -195,8 +269,9 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
     await page.click('#playpause');
     await page.waitForTimeout(1500);
 
-    page.on('dialog', (d) => d.accept());
-    await loadOver(page, bJson);
+    await offerOver(page, bJson);
+    await answerReplacePrompt(page, 'replace');
+    await clickContinue(page);
     await page.waitForTimeout(6000);
 
     const state = await readState(page);
@@ -210,17 +285,13 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
   test('25.4 same recordings, different score, is treated as a different piece', async ({ page }) => {
     const other = makeOtherPieceSameRecordings();
     const errors = collectErrors(page);
-    let prompted = false;
 
     await loadPieceA(page);
-    page.on('dialog', (d) => {
-      prompted = true;
-      d.accept();
-    });
-    await loadOver(page, other, A_KEYS);
-    await page.waitForTimeout(4000);
+    await offerOver(page, other, A_KEYS);
+    await answerReplacePrompt(page, 'replace');
+    await clickContinue(page);
+    await page.waitForTimeout(3000);
 
-    expect(prompted).toBe(true);
     expect(errors).toEqual([]);
   });
 
@@ -229,7 +300,6 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
   test('25.5 a recording missing from the new alignment is torn down', async ({ page }) => {
     const subset = makeSamePieceFewerRecordings('audio-c.mp3');
     const errors = collectErrors(page);
-    let prompted = false;
 
     await loadPieceA(page);
     await expect
@@ -238,11 +308,9 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
       })
       .toContain('audio-c.mp3');
 
-    page.on('dialog', (d) => {
-      prompted = true;
-      d.accept();
-    });
-    await loadOver(page, subset, A_KEYS);
+    await offerOver(page, subset, A_KEYS);
+    await expectNoReplacePrompt(page);
+    await clickContinue(page);
 
     await expect
       .poll(() => page.evaluate(() => Object.keys((window as any)._listenTest.wavesurfers)), {
@@ -251,7 +319,6 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
       .not.toContain('audio-c.mp3');
 
     const state = await readState(page);
-    expect(prompted).toBe(false); // same piece — managing its recordings
     expect(state.grids).not.toContain('audio-c.mp3');
     expect(state.loaded).not.toContain('audio-c.mp3');
     expect(state.grids).toContain('audio-a.mp3');
@@ -262,7 +329,6 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
   // rests on the warped time sequence (user's case: album filenames collide)
   test('25.6 audio-only, same recordings, different times reads as a different piece', async ({ page }) => {
     const errors = collectErrors(page);
-    let prompted = false;
 
     // load an audio-only piece first, so neither side has a score
     await stubExternalMei(page);
@@ -278,14 +344,11 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
       })
       .toBeGreaterThan(0);
 
-    page.on('dialog', (d) => {
-      prompted = true;
-      d.accept();
-    });
-    await loadOver(page, makeAudioOnly({ warp: 0.87 }), A_KEYS);
-    await page.waitForTimeout(4000);
+    await offerOver(page, makeAudioOnly({ warp: 0.87 }), A_KEYS);
+    await answerReplacePrompt(page, 'replace');
+    await clickContinue(page);
+    await page.waitForTimeout(3000);
 
-    expect(prompted).toBe(true);
     expect(errors).toEqual([]);
   });
 
@@ -293,7 +356,6 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
   // guards the fingerprint against false positives
   test('25.7 audio-only, identical times, fewer recordings does not prompt', async ({ page }) => {
     const errors = collectErrors(page);
-    let prompted = false;
 
     await stubExternalMei(page);
     await page.goto('/?useFiles');
@@ -308,11 +370,9 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
       })
       .toContain('audio-c.mp3');
 
-    page.on('dialog', (d) => {
-      prompted = true;
-      d.accept();
-    });
-    await loadOver(page, makeAudioOnly({ keep: ['audio-a.mp3', 'audio-b.mp3'] }), ['audio-a.mp3', 'audio-b.mp3']);
+    await offerOver(page, makeAudioOnly({ keep: ['audio-a.mp3', 'audio-b.mp3'] }), ['audio-a.mp3', 'audio-b.mp3']);
+    await expectNoReplacePrompt(page);
+    await clickContinue(page);
 
     // the dropped recording is pruned, the kept ones stay, and no prompt fires
     await expect
@@ -321,7 +381,6 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
       })
       .not.toContain('audio-c.mp3');
     const state = await readState(page);
-    expect(prompted).toBe(false);
     expect(state.grids).toContain('audio-a.mp3');
     expect(errors).toEqual([]);
   });

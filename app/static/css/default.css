@@ -5415,7 +5415,10 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
   position: fixed;
   inset: 0;
   background: rgba(120, 0, 0, 0.55);
-  z-index: 1200;
+  /* Above every other overlay, including the file picker (9999) and the
+     highest panel (10000): a confirmation must never be un-clickable behind
+     the dialog that raised it. */
+  z-index: 10001;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5486,6 +5489,12 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
 .lh-v6-confirm-target strong {
   color: #b91c1c;
   word-break: break-all;
+}
+/* break-all above suits the pod URIs it was written for; a prose callout
+   (e.g. the piece-replacement reason) must wrap on word boundaries. */
+.lh-v6-confirm-target strong.lh-v6-confirm-reason {
+  word-break: normal;
+  overflow-wrap: break-word;
 }
 
 .lh-v6-confirm-detail {
@@ -6570,7 +6579,8 @@ body.lh-v6-drawer-open .drawer-btns {
   outline-offset: 2px;
 }
 
-.lh-v6-repin-list {
+.lh-v6-repin-list,
+.lh-v6-confirm-list {
   margin: 6px 0 0;
   padding: 0;
   list-style: none;
@@ -6579,24 +6589,29 @@ body.lh-v6-drawer-open .drawer-btns {
   gap: 3px;
 }
 
-.lh-v6-repin-line {
+.lh-v6-repin-line,
+.lh-v6-confirm-line {
   font-size: 12.5px;
   line-height: 1.35;
 }
 
-.lh-v6-repin-line.added {
+.lh-v6-repin-line.added,
+.lh-v6-confirm-line.added {
   color: #15803d;
 }
 
-.lh-v6-repin-line.removed {
+.lh-v6-repin-line.removed,
+.lh-v6-confirm-line.removed {
   color: #b91c1c;
 }
 
-.lh-v6-repin-line.renamed {
+.lh-v6-repin-line.renamed,
+.lh-v6-confirm-line.renamed {
   color: var(--color-text);
 }
 
-.lh-v6-repin-line.neutral {
+.lh-v6-repin-line.neutral,
+.lh-v6-confirm-line.neutral {
   color: var(--color-text-secondary, var(--color-text));
 }
 

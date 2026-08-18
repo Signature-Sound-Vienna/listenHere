@@ -110,6 +110,11 @@ export class DataSession {
     /** Alignment key -> object URL minted for the picked file. */
     this.fileBlobUrls = new Map();
 
+    /** Object URLs whose owner has gone but which may still back a live media
+     *  element, so they can't be revoked yet. Drained by listen.js's
+     *  _revokeRetiredBlobUrls once nothing references them. */
+    this.retiredBlobUrls = [];
+
     /** origin -> fetchParams ({ headers: { Authorization } }); scoped per
      *  origin so HTTP Basic credentials can't leak across hosts. */
     this.authByOrigin = new Map();
@@ -192,6 +197,18 @@ export class DataSession {
    * Deliberately preserved: tk (expensive, piece-independent), storage, and the
    * per-origin auth maps (host credentials, not piece data).
    */
+  /**
+   * Hand the picked-file maps' object URLs over for later revocation and empty
+   * the maps. The file picker calls this when a newly picked alignment starts a
+   * fresh matching slate: dropping the maps outright would strand those URLs in
+   * the document's object-URL store with no handle left to revoke them.
+   */
+  retireFileBlobs() {
+    for (const url of this.fileBlobUrls.values()) this.retiredBlobUrls.push(url);
+    this.fileBlobUrls.clear();
+    this.fileBlobs.clear();
+  }
+
   reset() {
     this.loaded.clear();
     this.markers.length = 0;
@@ -201,6 +218,8 @@ export class DataSession {
     this.synthBlobUrls.clear();
     this.fileBlobs.clear();
     this.fileBlobUrls.clear();
+    // retiredBlobUrls deliberately survives: those URLs are still owed a
+    // revoke, and the caller sweeps them once the renderers are gone.
 
     this.currentAudioIx = "";
     this.alignmentGrids = {};

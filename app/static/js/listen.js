@@ -3,6 +3,7 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { initSolidAuth } from "./solid.js";
+import { confirmDialog, el } from "./annotation/ui-common.js";
 import * as v6UiState from "./annotation/ui-state.js";
 import * as v6State from "./annotation/state.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
@@ -5432,6 +5433,28 @@ function _autoLoadDefaultWaveforms(filenames) {
 }
 
 /**
+ * Revoke retired object URLs (see DataSession.retireFileBlobs), skipping any
+ * that still back a live media element — revoking one mid-load would fail that
+ * waveform. Anything skipped stays retired and is swept on the next call, so a
+ * URL is released as soon as its renderer is gone and never before.
+ */
+function _revokeRetiredBlobUrls() {
+  const retired = session.retiredBlobUrls;
+  if (!retired.length) return;
+  const inUse = new Set();
+  for (const ws of Object.values(wavesurfers)) {
+    const src = ws?.getMediaElement?.()?.currentSrc;
+    if (src) inUse.add(src);
+  }
+  const stillInUse = [];
+  for (const url of retired) {
+    if (inUse.has(url)) stillInUse.push(url);
+    else URL.revokeObjectURL(url);
+  }
+  refillArray(retired, stillInUse);
+}
+
+/**
  * Audio keys an incoming alignment object declares, across the three formats
  * setGrids accepts (final, pre-final dev, and bare-grids legacy).
  */
@@ -5497,13 +5520,15 @@ function resetSession(keepAudioKeys = []) {
   });
   _seekAnalysis.clear();
 
-  // 3. Release object URLs we minted for the outgoing piece
+  // 3. Release object URLs we minted for the outgoing piece. Renderers are
+  //    destroyed by now, so the sweep below can revoke everything it holds.
   for (const url of session.synthBlobUrls.values()) {
     if (url && url !== "__pending__") URL.revokeObjectURL(url);
   }
   for (const [k, url] of session.fileBlobUrls) {
-    if (!keep.has(k)) URL.revokeObjectURL(url);
+    if (!keep.has(k)) session.retiredBlobUrls.push(url);
   }
+  _revokeRetiredBlobUrls();
 
   // 4. Piece-scoped state living outside the DataSession
   _preparing.clear();
@@ -5593,11 +5618,25 @@ function _pruneWaveformsWithoutGrids() {
  *
  * @returns {boolean} whether the load should proceed
  */
-function _maybeResetForNewPiece(grids) {
+/**
+ * Alignment object the user has already agreed to load in place of the current
+ * piece (approved in the file picker, before it touched any state). Kept so
+ * setGrids doesn't ask a second time for the same object.
+ */
+let _approvedReplacement = null;
+
+/**
+ * Decide whether an incoming alignment is a different piece from the loaded
+ * one. Pure — no prompting, no state changes — so callers can ask before they
+ * commit to anything. See _confirmReplacePiece for the prompt.
+ *
+ * @returns {{different: boolean, why: string, incoming: string[]}}
+ */
+function _assessIncomingPiece(grids) {
   const current = Object.keys(alignmentGrids).filter((k) => k !== SYNTH_MEI_KEY);
-  if (!current.length) return true; // nothing loaded yet
   const incoming = _incomingAudioKeys(grids);
-  if (!incoming.length) return true; // nothing to compare; normal path reports it
+  const nothingToJudge = !current.length || !incoming.length;
+  if (nothingToJudge) return { different: false, why: "", incoming };
   // Recordings alone don't identify a piece: in this corpus filenames name the
   // ALBUM, so several pieces are aligned over the SAME recordings and a shared
   // key set is no evidence of sameness. Two signals settle it, in order.
@@ -5626,36 +5665,104 @@ function _maybeResetForNewPiece(grids) {
   }
 
   if (!differentScore && !differentTimes && shared.length) {
-    return true; // same piece: managing its recordings
+    return { different: false, why: "", incoming }; // managing its recordings
   }
-  console.log(
-    "setGrids: incoming alignment looks like a different piece —",
-    differentScore
-      ? "different score"
-      : differentTimes
-        ? `different alignment times for "${evidence}"`
-        : "no recordings in common",
-  );
+
   const why = differentScore
     ? "it uses a different score"
     : differentTimes
-      ? "its alignment times differ from the loaded ones"
+      ? `its alignment times differ from the loaded ones (${evidence})`
       : "none of its recordings match the ones loaded";
-  const ok = confirm(
-    `This alignment appears to be for a different piece — ${why}.\n\n` +
-      "Replace the loaded piece?\n\n" +
-      "Markers, annotations and alignment corrections that have not been " +
-      "saved will be discarded.",
-  );
-  if (!ok) return false;
-  resetSession(incoming);
+  console.log("incoming alignment looks like a different piece —", why);
+  return { different: true, why, incoming };
+}
+
+/**
+ * Ask whether to replace the loaded piece. Styled like the app's other
+ * dangerous-operation dialogs (see confirmDialog), and spells out what the
+ * replacement closes, loads, and discards.
+ *
+ * @returns {Promise<boolean>} true to replace
+ */
+async function _confirmReplacePiece({ why, incoming }) {
+  const outgoing = Object.keys(wavesurfers).filter((k) => k !== SYNTH_MEI_KEY);
+  const unsaved = _annoChangesPending || _changeCounter !== _savedAtCounter;
+
+  const lines = [
+    el("li", {
+      class: "lh-v6-confirm-line removed",
+      text:
+        "− Closes " +
+        outgoing.length +
+        " loaded waveform" +
+        (outgoing.length === 1 ? "" : "s"),
+    }),
+    el("li", {
+      class: "lh-v6-confirm-line added",
+      text:
+        "+ Loads " +
+        incoming.length +
+        " recording" +
+        (incoming.length === 1 ? "" : "s") +
+        " from the new alignment",
+    }),
+    el("li", {
+      class: "lh-v6-confirm-line " + (unsaved ? "removed" : "neutral"),
+      text: unsaved
+        ? "− Discards unsaved markers, annotations, and/or alignment corrections"
+        : "✓ Nothing unsaved to discard",
+    }),
+  ];
+
+  // Enter deliberately does NOT confirm here: the prompt follows a click on
+  // the file picker's Continue button, and a stray Enter would discard work.
+  const ok = await confirmDialog({
+    title: "Replace the loaded piece?",
+    confirmLabel: "Replace piece",
+    cancelLabel: "Keep current",
+    focus: "cancel",
+    enterConfirms: false,
+    body: [
+      el("p", { class: "lh-v6-confirm-target" }, [
+        "This alignment appears to be for a different piece — ",
+        el("strong", { class: "lh-v6-confirm-reason", text: why }),
+        ".",
+      ]),
+      el("ul", { class: "lh-v6-confirm-list" }, lines),
+      el("p", {
+        class: "lh-v6-confirm-detail",
+        text: "Files already saved to disk or to your Solid pod are unaffected.",
+      }),
+    ],
+  });
+  return ok;
+}
+
+/**
+ * setGrids guard. Honours an approval already given in the file picker;
+ * otherwise assesses and, if this is a different piece, prompts.
+ *
+ * @returns {Promise<boolean>} whether the load should proceed
+ */
+async function _maybeResetForNewPiece(grids) {
+  if (grids && grids === _approvedReplacement) {
+    // Approved in the picker before it replaced its own state — reset, no
+    // second prompt.
+    _approvedReplacement = null;
+    resetSession(_incomingAudioKeys(grids));
+    return true;
+  }
+  const assessment = _assessIncomingPiece(grids);
+  if (!assessment.different) return true;
+  if (!(await _confirmReplacePiece(assessment))) return false;
+  resetSession(assessment.incoming);
   return true;
 }
 
 async function setGrids(grids) {
   console.log("received grids: ", grids);
   // Replacing the loaded piece requires a full teardown first (issue #32)
-  if (!_maybeResetForNewPiece(grids)) {
+  if (!(await _maybeResetForNewPiece(grids))) {
     console.log("setGrids: user declined replacing the loaded piece");
     return;
   }
@@ -5731,6 +5838,10 @@ async function setGrids(grids) {
   // Any waveform the new alignment doesn't mention must go before anything
   // tries to project through its (now absent) grid — see #32.
   _pruneWaveformsWithoutGrids();
+  // Re-picking the SAME piece's alignment retires its blob URLs without any
+  // session reset, so sweep here as well. The in-use check makes it a no-op for
+  // URLs still backing a renderer.
+  _revokeRetiredBlobUrls();
 
   // Invalidate tempo curve cache (alignment data changed)
   for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
@@ -7889,10 +8000,33 @@ function initFilePicker() {
         const data = await processPickedJsonFile(jsonFiles[0]);
         // Validate basic structure
         if (data.body && data.body.audio && data.header && data.header.ref) {
+          // Ask BEFORE touching any state: accepting a JSON here clears the
+          // loaded piece's blobs and rebinds loadedAlignmentJSON, so a "Keep
+          // current" answer at Continue-time would leave the app and this
+          // dialog describing different pieces (#32 follow-up).
+          const assessment = _assessIncomingPiece(data);
+          if (assessment.different) {
+            if (!(await _confirmReplacePiece(assessment))) {
+              if (jsonStatusEl) {
+                jsonStatusEl.replaceChildren(
+                  Object.assign(document.createElement("span"), {
+                    className: "json-status-missing",
+                    textContent:
+                      "Kept the loaded piece — " +
+                      jsonFiles[0].name +
+                      " was not applied.",
+                  }),
+                );
+              }
+              return; // nothing picked in this batch is applied
+            }
+            _approvedReplacement = data;
+          }
           alignmentLoadedFromFile = true;
-          // Clear old blob URLs/objects and audio keys
-          fileBlobUrls.clear();
-          fileBlobs.clear();
+          // Start a fresh matching slate for the newly picked alignment.
+          // retireFileBlobs (not .clear()) so the outgoing URLs keep a handle
+          // and can be revoked once nothing renders them.
+          session.retireFileBlobs();
           _seekAnalysis.clear();
           expectedAudioKeys = Object.keys(data.body.audio).filter(
             (k) => k !== SYNTH_MEI_KEY,
@@ -8264,6 +8398,14 @@ window._listenTest = {
   get markers() { return [...markers]; },
   /** The DataSession itself — state ownership is migrating into it (item 13). */
   get session() { return session; },
+  /** header.ref of the loaded alignment — cheap identity check for tests. */
+  get alignmentHeaderRef() { return loadedAlignmentJSON?.header?.ref ?? null; },
+  /** What the file picker currently expects; must track the loaded piece. */
+  get expectedAudioKeys() { return [...expectedAudioKeys]; },
+  /** Object URLs awaiting revocation — should drain to 0 once renderers die. */
+  get retiredBlobUrlCount() { return session.retiredBlobUrls.length; },
+  /** Live picked-file object URLs, so a test can check they get revoked. */
+  get fileBlobUrlValues() { return [...session.fileBlobUrls.values()]; },
   /**
    * Inject a synthetic region directly onto each named waveform's regions
    * plugin. Bypasses V6 state (which is the intended path in production)

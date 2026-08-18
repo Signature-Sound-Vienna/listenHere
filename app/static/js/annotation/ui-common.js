@@ -96,13 +96,39 @@ export function confirmRemoveIfTextful(description) {
 }
 
 /**
- * Custom confirmation dialog for destructive pod-side actions. Returns a
- * Promise that resolves to true if the user clicks Delete, false otherwise
- * (Cancel, backdrop click, or Escape). Layered above other modals (high
- * z-index) and visually alarming so a misclick stands out. Caller passes
- * the annotation title for the bold callout.
+ * The shared shell for the app's styled confirmation dialogs: overlay +
+ * alertdialog, icon/title header, caller-supplied body, Cancel/confirm actions.
+ * Resolves true on confirm, false on Cancel, backdrop click or Escape.
+ *
+ * Used by the annotation dialogs below and by listen.js's piece-replacement
+ * prompt. It lives here because `el` does; if more non-annotation callers
+ * appear it should move to a shared ui module.
+ *
+ * @param {object} opts
+ * @param {string} opts.title          heading text
+ * @param {Node[]} opts.body           body children
+ * @param {string} [opts.icon]         header glyph (decorative)
+ * @param {string} [opts.confirmLabel] confirm button text
+ * @param {string} [opts.cancelLabel]  cancel button text
+ * @param {string} [opts.confirmClass] confirm button class (styling severity)
+ * @param {string} [opts.dialogClass]  extra class on the dialog
+ * @param {string} [opts.labelId]      id linking heading to aria-labelledby
+ * @param {"confirm"|"cancel"} [opts.focus] which button takes initial focus
+ * @param {boolean} [opts.enterConfirms] whether Enter confirms
+ * @returns {Promise<boolean>}
  */
-export function confirmDeleteFromPod(title) {
+export function confirmDialog({
+  title,
+  body = [],
+  icon = "⚠",
+  confirmLabel = "OK",
+  cancelLabel = "Cancel",
+  confirmClass = "lh-v6-confirm-ok",
+  dialogClass = "",
+  labelId = "lh-v6-confirm-h",
+  focus = "confirm",
+  enterConfirms = true,
+}) {
   return new Promise((resolve) => {
     let settled = false;
     function settle(answer) {
@@ -114,40 +140,40 @@ export function confirmDeleteFromPod(title) {
     }
     function onKey(e) {
       if (e.key === "Escape") settle(false);
-      else if (e.key === "Enter") settle(true);
+      else if (e.key === "Enter" && enterConfirms) settle(true);
     }
 
     const cancelBtn = el("button", {
       class: "lh-v6-confirm-cancel",
       type: "button",
-      text: "Cancel",
+      text: cancelLabel,
       onclick: () => settle(false),
     });
-    const deleteBtn = el("button", {
-      class: "lh-v6-confirm-delete",
+    const confirmBtn = el("button", {
+      class: confirmClass,
       type: "button",
-      text: "Delete from pod",
+      text: confirmLabel,
       onclick: () => settle(true),
     });
 
     const dialog = el(
       "div",
-      { class: "lh-v6-confirm-dialog", role: "alertdialog", "aria-labelledby": "lh-v6-confirm-h" },
+      {
+        class: ("lh-v6-confirm-dialog " + dialogClass).trim(),
+        role: "alertdialog",
+        "aria-labelledby": labelId,
+      },
       [
         el("div", { class: "lh-v6-confirm-header" }, [
-          el("span", { class: "lh-v6-confirm-warning", text: "⚠", "aria-hidden": "true" }),
-          el("h2", { id: "lh-v6-confirm-h", class: "lh-v6-confirm-title", text: "Delete this annotation?" }),
+          el("span", {
+            class: "lh-v6-confirm-warning",
+            text: icon,
+            "aria-hidden": "true",
+          }),
+          el("h2", { id: labelId, class: "lh-v6-confirm-title", text: title }),
         ]),
-        el("div", { class: "lh-v6-confirm-body" }, [
-          el("p", { class: "lh-v6-confirm-target" }, [
-            "You are about to permanently delete ",
-            el("strong", { text: '"' + title + '"' }),
-            " from your Solid pod.",
-          ]),
-          el("p", { class: "lh-v6-confirm-detail", text: "This removes the MusicalMaterial, Extract, Selections, and every related OA Annotation. If a local copy is loaded in this session, it will also be removed." }),
-          el("p", { class: "lh-v6-confirm-warn", text: "This cannot be undone." }),
-        ]),
-        el("div", { class: "lh-v6-confirm-actions" }, [cancelBtn, deleteBtn]),
+        el("div", { class: "lh-v6-confirm-body" }, body),
+        el("div", { class: "lh-v6-confirm-actions" }, [cancelBtn, confirmBtn]),
       ],
     );
 
@@ -155,136 +181,121 @@ export function confirmDeleteFromPod(title) {
       "div",
       {
         class: "lh-v6-confirm-overlay",
-        onclick: (e) => { if (e.target === overlay) settle(false); },
+        onclick: (e) => {
+          if (e.target === overlay) settle(false);
+        },
       },
       dialog,
     );
     document.body.appendChild(overlay);
     document.addEventListener("keydown", onKey);
-    cancelBtn.focus(); // safer default focus than the destructive button
+    (focus === "cancel" ? cancelBtn : confirmBtn).focus();
+  });
+}
+
+/**
+ * Confirmation dialog for destructive pod-side actions. Visually alarming and
+ * defaults focus to Cancel so a misclick stands out. Caller passes the
+ * annotation title for the bold callout.
+ */
+export function confirmDeleteFromPod(title) {
+  return confirmDialog({
+    title: "Delete this annotation?",
+    confirmLabel: "Delete from pod",
+    confirmClass: "lh-v6-confirm-delete",
+    focus: "cancel",
+    body: [
+      el("p", { class: "lh-v6-confirm-target" }, [
+        "You are about to permanently delete ",
+        el("strong", { text: '"' + title + '"' }),
+        " from your Solid pod.",
+      ]),
+      el("p", {
+        class: "lh-v6-confirm-detail",
+        text: "This removes the MusicalMaterial, Extract, Selections, and every related OA Annotation. If a local copy is loaded in this session, it will also be removed.",
+      }),
+      el("p", { class: "lh-v6-confirm-warn", text: "This cannot be undone." }),
+    ],
   });
 }
 
 /**
  * Confirmation dialog for re-pinning an annotation's grouping to the current
  * application grouping. Renders the diff produced by state.diffGrouping so the
- * change is a deliberate, informed decision. Resolves true to proceed, false
- * to cancel (Cancel, backdrop, or Escape). Enter confirms.
+ * change is a deliberate, informed decision.
  *
  * `diff` is the object returned by state.diffGrouping; `published` toggles the
  * pod-impact line.
  */
 export function confirmRepin(diff, published) {
-  return new Promise((resolve) => {
-    let settled = false;
-    function settle(answer) {
-      if (settled) return;
-      settled = true;
-      document.removeEventListener("keydown", onKey);
-      overlay.remove();
-      resolve(answer);
-    }
-    function onKey(e) {
-      if (e.key === "Escape") settle(false);
-      else if (e.key === "Enter") settle(true);
-    }
+  const lines = [];
+  const pushLine = (cls, text) =>
+    lines.push(el("li", { class: "lh-v6-repin-line " + cls, text }));
 
-    const lines = [];
-    const pushLine = (cls, text) =>
-      lines.push(el("li", { class: "lh-v6-repin-line " + cls, text }));
+  diff.added.forEach((g) =>
+    pushLine("added", "+ New group: " + (g.label || "(untitled)")),
+  );
+  diff.renamed.forEach((g) =>
+    pushLine(
+      "renamed",
+      "↻ Renamed: “" + g.from + "” → “" + g.to + "” (note kept)",
+    ),
+  );
+  diff.removed.forEach((g) =>
+    pushLine(
+      "removed",
+      "− Group leaves: “" +
+        (g.label || "(untitled)") +
+        "”" +
+        (g.hasNote ? " — its note moves to “Notes from removed groups”" : ""),
+    ),
+  );
+  diff.affectedComparisons.forEach((c) =>
+    pushLine("removed", "− Comparison removed: " + c.left + " vs. " + c.right),
+  );
+  if (diff.restoredNoteCount > 0) {
+    pushLine(
+      "added",
+      "↩ " +
+        diff.restoredNoteCount +
+        " previously-removed note(s) re-attach to a returning group",
+    );
+  }
+  if (lines.length === 0) {
+    pushLine("neutral", "No group changes — the grouping is already current.");
+  }
 
-    diff.added.forEach((g) =>
-      pushLine("added", "+ New group: " + (g.label || "(untitled)")),
-    );
-    diff.renamed.forEach((g) =>
-      pushLine("renamed", "↻ Renamed: “" + g.from + "” → “" + g.to + "” (note kept)"),
-    );
-    diff.removed.forEach((g) =>
-      pushLine(
-        "removed",
-        "− Group leaves: “" +
-          (g.label || "(untitled)") +
-          "”" +
-          (g.hasNote ? " — its note moves to “Notes from removed groups”" : ""),
-      ),
-    );
-    diff.affectedComparisons.forEach((c) =>
-      pushLine("removed", "− Comparison removed: " + c.left + " vs. " + c.right),
-    );
-    if (diff.restoredNoteCount > 0) {
-      pushLine(
-        "added",
-        "↩ " +
-          diff.restoredNoteCount +
-          " previously-removed note(s) re-attach to a returning group",
-      );
-    }
-    if (lines.length === 0) {
-      pushLine("neutral", "No group changes — the grouping is already current.");
-    }
-
-    const bodyChildren = [
+  const body = [
+    el("p", {
+      class: "lh-v6-confirm-target",
+      text: "Re-pin this annotation's grouping to the current view?",
+    }),
+    el("ul", { class: "lh-v6-repin-list" }, lines),
+  ];
+  if (published && diff.podDeleteCount > 0) {
+    body.push(
       el("p", {
-        class: "lh-v6-confirm-target",
-        text: "Re-pin this annotation's grouping to the current view?",
-      }),
-      el("ul", { class: "lh-v6-repin-list" }, lines),
-    ];
-    if (published && diff.podDeleteCount > 0) {
-      bodyChildren.push(
-        el("p", {
-          class: "lh-v6-confirm-warn",
-          text:
-            "On the next Update to Solid, " +
-            diff.podDeleteCount +
-            " published annotation resource(s) will be deleted from your pod.",
-        }),
-      );
-    }
-    bodyChildren.push(
-      el("p", {
-        class: "lh-v6-confirm-detail",
+        class: "lh-v6-confirm-warn",
         text:
-          "Recordings, regions and per-recording notes are unaffected. Detached notes stay recoverable until you save over them.",
+          "On the next Update to Solid, " +
+          diff.podDeleteCount +
+          " published annotation resource(s) will be deleted from your pod.",
       }),
     );
+  }
+  body.push(
+    el("p", {
+      class: "lh-v6-confirm-detail",
+      text: "Recordings, regions, and per-recording notes are unaffected. Detached notes stay recoverable until you save over them.",
+    }),
+  );
 
-    const cancelBtn = el("button", {
-      class: "lh-v6-confirm-cancel",
-      type: "button",
-      text: "Cancel",
-      onclick: () => settle(false),
-    });
-    const okBtn = el("button", {
-      class: "lh-v6-confirm-ok",
-      type: "button",
-      text: "Update grouping",
-      onclick: () => settle(true),
-    });
-
-    const dialog = el(
-      "div",
-      { class: "lh-v6-confirm-dialog lh-v6-repin-dialog", role: "alertdialog", "aria-labelledby": "lh-v6-repin-h" },
-      [
-        el("div", { class: "lh-v6-confirm-header" }, [
-          el("span", { class: "lh-v6-confirm-warning", text: "↻", "aria-hidden": "true" }),
-          el("h2", { id: "lh-v6-repin-h", class: "lh-v6-confirm-title", text: "Update groups to current view" }),
-        ]),
-        el("div", { class: "lh-v6-confirm-body" }, bodyChildren),
-        el("div", { class: "lh-v6-confirm-actions" }, [cancelBtn, okBtn]),
-      ],
-    );
-
-    const overlay = el(
-      "div",
-      {
-        class: "lh-v6-confirm-overlay",
-        onclick: (e) => { if (e.target === overlay) settle(false); },
-      },
-      dialog,
-    );
-    document.body.appendChild(overlay);
-    document.addEventListener("keydown", onKey);
-    okBtn.focus();
+  return confirmDialog({
+    title: "Update groups to current view",
+    icon: "↻",
+    body,
+    confirmLabel: "Update grouping",
+    dialogClass: "lh-v6-repin-dialog",
+    labelId: "lh-v6-repin-h",
   });
 }

@@ -60,6 +60,14 @@ import {
   clearMap,
   gridFingerprint,
 } from "./engine/data-session.js";
+import {
+  redrawAllMarkers,
+  _clearMarkers,
+  _addMarker,
+  _updateMarkerDraggableClass,
+  seekToActiveMarker,
+  _persistMarkers,
+} from "./engine/markers.js";
 // Preserve the public API: _overlayWrappers was declared here before the
 // Phase-1 zoom/scroll extraction and is imported by
 // annotation/waveform-interactions.js.
@@ -77,7 +85,7 @@ const session = new DataSession();
 
 // Owned by the DataSession (Wave B). Rebinds became in-place resets, so the
 // aliases stay valid for every call site and every importing module.
-const markers = session.markers;
+export const markers = session.markers;
 export const loaded = session.loaded;
 const timemap = session.timemap; // verovio timemap
 let parser = new DOMParser(); // XML parser for MEI
@@ -225,7 +233,7 @@ const authByOrigin = session.authByOrigin;
 const authPromptedOrigins = session.authPromptedOrigins;
 
 // Close-listening mode state
-let closeListeningMode = false;
+export let closeListeningMode = false;
 
 // jumpToTarget mode: show numbered overlays on on-screen waveforms
 let _jumpToTargetActive = false;
@@ -234,8 +242,8 @@ let _jumpToTargetWaveforms = []; // snapshot of badged waveforms for the current
 // active-annotation region start. At most one of these is non-null at a time:
 //   activeMarkerIx     — index into markers[] when the target is a marker
 //   _activeRegionStart — { annId, regionId } when the target is a region start
-let activeMarkerIx = session.activeMarkerIx; // index into markers[] array
-function setActiveMarkerIx(v) {
+export let activeMarkerIx = session.activeMarkerIx; // index into markers[] array
+export function setActiveMarkerIx(v) {
   return (activeMarkerIx = session.activeMarkerIx = v);
 }
 let _activeRegionStart = null; // { annId, regionId } | null
@@ -319,25 +327,6 @@ function resolveAudioUrl(filename) {
   }
   // Relative paths: load from local static files
   return root + "wav/" + filename;
-}
-
-// --- Marker redraw helper ---
-// Redraws all markers on all wavesurfers, highlighting the active marker in close-listening mode
-function redrawAllMarkers() {
-  const _style = getComputedStyle(document.documentElement);
-  const markerColor       = _style.getPropertyValue("--color-marker").trim()        || "red";
-  const markerActiveColor = _style.getPropertyValue("--color-marker-active").trim() || "#8b0000";
-  Object.keys(wavesurfers).forEach((ws) => {
-    _clearMarkers(ws);
-    _ensureWfLabel(ws);
-    markers.forEach((m, i) => {
-      const t = getCorrespondingTime(ws, m);
-      const color = closeListeningMode && activeMarkerIx === i ? markerActiveColor : markerColor;
-      _addMarker(ws, { time: t, color, alignIx: m });
-    });
-  });
-  // Re-apply draggable visual class after DOM recreation
-  _updateMarkerDraggableClass();
 }
 
 // --- Resize handling ---
@@ -1158,7 +1147,7 @@ const _ALIGN_RADIUS_WIDE = 90;
 // Current radius selection (set from UI)
 let _alignRadius = _ALIGN_RADIUS_MEDIUM;
 // Drag markers: whether markers are currently draggable
-let _dragMarkersEnabled = false;
+export let _dragMarkersEnabled = false;
 // Drag mode: 'move' or 'fix'
 let _dragMode = "move";
 // Track whether pulse hints have been shown (first-time tooltips)
@@ -1244,70 +1233,6 @@ function hideWaveformOverlay(wfEl) {
 
 // --- Custom marker system (replaces WaveSurfer v4 markers plugin) ---
 
-function _clearMarkers(filename) {
-  const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
-  if (!wfEl) return;
-  wfEl.querySelectorAll(".ws-marker").forEach((el) => el.remove());
-}
-
-function _addMarker(
-  filename,
-  { time, label, color = "red", position = "bottom", alignIx } = {},
-) {
-  const ws = wavesurfers[filename];
-  if (!ws) return null;
-  const duration = ws.getDuration();
-  const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
-  if (!wfEl) return null;
-  // Use pixel positioning on the full-width overlay inner div
-  const fullW = _getZoomedWidth(filename);
-  const leftPx =
-    duration > 0 ? Math.max(0, Math.min(fullW, (time / duration) * fullW)) : 0;
-  const marker = document.createElement("div");
-  marker.className = "ws-marker";
-  marker.dataset.time = time;
-  marker.dataset.position = position;
-  if (alignIx != null) marker.dataset.alignIx = alignIx;
-  marker.style.left = `${leftPx}px`;
-  marker.style.color = color;
-  if (label) {
-    const lbl = document.createElement("span");
-    lbl.className = "ws-marker-label";
-    lbl.textContent = label;
-    marker.appendChild(lbl);
-  }
-  marker.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    _onMarkerClick(filename, marker);
-  });
-  // Append to the overlay inner div (scrolls with the waveform)
-  const overlayInner = _overlayWrappers[filename]?.inner;
-  (overlayInner || wfEl).appendChild(marker);
-  return marker;
-}
-
-function _onMarkerClick(filename, markerEl) {
-  if (markerEl.dataset.position === "top") return;
-  const alignIxStr = markerEl.dataset.alignIx;
-  if (alignIxStr == null) return;
-  // If drag markers is enabled, let the mousedown handler on #waveforms
-  // handle it (start a drag instead of seeking/entering close-listening).
-  if (_dragMarkersEnabled) return;
-  const alignmentIx = parseInt(alignIxStr);
-  const markerArrayIx = markers.indexOf(alignmentIx);
-  if (markerArrayIx > -1) {
-    if (closeListeningMode) {
-      setActiveMarkerIx(markerArrayIx);
-      redrawAllMarkers();
-      seekToActiveMarker();
-    } else {
-      enterCloseListeningMode(markerArrayIx);
-    }
-  } else {
-    console.error("Could not find marker with alignIx", alignmentIx);
-  }
-}
-
 // --- Alt-mode number overlay helpers ---
 
 /** Returns .waveform elements that are >25% visible in the viewport, in DOM order. */
@@ -1355,7 +1280,7 @@ window.addEventListener("resize", () => {
 
 // --- Close-listening mode ---
 
-function enterCloseListeningMode(markerArrayIndex) {
+export function enterCloseListeningMode(markerArrayIndex) {
   closeListeningMode = true;
   if (markerArrayIndex != null) {
     // Explicit marker entry (e.g. clicking a marker): activate that marker.
@@ -1424,18 +1349,12 @@ function _activateJumpTarget(stop) {
   }
 }
 
-function seekToActiveMarker() {
-  if (activeMarkerIx == null || !currentAudioIx) return;
-  _seekCloseListeningTo(getCorrespondingTime(currentAudioIx, markers[activeMarkerIx]));
-  _updateMarkBtnTooltip();
-}
-
 /**
  * Seek the current waveform to time `t` (seconds) and, when zoomed, scroll it
  * into view if it isn't already. Shared by active-marker seeks and the
  * close-listening jump-to-region-start navigation.
  */
-function _seekCloseListeningTo(t) {
+export function _seekCloseListeningTo(t) {
   if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
   const duration = wavesurfers[currentAudioIx].getDuration();
   wavesurfers[currentAudioIx].seekTo(t / duration);
@@ -1708,13 +1627,6 @@ export function setDrawModeActive(active) {
 }
 
 /** Toggle .draggable class on all marker elements. */
-function _updateMarkerDraggableClass() {
-  const draggable = _dragMarkersEnabled;
-  document.querySelectorAll(".ws-marker[data-align-ix]").forEach((el) => {
-    el.classList.toggle("draggable", draggable);
-  });
-}
-
 function getClosestAlignmentIx(
   time = wavesurfers[currentAudioIx].getCurrentTime(),
   audioIx = currentAudioIx,
@@ -3148,12 +3060,6 @@ function _updateDirtyState() {
 }
 
 /** Persist markers into the alignment JSON and mark dirty. */
-function _persistMarkers() {
-  if (!loadedAlignmentJSON) return;
-  if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
-  loadedAlignmentJSON.header.markers = [...markers];
-}
-
 /**
  * Update the Mark button tooltip: "Remove marker" when paused at a marker,
  * "Place marker" otherwise.

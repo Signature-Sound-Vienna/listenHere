@@ -948,6 +948,55 @@ function _morphGrid(grid, jCenter, dtDrag, sigma) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Pane-level loading indicator.
+//
+// Between accepting an alignment and creating the first waveform element there
+// is nothing to hang a per-waveform overlay on, so the content pane sat blank —
+// several seconds on a long piece with many recordings, spent rendering MIDI
+// from the score, interpolating the synth grid, and then decoding audio. This
+// covers exactly that window and hands over to the per-waveform overlays as
+// soon as the first waveform exists.
+//
+// The phases are named rather than shown as an opaque spinner: several seconds
+// of unexplained spinning is only marginally better than several seconds of
+// nothing.
+// ---------------------------------------------------------------------------
+
+/** Show (or retext) the pane indicator. */
+function showWaveformsPaneLoading(statusText) {
+  const pane = document.getElementById("waveforms");
+  if (!pane) return;
+  let el = pane.querySelector(":scope > .wf-pane-loading");
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "wf-pane-loading";
+    el.innerHTML =
+      '<div class="resize-spinner"></div><span class="wf-overlay-status"></span>';
+    pane.appendChild(el);
+  }
+  const status = el.querySelector(".wf-overlay-status");
+  if (status) status.textContent = statusText || "";
+}
+
+/**
+ * Retext the pane indicator, but never resurrect it.
+ *
+ * Once a waveform exists the indicator is gone for good; a late phase update
+ * must not bring it back over a pane that is already showing content.
+ */
+function setWaveformsPaneLoadingStatus(statusText) {
+  const el = document.querySelector("#waveforms > .wf-pane-loading");
+  if (!el) return;
+  const status = el.querySelector(".wf-overlay-status");
+  if (status) status.textContent = statusText || "";
+}
+
+/** Remove the pane indicator. Safe to call when it was never shown. */
+function hideWaveformsPaneLoading() {
+  document.querySelector("#waveforms > .wf-pane-loading")?.remove();
+}
+
 function showWaveformOverlays() {
   document.querySelectorAll("#waveforms .waveform").forEach((wf) => {
     showWaveformOverlay(wf, "Redrawing\u2026");
@@ -3899,6 +3948,13 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
     // add waveform element
     parentList.appendChild(waveform);
+    // The pane has content now; the per-waveform overlays take it from here.
+    hideWaveformsPaneLoading();
+    // Claim the row straight away. WaveSurfer is not created until after the
+    // await further down, and with dozens of recordings that queue is long — so
+    // without this the row would sit as an empty reserved box, with no spinner,
+    // until its turn came. The later "Loading audio…" call just retexts this.
+    showWaveformOverlay(waveform, "Preparing\u2026");
 
     // Add small drag handle and enable dragging
     const handle = document.createElement("div");
@@ -5058,6 +5114,8 @@ async function setGrids(grids) {
     console.log("setGrids: user declined replacing the loaded piece");
     return;
   }
+  // After the guard, not before: the confirm dialog must not sit behind a spinner.
+  showWaveformsPaneLoading("Loading alignment\u2026");
   setLoadedAlignmentJSON(grids);
   // V6 hook: load any persisted V6 annotations out of the alignment JSON
   // into the in-memory state. No-op when V6 is inactive.
@@ -5087,6 +5145,7 @@ async function setGrids(grids) {
             alignmentGrids[SYNTH_MEI_KEY] = []; // placeholder; computed in _buildAndPrepareSynthWaveform
           }
           console.log("starting MEI fetch: ", meiUri);
+          setWaveformsPaneLoadingStatus("Fetching score\u2026");
           _meiLoadError = null;
           try {
             // Verovio builds its toolkit from a wasm runtime callback, so `tk`
@@ -5119,6 +5178,7 @@ async function setGrids(grids) {
           setReferenceAudioIx(grids.header.ref);
         }
       } else {
+        hideWaveformsPaneLoading();
         console.error(
           "Broken grids received from alignment json file: ",
           grids,
@@ -5235,6 +5295,7 @@ async function setGrids(grids) {
   ) {
     try {
       if (!tk) throw new Error("the score renderer (Verovio) is unavailable");
+      setWaveformsPaneLoadingStatus("Preparing score\u2026");
       const _midiB64 = tk.renderToMIDI();
       _buildAndPrepareSynthWaveform(
         SYNTH_MEI_KEY,
@@ -5258,7 +5319,11 @@ async function setGrids(grids) {
   // Auto-load waveforms: all of them if the alignment JSON has precalculated
   // peaks, otherwise just the first few. Uses the same sorted filename list
   // already rendered into the sidebar above.
+  setWaveformsPaneLoadingStatus("Creating waveforms\u2026");
   _autoLoadDefaultWaveforms(filenames);
+  // Nothing will be auto-loaded, so no waveform will arrive to take over: a
+  // spinner left running forever is worse than the blank pane it replaced.
+  if (!filenames.length) hideWaveformsPaneLoading();
 }
 
 // ---------------------------------------------------------------------------
@@ -6552,12 +6617,20 @@ document.addEventListener("DOMContentLoaded", () => {
     // Just show the file picker, alignment loading happens there
     showFilePickerIfNeeded();
   } else if (alignmentData !== "local") {
+    // The alignment JSON itself can be slow to arrive — peaks inflate it
+    // roughly fivefold — and this fetch happens before setGrids, so cover it
+    // here too rather than leaving the pane blank until setGrids takes over.
+    showWaveformsPaneLoading("Loading alignment\u2026");
     fetch(alignmentData)
       .then((response) => response.json())
       .then((contents) => {
         setGrids(contents);
       })
-      .catch((err) => console.warn("Couldn't load alignment data: ", err));
+      .catch((err) => {
+        // No setGrids, so nothing downstream will ever clear the indicator.
+        hideWaveformsPaneLoading();
+        console.warn("Couldn't load alignment data: ", err);
+      });
   }
 
   // load a colormap json file (kept for potential future use).

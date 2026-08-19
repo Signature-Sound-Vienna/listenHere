@@ -52,6 +52,9 @@
    CSS Custom Properties — Light theme (default)
    ============================================================ */
 :root {
+  /* WaveSurfer's default waveform height. Mirrored in listen.js, which
+     falls back to 128 when reading ws.options.height — keep the two in step. */
+  --wf-height: 128px;
   --font-size-large: 14px;
   --font-size-medium: 13px;
   --font-size-small: 12.5px;
@@ -1005,6 +1008,13 @@ details {
 /* Per-waveform resize overlay */
 .waveform {
   position: relative;
+  /* Reserve the rendered height up front. WaveSurfer only gives the container a
+     size once it paints its canvas, so until then the row collapsed to its
+     border — and .wf-resize-overlay, being inset:0, collapsed with it, which is
+     why loading waveforms showed no spinner at all. Reserving the space also
+     stops the pane shoving itself down as each waveform pops in: with dozens of
+     recordings they now fill in place. Must track --wf-height. */
+  min-height: var(--wf-height);
   margin-bottom: .2em;
   border: 1px solid var(--color-waveform-border, #cbd5e1);
   border-top: 0px;
@@ -1046,6 +1056,23 @@ details {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Pane-level loading indicator, shown while an alignment is being prepared and
+   no waveform element exists yet to carry its own overlay. Reuses
+   .resize-spinner and .wf-overlay-status so the two read as one language. */
+.wf-pane-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6em;
+  /* The pane is a column flexbox; grow into it so the spinner sits centred in
+     the empty space rather than clinging to the top edge. */
+  flex: 1 1 auto;
+  min-height: 8em;
+  padding: 2em 1em;
+  color: var(--color-text-muted, #64748b);
 }
 
 /* Alt-mode waveform number badges */

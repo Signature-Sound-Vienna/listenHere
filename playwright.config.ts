@@ -8,9 +8,13 @@ const BASE_URL = process.env.APP_BASE_URL ?? 'http://localhost:5001';
 
 export default defineConfig({
   testDir: './tests/e2e',
-  fullyParallel: false, // audio/state tests are order-sensitive within a file
+  // Files run in parallel; tests WITHIN a file stay serial and in order, which is
+  // what the audio/state tests actually depend on. The Flask dev server is
+  // threaded and holds no per-request state, and each worker gets its own
+  // browser context, so there is nothing shared to serialise on.
+  fullyParallel: false,
   retries: process.env.CI ? 1 : 0,
-  workers: 1, // single worker — tests share a Flask server and audio state
+  workers: 4,
   reporter: [['html', { outputFolder: 'tests/report' }], ['list']],
 
   use: {
@@ -39,7 +43,11 @@ export default defineConfig({
   projects: [
     {
       name: 'functional',
-      testMatch: /(?!.*\.(perf|solid)\.spec\.).*\.spec\.ts/,
+      // Anchored: an unanchored negative lookahead excludes nothing, which is why
+      // the perf specs used to run here too (and their budgets break under parallel
+      // workers). Perf lives in its own project: npx playwright test --project=perf
+      // --workers=1, so budgets are measured without CPU contention.
+      testMatch: /^(?!.*\.(perf|solid)\.spec\.).*\.spec\.ts$/,
       use: {
         ...devices['Desktop Chrome'],
         launchOptions: { args: ['--autoplay-policy=no-user-gesture-required', '--mute-audio'] },

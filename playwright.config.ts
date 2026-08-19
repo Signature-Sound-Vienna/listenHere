@@ -32,26 +32,33 @@ export default defineConfig({
     },
   },
 
+  // --mute-audio / media.volume_scale keep the suite silent: several specs start
+  // real playback, which is disruptive when a run happens in the background.
   projects: [
     {
       name: 'functional',
       testMatch: /(?!.*\.(perf|solid)\.spec\.).*\.spec\.ts/,
       use: {
         ...devices['Desktop Chrome'],
-        launchOptions: { args: ['--autoplay-policy=no-user-gesture-required'] },
+        launchOptions: { args: ['--autoplay-policy=no-user-gesture-required', '--mute-audio'] },
       },
     },
     {
       name: 'functional-firefox',
       testMatch: /^(?!.*\.(perf|solid)\.spec\.).*\.spec\.ts$/,
-      use: { ...devices['Desktop Firefox'] },
+      use: {
+        ...devices['Desktop Firefox'],
+        // media.volume_scale silences the output stage only — decoding, currentTime
+        // and the play/pause events the tests assert on are unaffected.
+        launchOptions: { firefoxUserPrefs: { 'media.volume_scale': '0.0' } },
+      },
     },
     {
       name: 'perf',
       testMatch: /.*\.perf\.spec\.ts/,
       use: {
         ...devices['Desktop Chrome'],
-        launchOptions: { args: ['--autoplay-policy=no-user-gesture-required'] },
+        launchOptions: { args: ['--autoplay-policy=no-user-gesture-required', '--mute-audio'] },
       },
       timeout: 120_000,
     },

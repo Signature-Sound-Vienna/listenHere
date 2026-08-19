@@ -4508,6 +4508,51 @@ function _float32ToWavBlob(samples, SR) {
   return new Blob([ab], { type: "audio/wav" });
 }
 
+// Why the score MEI could not be loaded, or null when it loaded fine. Read by
+// the synth-waveform builder so a score-source failure is reported as such.
+let _meiLoadError = null;
+
+// Resolves once Verovio's toolkit exists (or with null if Verovio is absent).
+// Module-scope because setGrids has to await it: the toolkit is built from a wasm
+// runtime callback, and whoever touches `tk` first must not assume it has fired.
+let _verovioReady = null;
+
+/**
+ * Fetch the score MEI, failing loudly on anything that is not XML.
+ *
+ * A bare fetch().text() hands the body straight to Verovio whatever it is: an
+ * HTTP error page, a rate-limit notice, or a 404 from a mistyped local path all
+ * parse to a document with no MEI root, yield zero notes, and finally surface as
+ * "synthesis produced no audio" — blaming the last step for the first one's
+ * failure. parseFromString does not throw on malformed input and tk.loadData
+ * only logs, so nothing upstream can raise on our behalf; the check has to
+ * happen here.
+ */
+async function _fetchMeiXml(uri) {
+  let response;
+  try {
+    response = await fetch(uri);
+  } catch (e) {
+    // Network-level: DNS, offline, CORS, connection reset.
+    throw new Error(`could not reach the score source (${e.message})`);
+  }
+  if (!response.ok) {
+    throw new Error(
+      `score source returned HTTP ${response.status} ${response.statusText}`.trim(),
+    );
+  }
+  const text = await response.text();
+  if (!text.trim()) throw new Error("score source returned an empty response");
+  // Sniff rather than trust Content-Type: raw hosts and static servers label
+  // .mei inconsistently (text/plain, application/octet-stream, …), so the body
+  // is the only reliable signal.
+  if (!/<\s*(\?xml|mei\b|music\b)/i.test(text.slice(0, 2048))) {
+    const preview = text.trim().slice(0, 120).replace(/\s+/g, " ");
+    throw new Error(`score source did not return MEI XML (got "${preview}…")`);
+  }
+  return text;
+}
+
 /** Encode a mono AudioBuffer as a 16-bit PCM WAV Blob. */
 function _audioBufferToWavBlob(buffer) {
   return _float32ToWavBlob(buffer.getChannelData(0), buffer.sampleRate);
@@ -4526,6 +4571,28 @@ async function _buildAndPrepareSynthWaveform(
   refKey,
   midiB64,
 ) {
+  // The score never arrived: report that on the score waveform instead of
+  // running the pipeline on an empty MEI, where the failure would resurface as
+  // "synthesis produced no audio" and blame the last step for the first one's
+  // problem. Await prepareWaveform here: it only builds the overlay after its
+  // own await, and unlike the synthesis path below there are no later progress
+  // updates to land the message for us.
+  if (_meiLoadError) {
+    console.error("skipping synthesis, MEI never loaded:", _meiLoadError);
+    // Pending marker first, so resolveAudioUrl returns null and prepareWaveform
+    // renders an overlay rather than trying to load audio (as the normal path does).
+    _synthBlobUrls.set(synthKey, "__pending__");
+    await prepareWaveform(synthKey);
+    const wfEl = document.querySelector(`.waveform[data-ix='${synthKey}']`);
+    if (wfEl) {
+      updateWaveformOverlayStatus(
+        wfEl,
+        `\u26a0 Score unavailable: ${_meiLoadError}`,
+      );
+    }
+    return;
+  }
+
   // ---- Synchronous phase (must complete before first await) ----
   // Parse MIDI first so we can compute synth timings synchronously,
   // then set the alignment grid BEFORE calling prepareWaveform / before
@@ -5020,25 +5087,32 @@ async function setGrids(grids) {
             alignmentGrids[SYNTH_MEI_KEY] = []; // placeholder; computed in _buildAndPrepareSynthWaveform
           }
           console.log("starting MEI fetch: ", meiUri);
-          await fetch(meiUri)
-            .then((response) => response.text())
-            .then((meiXml) => {
-              setMei(meiXml);
-              setMeiDOM(parser.parseFromString(mei, "application/xml"));
-              tk.loadData(mei, {});
-              refillArray(
-                timemap,
-                tk.renderToTimemap({ includeMeasures: true }),
-              );
-              // Invalidate tempo cache so it picks up timemap qstamp values
-              for (const k of Object.keys(_tempoRawCache))
-                delete _tempoRawCache[k];
-              _tempoYRange = null;
-              console.log("timemap set!", timemap, mei);
-            })
-            .catch((e) => {
-              console.error("Couldn't load MEI: ", e, grids.header.meiUri);
-            });
+          _meiLoadError = null;
+          try {
+            // Verovio builds its toolkit from a wasm runtime callback, so `tk`
+            // is not ready just because the script tag ran. Chrome happened to
+            // win that race and Firefox did not, where every tk use below threw
+            // and took the rest of setGrids with it — including the auto-load,
+            // so the page came up with no waveforms at all.
+            if (_verovioReady) await _verovioReady;
+            if (!tk) throw new Error("the score renderer (Verovio) is unavailable");
+            const meiXml = await _fetchMeiXml(meiUri);
+            setMei(meiXml);
+            setMeiDOM(parser.parseFromString(mei, "application/xml"));
+            tk.loadData(mei, {});
+            refillArray(timemap, tk.renderToTimemap({ includeMeasures: true }));
+            // Invalidate tempo cache so it picks up timemap qstamp values
+            for (const k of Object.keys(_tempoRawCache))
+              delete _tempoRawCache[k];
+            _tempoYRange = null;
+            console.log("timemap set!", timemap, mei);
+          } catch (e) {
+            // Record WHY, so the score waveform can say so instead of blaming
+            // synthesis. Without this the failure surfaced as "synthesis
+            // produced no audio", which sends debugging to the wrong place.
+            _meiLoadError = e.message;
+            console.error("Couldn't load MEI: ", e, grids.header.meiUri);
+          }
           console.log("MEI fetched: ", meiUri);
         }
         if ("ref" in grids.header) {
@@ -5146,7 +5220,12 @@ async function setGrids(grids) {
   // If ?useFiles mode is active, show file picker overlay
   showFilePickerIfNeeded();
 
-  // Kick off async MEI-to-audio synthesis for the score waveform entry
+  // Kick off async MEI-to-audio synthesis for the score waveform entry.
+  //
+  // Wrapped: this used to be the last unguarded call in setGrids, so a throw here
+  // (tk undefined in Firefox) skipped _autoLoadDefaultWaveforms below and the page
+  // came up with no waveforms at all. The score is one entry among many — losing
+  // it must never cost the recordings too.
   if (
     SYNTH_MEI_KEY in alignmentGrids &&
     grids.body &&
@@ -5154,13 +5233,26 @@ async function setGrids(grids) {
     grids.header &&
     grids.header.ref
   ) {
-    const _midiB64 = tk.renderToMIDI();
-    _buildAndPrepareSynthWaveform(
-      SYNTH_MEI_KEY,
-      grids.body.score,
-      grids.header.ref,
-      _midiB64,
-    );
+    try {
+      if (!tk) throw new Error("the score renderer (Verovio) is unavailable");
+      const _midiB64 = tk.renderToMIDI();
+      _buildAndPrepareSynthWaveform(
+        SYNTH_MEI_KEY,
+        grids.body.score,
+        grids.header.ref,
+        _midiB64,
+      );
+    } catch (e) {
+      // Surface it on the score waveform rather than only in the console.
+      _meiLoadError = _meiLoadError || e.message;
+      console.error("score synthesis could not start:", e);
+      _buildAndPrepareSynthWaveform(
+        SYNTH_MEI_KEY,
+        grids.body.score,
+        grids.header.ref,
+        "",
+      );
+    }
   }
 
   // Auto-load waveforms: all of them if the alignment JSON has precalculated
@@ -5394,7 +5486,7 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // set up Verovio
-  const _verovioReady = new Promise((resolve) => {
+  _verovioReady = new Promise((resolve) => {
     if (typeof verovio !== "undefined" && verovio.module.calledRun) {
       setTk(new verovio.toolkit());
       resolve(tk);
@@ -5404,6 +5496,11 @@ document.addEventListener("DOMContentLoaded", () => {
         console.log("Have Verovio toolkit:", tk);
         resolve(tk);
       };
+    } else {
+      // Verovio script absent: settle anyway. An unsettled promise would hang
+      // every awaiting caller forever, which is worse than no score.
+      console.warn("Verovio not present; score synthesis unavailable");
+      resolve(null);
     }
   });
   setVerovioPromise(_verovioReady);

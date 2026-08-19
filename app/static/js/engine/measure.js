@@ -24,7 +24,8 @@ import {
   getCorrespondingTime,
   getClosestAlignmentIx,
 } from "../listen.js";
-import { overlayWrappers, getZoomedWidth } from "./zoom-scroll.js";
+import { getZoomedWidth } from "./zoom-scroll.js";
+import { waveformViews } from "./waveform-view.js";
 
 let _measureShiftHeld = false;
 let _measureDragState = null; // { filename, startAlignIx, endAlignIx }
@@ -50,7 +51,7 @@ export function showMarkerDurations() {
   Object.keys(wavesurfers).forEach((filename) => {
     if (!loaded.has(filename)) return;
     const ws = wavesurfers[filename];
-    const ow = overlayWrappers[filename];
+    const ow = waveformViews[filename]?.ow;
     if (!ws || !ow) return;
     const dur = ws.getDuration();
     const fullW = getZoomedWidth(filename);
@@ -106,7 +107,7 @@ function _drawMeasureSpan(startAlignIx, endAlignIx) {
   Object.keys(wavesurfers).forEach((filename) => {
     if (!loaded.has(filename)) return;
     const ws = wavesurfers[filename];
-    const ow = overlayWrappers[filename];
+    const ow = waveformViews[filename]?.ow;
     if (!ws || !ow) return;
     const dur = ws.getDuration();
     const fullW = getZoomedWidth(filename);
@@ -178,7 +179,7 @@ export function initMeasureInteractions({ isSuppressed = () => false } = {}) {
     const fullW = getZoomedWidth(filename);
     if (fullW <= 0 || dur <= 0) return null;
     // Get x relative to the overlay inner (accounts for scroll)
-    const ow = overlayWrappers[filename];
+    const ow = waveformViews[filename]?.ow;
     if (!ow) return null;
     const rect = ow.inner.getBoundingClientRect();
     const x = e.clientX - rect.left;

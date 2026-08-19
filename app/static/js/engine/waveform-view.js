@@ -8,11 +8,13 @@
 // one filename and its canvases and then published into the DataSession's
 // gridRedrawers / positionUpdaters maps so the rest of the app could call back
 // into a single waveform's renderer. That indirection *was* an implicit
-// WaveformView (design doc §3); this module makes it explicit: `_views` holds
-// each waveform's DOM refs, and the drawing functions take a filename.
+// WaveformView (design doc §3); this module makes it explicit: `waveformViews`
+// holds each waveform's DOM refs, and the drawing functions take a filename.
 //
-// listen.js keeps the two registries — their key sets double as "which
-// waveforms are ready" — but the functions they hold are now thin delegates.
+// The positionUpdaters registry is gone (increment 19): every entry was just
+// `() => updatePositionIndicator(filename)`, so callers now invoke that directly
+// and test `waveformViews[filename]` for the readiness the map's key set used to
+// signal.
 //
 // The tempo curve is drawn here but derived in listen.js, behind the single
 // getTempoDrawModel() accessor: the derivation (cache, smoothing, scope, corpus
@@ -38,11 +40,17 @@ import { clearMap } from "./data-session.js";
 // gridCanvas, positionIndicatorCanvas, tempoCanvas }.
 //
 // These are renderer internals, not session data, so they live here rather than
-// in DataSession. When session.view becomes a real per-viewport WaveformView,
-// this map is what it is built from — and zoom-scroll's overlayWrappers folds
-// into it, which is why `ow` is held here too.
+// in DataSession. This map IS the per-waveform WaveformView registry of design
+// doc §3; increment 19 is folding the other per-filename stores into it, so a
+// waveform's renderer state is created and torn down as one unit instead of via
+// a manual per-store checklist.
+//
+// Reference-stable and reset in place (clearMap), so importers may hold it.
+// Its key set doubles as "which waveforms have a renderer", which several call
+// sites rely on as a readiness check — every entry is created and deleted
+// alongside the WaveSurfer instance itself.
 // ---------------------------------------------------------------------------
-const _views = {};
+export const waveformViews = {};
 
 /**
  * Create this waveform's overlay canvases and register its view.
@@ -82,18 +90,18 @@ export function createWaveformOverlays(filename, container, waveHeight, ow) {
     positionIndicatorCanvas,
     tempoCanvas,
   };
-  _views[filename] = view;
+  waveformViews[filename] = view;
   return view;
 }
 
 /** Drop one waveform's view (called when its waveform is pruned/destroyed). */
 export function disposeWaveformView(filename) {
-  delete _views[filename];
+  delete waveformViews[filename];
 }
 
 /** Drop every view (called when all waveforms are torn down and rebuilt). */
 export function clearWaveformViews() {
-  clearMap(_views);
+  clearMap(waveformViews);
 }
 
 /**
@@ -176,7 +184,7 @@ export function updatePositionIndicator(filename) {
  * At zoom, draws only the visible viewport portion, offset by scroll.
  */
 export function drawAlignmentGrid(filename) {
-  const view = _views[filename];
+  const view = waveformViews[filename];
   if (!view) return;
   const { container, gridCanvas, positionIndicatorCanvas, ow } = view;
   if (!container || !container.isConnected) return;

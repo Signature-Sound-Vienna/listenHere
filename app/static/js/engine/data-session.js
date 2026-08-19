@@ -170,10 +170,6 @@ export class DataSession {
       wavesurfers: {},
       /** filename -> RegionsPlugin instance (one per renderer). */
       regionsPlugins: {},
-      /** filename -> closure redrawing the alignment grid canvas. */
-      gridRedrawers: {},
-      /** filename -> closure repainting the position indicator. */
-      positionUpdaters: {},
     };
   }
 

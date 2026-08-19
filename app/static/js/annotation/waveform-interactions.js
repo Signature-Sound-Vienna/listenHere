@@ -31,7 +31,7 @@ import { fmtRegionRange, fmtRegionDuration } from "./ui-editor.js";
 import { confirmRemoveIfTextful } from "./ui-common.js";
 import {
   regionsPlugins,
-  overlayWrappers,
+  waveformViews,
   wavesurfers,
   setDrawModeActive,
   setCurrentAudioInactive,
@@ -619,7 +619,7 @@ function _showRegionDurations() {
       .slice()
       .sort((a, b) => a.start - b.start);
     if (v6Regions.length === 0) continue;
-    const ow = overlayWrappers[file];
+    const ow = waveformViews[file]?.ow;
     const ws = wavesurfers[file];
     if (!ow || !ow.inner || !ws) continue;
     const dur = ws.getDuration();

@@ -15,9 +15,9 @@
 // geometry helpers. Eval-safe because every imported binding is only touched
 // inside a function body, never at module top level.
 
-import { regionsPlugins, wavesurfers, gridRedrawers } from "../listen.js";
+import { regionsPlugins, wavesurfers } from "../listen.js";
+import { waveformViews, drawAlignmentGrid } from "./waveform-view.js";
 import {
-  overlayWrappers,
   currentZoomLevel,
   getZoomedWidth,
   getScrollContainer,
@@ -38,7 +38,7 @@ function _collectAllRegionTimes(filename) {
 
 /** Create left/right region-nav arrow buttons inside the waveform's overlay wrapper. */
 export function createRegionNavArrows(filename) {
-  const ow = overlayWrappers[filename];
+  const ow = waveformViews[filename]?.ow;
   if (!ow) return;
   if (ow.wrapper.querySelector(".wf-region-nav-left")) return; // already created
 
@@ -128,14 +128,14 @@ function _jumpToOffscreenRegion(filename, side) {
   newScroll = Math.max(0, Math.min(newScroll, fullW - viewW));
   ws.setScroll(newScroll);
   syncOverlayScroll(filename);
-  if (gridRedrawers[filename]) gridRedrawers[filename]();
+  drawAlignmentGrid(filename);
   syncAllWaveformScrolls(filename);
   updateAllRegionNavArrows();
 }
 
 /** Update arrow visibility + badge count on a single waveform. */
 function _updateRegionNavArrows(filename) {
-  const ow = overlayWrappers[filename];
+  const ow = waveformViews[filename]?.ow;
   if (!ow) return;
   const left = ow.wrapper.querySelector(".wf-region-nav-left");
   const right = ow.wrapper.querySelector(".wf-region-nav-right");
@@ -178,5 +178,5 @@ function _updateRegionNavArrows(filename) {
 
 /** Update region-nav arrows on all loaded waveforms. */
 export function updateAllRegionNavArrows() {
-  Object.keys(overlayWrappers).forEach((fn) => _updateRegionNavArrows(fn));
+  Object.keys(waveformViews).forEach((fn) => _updateRegionNavArrows(fn));
 }

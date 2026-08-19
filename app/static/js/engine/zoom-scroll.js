@@ -11,6 +11,11 @@
 //    are the seed of the future DataSession; they are imported here (a circular
 //    but eval-safe import — every borrowed binding is used only inside function
 //    bodies, never at module top level).
+//  - The overlay wrappers used to be owned here as `overlayWrappers`. They are
+//    now read from waveform-view.js's `waveformViews[filename].ow` (increment
+//    19): the same wrapper object was being stored in both places and kept in
+//    sync by hand across two teardown paths. Same eval-safe circular-import
+//    rule applies — `waveformViews` is only touched inside function bodies.
 //  - `currentZoomLevel` / `scrollMode` / `sharedTimeAxis` are exported as live
 //    bindings so listen.js keeps reading the current value; the few writes that
 //    still live in listen.js's DOMContentLoaded wiring go through the setters
@@ -24,11 +29,11 @@ import {
   loaded,
   wfBgCache,
   refreshWfBg,
-  gridRedrawers,
   getClosestAlignmentIx,
   getCorrespondingTime,
 } from "../listen.js";
 import { updateAllRegionNavArrows } from "./region-nav.js";
+import { waveformViews, drawAlignmentGrid } from "./waveform-view.js";
 
 // ---------------------------------------------------------------------------
 // Zoom state (owned here)
@@ -37,7 +42,6 @@ export const ZOOM_LEVELS = [1, 2, 5, 10, 20, 50];
 export let currentZoomLevel = 1; // multiplier (1 = no zoom)
 export let scrollMode = "page"; // "follow" | "page" | "manual"
 export let sharedTimeAxis = false; // when true, all waveforms use same px/sec
-export const overlayWrappers = {}; // filename → { wrapper, inner }
 
 // Setters for the writes that still originate in listen.js's UI wiring
 // (live-binding imports are read-only for the importer).
@@ -88,7 +92,7 @@ export function createOverlayWrapper(wfEl, height) {
 
 /** Ensure a sticky filename label exists on the waveform overlay (not in the scrolling inner). */
 export function ensureWfLabel(filename) {
-  const ow = overlayWrappers[filename];
+  const ow = waveformViews[filename]?.ow;
   const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
   const parent = ow ? ow.wrapper : wfEl;
   if (!parent) return;
@@ -105,7 +109,7 @@ export function ensureWfLabel(filename) {
 
 /** Sync overlay scroll transform to match WaveSurfer's scroll position. */
 export function syncOverlayScroll(filename) {
-  const ow = overlayWrappers[filename];
+  const ow = waveformViews[filename]?.ow;
   if (!ow) return;
   const scrollLeft = wavesurfers[filename]
     ? wavesurfers[filename].getScroll()
@@ -261,7 +265,7 @@ export function syncAllWaveformScrolls(sourceFilename) {
       if (!targetWs) return;
       targetWs.setScroll(sourceScroll);
       syncOverlayScroll(targetFilename);
-      if (gridRedrawers[targetFilename]) gridRedrawers[targetFilename]();
+      drawAlignmentGrid(targetFilename);
     });
     return;
   }
@@ -291,6 +295,6 @@ export function syncAllWaveformScrolls(sourceFilename) {
     targetWs.setScroll(targetScroll);
     syncOverlayScroll(targetFilename);
     // Redraw viewport-based canvases for this target
-    if (gridRedrawers[targetFilename]) gridRedrawers[targetFilename]();
+    drawAlignmentGrid(targetFilename);
   });
 }

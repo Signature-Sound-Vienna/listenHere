@@ -34,8 +34,8 @@ import {
 import {
   ensureWfLabel,
   getZoomedWidth,
-  overlayWrappers,
 } from "./zoom-scroll.js";
+import { waveformViews } from "./waveform-view.js";
 
 // Redraws all markers on all wavesurfers, highlighting the active marker in close-listening mode
 export function redrawAllMarkers() {
@@ -92,7 +92,7 @@ export function addMarker(
     _onMarkerClick(filename, marker);
   });
   // Append to the overlay inner div (scrolls with the waveform)
-  const overlayInner = overlayWrappers[filename]?.inner;
+  const overlayInner = waveformViews[filename]?.ow?.inner;
   (overlayInner || wfEl).appendChild(marker);
   return marker;
 }

@@ -20,15 +20,17 @@ export default defineConfig({
     video: 'on-first-retry',
   },
 
-  // Start the Flask dev server automatically before running tests.
+  // Start the Flask dev server automatically before running tests. FLASK_DEBUG is
+  // required, not cosmetic: tests/fixtures/ is only served at /static/test/<file>
+  // when app.debug is true (see app/routes.py).
   webServer: {
     command: 'flask run --port=5001',
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
     env: {
-      FLASK_APP: 'app.py',
-      FLASK_ENV: 'development',
+      FLASK_APP: 'wsgi.py',
+      FLASK_DEBUG: '1',
     },
   },
 

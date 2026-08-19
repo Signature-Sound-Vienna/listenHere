@@ -2908,18 +2908,6 @@ body.marker-dragging * {
   box-sizing: border-box;
 }
 
-/* Legacy standalone page (align.html) */
-#align-page {
-  background: var(--color-bg, linear-gradient(135deg, #f8fafc 0%, #e0e7ef 100%));
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0;
-  font-family: 'Segoe UI', 'Helvetica Neue', Arial, 'Liberation Sans', sans-serif;
-  color: var(--color-text, #2d3748);
-}
-
 #align-panel #align-logo {
   margin-bottom: 0.15em;
   filter: drop-shadow(0 4px 16px rgba(0, 0, 0, 0.08));

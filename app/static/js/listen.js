@@ -5373,27 +5373,23 @@ function onAlignmentComplete(alignmentResult, files) {
 // Settings Drawer — theme & i18n
 // ----------------------------------------------------------------------------
 
-const _THEME_KEY = "listenTool_theme";
 const _LANG_KEY  = "listenTool_language";
 
-/** Apply a theme by setting data-theme on <html>. Persists to localStorage. */
-function _applyTheme(theme) {
-  if (theme === "light") {
-    document.documentElement.removeAttribute("data-theme");
-  } else {
-    document.documentElement.setAttribute("data-theme", theme);
-  }
-  try { localStorage.setItem(_THEME_KEY, theme); } catch (_) {}
+/** Read current waveform colours from CSS custom properties. */
+function _waveformColors() {
+  const s = getComputedStyle(document.documentElement);
+  return {
+    waveColor:     s.getPropertyValue("--color-waveform").trim()          || "violet",
+    progressColor: s.getPropertyValue("--color-waveform-progress").trim() || "purple",
+  };
+}
 
-  // Swap bat logo: sleeping bat for light themes, active bat for dark-background themes
-  const darkBgThemes = ["dark", "dracula", "forest", "nord"];
-  const logoEl = document.querySelector(".nav-logo-img");
-  if (logoEl) {
-    logoEl.src = darkBgThemes.includes(theme)
-      ? "/static/bat/ListenHereBat.svg"
-      : "/static/bat/ListenHereBatAsleep.svg";
-  }
-
+/** Repaint everything on this page that caches a theme colour.
+ *
+ *  theme-setup.js owns the theme itself — the persisted choice, the `data-theme`
+ *  attribute, the logo swap, and the drawer's Theme radios — and announces each
+ *  change with `lh-theme-change`. Only the waveform-side repaint lives here. */
+function _onThemeChange() {
   // Re-apply waveform colours to any live WaveSurfer instances
   const { waveColor, progressColor } = _waveformColors();
   for (const ws of Object.values(wavesurfers)) {
@@ -5413,14 +5409,7 @@ function _applyTheme(theme) {
   if (_firstPosUpdater) _firstPosUpdater();
 }
 
-/** Read current waveform colours from CSS custom properties. */
-function _waveformColors() {
-  const s = getComputedStyle(document.documentElement);
-  return {
-    waveColor:     s.getPropertyValue("--color-waveform").trim()          || "violet",
-    progressColor: s.getPropertyValue("--color-waveform-progress").trim() || "purple",
-  };
-}
+document.addEventListener("lh-theme-change", _onThemeChange);
 
 /** Apply a language preference. Persists to localStorage.
  *  Full i18n support is a future feature; this stores the preference for later. */
@@ -5429,17 +5418,17 @@ function _applyLanguage(lang) {
   try { localStorage.setItem(_LANG_KEY, lang); } catch (_) {}
 }
 
-/** Restore persisted theme and language on page load (call before DOMContentLoaded). */
-function _restoreSettings() {
+/** Restore the persisted language on page load. The theme is restored earlier
+ *  still, by theme-setup.js, which runs before this module is evaluated. */
+function _restoreLanguage() {
   try {
-    const theme = localStorage.getItem(_THEME_KEY) || "light";
-    _applyTheme(theme);
     const lang = localStorage.getItem(_LANG_KEY);
     if (lang) _applyLanguage(lang);
   } catch (_) {}
 }
 
-/** Wire up the Settings drawer UI. Called from DOMContentLoaded. */
+/** Wire up the Settings drawer UI. Called from DOMContentLoaded.
+ *  The Theme section is injected into this drawer, and wired, by theme-setup.js. */
 function _initSettingsDrawer() {
   const drawer = document.getElementById("settings-drawer");
   const openBtn = document.getElementById("settings-drawer-btn");
@@ -5467,17 +5456,6 @@ function _initSettingsDrawer() {
     }
   });
 
-  // Theme radio buttons — reflect persisted state, then wire change handler
-  const savedTheme = (() => {
-    try { return localStorage.getItem(_THEME_KEY) || "light"; } catch (_) { return "light"; }
-  })();
-  document.querySelectorAll('input[name="app-theme"]').forEach((radio) => {
-    if (radio.value === savedTheme) radio.checked = true;
-    radio.addEventListener("change", () => {
-      if (radio.checked) _applyTheme(radio.value);
-    });
-  });
-
   // Language select — reflect persisted state, then wire change handler
   const savedLang = (() => {
     try { return localStorage.getItem(_LANG_KEY) || "en"; } catch (_) { return "en"; }
@@ -5489,8 +5467,7 @@ function _initSettingsDrawer() {
   }
 }
 
-// Restore theme immediately (before paint) to avoid flash of unstyled content
-_restoreSettings();
+_restoreLanguage();
 
 // ----------------------------------------------------------------------------
 // Document Ready Hook

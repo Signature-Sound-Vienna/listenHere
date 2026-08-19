@@ -8,15 +8,11 @@ const THEME_KEY = 'listenTool_theme';
 // Time (ms) to allow the settings drawer slide-in transition to complete
 const DRAWER_TRANSITION_MS = 350;
 
-/** Open the listen-page settings drawer and wait for its transition to settle. */
-async function openListenSettingsDrawer(page: import('@playwright/test').Page) {
+/** Open the settings drawer and wait for its transition to settle. Every page
+ *  uses the same ids: listen.html declares the drawer, theme-setup.js injects an
+ *  identical one wherever the page has none. */
+async function openSettingsDrawer(page: import('@playwright/test').Page) {
   await page.locator('#settings-drawer-btn').click();
-  await page.waitForTimeout(DRAWER_TRANSITION_MS);
-}
-
-/** Open the injected landing-page settings drawer and wait for its transition. */
-async function openLandingSettingsDrawer(page: import('@playwright/test').Page) {
-  await page.locator('#lh-settings-btn').click();
   await page.waitForTimeout(DRAWER_TRANSITION_MS);
 }
 
@@ -29,7 +25,7 @@ test.describe('19. Theming', () => {
 
   // 19.1 Theme persists across page reload on the listen page
   test('19.1 selected theme persists across reload', async ({ listenPage: page }) => {
-    await openListenSettingsDrawer(page);
+    await openSettingsDrawer(page);
     await selectTheme(page, '#settings-drawer', 'dark');
 
     // data-theme attribute should be applied immediately
@@ -57,14 +53,14 @@ test.describe('19. Theming', () => {
     await page.goto('/');
 
     // Injected cog button should be present
-    await expect(page.locator('#lh-settings-btn')).toBeVisible();
+    await expect(page.locator('#settings-drawer-btn')).toBeVisible();
 
-    await openLandingSettingsDrawer(page);
-    const drawer = page.locator('#lh-settings-drawer');
+    await openSettingsDrawer(page);
+    const drawer = page.locator('#settings-drawer');
     await expect(drawer).not.toHaveClass(/closed/);
 
     // Select a non-default theme
-    await selectTheme(page, '#lh-settings-drawer', 'solarized');
+    await selectTheme(page, '#settings-drawer', 'solarized');
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'solarized');
 
     // Theme should carry over to the listen page (same localStorage key)
@@ -91,7 +87,7 @@ test.describe('19. Theming', () => {
     await expect(logo).toHaveAttribute('src', /ListenHereBatAsleep\.svg/);
 
     // Switch to a dark-background theme
-    await openListenSettingsDrawer(page);
+    await openSettingsDrawer(page);
     await selectTheme(page, '#settings-drawer', 'dark');
     const darkSrc = await logo.getAttribute('src');
     expect(darkSrc).toMatch(/ListenHereBat\.svg/);
@@ -136,6 +132,21 @@ test.describe('19. Theming', () => {
       (el: HTMLElement) => el.style.color
     );
     expect(labelColor).toBe('rgb(34, 34, 34)');
+  });
+
+  // 19.5 One drawer per page: theme-setup.js injects the Theme section into the
+  //      drawer listen.html already declares, rather than a second drawer of its own.
+  test('19.5 the listen page has exactly one settings drawer, with an injected Theme section', async ({ listenPage: page }) => {
+    // Exactly one drawer, one pull button, one Theme section, one set of radios
+    await expect(page.locator('#settings-drawer')).toHaveCount(1);
+    await expect(page.locator('#settings-drawer-btn')).toHaveCount(1);
+    await expect(page.locator('#settings-drawer-content > .settings-section')).toHaveCount(2);
+    await expect(page.locator('input[name="app-theme"]')).toHaveCount(8);
+
+    // Theme is injected ahead of the page's own Language section
+    const titles = await page.locator('#settings-drawer-content .settings-section-title')
+      .allTextContents();
+    expect(titles).toEqual(['Theme', 'Language']);
   });
 
 });

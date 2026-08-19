@@ -13,10 +13,14 @@
 // at locally-hosted MEIs — so what remains is that the message must tell the truth.
 // It matters just as much for local hosting: a wrong local path fails identically.
 import { test, expect } from '../support/fixtures';
-import { loadLocalAlignment, waitForWaveformsReady } from '../support/helpers';
+import { loadLocalAlignment, waitForWaveformsReady, FIXTURES_DIR as FIXTURES } from '../support/helpers';
+import fs from 'fs';
+import path from 'path';
 
 const SCORE_KEY = 'Score (synthesised from MEI)';
-const MEI_GLOB = '**/raw.githubusercontent.com/**';
+// The score fixture is served locally (see tests/fixtures/alignment.json);
+// intercept that URL to simulate a failing score source.
+const MEI_GLOB = '**/static/test/*.mei';
 
 /** Overlay status text on the score waveform. */
 async function scoreOverlayText(page: import('@playwright/test').Page): Promise<string> {
@@ -136,5 +140,48 @@ test.describe('29. Score source failures are reported honestly', () => {
 
     // And the score entry, if it rendered at all, must not claim synthesis failed.
     expect(await scoreOverlayText(page)).not.toContain('produced no audio');
+  });
+  // 29.5 Source invariant, no browser: the suite must not fetch anything
+  //      off-machine. Fixtures used to point `meiUri` at raw.githubusercontent.com,
+  //      and ~150 page loads per run tripped GitHub's rate limit (see 29.1). The
+  //      MEI now ships in tests/fixtures/ and is served at /static/test/, so this
+  //      guards the arrangement rather than trusting everyone to remember it.
+  test('29.5 no test fixture fetches a resource from outside localhost', () => {
+    // Fields whose value the app actually FETCHES. `linkedDataUriPrefix` is
+    // deliberately excluded: it mints annotation identifiers and is never
+    // dereferenced, so it legitimately carries a public https:// namespace.
+    const FETCHED_FIELDS = ['meiUri', 'url', 'src', 'audioUri'];
+    const offenders: string[] = [];
+
+    const visit = (node: unknown, file: string, keyPath: string) => {
+      if (Array.isArray(node)) {
+        node.forEach((v, i) => visit(v, file, `${keyPath}[${i}]`));
+      } else if (node && typeof node === 'object') {
+        for (const [k, v] of Object.entries(node)) {
+          if (
+            typeof v === 'string' &&
+            FETCHED_FIELDS.includes(k) &&
+            /^https?:\/\//.test(v) &&
+            !/^https?:\/\/(localhost|127\.0\.0\.1)([:/]|$)/.test(v)
+          ) {
+            offenders.push(`${file}: ${keyPath}.${k} = ${v}`);
+          }
+          visit(v, file, `${keyPath}.${k}`);
+        }
+      }
+    };
+
+    for (const name of fs.readdirSync(FIXTURES).filter((f) => f.endsWith('.json'))) {
+      const raw = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        continue; // alignment-malformed.json is unparseable on purpose
+      }
+      visit(parsed, name, '');
+    }
+
+    expect(offenders, `fixtures must be served locally:\n${offenders.join('\n')}`).toEqual([]);
   });
 });

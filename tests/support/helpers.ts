@@ -12,12 +12,17 @@ export const FIXTURES_DIR = path.resolve(__dirname, '../fixtures');
  * the Flask dev server from tests/fixtures/.
  */
 /**
- * Serve the score MEI from a local fixture instead of letting the browser fetch
- * it live from raw.githubusercontent.com. In normal usage the MEI is fetched
- * once per session, but the e2e suite loads the page ~124× per run (× browsers,
- * × reruns), which trips GitHub's anti-scraping rate limit (HTTP 429) — the 429
- * body is then handed to Verovio as "XML", breaking score synthesis. Stubbing it
- * makes the tests hermetic, faster, and immune to GitHub availability/limits.
+ * Safety net: nothing in the suite should reach raw.githubusercontent.com.
+ *
+ * `alignment.json`'s `header.meiUri` now points at the MEI fixture this server
+ * already serves at /static/test/, so the score loads locally by default. This
+ * route stays as a backstop, so a fixture or spec that reintroduces a GitHub URL
+ * is served the local file rather than hammering GitHub: the suite loads the
+ * page ~150× per run (× browsers, × reruns), which used to trip GitHub's
+ * anti-scraping limit (HTTP 429) — and the 429 body was then handed to Verovio
+ * as "XML", breaking score synthesis.
+ *
+ * Test 29.5 fails if a fixture points off-machine, so this net should stay idle.
  * Idempotent-safe to call before each navigation.
  */
 export async function stubExternalMei(page: Page) {
@@ -31,7 +36,7 @@ export async function stubExternalMei(page: Page) {
 }
 
 export async function loadLocalAlignment(page: Page, filename = 'alignment.json') {
-  // Route the score MEI to a local fixture BEFORE navigating (see stubExternalMei).
+  // Backstop against off-machine MEI fetches, registered BEFORE navigating.
   await stubExternalMei(page);
   // useLocal overrides the audio base URL so that relative filenames in the
   // alignment JSON resolve to /static/test/ (where test fixtures are served).

@@ -99,11 +99,27 @@ async function answerReplacePrompt(page: Page, action: 'replace' | 'keep') {
   await expect(page.locator(CONFIRM)).toHaveCount(0);
 }
 
-/** Assert the prompt does NOT appear (the incoming alignment is the same piece). */
+/** Assert the prompt does NOT appear (the incoming alignment is the same piece).
+ *  The picker only reports "Alignment JSON loaded" once _assessIncomingPiece has
+ *  run without blocking, so that text is the completion signal — if a prompt were
+ *  coming, it would already be up. */
 async function expectNoReplacePrompt(page: Page) {
-  await page.waitForTimeout(1500);
+  await expect(page.locator('#file-picker-json-status')).toContainText(
+    'Alignment JSON loaded',
+    { timeout: 15_000 },
+  );
   await expect(page.locator(CONFIRM)).toHaveCount(0);
 }
+
+/** Resolve once the app has finished a load that started after `since`. */
+async function waitForLoadAfter(page: Page, since: number, timeout = 60_000) {
+  await expect
+    .poll(() => page.evaluate(() => (window as any)._listenTest.loadGeneration), { timeout })
+    .toBeGreaterThan(since);
+}
+
+const loadGeneration = (page: Page) =>
+  page.evaluate(() => (window as any)._listenTest.loadGeneration as number);
 
 /** Choose files in the picker. The replacement prompt (if any) fires on read. */
 async function setPickerFiles(page: Page, files: string[]) {
@@ -229,7 +245,11 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
     const before = await readState(page);
     await offerOver(page, bJson);
     await answerReplacePrompt(page, 'keep');
-    await page.waitForTimeout(2000);
+    // Declining is finished once the picker says so — no settle guess needed.
+    await expect(page.locator('#file-picker-json-status')).toContainText(
+      'Kept the loaded piece',
+      { timeout: 15_000 },
+    );
 
     const after = await readState(page);
     expect(after.grids.sort()).toEqual(before.grids.sort());
@@ -242,11 +262,13 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
     expect(after.headerRef).toBe(before.headerRef);
     expect(after.expectedAudioKeys.sort()).toEqual(before.expectedAudioKeys.sort());
     for (const k of B_KEYS) expect(after.expectedAudioKeys).not.toContain(k);
-    await expect(page.locator('#file-picker-json-status')).toContainText('Kept the loaded piece');
 
     // …and closing the dialog afterwards must not apply it either
+    const genBeforeClose = await loadGeneration(page);
     await page.click('#file-picker-continue');
-    await page.waitForTimeout(1500);
+    await expect(page.locator('#file-picker-overlay')).toBeHidden({ timeout: 15_000 });
+    // Nothing may load as a result of closing: the generation must not move.
+    expect(await loadGeneration(page)).toBe(genBeforeClose);
     const closed = await readState(page);
     expect(closed.grids.sort()).toEqual(before.grids.sort());
     expect(closed.headerRef).toBe(before.headerRef);
@@ -267,12 +289,31 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
     await zoom.fill('2');
     await zoom.dispatchEvent('input');
     await page.click('#playpause');
-    await page.waitForTimeout(1500);
+    // Wait for playback to actually be under way, not a fixed guess.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() =>
+            Math.max(
+              0,
+              ...Object.values((window as any)._listenTest.wavesurfers).map((w: any) =>
+                w.getCurrentTime(),
+              ),
+            ),
+          ),
+        { timeout: 20_000 },
+      )
+      .toBeGreaterThan(0.05);
 
+    const gen = await loadGeneration(page);
     await offerOver(page, bJson);
     await answerReplacePrompt(page, 'replace');
     await clickContinue(page);
-    await page.waitForTimeout(6000);
+    await waitForLoadAfter(page, gen);
+    // The replacement's own waveforms must be up before we judge the console.
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._listenTest.loaded), { timeout: 60_000 })
+      .toEqual(expect.arrayContaining(B_KEYS));
 
     const state = await readState(page);
     console.log('STATE AFTER REPLACE:', JSON.stringify(state));
@@ -284,13 +325,26 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
   // evidence of the same piece (corpora align several pieces over one corpus)
   test('25.4 same recordings, different score, is treated as a different piece', async ({ page }) => {
     const other = makeOtherPieceSameRecordings();
+    // The synthetic URL has no file behind it; serve the real MEI so this test
+    // exercises the piece-identity check, not a 404 on the score.
+    await page.route('**/Some-Other-Piece.mei', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/xml; charset=utf-8',
+        path: path.join(FIXTURES_DIR, 'Schumann-Clara_Romanze-ohne-Opuszahl_a-Moll.mei'),
+      }),
+    );
     const errors = collectErrors(page);
 
     await loadPieceA(page);
+    const gen = await loadGeneration(page);
     await offerOver(page, other, A_KEYS);
     await answerReplacePrompt(page, 'replace');
     await clickContinue(page);
-    await page.waitForTimeout(3000);
+    await waitForLoadAfter(page, gen);
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._listenTest.loaded), { timeout: 60_000 })
+      .toEqual(expect.arrayContaining(A_KEYS));
 
     expect(errors).toEqual([]);
   });
@@ -344,10 +398,14 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
       })
       .toBeGreaterThan(0);
 
+    const gen = await loadGeneration(page);
     await offerOver(page, makeAudioOnly({ warp: 0.87 }), A_KEYS);
     await answerReplacePrompt(page, 'replace');
     await clickContinue(page);
-    await page.waitForTimeout(3000);
+    await waitForLoadAfter(page, gen);
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._listenTest.loaded), { timeout: 60_000 })
+      .toEqual(expect.arrayContaining(A_KEYS));
 
     expect(errors).toEqual([]);
   });

@@ -5107,6 +5107,9 @@ async function _maybeResetForNewPiece(grids) {
   return true;
 }
 
+/** Ticks once per completed setGrids — a load-completion signal for tests. */
+let _loadGeneration = 0;
+
 async function setGrids(grids) {
   console.log("received grids: ", grids);
   // Replacing the loaded piece requires a full teardown first (issue #32)
@@ -5324,6 +5327,9 @@ async function setGrids(grids) {
   // Nothing will be auto-loaded, so no waveform will arrive to take over: a
   // spinner left running forever is worse than the blank pane it replaced.
   if (!filenames.length) hideWaveformsPaneLoading();
+  // One tick per completed load. Exposed on _listenTest so e2e tests can wait
+  // for "this piece finished loading" instead of sleeping for a guessed duration.
+  _loadGeneration++;
 }
 
 // ---------------------------------------------------------------------------
@@ -7657,6 +7663,8 @@ window._listenTest = {
   get expectedAudioKeys() { return [...expectedAudioKeys]; },
   /** Object URLs awaiting revocation — should drain to 0 once renderers die. */
   get retiredBlobUrlCount() { return session.retiredBlobUrls.length; },
+  /** Increments once per completed load; lets tests await a load instead of sleeping. */
+  get loadGeneration() { return _loadGeneration; },
   /** Live picked-file object URLs, so a test can check they get revoked. */
   get fileBlobUrlValues() { return [...session.fileBlobUrls.values()]; },
   /**

@@ -1,7 +1,7 @@
 {
   "header": {
     "ref": "audio-b.mp3",
-    "meiUri": "https://raw.githubusercontent.com/trompamusic-encodings/Schumann-Clara_Romanze-in-a-Moll/b58c300/Schumann-Clara_Romanze-ohne-Opuszahl_a-Moll.mei",
+    "meiUri": "http://localhost:5001/static/test/Schumann-Clara_Romanze-ohne-Opuszahl_a-Moll.mei",
     "linkedDataUriPrefix": "https://listen-here.mdw.ac.at/testPrefix/",
     "createdBy": "Listen Here! v0.16.0",
     "createdAt": "2026-04-08T07:22:58.514Z",

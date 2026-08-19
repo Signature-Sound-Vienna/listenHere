@@ -28,6 +28,14 @@ const regionBorder = (page: Page) =>
     return r ? r.element.style.borderLeft : null;
   }, AUDIO_A);
 
+/** Skip to the start, then wait for the playhead to actually arrive there.
+ *  (The other sleeps in this file are deliberate: "play, then let the playhead
+ *  travel for N ms" is the thing under test, not a wait for a settled state.) */
+async function skipBackToStart(page: Page) {
+  await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
+  await expect.poll(() => playhead(page), { timeout: 10_000 }).toBeLessThan(0.1);
+}
+
 /**
  * Create a fresh annotation and draw one region on AUDIO_A, then close the
  * editor drawer (the annotation stays active). Returns the region's start time
@@ -161,8 +169,7 @@ test.describe('7. Close Listening Mode', () => {
     await placeMarker(page);
 
     // Seek back to start so close listening activates on the first marker
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement).click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
 
     // Enter close listening — activates closest marker (the first one near start)
     const cb = page.locator('#close-listening-cb');
@@ -263,8 +270,7 @@ test.describe('7. Close Listening Mode', () => {
     const regionStart = await newAnnotationWithRegion(page);
     // Park the playhead at the very start so the region start is the only
     // target and lies ahead of the cursor.
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
 
     // No indicator before entering.
     expect(await regionBorder(page)).toBe('');
@@ -282,8 +288,7 @@ test.describe('7. Close Listening Mode', () => {
   test('7.11 ArrowRight steps from a marker to a region start', async ({ loadedPage: page }) => {
     const regionStart = await newAnnotationWithRegion(page);
     // Marker near the start, well before the region.
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
     await placeMarker(page);
 
     // Enter at the start → the marker (closest target at/before the playhead)
@@ -303,8 +308,7 @@ test.describe('7. Close Listening Mode', () => {
   // 7.12 Disabling close listening keeps the playhead where it is
   test('7.12 disabling close listening does not move the playhead', async ({ loadedPage: page }) => {
     await newAnnotationWithRegion(page);
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
 
     // Enter → parks the playhead at the region start (a non-zero position).
     await page.locator('#close-listening-cb').check({ force: true });
@@ -386,8 +390,7 @@ test.describe('7. Close Listening Mode', () => {
 
     // Park at the start; entering activates the earliest stop — ann1's region
     // start — even though ann1 is not the active annotation.
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
     await page.locator('#close-listening-cb').check({ force: true });
     await page.waitForTimeout(300);
     expect(Math.abs((await playhead(page)) - ann1Start)).toBeLessThan(1.0);
@@ -441,8 +444,7 @@ test.describe('7. Close Listening Mode', () => {
 
     // Park at the start, enter close-listening → the AUDIO_A region start is the
     // active jump target (playhead jumps to ~3.0; indicator shown).
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
     await page.locator('#close-listening-cb').check({ force: true });
     await page.waitForTimeout(300);
     expect(await regionBorder(page)).toMatch(/2px solid/);
@@ -476,8 +478,7 @@ test.describe('7. Close Listening Mode', () => {
       { a: AUDIO_A },
     );
 
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
     await page.locator('#close-listening-cb').check({ force: true });
     await page.waitForTimeout(300);
     await seekTo(page, 6.0);

@@ -37,11 +37,29 @@ async function widths(page: import('@playwright/test').Page): Promise<WfWidths[]
   });
 }
 
+/** Resolve once every waveform's geometry has stopped moving. Zoom and resize
+ *  both settle asynchronously (WaveSurfer rerenders via its own ResizeObserver),
+ *  so wait for two identical readings rather than guessing a duration. */
+async function settled(page: import('@playwright/test').Page, timeout = 15_000) {
+  let previous = '';
+  await expect
+    .poll(
+      async () => {
+        const now = JSON.stringify(await widths(page));
+        const stable = now === previous;
+        previous = now;
+        return stable;
+      },
+      { timeout, intervals: [100] },
+    )
+    .toBe(true);
+}
+
 async function setZoom(page: import('@playwright/test').Page, value: string) {
   const slider = page.locator('#zoom-slider');
   await slider.fill(value);
   await slider.dispatchEvent('input');
-  await page.waitForTimeout(1000);
+  await settled(page);
 }
 
 /** Content wider than its container is only legitimate above zoom 1. */
@@ -59,7 +77,13 @@ test.describe('28. Refitting on container resize', () => {
     await setZoom(page, '0');
 
     await page.setViewportSize({ width: 720, height: 720 });
-    await page.waitForTimeout(2500);
+    await settled(page);
+
+    // Polled, not slept: still fails if the refit never lands, but returns as
+    // soon as it does. The final assertion keeps the diagnostic message.
+    await expect
+      .poll(async () => overflowing(await widths(page)).length, { timeout: 15_000 })
+      .toBe(0);
 
     const rows = await widths(page);
     const stale = overflowing(rows);
@@ -81,7 +105,15 @@ test.describe('28. Refitting on container resize', () => {
     await setZoom(page, '0');
 
     await page.setViewportSize({ width: 1600, height: 900 });
-    await page.waitForTimeout(2500);
+    await settled(page);
+
+    await expect
+      .poll(
+        async () =>
+          Math.max(...(await widths(page)).map((r) => Math.abs(r.scrollW - r.clientW))),
+        { timeout: 15_000 },
+      )
+      .toBeLessThanOrEqual(2);
 
     const rows = await widths(page);
     for (const r of rows) {

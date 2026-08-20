@@ -111,6 +111,21 @@ async function answerReloadPrompt(page: Page, action: 'reload' | 'keep') {
 
 /** Make the session dirty by placing a marker, and prove it took. */
 async function makeUnsavedChange(page: Page, file: string) {
+  // Wait for THIS recording's renderer, not just for any renderer. A load builds
+  // them one at a time and in no fixed order — measured, the score and
+  // audio-short.mp3 win the race every time — so loadPieceA's "some wavesurfer
+  // exists" gate says nothing about `file`. With no current recording yet,
+  // swapCurrentAudio deliberately marks `file` active without dereferencing a
+  // renderer (see its no-current branch), and #mark's
+  // `!wavesurfers[currentAudioIx]` guard then returns silently: no marker, a
+  // clean session, and the assertion below burning its full timeout. That was
+  // the 25.10 flake.
+  await expect
+    .poll(
+      () => page.evaluate((fn) => !!(window as any)._listenTest.wavesurfers[fn], file),
+      { timeout: 20_000 },
+    )
+    .toBe(true);
   await page.evaluate((fn) => (window as any)._listenTest.swapCurrentAudio(fn), file);
   await page.evaluate(() => (document.getElementById('mark') as HTMLElement).click());
   await expect(page.locator('#download-json-btn')).toHaveAttribute(

@@ -117,6 +117,37 @@ export function syncOverlayScroll(filename) {
   ow.inner.style.transform = `translateX(${-scrollLeft}px)`;
 }
 
+/**
+ * pxPerSec that makes a waveform fit its container exactly at zoom 1.
+ *
+ * Two durations are in play and they are not the same number. `ws.getDuration()`
+ * reports `media.duration`, read from the MP3 container header, but WaveSurfer's
+ * renderer sizes the wrapper from the DECODED buffer:
+ * `Math.ceil(decodedData.duration * minPxPerSec)`, treating anything wider than
+ * the container as scrollable. Fitting against the header duration therefore
+ * overshoots whenever the decoded audio is even microseconds longer — measured
+ * on the test fixtures, +9µs on audio-a and audio-b and +5µs on audio-short,
+ * enough for the ceil to round up to `containerWidth + 1`. The row then
+ * overflows by one pixel, becomes scrollable with a maxScroll of 1, and holds a
+ * stale `scrollLeft` of 1 that the redrawcomplete clamp cannot heal because 1 IS
+ * the maximum. Files whose decoded duration matches or undershoots the header
+ * (the synthesised score, audio-c) were unaffected — hence "some but not all".
+ *
+ * So fit against the duration the renderer will actually use. The half-pixel
+ * fallback then guards the residual case where that product still ceils high in
+ * floating point. Below the overflow threshold the row is not scrollable, so
+ * fillParent draws it to the container's full width with no gap either side.
+ */
+function fitPxPerSec(containerWidth, ws) {
+  // The renderer's own duration, not the media header's.
+  const duration = ws.decodedData?.duration || ws.getDuration();
+  if (!(containerWidth > 0) || !(duration > 0)) return 0;
+  const exact = containerWidth / duration;
+  return Math.ceil(duration * exact) > containerWidth
+    ? (containerWidth - 0.5) / duration
+    : exact;
+}
+
 /** Configure WaveSurfer autoScroll/autoCenter for a waveform based on scroll mode. */
 export function applyScrollMode(filename) {
   const ws = wavesurfers[filename];
@@ -201,14 +232,14 @@ export function applyZoom(level) {
           // Explicit pxPerSec instead of ws.zoom(0) — the latter can be a
           // no-op in v7 when fillParent is already active, leaving the wrapper
           // stuck at its previously zoomed width so the waveform vanishes.
-          ws.zoom(wfEl.clientWidth / duration);
+          ws.zoom(fitPxPerSec(wfEl.clientWidth, ws));
         } else {
           ws.zoom(sharedPxPerSec);
         }
       } else {
         const containerWidth = wfEl.clientWidth;
         if (level <= 1) {
-          ws.zoom(containerWidth / duration);
+          ws.zoom(fitPxPerSec(containerWidth, ws));
         } else {
           ws.zoom((level * containerWidth) / duration);
         }

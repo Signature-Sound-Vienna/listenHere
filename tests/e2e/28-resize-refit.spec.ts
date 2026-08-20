@@ -124,4 +124,56 @@ test.describe('28. Refitting on container resize', () => {
     }
   });
 
+  // 28.3 Zoom alone — no resize at all — must also land back on an exact fit.
+  // WaveSurfer sizes its wrapper at ceil(duration * minPxPerSec), and applyZoom
+  // fits with containerWidth / duration, whose product can land a hair above
+  // containerWidth in floating point: the ceil then rounds UP to
+  // containerWidth + 1. The row stays scrollable by exactly 1px and can hold a
+  // stale scrollLeft of 1, which the redrawcomplete clamp permits because 1 IS
+  // the maximum there. Duration-dependent, so it left some recordings slightly
+  // overflowing and others clean — measured as hitting audio-a, audio-b, and
+  // audio-short while the score and audio-c were fine.
+  //
+  // Deliberately asserts an EXACT fit instead of reusing overflowing(): that
+  // helper's 2px tolerance is precisely what let this through, since here 1px
+  // is the whole bug.
+  test('28.3 a zoom round-trip leaves no residual 1px overflow or scroll', async ({
+    loadedPage: page,
+  }) => {
+    await setZoom(page, '3');
+    // Park every waveform's scroll away from 0, so returning to 1x has
+    // something to clean up rather than passing trivially from zero.
+    await page.evaluate(() => {
+      const t = (window as any)._listenTest;
+      Object.keys(t.wavesurfers).forEach((fn) => {
+        const sc = t.wavesurfers[fn].getWrapper().parentElement as HTMLElement;
+        sc.scrollLeft = Math.round((sc.scrollWidth - sc.clientWidth) * 0.6);
+      });
+    });
+    await settled(page);
+    // Guard against the test quietly degrading into a no-op: if nothing is
+    // actually scrolled at zoom 3, the scrollLeft assertion below proves nothing.
+    const parked = (await widths(page)).filter((r) => r.scrollLeft > 0);
+    expect(parked.length, 'zoom 3 should leave waveforms scrolled before zooming out').toBeGreaterThan(0);
+
+    await setZoom(page, '0');
+
+    const rows = await widths(page);
+    const overflow = rows.filter((r) => r.scrollW !== r.clientW);
+    expect(
+      overflow,
+      `at zoom 1 every waveform must fit its container exactly: ${overflow
+        .map((r) => `${r.file} ${r.scrollW} vs ${r.clientW}`)
+        .join('; ')}`,
+    ).toEqual([]);
+
+    const scrolled = rows.filter((r) => r.scrollLeft !== 0);
+    expect(
+      scrolled,
+      `at zoom 1 no waveform may retain horizontal scroll: ${scrolled
+        .map((r) => `${r.file} scrollLeft=${r.scrollLeft}`)
+        .join('; ')}`,
+    ).toEqual([]);
+  });
+
 });

@@ -142,6 +142,55 @@ export async function waitForWaveformsReady(page: Page, timeout = 30_000) {
   );
 }
 
+/**
+ * Wait until a waveform's own width has stopped changing.
+ *
+ * Opening or closing the V6 annotation drawer animates `body`'s padding-right
+ * over 200ms (`body.lh-v6-active` in default.css), so the waveform pane narrows
+ * frame by frame — measured, 1047px to 667px in ~215ms — and WaveSurfer
+ * re-renders each waveform on every one of those frames via its own
+ * ResizeObserver. `body.lh-v6-edit-active` lands on frame 0 of that ramp, so
+ * waiting for the class is not waiting for the layout: a bounding box measured
+ * straight afterwards is stale before the mouse events based on it arrive, and
+ * the resulting pixel coordinates vary run to run with machine load.
+ *
+ * Settling is deliberately "no change for longer than the transition lasts"
+ * rather than "a few identical frames": the latter is also satisfied by
+ * sampling before the animation has started, which would let this return
+ * immediately and silently do nothing.
+ */
+export async function waitForWaveformWidthSettled(
+  page: Page,
+  filename: string,
+  timeout = 10_000,
+) {
+  const STABLE_MS = 220; // just over the 200ms padding-right transition
+  // Drop any state left by an earlier call on this page, so a previous settle
+  // cannot satisfy this one instantly.
+  await page.evaluate(() => {
+    delete (window as unknown as Record<string, unknown>).__wfWidthSettle;
+  });
+  await page.waitForFunction(
+    ({ fn, stableMs }) => {
+      const el = document.querySelector(`#waveforms .waveform[data-ix="${fn}"]`);
+      if (!el) return false;
+      const width = el.getBoundingClientRect().width;
+      const store = ((window as any).__wfWidthSettle ||= {});
+      const prev = store[fn];
+      const now = performance.now();
+      if (!prev || Math.abs(prev.width - width) >= 0.5) {
+        store[fn] = { width, since: now };
+        return false;
+      }
+      return now - prev.since >= stableMs;
+    },
+    { fn: filename, stableMs: STABLE_MS },
+    // Interval rather than 'raf': rAF can be throttled, and a plain clock is
+    // all this needs.
+    { polling: 50, timeout },
+  );
+}
+
 // ---------------------------------------------------------------------------
 // HTML5 drag-and-drop helper
 // ---------------------------------------------------------------------------

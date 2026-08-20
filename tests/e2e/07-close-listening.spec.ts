@@ -1,5 +1,5 @@
 import { test, expect, AUDIO_A, AUDIO_B } from '../support/fixtures';
-import { play, pause } from '../support/helpers';
+import { play, pause, waitForWaveformWidthSettled } from '../support/helpers';
 import { type Page } from '@playwright/test';
 
 // ---------------------------------------------------------------------------
@@ -41,29 +41,60 @@ async function skipBackToStart(page: Page) {
  * editor drawer (the annotation stays active). Returns the region's start time
  * on AUDIO_A as recorded in V6 state.
  */
-async function newAnnotationWithRegion(page: Page): Promise<number> {
+async function newAnnotationWithRegion(
+  page: Page,
+  span: { from: number; to: number } = { from: 0.3, to: 0.5 },
+): Promise<number> {
   const wfA = page.locator(`#waveforms .waveform[data-ix="${AUDIO_A}"]`);
   await wfA.click({ position: { x: 10, y: 10 }, force: true });
   await page.waitForTimeout(150);
   await page.locator('.lh-v6-ribbon-new').click();
   await page.waitForSelector('body.lh-v6-edit-active');
-  // Drag across the middle third of the waveform to draw a region.
+  // The class lands on frame 0 of the drawer's 200ms padding-right animation,
+  // which narrows this pane from 1047px to 667px. Measuring the box before that
+  // settles makes the drag land on load-dependent pixels — which is what turned
+  // the region overlap below into an intermittent failure rather than an
+  // obvious one.
+  await waitForWaveformWidthSettled(page, AUDIO_A);
+  // Drag across `span` of the waveform to draw a region. Callers that draw a
+  // SECOND region on this waveform must pass a span clear of the first one:
+  // regions are drag/resize-enabled while their annotation is being edited, so
+  // a pointerdown inside an existing region is claimed by that region and
+  // never starts a new drag-selection — the gesture is swallowed and no region
+  // is created. That overlap was the mechanism behind the 7.16 flake.
   const box = (await wfA.boundingBox())!;
   const y = box.y + box.height / 2;
-  await page.mouse.move(box.x + box.width * 0.3, y);
+  await page.mouse.move(box.x + box.width * span.from, y);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.5, y, { steps: 12 });
+  await page.mouse.move(box.x + box.width * span.to, y, { steps: 12 });
   await page.mouse.up();
-  await page.waitForTimeout(300);
+  // Arrival, not a duration: wait for the drawn region to reach V6 state rather
+  // than sleeping and hoping. Also turns a lost gesture into a legible timeout
+  // instead of a "target is undefined" TypeError one line further down.
+  await expect
+    .poll(
+      () =>
+        page.evaluate((file) => {
+          const v = (window as any).__annotationV6;
+          const ann = v.state.getById(v.state.getActiveId());
+          const rid = ann?.regions?.[0]?.id;
+          const target = (ann?.targets ?? []).find((t: any) => t.file === file);
+          return !!(rid && target?.regionTimes?.[rid]);
+        }, AUDIO_A),
+      { message: 'drag-drawn region never reached V6 state' },
+    )
+    .toBe(true);
   const start = await page.evaluate((file) => {
     const v = (window as any).__annotationV6;
     const ann = v.state.getById(v.state.getActiveId());
     const target = ann.targets.find((t: any) => t.file === file);
     return target.regionTimes[ann.regions[0].id].start;
   }, AUDIO_A);
-  // Close the editor drawer; the annotation remains active.
+  // Close the editor drawer; the annotation remains active. Closing runs the
+  // same 200ms animation in reverse, so settle again before the caller (or the
+  // next call) measures anything.
   await page.locator('#v6-annotation-drawer-btn').click();
-  await page.waitForTimeout(250);
+  await waitForWaveformWidthSettled(page, AUDIO_A);
   return start;
 }
 
@@ -376,8 +407,10 @@ test.describe('7. Close Listening Mode', () => {
   // close-listening at the start activates the FIRST (non-active) annotation's
   // region start (the earliest stop), and ArrowRight steps to the second.
   test('7.16 a non-active annotation region start is a navigable stop', async ({ loadedPage: page }) => {
-    await newAnnotationWithRegion(page); // ann1
-    await newAnnotationWithRegion(page); // ann2 (active)
+    // Disjoint spans: ann2's drag must not start inside ann1's region, or the
+    // region element claims the pointerdown and no second region is drawn.
+    await newAnnotationWithRegion(page, { from: 0.30, to: 0.45 }); // ann1
+    await newAnnotationWithRegion(page, { from: 0.55, to: 0.70 }); // ann2 (active)
     const { ann1Start, ann2Start } = await page.evaluate((file) => {
       const v = (window as any).__annotationV6;
       const anns = v.state.getAll();

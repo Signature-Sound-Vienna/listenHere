@@ -981,6 +981,15 @@ label.loading {
   color: var(--color-text, black);
 }
 
+/* Deferred: in the pane, waiting on the viewport before its waveform is built
+   (roadmap item L). Deliberately quieter than .loading — nothing is happening
+   yet, and reporting it as loading would be a lie for as long as the user
+   never scrolls there. */
+label.queued {
+  color: var(--color-text-muted, gray);
+  font-style: italic;
+}
+
 
 details {
   cursor: pointer;
@@ -1020,6 +1029,41 @@ details {
   border-top: 0px;
   border-bottom-right-radius: 5px;
   border-bottom-left-radius: 5px;
+}
+
+/* Deferred waveform placeholder (roadmap item L).
+
+   The row already reserves --wf-height above, so the pane's scroll extent is
+   correct before anything is built; this only fills that reserved space with
+   something honest. No spinner: nothing is loading until the row comes near the
+   viewport, and a spinner that never resolves is worse than a plain statement. */
+.wf-deferred-note {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25em;
+  pointer-events: none;
+  text-align: center;
+  padding: 0 1em;
+}
+
+.wf-deferred-name {
+  font-size: var(--font-size-small, 0.85rem);
+  color: var(--color-text-muted, #64748b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.wf-deferred-hint {
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--color-text-muted, #64748b);
+  opacity: 0.75;
 }
 
 .wf-resize-overlay {

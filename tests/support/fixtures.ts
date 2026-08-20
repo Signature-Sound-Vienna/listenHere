@@ -16,6 +16,8 @@ export const ALIGNMENT_MALFORMED = 'alignment-malformed.json';
 // Alignment with 6 recordings and NO precalculated peaks — exercises the
 // "auto-load only the first 5 waveforms" default path.
 export const ALIGNMENT_NO_PEAKS = 'alignment-no-peaks.json';
+/** 20 recordings with precalculated peaks — exercises lazy waveform creation. */
+export const ALIGNMENT_MANY = 'alignment-many.json';
 
 // ---------------------------------------------------------------------------
 // Custom fixture types

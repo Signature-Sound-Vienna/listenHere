@@ -15,7 +15,7 @@
 // geometry helpers. Eval-safe because every imported binding is only touched
 // inside a function body, never at module top level.
 
-import { regionsPlugins, wavesurfers } from "../listen.js";
+import { wavesurfers } from "../listen.js";
 import { waveformViews, drawAlignmentGrid } from "./waveform-view.js";
 import {
   currentZoomLevel,
@@ -29,7 +29,7 @@ const REGION_NAV_BUFFER_FRAC = 0.05; // 5% of viewport width
 
 /** Collect all currently-visible region times on a waveform. */
 function _collectAllRegionTimes(filename) {
-  const plugin = regionsPlugins[filename];
+  const plugin = waveformViews[filename]?.regions;
   if (!plugin) return [];
   return plugin
     .getRegions()

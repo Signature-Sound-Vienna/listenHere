@@ -99,6 +99,27 @@ async function answerReplacePrompt(page: Page, action: 'replace' | 'keep') {
   await expect(page.locator(CONFIRM)).toHaveCount(0);
 }
 
+/** Answer the same-piece reload prompt. */
+async function answerReloadPrompt(page: Page, action: 'reload' | 'keep') {
+  await expect(page.locator(CONFIRM)).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.lh-v6-confirm-title')).toHaveText('Reload the loaded piece?');
+  await page
+    .locator(action === 'reload' ? '.lh-v6-confirm-ok' : '.lh-v6-confirm-cancel')
+    .click();
+  await expect(page.locator(CONFIRM)).toHaveCount(0);
+}
+
+/** Make the session dirty by placing a marker, and prove it took. */
+async function makeUnsavedChange(page: Page, file: string) {
+  await page.evaluate((fn) => (window as any)._listenTest.swapCurrentAudio(fn), file);
+  await page.evaluate(() => (document.getElementById('mark') as HTMLElement).click());
+  await expect(page.locator('#download-json-btn')).toHaveAttribute(
+    'title',
+    /unsaved changes/i,
+    { timeout: 10_000 },
+  );
+}
+
 /** Assert the prompt does NOT appear (the incoming alignment is the same piece).
  *  The picker only reports "Alignment JSON loaded" once _assessIncomingPiece has
  *  run without blocking, so that text is the completion signal — if a prompt were
@@ -440,6 +461,102 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
       .not.toContain('audio-c.mp3');
     const state = await readState(page);
     expect(state.grids).toContain('audio-a.mp3');
+    expect(errors).toEqual([]);
+  });
+
+  // 25.8 Re-picking the alignment and recordings that are ALREADY loaded is the
+  // one case where a load has nothing to do. The pane indicator used to be
+  // retired only by the first waveform row a load creates — and this load
+  // creates none, because every recording is already checked — so it sat
+  // spinning at the bottom of a full pane for good.
+  test('25.8 re-picking the loaded alignment leaves no spinner behind', async ({ page }) => {
+    const errors = collectErrors(page);
+    await loadPieceA(page);
+    const rowsBefore = await page.locator('#waveforms .waveform').count();
+    expect(rowsBefore).toBeGreaterThan(0);
+
+    const gen = await loadGeneration(page);
+    await offerOver(page, path.join(FIXTURES_DIR, 'alignment.json'), A_KEYS);
+    await expectNoReplacePrompt(page);
+    await clickContinue(page);
+    await waitForLoadAfter(page, gen);
+
+    // The pane is full of waveforms, so nothing may still claim to be loading it.
+    await expect(page.locator('#waveforms > .wf-pane-loading')).toHaveCount(0, {
+      timeout: 15_000,
+    });
+    // …and the re-pick neither duplicated nor dropped anything.
+    expect(await page.locator('#waveforms .waveform').count()).toBe(rowsBefore);
+    expect(errors).toEqual([]);
+  });
+
+  // 25.9 Re-picking the SAME alignment looks harmless but re-reads markers,
+  // annotations, and times from the file over whatever is in memory. When that
+  // would cost unsaved work, say so first — the replace-piece prompt never
+  // fires here, because nothing is being replaced.
+  test('25.9 re-picking the loaded alignment with unsaved changes prompts first', async ({ page }) => {
+    await loadPieceA(page);
+    await makeUnsavedChange(page, 'audio-a.mp3');
+    const markersBefore = await page.evaluate(
+      () => (window as any)._listenTest.markers.length,
+    );
+    expect(markersBefore).toBeGreaterThan(0);
+
+    await offerOver(page, path.join(FIXTURES_DIR, 'alignment.json'), A_KEYS);
+    await clickContinue(page);
+    // Declining keeps the in-memory work exactly as it was.
+    await answerReloadPrompt(page, 'keep');
+    expect(await page.evaluate(() => (window as any)._listenTest.markers.length)).toBe(
+      markersBefore,
+    );
+    await expect(page.locator('#download-json-btn')).toHaveAttribute(
+      'title',
+      /unsaved changes/i,
+    );
+    // Declining must not leave the pane claiming to load something either.
+    await expect(page.locator('#waveforms > .wf-pane-loading')).toHaveCount(0);
+  });
+
+  // 25.10 …and accepting goes through with it. A same-piece reload adopts the
+  // file wholesale — markers, annotations, and alignment times alike — so it
+  // costs exactly what a different-piece replacement costs, and the two prompts
+  // can say the same thing. The marker assertion is the one that used to differ.
+  test('25.10 accepting the reload prompt re-reads the file over in-memory edits', async ({ page }) => {
+    const errors = collectErrors(page);
+    await loadPieceA(page);
+    await makeUnsavedChange(page, 'audio-a.mp3');
+    expect(
+      await page.evaluate(() => (window as any)._listenTest.markers.length),
+    ).toBeGreaterThan(0);
+
+    // Stand in for an unsaved alignment correction: a correction replaces grid
+    // values exactly like this, and the piece fingerprints are the as-loaded
+    // ones, so an in-session edit still reads as the same piece.
+    const onDisk = await page.evaluate(() => {
+      const g = (window as any)._listenTest.alignmentGrids['audio-a.mp3'];
+      const original = g[0];
+      g[0] = original + 999;
+      return original;
+    });
+
+    const gen = await loadGeneration(page);
+    await offerOver(page, path.join(FIXTURES_DIR, 'alignment.json'), A_KEYS);
+    await clickContinue(page);
+    await answerReloadPrompt(page, 'reload');
+    await waitForLoadAfter(page, gen);
+
+    // The file's times replaced the edited ones…
+    expect(
+      await page.evaluate(() => (window as any)._listenTest.alignmentGrids['audio-a.mp3'][0]),
+    ).toBe(onDisk);
+    // …and alignment.json declares no markers, so the unsaved one is gone.
+    expect(await page.evaluate(() => (window as any)._listenTest.markers.length)).toBe(0);
+    // Nothing is outstanding any more: the session now matches the file.
+    await expect(page.locator('#download-json-btn')).not.toHaveAttribute(
+      'title',
+      /unsaved changes/i,
+    );
+    await expect(page.locator('#waveforms > .wf-pane-loading')).toHaveCount(0);
     expect(errors).toEqual([]);
   });
 

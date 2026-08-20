@@ -23,6 +23,10 @@ import {
 import { drawTimeTicks } from "./engine/time-axis.js";
 import {
   waveformViews,
+  ensureWaveformView,
+  isWaveformRendered,
+  setRegionsPlugin,
+  regionsPluginEntries,
   createWaveformOverlays,
   drawAlignmentGrid,
   updatePositionIndicator,
@@ -86,7 +90,7 @@ import {
 // per-waveform renderer registry through listen.js rather than importing the
 // engine module directly, as it did for the overlay wrappers before increment
 // 19 folded that store into the view.
-export { waveformViews };
+export { waveformViews, isWaveformRendered, regionsPluginEntries };
 
 // ---------------------------------------------------------------------------
 // The one DataSession for this screen.
@@ -179,13 +183,227 @@ function setMeiUri(v) {
 export const wavesurfers = session.view.wavesurfers; // filename -> WaveSurfer renderer
 // Owned by the DataSession (Wave A). Reference-stable: never rebound, so these
 // aliases stay valid for every call site and every importing module.
-export const regionsPlugins = session.view.regionsPlugins; // filename -> RegionsPlugin instance
 export const waveformPeaks = session.waveformPeaks; // filename -> { peaks: number[], duration: number } when pre-computed
 
 // Audio normalization + windowed-player lifecycle extracted to
 // ./engine/normalization.js (Phase 1 refactor). seekAnalysis is imported above
 // for the reload-time .clear(); other norm state is private to that module.
 const _preparing = new Set(); // filenames mid-(async)-prepareWaveform, to avoid double-create
+
+// ---------------------------------------------------------------------------
+// Lazy waveform creation (roadmap item L)
+//
+// A recording with 55 renditions used to create 55 WaveSurfer instances and
+// fetch 55 long audio files at once, on one main thread. Above the threshold
+// below, the pane instead lays out every ROW up front — so scroll extent,
+// grouping and ordering are correct from the start — and builds each renderer
+// only when its row comes near the viewport, or when the user asks for that
+// recording by name.
+//
+// That splits two things `wavesurfers` used to answer together: which
+// recordings are in the pane (now waveformViews' key set — the working set) and
+// which have a live renderer (still wavesurfers). Anything iterating one when
+// it means the other is a bug; the sites that had to change are marked
+// "working set" in comments.
+// ---------------------------------------------------------------------------
+
+/** Recording count above which a piece defers off-screen waveforms. */
+const LAZY_WAVEFORM_THRESHOLD = 12;
+/**
+ * How far outside the pane a row counts as "near". A whole pane-height of
+ * prefetch on each side, so ordinary scrolling meets waveforms that are already
+ * built rather than watching them appear.
+ */
+const LAZY_ROOT_MARGIN = "100% 0px";
+/**
+ * How many deferred waveforms may be mid-build at once. Without this, flicking
+ * the scrollbar past forty rows would fire forty creations together — exactly
+ * the pile-up deferral exists to prevent.
+ */
+const MATERIALIZE_CONCURRENCY = 4;
+/** A build that never signals ready must not wedge the queue behind it. */
+const MATERIALIZE_WATCHDOG_MS = 30_000;
+
+/** Does the loaded piece have enough recordings to be worth deferring? */
+let _lazyWaveforms = false;
+/** Working-set members with a row but no renderer yet. */
+const _deferred = new Set();
+/** Deferred filenames the observer has asked for, awaiting a build slot. */
+const _materializeQueue = [];
+/** Filenames currently being built, i.e. holding a concurrency slot. */
+const _materializing = new Map(); // filename -> watchdog timer id
+let _wfIntersectionObserver = null;
+
+/**
+ * Should this waveform's renderer wait until its row is near the viewport?
+ *
+ * The score is always built eagerly: it is synthesised rather than fetched, its
+ * blob arrives asynchronously through a separate path, and there is exactly one
+ * of it — so it is never part of the pile-up this defers.
+ */
+function _shouldDeferWaveform(filename) {
+  return _lazyWaveforms && filename !== SYNTH_MEI_KEY;
+}
+
+/**
+ * Park a waveform: mark the row, say so in place of a spinner that would never
+ * resolve, and hand it to the observer.
+ */
+function _deferWaveform(filename, wfEl) {
+  _deferred.add(filename);
+  wfEl.classList.add("wf-deferred");
+  hideWaveformOverlay(wfEl);
+  let note = wfEl.querySelector(".wf-deferred-note");
+  if (!note) {
+    note = document.createElement("div");
+    note.className = "wf-deferred-note";
+    const name = document.createElement("span");
+    name.className = "wf-deferred-name";
+    const hint = document.createElement("span");
+    hint.className = "wf-deferred-hint";
+    hint.textContent = "loads when scrolled into view";
+    note.append(name, hint);
+    wfEl.appendChild(note);
+  }
+  note.querySelector(".wf-deferred-name").textContent = filename.substring(
+    filename.lastIndexOf("/") + 1,
+  );
+  _setSidebarFileState(filename, "queued");
+  _observeWaveformRow(wfEl);
+}
+
+/** Undo _deferWaveform, because this waveform is being built now. */
+function _undeferWaveform(filename) {
+  if (!_deferred.delete(filename)) return;
+  const wfEl = waveformViews[filename]?.container;
+  if (wfEl) {
+    wfEl.classList.remove("wf-deferred");
+    wfEl.querySelector(".wf-deferred-note")?.remove();
+    _wfIntersectionObserver?.unobserve(wfEl);
+  }
+  _setSidebarFileState(filename, "loading");
+}
+
+/**
+ * Set the sidebar entry's single state class. "queued" is the deferred state:
+ * in the pane, waiting on the viewport — distinct from "loading", which means
+ * a build is actually under way.
+ */
+function _setSidebarFileState(filename, state) {
+  const label = document.getElementById(filename)?.querySelector("label");
+  if (!label) return;
+  label.classList.remove("queued", "loading", "ready");
+  if (state) label.classList.add(state);
+}
+
+/** Watch one row, creating the shared observer on first use. */
+function _observeWaveformRow(wfEl) {
+  if (!_wfIntersectionObserver) {
+    const root = document.getElementById("waveforms");
+    if (!root || typeof IntersectionObserver === "undefined") {
+      // No observer available: build it rather than stranding the row.
+      _requestMaterialize(wfEl.dataset.ix);
+      return;
+    }
+    _wfIntersectionObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const fn = entry.target.dataset.ix;
+          if (fn) _requestMaterialize(fn);
+        }
+      },
+      { root, rootMargin: LAZY_ROOT_MARGIN, threshold: 0 },
+    );
+  }
+  _wfIntersectionObserver.observe(wfEl);
+}
+
+/** Queue a deferred waveform for building as soon as a slot is free. */
+function _requestMaterialize(filename) {
+  if (!filename || !_deferred.has(filename)) return;
+  if (_materializeQueue.includes(filename) || _materializing.has(filename))
+    return;
+  _materializeQueue.push(filename);
+  _pumpMaterializeQueue();
+}
+
+function _pumpMaterializeQueue() {
+  while (
+    _materializing.size < MATERIALIZE_CONCURRENCY &&
+    _materializeQueue.length
+  ) {
+    const filename = _materializeQueue.shift();
+    // It may have been built by an explicit request, or pruned, while queued.
+    if (!_deferred.has(filename)) continue;
+    _materializeNow(filename);
+  }
+}
+
+/**
+ * Build one waveform now, holding a concurrency slot until it reports ready (or
+ * fails, or the watchdog fires). The slot is held across the audio load, not
+ * just the synchronous setup — otherwise the cap would gate nothing.
+ */
+function _materializeNow(filename, playPosition = 0, isPlaying = false) {
+  if (!_materializing.has(filename)) {
+    _materializing.set(
+      filename,
+      setTimeout(() => {
+        console.warn("waveform build did not settle in time:", filename);
+        _materializeSettled(filename);
+      }, MATERIALIZE_WATCHDOG_MS),
+    );
+  }
+  return Promise.resolve(
+    materializeWaveform(filename, playPosition, isPlaying),
+  ).catch((e) => {
+    console.warn("waveform build failed for", filename, e);
+    _materializeSettled(filename);
+  });
+}
+
+/** Release this waveform's build slot and let the next one start. */
+function _materializeSettled(filename) {
+  const timer = _materializing.get(filename);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  _materializing.delete(filename);
+  _pumpMaterializeQueue();
+}
+
+/** Forget every deferral — used by the two full-teardown paths. */
+function _clearDeferredWaveforms() {
+  for (const timer of _materializing.values()) clearTimeout(timer);
+  _materializing.clear();
+  _materializeQueue.length = 0;
+  _deferred.clear();
+  _wfIntersectionObserver?.disconnect();
+  _wfIntersectionObserver = null;
+}
+
+/**
+ * Resolve once this waveform has finished loading. Used before swapping onto a
+ * recording that had to be built first: swapping needs a real duration, and
+ * until "ready" fires getDuration() is 0.
+ */
+function _whenWaveformReady(filename) {
+  if (loaded.has(filename)) return Promise.resolve();
+  const ws = wavesurfers[filename];
+  if (!ws) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(done, MATERIALIZE_WATCHDOG_MS);
+    ws.once("ready", done);
+    ws.once("error", done);
+  });
+}
 
 /** Return the pre-computed peak data for a filename, or null if unavailable. */
 export function getWaveformPeaks(filename) {
@@ -546,7 +764,10 @@ function _smoothTempo(points, windowSize) {
  *   _tempoScopeDisplayedOnly: true = restrict to currently displayed files
  */
 function _getTempoScopeFiles(forFilename) {
-  let files = Object.keys(wavesurfers).filter(
+  // Working set: the tempo curve is derived from alignment grids and the
+  // timemap, not from any renderer, so a deferred recording still counts. Using
+  // the renderer set here would make the shared Y axis jump as rows appear.
+  let files = Object.keys(waveformViews).filter(
     (fn) =>
       fn !== SYNTH_MEI_KEY && alignmentGrids[fn] && alignmentGrids[fn].length,
   );
@@ -678,7 +899,8 @@ function _median(sorted) {
  * For relative mode the range is symmetric around 0.
  */
 function _recomputeTempoYRange() {
-  const allFiles = Object.keys(wavesurfers).filter(
+  // Working set — see _getTempoScopeFiles.
+  const allFiles = Object.keys(waveformViews).filter(
     (fn) =>
       fn !== SYNTH_MEI_KEY && alignmentGrids[fn] && alignmentGrids[fn].length,
   );
@@ -1033,7 +1255,9 @@ function hideWaveformOverlay(wfEl) {
 
 // --- Alt-mode number overlay helpers ---
 
-/** Returns .waveform elements that are >25% visible in the viewport, in DOM order. */
+/** Returns .waveform elements that are >25% visible in the viewport, in DOM order.
+ *  Renderer set on purpose: these become numbered jump targets, and a deferred
+ *  row has nothing to jump to yet. */
 function _getOnScreenWaveforms() {
   const vpTop = 0;
   const vpBottom = window.innerHeight;
@@ -1520,12 +1744,23 @@ function onClickRenditionCheckbox(e) {
   let label = checkbox.parentElement.querySelector("label");
   let waveform = document.getElementById("waveform-" + e.target.value + "-wav");
   if (!waveform) return; // element may not be in DOM during tab switch
+  // A deferred recording is shown and checked but has no waveform yet, so the
+  // hide/show pair must not relabel it "loading" on the way out or "ready" on
+  // the way back in — neither is true until something actually builds it.
+  const isDeferred = _deferred.has(e.target.value);
   if (!checked) {
     e.stopPropagation(); // hide from other handler
     waveform.style.display = "none";
     checkbox.checked = false;
     label.classList.remove("ready");
-    label.classList.add("loading");
+    label.classList.add(isDeferred ? "queued" : "loading");
+  } else if (isDeferred) {
+    e.stopPropagation(); // hide from other handler
+    waveform.style.display = "unset";
+    checkbox.checked = true;
+    // Back on screen and still deferred: the observer takes it from here, and
+    // builds it as soon as the row is actually near the viewport.
+    _observeWaveformRow(waveform);
   } else if (label.classList.contains("loading")) {
     e.stopPropagation(); // hide from other handler
     waveform.style.display = "unset";
@@ -1582,6 +1817,21 @@ export function swapCurrentAudio(newAudio) {
     // no need to swap
     return;
   }
+  // Swapping onto a recording whose renderer was deferred: build it, wait for a
+  // real duration (everything below divides by getDuration()), then swap. The
+  // caller's contract stays synchronous — the swap simply lands a tick later
+  // instead of being dropped.
+  if (_deferred.has(newAudio)) {
+    _materializeNow(newAudio)
+      .then(() => _whenWaveformReady(newAudio))
+      .then(() => {
+        if (wavesurfers[newAudio]) swapCurrentAudio(newAudio);
+      });
+    return;
+  }
+  // Only the branch below dereferences the incoming renderer; the no-current
+  // branch just marks it active, which is still meaningful without one.
+  if (currentAudioIx && !wavesurfers[newAudio]) return;
   if (currentAudioIx) {
     console.log("Pausing current: ", currentAudioIx);
     console.log(
@@ -1909,7 +2159,9 @@ export function getActiveGroupingSnapshot() {
   if (!loadedAlignmentJSON) return null;
   const tab = _getActiveTab();
   const groups = _getActiveFileGroups();
-  const loadedFiles = Object.keys(wavesurfers);
+  // Working set: this snapshot is persisted with the annotation, so it must
+  // describe what the user has in the pane, not which rows happen to be built.
+  const loadedFiles = Object.keys(waveformViews);
   const out = { name: tab.name || "Default", groups: [] };
   for (const g of groups) {
     const explicit = new Set(g.files || []);
@@ -2749,8 +3001,9 @@ function _switchActiveTab(tabName) {
     members.forEach((f) => groupMap.set(f, g.name));
   });
 
-  // Place each existing waveform into the correct group-list
-  Object.keys(wavesurfers).forEach((fname) => {
+  // Place each existing waveform into the correct group-list. Working set: a
+  // deferred row is in the pane and must be re-parented with the rest.
+  Object.keys(waveformViews).forEach((fname) => {
     const wfEl = waveformsRoot.querySelector(
       `.waveform[data-ix='${CSS.escape(fname)}']`,
     );
@@ -3855,21 +4108,33 @@ function _openGroupModal() {
 function reloadWaveforms() {
   let playPosition = 0;
   let isPlaying = false;
-  const prevLoaded = Object.keys(wavesurfers);
-  if (currentAudioIx) {
+  // Working set: everything in the pane comes back, whether or not it had a
+  // renderer. Rebuilding only the built ones would silently drop every deferred
+  // recording from the pane on something as ordinary as toggling Normalize.
+  const prevLoaded = [
+    ...new Set([...Object.keys(waveformViews), ...Object.keys(wavesurfers)]),
+  ];
+  if (currentAudioIx && wavesurfers[currentAudioIx]) {
     playPosition = wavesurfers[currentAudioIx].getCurrentTime();
     isPlaying = wavesurfers[currentAudioIx].isPlaying();
   }
   // get current play position of active wavesurfer
   // destroy current wavesurfers
   prevLoaded.forEach((ws) => {
-    wavesurfers[ws].destroy();
-    delete regionsPlugins[ws];
+    wavesurfers[ws]?.destroy();
     teardownNormGainNode(ws);
   });
   clearMap(wavesurfers);
   // forget waveform elements (and spectorgrams)
   document.getElementById("waveforms").replaceChildren();
+  // …and the views that pointed at them. Without this the map kept entries for
+  // detached nodes of any recording that does not come back — harmless while
+  // every consumer guarded on isConnected, but it is a teardown path like the
+  // other two and should leave nothing behind.
+  clearWaveformViews();
+  // Deferrals refer to rows that no longer exist; prepareWaveform below decides
+  // afresh which of the returning waveforms to defer.
+  _clearDeferredWaveforms();
   // re-create previously loaded waveforms
   prevLoaded.forEach((ws) => prepareWaveform(ws, playPosition, isPlaying));
 }
@@ -3885,9 +4150,15 @@ function visualiseAlignments() {
 }
 
 async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
+  // A deferred waveform has a row but no renderer. Being asked for it by name —
+  // a sidebar click, arrow-key navigation, the group All button — outranks the
+  // viewport heuristic that deferred it, so build it now rather than queueing.
+  if (_deferred.has(filename)) {
+    await _materializeNow(filename, playPosition, isPlaying);
+    return;
+  }
   // if not yet created, do so (guard against the async gap below re-entering):
   if (!(filename in wavesurfers) && !_preparing.has(filename)) {
-    _preparing.add(filename);
     const waveform = document.createElement("div");
     waveform.id = "waveform-" + filename + "-wav";
     waveform.dataset.ix = filename;
@@ -3948,14 +4219,12 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
     // add waveform element
     parentList.appendChild(waveform);
+    // Register the view as soon as the row exists. From here on this recording
+    // is in the working set even though it has no WaveSurfer yet; the view's
+    // canvases are filled in later, in the "ready" handler.
+    ensureWaveformView(filename, waveform);
     // The pane has content now; the per-waveform overlays take it from here.
     hideWaveformsPaneLoading();
-    // Claim the row straight away. WaveSurfer is not created until after the
-    // await further down, and with dozens of recordings that queue is long — so
-    // without this the row would sit as an empty reserved box, with no spinner,
-    // until its turn came. The later "Loading audio…" call just retexts this.
-    showWaveformOverlay(waveform, "Preparing\u2026");
-
     // Add small drag handle and enable dragging
     const handle = document.createElement("div");
     handle.className = "wf-drag-handle";
@@ -3996,6 +4265,57 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     other
       .sort((a, b) => (a.id > b.id ? 1 : -1))
       .forEach((node) => waveforms.appendChild(node));
+
+    // Row done. Whether its renderer gets built now or when the user scrolls to
+    // it is the lazy-creation decision (roadmap item L).
+    if (_shouldDeferWaveform(filename)) {
+      _deferWaveform(filename, waveform);
+      return;
+    }
+    await materializeWaveform(filename, playPosition, isPlaying);
+  } else {
+    // waveform already loaded...
+    let checkbox = document.getElementById(filename).querySelector("input");
+    if (!checkbox.checked) {
+      // if hidden, unhide by clicking on checkbox
+      checkbox.click();
+    }
+    // now swap to the audio
+    swapCurrentAudio(filename);
+  }
+}
+
+/**
+ * Build one waveform's renderer: its plugins, its WaveSurfer instance, the
+ * audio load, and every handler hanging off it. Phase 2 of prepareWaveform —
+ * the row and the view already exist.
+ *
+ * Split out for roadmap item L: with dozens of recordings this is the expensive
+ * half (a WaveSurfer instance and a full audio fetch each), so above the lazy
+ * threshold it runs only when a row nears the viewport or the user asks for
+ * that recording by name.
+ */
+async function materializeWaveform(filename, playPosition = 0, isPlaying = false) {
+  if (filename in wavesurfers || _preparing.has(filename)) return;
+  const view = waveformViews[filename];
+  const waveform = view?.container;
+  if (!waveform || !waveform.isConnected) {
+    // The row went away (pruned, or the piece was replaced) while this sat in
+    // the queue. Release the slot; there is nothing left to build.
+    _materializeSettled(filename);
+    return;
+  }
+  _preparing.add(filename);
+  _undeferWaveform(filename);
+  // Claim the row straight away. WaveSurfer is not created until after the
+  // await further down, and with dozens of recordings that queue is long — so
+  // without this the row would sit as an empty reserved box, with no spinner,
+  // until its turn came. The later "Loading audio…" call just retexts this.
+  showWaveformOverlay(waveform, "Preparing\u2026");
+  // Bare block: the body below is prepareWaveform's second half, moved here
+  // unchanged. Keeping its indentation keeps the diff to what actually changed;
+  // it can be dedented in any later pass that touches these lines anyway.
+  {
     // create new wavesurfer instance in the new container
     const _regPlugin = RegionsPlugin.create();
     const _hoverPlugin = HoverPlugin.create({
@@ -4012,7 +4332,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
         return label;
       },
     });
-    regionsPlugins[filename] = _regPlugin;
+    setRegionsPlugin(filename, _regPlugin);
 
     // For frame-stream formats (VBR MP3 / ADTS AAC), hand WaveSurfer a windowed
     // Web-Audio media object so seeking is sample-accurate. Returns null for
@@ -4085,6 +4405,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
     });
     // Handle 401 errors: prompt for credentials and retry (scoped to origin)
     wavesurfers[filename].on("error", function (err) {
+      _materializeSettled(filename);
       if (err && err.message && err.message.includes("401")) {
         const url = resolveAudioUrl(filename);
         const origin = getOrigin(url);
@@ -4094,6 +4415,8 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       }
     });
     wavesurfers[filename].on("ready", () => {
+      // Whatever else happens below, this build is done occupying a slot.
+      _materializeSettled(filename);
       // Wire up Web Audio GainNode for volume normalization
       setupNormGainNode(filename);
       // signal file is ready in filename list
@@ -4149,7 +4472,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
             requestAnimationFrame(() => {
               _scrollRedrawRaf = false;
               drawAlignmentGrid(filename);
-              if (currentAudioIx && waveformViews[currentAudioIx]) {
+              if (currentAudioIx && isWaveformRendered(currentAudioIx)) {
                 updatePositionIndicator(currentAudioIx);
               }
               // Cross-waveform scroll sync
@@ -4235,7 +4558,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
           }
           _scrollSyncLock = false;
         }
-        if (currentAudioIx && waveformViews[currentAudioIx]) {
+        if (currentAudioIx && isWaveformRendered(currentAudioIx)) {
           updatePositionIndicator(currentAudioIx);
         }
         // Re-add annotation regions — WaveSurfer's redraw removes and recreates
@@ -4249,6 +4572,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
       let listItem = document.getElementById(filename);
       let status = listItem.querySelector("label").classList;
       status.remove("loading");
+      status.remove("queued");
       status.add("ready");
       listItem.querySelector("input").checked = true;
       // check if we're the currentAudioIx, and if so make ourselves active and spool to provided playPosition
@@ -4276,15 +4600,6 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
 
     // render anno regions
     updateRenderAnnoRegions();
-  } else {
-    // waveform already loaded...
-    let checkbox = document.getElementById(filename).querySelector("input");
-    if (!checkbox.checked) {
-      // if hidden, unhide by clicking on checkbox
-      checkbox.click();
-    }
-    // now swap to the audio
-    swapCurrentAudio(filename);
   }
 }
 
@@ -4880,6 +5195,7 @@ function resetSession(keepAudioKeys = []) {
 
   // 4. Piece-scoped state living outside the DataSession
   _preparing.clear();
+  _clearDeferredWaveforms();
   clearMap(wfBgCache);
   clearWaveformViews();
   clearMap(_tempoRawCache);
@@ -4919,23 +5235,31 @@ function resetSession(keepAudioKeys = []) {
 function _pruneWaveformsWithoutGrids() {
   const valid = new Set(Object.keys(alignmentGrids));
   const dropped = [];
-  Object.keys(wavesurfers).forEach((fn) => {
+  // The working set, not just the renderers: a row can be in the pane with its
+  // WaveSurfer not yet created (deferred, or mid-async-gap), and it needs
+  // dropping just the same — otherwise the row outlives its alignment grid.
+  const inPane = new Set([
+    ...Object.keys(waveformViews),
+    ...Object.keys(wavesurfers),
+  ]);
+  inPane.forEach((fn) => {
     if (valid.has(fn)) return;
     dropped.push(fn);
     teardownNormGainNode(fn);
     try {
-      wavesurfers[fn].destroy();
+      wavesurfers[fn]?.destroy();
     } catch (e) {
       console.warn("prune: destroy failed for", fn, e);
     }
     delete wavesurfers[fn];
-    delete regionsPlugins[fn];
     delete wfBgCache[fn];
     delete waveformPeaks[fn];
     delete _tempoRawCache[fn];
     delete _alignOriginalGrids[fn];
     loaded.delete(fn);
     _preparing.delete(fn);
+    _deferred.delete(fn);
+    _materializeSettled(fn);
     if (currentAudioIx === fn) setCurrentAudioIx("");
     // The overlay wrapper, when present, contains the waveform element
     const ow = waveformViews[fn]?.ow;
@@ -4975,6 +5299,15 @@ let _approvedReplacement = null;
  *
  * @returns {{different: boolean, why: string, incoming: string[]}}
  */
+/**
+ * Is there work a reload would throw away? Markers, grouping, and alignment
+ * corrections all bump the change counter; V6 annotations track their own dirty
+ * flag. Both replacement paths ask this before discarding anything.
+ */
+function _hasUnsavedWork() {
+  return _annoChangesPending || _changeCounter !== _savedAtCounter;
+}
+
 function _assessIncomingPiece(grids) {
   const current = Object.keys(alignmentGrids).filter((k) => k !== SYNTH_MEI_KEY);
   const incoming = _incomingAudioKeys(grids);
@@ -5008,7 +5341,10 @@ function _assessIncomingPiece(grids) {
   }
 
   if (!differentScore && !differentTimes && shared.length) {
-    return { different: false, why: "", incoming }; // managing its recordings
+    // Managing the recordings of the piece already loaded. Flagged distinctly
+    // from the nothingToJudge case above: that one is a first load, where there
+    // is nothing yet to overwrite.
+    return { different: false, samePiece: true, why: "", incoming };
   }
 
   const why = differentScore
@@ -5028,8 +5364,10 @@ function _assessIncomingPiece(grids) {
  * @returns {Promise<boolean>} true to replace
  */
 async function _confirmReplacePiece({ why, incoming }) {
-  const outgoing = Object.keys(wavesurfers).filter((k) => k !== SYNTH_MEI_KEY);
-  const unsaved = _annoChangesPending || _changeCounter !== _savedAtCounter;
+  // Working set: the prompt is telling the user how much they are closing, and
+  // a deferred recording is just as much theirs as a built one.
+  const outgoing = Object.keys(waveformViews).filter((k) => k !== SYNTH_MEI_KEY);
+  const unsaved = _hasUnsavedWork();
 
   const lines = [
     el("li", {
@@ -5087,6 +5425,96 @@ async function _confirmReplacePiece({ why, incoming }) {
  *
  * @returns {Promise<boolean>} whether the load should proceed
  */
+/**
+ * Ask before re-reading the alignment that is already loaded.
+ *
+ * Re-picking the same piece tears nothing down, so it looks harmless — but it
+ * still adopts the file's markers, annotations, and alignment times over
+ * whatever is in memory, so unsaved work is lost just as surely as on a
+ * replacement. The different-piece prompt covers the obvious case; this covers
+ * the one that does not look dangerous.
+ *
+ * Only reached when there IS unsaved work: a clean re-pick changes nothing the
+ * user would want to confirm, and 25.7 pins that it must not prompt.
+ *
+ * @returns {Promise<boolean>} true to go ahead and re-read the file
+ */
+async function _confirmReloadSamePiece({ incoming }) {
+  const current = Object.keys(waveformViews).filter((k) => k !== SYNTH_MEI_KEY);
+  const incomingSet = new Set(incoming);
+  const dropped = current.filter((k) => !incomingSet.has(k));
+  const added = incoming.filter((k) => !current.includes(k));
+  const kept = current.length - dropped.length;
+
+  // Same wording as the replace-piece prompt, and true here for the same
+  // reason: setGrids now adopts the file's markers as well as its annotations
+  // and grids, so a reload discards unsaved work whichever path it takes.
+  const lines = [
+    el("li", {
+      class: "lh-v6-confirm-line removed",
+      text: "− Discards unsaved markers, annotations, and/or alignment corrections",
+    }),
+    el("li", {
+      class: "lh-v6-confirm-line neutral",
+      text:
+        "✓ Keeps the " +
+        kept +
+        " waveform" +
+        (kept === 1 ? "" : "s") +
+        " already loaded",
+    }),
+  ];
+  if (dropped.length) {
+    lines.push(
+      el("li", {
+        class: "lh-v6-confirm-line removed",
+        text:
+          "− Closes " +
+          dropped.length +
+          " recording" +
+          (dropped.length === 1 ? "" : "s") +
+          " this file no longer lists",
+      }),
+    );
+  }
+  if (added.length) {
+    lines.push(
+      el("li", {
+        class: "lh-v6-confirm-line added",
+        text:
+          "+ Loads " +
+          added.length +
+          " recording" +
+          (added.length === 1 ? "" : "s") +
+          " not currently open",
+      }),
+    );
+  }
+
+  // Enter deliberately does NOT confirm, for the same reason as the
+  // replace-piece prompt: it follows a click on the picker's Continue button,
+  // and a stray Enter would discard work.
+  return await confirmDialog({
+    title: "Reload the loaded piece?",
+    confirmLabel: "Reload alignment",
+    cancelLabel: "Keep current",
+    focus: "cancel",
+    enterConfirms: false,
+    body: [
+      el("p", { class: "lh-v6-confirm-target" }, [
+        "This is the piece already loaded, and you have ",
+        el("strong", { class: "lh-v6-confirm-reason", text: "unsaved changes" }),
+        ". Re-reading the file replaces them with what is on disk.",
+      ]),
+      el("ul", { class: "lh-v6-confirm-list" }, lines),
+      el("p", {
+        class: "lh-v6-confirm-detail",
+        text: "Files already saved to disk or to your Solid pod are unaffected.",
+      }),
+    ],
+  });
+}
+
 async function _maybeResetForNewPiece(grids) {
   if (grids && grids === _approvedReplacement) {
     // Approved in the picker before it replaced its own state — reset, no
@@ -5096,7 +5524,14 @@ async function _maybeResetForNewPiece(grids) {
     return true;
   }
   const assessment = _assessIncomingPiece(grids);
-  if (!assessment.different) return true;
+  if (!assessment.different) {
+    // Same piece: nothing is torn down, but the file is still re-read over the
+    // top of whatever is in memory. Ask only when that would cost something.
+    if (assessment.samePiece && _hasUnsavedWork()) {
+      return await _confirmReloadSamePiece(assessment);
+    }
+    return true;
+  }
   if (!(await _confirmReplacePiece(assessment))) return false;
   resetSession(assessment.incoming);
   return true;
@@ -5215,6 +5650,26 @@ async function setGrids(grids) {
     }
   }
 
+  // Adopt the file's markers, the same way the annotations and the grids above
+  // are taken wholesale from it. Without this a same-piece reload behaved
+  // differently from a different-piece one: resetSession clears the markers for
+  // the latter, while the only other load-time refill lives in a waveform's
+  // "ready" handler — which nothing reaches when no waveform is re-created, so
+  // the previous piece's unsaved markers quietly survived a reload.
+  refillArray(
+    markers,
+    Array.isArray(grids?.header?.markers) ? grids.header.markers : [],
+  );
+  setActiveMarkerIx(null);
+  redrawAllMarkers();
+  // The session now holds exactly what the file holds, so nothing is
+  // outstanding and no undo entry still refers to anything live. Mirrors what
+  // resetSession does for the different-piece path.
+  _undoStack.length = 0;
+  _redoStack.length = 0;
+  _savedAtCounter = _changeCounter;
+  _updateDirtyState();
+
   /* ---- Dynamic file grouping ---- */
   _migrateToGroupingTabs();
 
@@ -5222,6 +5677,11 @@ async function setGrids(grids) {
     (n) => n !== SYNTH_MEI_KEY,
   );
   filenames.sort();
+
+  // Lazy waveform creation is a property of the loaded piece, not of one batch:
+  // whether a row is built now or on scroll must not depend on whether it came
+  // from the auto-load, a group's All button, or a sidebar click.
+  _lazyWaveforms = filenames.length > LAZY_WAVEFORM_THRESHOLD;
 
   _renderSidebarFileList(filenames);
   _renderGroupingTabPills();
@@ -5322,6 +5782,15 @@ async function setGrids(grids) {
   // Nothing will be auto-loaded, so no waveform will arrive to take over: a
   // spinner left running forever is worse than the blank pane it replaced.
   if (!filenames.length) hideWaveformsPaneLoading();
+  // Same reasoning for a pane that is ALREADY full. The indicator is normally
+  // retired by the first row a load creates, but re-picking the alignment that
+  // is already loaded creates none — every recording is checked, so the
+  // auto-load has nothing to click — and the spinner sat over a full pane for
+  // good. Row creation is synchronous, so by here every row this load will add
+  // has been added, and a pane with content must not claim to be loading.
+  // Deliberately conditional: an empty pane may still be waiting on the score,
+  // which builds asynchronously and retires the indicator when its row lands.
+  if (document.querySelector("#waveforms .waveform")) hideWaveformsPaneLoading();
   // One tick per completed load. Exposed on _listenTest so e2e tests can wait
   // for "this piece finished loading" instead of sleeping for a guessed duration.
   _loadGeneration++;
@@ -5409,7 +5878,7 @@ function _onThemeChange() {
   // One call repaints every position-indicator canvas; the filename passed
   // selects which one gets the plain playhead line, so keep using the first
   // registered view exactly as the old first-updater lookup did.
-  const _firstViewed = Object.keys(waveformViews)[0];
+  const _firstViewed = Object.keys(waveformViews).find(isWaveformRendered);
   if (_firstViewed) updatePositionIndicator(_firstViewed);
 }
 
@@ -6689,7 +7158,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   // show relative position checkbox — redraw immediately when toggled while paused
   document.getElementById("visrelalign").addEventListener("click", () => {
-    if (currentAudioIx && waveformViews[currentAudioIx]) {
+    if (currentAudioIx && isWaveformRendered(currentAudioIx)) {
       updatePositionIndicator(currentAudioIx);
     }
   });
@@ -6872,9 +7341,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // --- Helper: get ordered list of visible (checked) waveform filenames ---
     function getVisibleWaveforms() {
+      // Working set: stepping onto a deferred recording builds it (see
+      // swapCurrentAudio), so skipping it here would make rows unreachable by
+      // keyboard purely because they had not been scrolled to.
       return Array.from(document.querySelectorAll("#waveforms .waveform"))
         .map((el) => el.dataset.ix)
-        .filter((name) => name in wavesurfers);
+        .filter((name) => name in waveformViews);
     }
 
     let handled = true;
@@ -7665,6 +8137,18 @@ window._listenTest = {
   get loadGeneration() { return _loadGeneration; },
   /** Live picked-file object URLs, so a test can check they get revoked. */
   get fileBlobUrlValues() { return [...session.fileBlobUrls.values()]; },
+  /** Every recording with a row in the pane, renderer or not (the working set). */
+  get waveformWorkingSet() { return Object.keys(waveformViews); },
+  /** The subset of those whose overlay canvases exist, i.e. actually drawn. */
+  get renderedWaveforms() { return Object.keys(waveformViews).filter(isWaveformRendered); },
+  /** Rows in the pane still waiting on the viewport (roadmap item L). */
+  get deferredWaveforms() { return [..._deferred]; },
+  /** Whether the loaded piece is big enough to defer off-screen waveforms. */
+  get lazyWaveformsActive() { return _lazyWaveforms; },
+  /** Deferred waveforms queued or mid-build; 0 means the build queue has settled. */
+  get materializePending() { return _materializeQueue.length + _materializing.size; },
+  /** Activate a recording, building it first if it was deferred. */
+  swapCurrentAudio(filename) { swapCurrentAudio(filename); },
   /**
    * Inject a synthetic region directly onto each named waveform's regions
    * plugin. Bypasses V6 state (which is the intended path in production)
@@ -7673,7 +8157,7 @@ window._listenTest = {
    */
   injectTestRegion(overridesByWaveform, selection = "test-region") {
     Object.keys(overridesByWaveform).forEach((filename) => {
-      const plugin = regionsPlugins[filename];
+      const plugin = waveformViews[filename]?.regions;
       if (!plugin) return;
       const { start, end } = overridesByWaveform[filename];
       plugin.addRegion({
@@ -7688,9 +8172,7 @@ window._listenTest = {
     updateRenderAnnoRegions();
   },
   clearTestRegions() {
-    Object.keys(regionsPlugins).forEach((filename) => {
-      const plugin = regionsPlugins[filename];
-      if (!plugin) return;
+    regionsPluginEntries().forEach(([, plugin]) => {
       plugin
         .getRegions()
         .filter((r) => r.id.startsWith("test_"))

@@ -166,10 +166,14 @@ export class DataSession {
     // Today session ≡ view: Listen Here has exactly one viewport.
     // -----------------------------------------------------------------------
     this.view = {
-      /** filename -> WaveSurfer instance (the renderer). */
+      /**
+       * filename -> WaveSurfer instance (the renderer).
+       *
+       * The last per-waveform store left here: the rest were folded into
+       * waveform-view.js's `waveformViews`, which now holds each waveform's
+       * RegionsPlugin, overlay wrapper and canvases as one unit.
+       */
       wavesurfers: {},
-      /** filename -> RegionsPlugin instance (one per renderer). */
-      regionsPlugins: {},
     };
   }
 

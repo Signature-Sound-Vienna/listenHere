@@ -30,7 +30,7 @@ import * as uiState from "./ui-state.js";
 import { fmtRegionRange, fmtRegionDuration } from "./ui-editor.js";
 import { confirmRemoveIfTextful } from "./ui-common.js";
 import {
-  regionsPlugins,
+  regionsPluginEntries,
   waveformViews,
   wavesurfers,
   setDrawModeActive,
@@ -123,9 +123,7 @@ function syncRegions() {
     const annotations = state.getAll();
     const activeId = state.getActiveId();
     const specsByFile = _computeSpecsByFile(annotations, activeId);
-    for (const file of Object.keys(regionsPlugins)) {
-      const plugin = regionsPlugins[file];
-      if (!plugin) continue;
+    for (const [file, plugin] of regionsPluginEntries()) {
       _ensureHooked(plugin, file);
       _reconcileForFile(plugin, file, specsByFile[file] || []);
     }
@@ -160,9 +158,7 @@ function _applyActiveRegionStyling() {
   // changes or close-listening exits (listen.js calls setActiveRegionStart).
   const ann = ref ? state.getById(ref.annId) : null;
   const color = ann ? ann.color : null;
-  for (const file of Object.keys(regionsPlugins)) {
-    const plugin = regionsPlugins[file];
-    if (!plugin) continue;
+  for (const [, plugin] of regionsPluginEntries()) {
     for (const r of plugin.getRegions()) {
       if (!r.id || !r.id.startsWith(V6_REGION_PREFIX) || !r.element) continue;
       const meta = r._v6Meta;
@@ -514,9 +510,7 @@ function _setUpDragMode(ann) {
   // interpreted as a drag and create an accidental thin region. Intentional
   // drags clear this easily; jittered clicks fall back to the click handler.
   const DRAG_THRESHOLD_PX = 10;
-  for (const file of Object.keys(regionsPlugins)) {
-    const plugin = regionsPlugins[file];
-    if (!plugin) continue;
+  for (const [file, plugin] of regionsPluginEntries()) {
     const cleanup = plugin.enableDragSelection(
       { color: dragColor },
       DRAG_THRESHOLD_PX,
@@ -610,9 +604,7 @@ function _appendDurationLabel(parent, midX, text, kind) {
 
 function _showRegionDurations() {
   _clearRegionDurations();
-  for (const file of Object.keys(regionsPlugins)) {
-    const plugin = regionsPlugins[file];
-    if (!plugin) continue;
+  for (const [file, plugin] of regionsPluginEntries()) {
     const v6Regions = plugin
       .getRegions()
       .filter((r) => r.id && r.id.startsWith(V6_REGION_PREFIX))
@@ -691,7 +683,7 @@ function syncSelectionOverlays() {
     document.body.classList.toggle("lh-v6-edit-active", editing);
   }
 
-  for (const file of Object.keys(regionsPlugins)) {
+  for (const file of Object.keys(waveformViews)) {
     const wfEl = document.querySelector(
       ".waveform[data-ix='" +
         (window.CSS && CSS.escape ? CSS.escape(file) : file) +

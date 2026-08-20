@@ -23,7 +23,7 @@ const regionBorder = (page: Page) =>
   page.evaluate((file) => {
     const v = (window as any).__annotationV6;
     const ann = v.state.getById(v.state.getActiveId());
-    const plugin = v.regionsPlugins[file];
+    const plugin = v.waveformViews[file]?.regions;
     const r = plugin?.getRegions().find((x: any) => x._v6Meta && x._v6Meta.annId === ann.id);
     return r ? r.element.style.borderLeft : null;
   }, AUDIO_A);

@@ -31,7 +31,7 @@ import { openLoadModal, consumeLoadIntent } from "./ui-ribbon.js";
 import { solid } from "../solid.js";
 import {
   setAnnoChangesPending,
-  regionsPlugins,
+  waveformViews,
   getAudioLinkedDataUri,
   loadedAlignmentJSON,
 } from "../listen.js";
@@ -150,14 +150,14 @@ export function initAnnotationV6() {
   // Push V6 dirty state into the central Save-data indicator on every change.
   state.subscribe(() => setAnnoChangesPending(state.isAnyDirty()));
 
-  // Expose state + adapter + uiState + the live regionsPlugins map for
-  // devtools inspection.
+  // Expose state + adapter + uiState + the live waveformViews map (each view
+  // carries its RegionsPlugin as `.regions`) for devtools inspection.
   window.__annotationV6 = {
     active: true,
     state,
     adapter,
     uiState,
-    regionsPlugins,
+    waveformViews,
     commitAnnotationsToAlignment,
     loadAnnotationsFromAlignment,
     postAnnotationToSolid,

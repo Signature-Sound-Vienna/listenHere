@@ -35,6 +35,22 @@ export async function stubExternalMei(page: Page) {
   );
 }
 
+/**
+ * Serve every `lazy-NN.mp3` the 20-recording fixture names from one small audio
+ * file. The lazy-waveform specs need many ROWS, not many distinct recordings,
+ * and 20 copies of a 105 KB fixture would be 2 MB of binaries in the repo for
+ * no extra coverage.
+ */
+export async function stubManyRecordingAudio(page: Page) {
+  await page.route('**/static/test/lazy-*.mp3', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'audio/mpeg',
+      path: path.join(FIXTURES_DIR, 'audio-short.mp3'),
+    }),
+  );
+}
+
 export async function loadLocalAlignment(page: Page, filename = 'alignment.json') {
   // Backstop against off-machine MEI fetches, registered BEFORE navigating.
   await stubExternalMei(page);
@@ -115,7 +131,11 @@ export async function waitForWaveformsReady(page: Page, timeout = 30_000) {
       if (checked.length === 0) return true;
       return [...checked].every((cb) => {
         const label = cb.parentElement?.querySelector('label');
-        return label?.classList.contains('ready');
+        // "queued" is settled, not in-flight: above the lazy threshold a
+        // recording sits in the pane with its waveform deliberately not built
+        // until the user scrolls to it, so waiting for it to turn ready would
+        // just burn the timeout.
+        return label?.classList.contains('ready') || label?.classList.contains('queued');
       });
     },
     { timeout },

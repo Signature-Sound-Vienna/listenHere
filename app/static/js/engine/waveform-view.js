@@ -12,9 +12,18 @@
 // holds each waveform's DOM refs, and the drawing functions take a filename.
 //
 // The positionUpdaters registry is gone (increment 19): every entry was just
-// `() => updatePositionIndicator(filename)`, so callers now invoke that directly
-// and test `waveformViews[filename]` for the readiness the map's key set used to
-// signal.
+// `() => updatePositionIndicator(filename)`, so callers now invoke that directly.
+//
+// A view is built in TWO phases (increment 19 V4 + roadmap item L):
+//   1. ensureWaveformView(filename, container) — the moment the waveform's row
+//      exists in the pane. The view is the WORKING-SET entry: this recording is
+//      in the pane, whether or not it has a renderer yet.
+//   2. createWaveformOverlays(...) — in the "ready" handler, once WaveSurfer has
+//      painted and the overlay wrapper exists. This fills in the canvases and
+//      makes the view RENDERED.
+// So `waveformViews[f]` no longer means "has a renderer"; isWaveformRendered(f)
+// does. Keeping the two apart is what lets a recording exist in the pane with
+// its audio and WaveSurfer instance not yet created at all.
 //
 // The tempo curve is drawn here but derived in listen.js, behind the single
 // getTempoDrawModel() accessor: the derivation (cache, smoothing, scope, corpus
@@ -36,24 +45,83 @@ import { drawTimeTicks } from "./time-axis.js";
 import { clearMap } from "./data-session.js";
 
 // ---------------------------------------------------------------------------
-// One view per loaded waveform: filename → { filename, container, ow,
-// gridCanvas, positionIndicatorCanvas, tempoCanvas }.
+// One view per waveform in the pane: filename → { filename, container, regions,
+// ow, gridCanvas, positionIndicatorCanvas, tempoCanvas }. Everything but
+// `filename` and `container` starts null and is filled in as the waveform is
+// built up.
 //
 // These are renderer internals, not session data, so they live here rather than
 // in DataSession. This map IS the per-waveform WaveformView registry of design
-// doc §3; increment 19 is folding the other per-filename stores into it, so a
+// doc §3; increment 19 folded the other per-filename stores into it, so a
 // waveform's renderer state is created and torn down as one unit instead of via
 // a manual per-store checklist.
 //
 // Reference-stable and reset in place (clearMap), so importers may hold it.
-// Its key set doubles as "which waveforms have a renderer", which several call
-// sites rely on as a readiness check — every entry is created and deleted
-// alongside the WaveSurfer instance itself.
+//
+// Its key set is the WORKING SET — the recordings the user has in the pane. That
+// is deliberately NOT the same question as "does this have a live WaveSurfer",
+// which `wavesurfers` answers; the two only coincide when nothing is deferred.
+// Use isWaveformRendered() for readiness, never the key set.
 // ---------------------------------------------------------------------------
 export const waveformViews = {};
 
 /**
- * Create this waveform's overlay canvases and register its view.
+ * Register this waveform's view, or return the existing one.
+ *
+ * Called as soon as the waveform's row is in the pane, long before there is a
+ * WaveSurfer instance to render into it — that is the point: the view is where
+ * a not-yet-rendered waveform is recorded.
+ */
+export function ensureWaveformView(filename, container) {
+  const existing = waveformViews[filename];
+  if (existing) {
+    // A reload rebuilds the row; keep the view but point it at the live node.
+    if (container) existing.container = container;
+    return existing;
+  }
+  const view = {
+    filename,
+    container,
+    regions: null, // RegionsPlugin, set when WaveSurfer is created
+    ow: null, // overlay wrapper, set in the ready handler
+    gridCanvas: null,
+    positionIndicatorCanvas: null,
+    tempoCanvas: null,
+  };
+  waveformViews[filename] = view;
+  return view;
+}
+
+/**
+ * True once this waveform's overlay canvases exist, i.e. there is something to
+ * draw into. The readiness check for every painting path — a view on its own
+ * only means the row is in the pane.
+ */
+export function isWaveformRendered(filename) {
+  return !!waveformViews[filename]?.gridCanvas;
+}
+
+/** Attach the RegionsPlugin created alongside this waveform's WaveSurfer. */
+export function setRegionsPlugin(filename, plugin) {
+  ensureWaveformView(filename).regions = plugin;
+}
+
+/**
+ * Every [filename, RegionsPlugin] pair that actually has a plugin. Replaces
+ * `Object.keys(regionsPlugins)` at the call sites that used to iterate the
+ * standalone map — a view without a renderer simply isn't yielded.
+ */
+export function regionsPluginEntries() {
+  const out = [];
+  for (const view of Object.values(waveformViews)) {
+    if (view.regions) out.push([view.filename, view.regions]);
+  }
+  return out;
+}
+
+/**
+ * Fill in this waveform's overlay canvases — phase 2 of the view, run from the
+ * "ready" handler once WaveSurfer has painted. After this the view is RENDERED.
  *
  * Canvas order matters: they stack on the (viewport-fixed, untransformed)
  * overlay wrapper as grid → tempo → position indicator, beneath the inner div
@@ -82,15 +150,11 @@ export function createWaveformOverlays(filename, container, waveHeight, ow) {
   ow.wrapper.insertBefore(tempoCanvas, positionIndicatorCanvas);
   ow.wrapper.insertBefore(gridCanvas, tempoCanvas);
 
-  const view = {
-    filename,
-    container,
-    ow,
-    gridCanvas,
-    positionIndicatorCanvas,
-    tempoCanvas,
-  };
-  waveformViews[filename] = view;
+  const view = ensureWaveformView(filename, container);
+  view.ow = ow;
+  view.gridCanvas = gridCanvas;
+  view.positionIndicatorCanvas = positionIndicatorCanvas;
+  view.tempoCanvas = tempoCanvas;
   return view;
 }
 
@@ -112,9 +176,15 @@ export function clearWaveformViews() {
  * vertically across the stack and show each recording's temporal offset.
  */
 export function updatePositionIndicator(filename) {
-  // work out current alignment grid index via binary search
+  // Both of these can legitimately be absent: a waveform can be in the pane
+  // with no renderer yet (item L), and a stale row can outlive its alignment
+  // grid (#32). Bail rather than throw — this runs on every audioprocess tick,
+  // so a throw here takes the playback loop with it.
   const grid = alignmentGrids[filename];
-  const currentTime = wavesurfers[filename].getCurrentTime();
+  const ws = wavesurfers[filename];
+  if (!grid || !grid.length || !ws) return;
+  // work out current alignment grid index via binary search
+  const currentTime = ws.getCurrentTime();
   let lo = 0,
     hi = grid.length - 1;
   while (lo < hi) {
@@ -133,7 +203,7 @@ export function updatePositionIndicator(filename) {
     const file =
       c.closest(".wf-overlays")?.parentElement?.dataset["ix"] ||
       c.closest(".waveform")?.dataset["ix"];
-    if (!file || !wavesurfers[file]) return;
+    if (!file || !wavesurfers[file] || !alignmentGrids[file]) return;
     const ctx = c.getContext("2d");
     const duration = wavesurfers[file].getDuration();
     const fullW = getZoomedWidth(file);
@@ -185,9 +255,13 @@ export function updatePositionIndicator(filename) {
  */
 export function drawAlignmentGrid(filename) {
   const view = waveformViews[filename];
-  if (!view) return;
+  // No canvases means the view exists but has not been rendered yet (its
+  // waveform is deferred, or still between create and "ready"). Nothing to
+  // paint into, and there will be a draw on ready.
+  if (!view || !view.gridCanvas) return;
   const { container, gridCanvas, positionIndicatorCanvas, ow } = view;
   if (!container || !container.isConnected) return;
+  if (!wavesurfers[filename]) return;
   const viewW = container.clientWidth;
   const h = wavesurfers[filename].options.height || 128;
   gridCanvas.width = viewW;
@@ -208,7 +282,7 @@ export function drawAlignmentGrid(filename) {
   // Draw alignment grid lines first (so time ticks render on top)
   const visalignEl = document.getElementById("visalign");
   if (visalignEl && visalignEl.checked) {
-    const grid = alignmentGrids[filename];
+    const grid = alignmentGrids[filename] || [];
     const gridLen = grid.length;
     if (gridLen > 0) {
       ctx.lineWidth = 1;

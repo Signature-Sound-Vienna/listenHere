@@ -20,9 +20,12 @@
 //    bindings so listen.js keeps reading the current value; the few writes that
 //    still live in listen.js's DOMContentLoaded wiring go through the setters
 //    below (ESM importers cannot assign to a live binding directly).
-//  - `_scrollSyncLock` deliberately stays in listen.js: it coordinates the scroll
-//    event handlers registered in prepareWaveform/swapCurrentAudio and is never
-//    touched here.
+//  - `scrollSyncLock` deliberately stays in listen.js and is never touched here,
+//    even though syncAllWaveformScrolls below is the very call it guards against
+//    re-entering. The lock is held by the CALLER: its only reader is the
+//    per-waveform scroll handler in waveform-events.js, which checks it before
+//    calling in, and its writers are that handler plus listen.js's
+//    swapCurrentAudio and setCurrentAudioInactive. Nothing here needs to know.
 
 import {
   wavesurfers,

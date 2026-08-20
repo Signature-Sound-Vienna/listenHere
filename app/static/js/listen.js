@@ -23,7 +23,6 @@ import {
 import { drawTimeTicks } from "./engine/time-axis.js";
 import {
   waveformViews,
-  ensureWaveformView,
   isWaveformRendered,
   setRegionsPlugin,
   regionsPluginEntries,
@@ -34,6 +33,7 @@ import {
   clearWaveformViews,
 } from "./engine/waveform-view.js";
 import { wireWaveformEvents } from "./engine/waveform-events.js";
+import { createWaveformRow } from "./engine/waveform-layout.js";
 import {
   initAlignPanel,
   configure as configureAlign,
@@ -445,7 +445,7 @@ let useFilesMode = false;
 let _fromAlignmentHandoff = false;
 
 // Synthesised MEI waveform: key used in wavesurfers / alignmentGrids for the synth track
-const SYNTH_MEI_KEY = "Score (synthesised from MEI)";
+export const SYNTH_MEI_KEY = "Score (synthesised from MEI)";
 // Maps SYNTH_MEI_KEY -> blob URL once synthesis is done, or the sentinel '__pending__'
 const _synthBlobUrls = session.synthBlobUrls; // DataSession-owned (Wave A)
 
@@ -774,7 +774,7 @@ function _getTempoScopeFiles(forFilename) {
 
   if (_tempoScopeWithinGroup) {
     // Restrict to files in the same group as forFilename
-    const groups = _getActiveFileGroups();
+    const groups = getActiveFileGroups();
     const grouped = new Set();
     let myGroupFiles = null;
     for (const g of groups) {
@@ -1215,7 +1215,7 @@ function setWaveformsPaneLoadingStatus(statusText) {
 }
 
 /** Remove the pane indicator. Safe to call when it was never shown. */
-function hideWaveformsPaneLoading() {
+export function hideWaveformsPaneLoading() {
   document.querySelector("#waveforms > .wf-pane-loading")?.remove();
 }
 
@@ -1649,6 +1649,11 @@ function _applyCorrectionOverlayPointerEvents() {
 /** Called by annotation.js when entering/exiting draw-region mode.
  *  Suppresses correction overlay pointer-events so drag-selection
  *  events reach the WaveSurfer wrapper. */
+/** Read-only accessor for engine modules; only annotation code sets the flag. */
+export function isDrawModeActive() {
+  return _drawModeActive;
+}
+
 export function setDrawModeActive(active) {
   _drawModeActive = active;
   _applyCorrectionOverlayPointerEvents();
@@ -2144,7 +2149,7 @@ function _getActiveTab() {
   );
 }
 
-function _getActiveFileGroups() {
+export function getActiveFileGroups() {
   return _getActiveTab().fileGroups || [];
 }
 
@@ -2158,7 +2163,7 @@ function _getActiveFileGroups() {
 export function getActiveGroupingSnapshot() {
   if (!loadedAlignmentJSON) return null;
   const tab = _getActiveTab();
-  const groups = _getActiveFileGroups();
+  const groups = getActiveFileGroups();
   // Working set: this snapshot is persisted with the annotation, so it must
   // describe what the user has in the pane, not which rows happen to be built.
   const loadedFiles = Object.keys(waveformViews);
@@ -2220,7 +2225,7 @@ function _renderSidebarFileList(filenames) {
     .forEach((el) => el.remove());
 
   // Use active tab's groups (migrated on load)
-  const groups = loadedAlignmentJSON ? _getActiveFileGroups() : [];
+  const groups = loadedAlignmentJSON ? getActiveFileGroups() : [];
 
   // Determine which files belong to groups
   const grouped = new Set();
@@ -2538,7 +2543,7 @@ function _syncGroupsFromNav() {
   if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
 
   // Build lookup of existing group properties (pattern, color) by name
-  const oldGroups = _getActiveFileGroups();
+  const oldGroups = getActiveFileGroups();
   const oldByName = {};
   oldGroups.forEach((g) => {
     oldByName[g.name] = g;
@@ -2740,7 +2745,7 @@ function _applyNavOrderToContentPanel(animate = true) {
  * (which would orphan already-mounted waveforms).
  * Pass `forceRebuild = true` (e.g. from reloadWaveforms) to tear down first.
  */
-function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
+export function ensureWaveformGroupContainers(filenames, forceRebuild = false) {
   const waveformsRoot = document.getElementById("waveforms");
 
   if (forceRebuild) {
@@ -2759,7 +2764,7 @@ function _ensureWaveformGroupContainers(filenames, forceRebuild = false) {
   // If containers already exist, nothing to do
   if (waveformsRoot.querySelector(".file-group")) return;
 
-  const groups = loadedAlignmentJSON ? _getActiveFileGroups() : [];
+  const groups = loadedAlignmentJSON ? getActiveFileGroups() : [];
 
   // Determine membership similar to sidebar: support explicit files + pattern
   const grouped = new Set();
@@ -2978,14 +2983,14 @@ function _switchActiveTab(tabName) {
   _renderSidebarFileList(filenames);
 
   // Rebuild content pane group containers
-  _ensureWaveformGroupContainers(
+  ensureWaveformGroupContainers(
     filenames.concat(SYNTH_MEI_KEY in alignmentGrids ? [SYNTH_MEI_KEY] : []),
     true /* forceRebuild */,
   );
 
   // Move existing waveform elements into their new group containers
   const waveformsRoot = document.getElementById("waveforms");
-  const groups = _getActiveFileGroups();
+  const groups = getActiveFileGroups();
   const groupMap = new Map(); // filename -> group name
   groups.forEach((g) => {
     const members = new Set(g.files || []);
@@ -3167,7 +3172,7 @@ function _persistGroupOrder() {
   if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
 
   // Preserve existing group properties (pattern, color) by name
-  const oldGroups = _getActiveFileGroups();
+  const oldGroups = getActiveFileGroups();
   const oldByName = {};
   oldGroups.forEach((g) => {
     oldByName[g.name] = g;
@@ -4159,112 +4164,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
   }
   // if not yet created, do so (guard against the async gap below re-entering):
   if (!(filename in wavesurfers) && !_preparing.has(filename)) {
-    const waveform = document.createElement("div");
-    waveform.id = "waveform-" + filename + "-wav";
-    waveform.dataset.ix = filename;
-    waveform.classList.add("waveform");
-
-    // Ensure group containers exist and append into the appropriate group-list
-    const allFilenames = Object.keys(alignmentGrids || {})
-      .filter((n) => n !== SYNTH_MEI_KEY)
-      .sort();
-    _ensureWaveformGroupContainers(allFilenames.concat(SYNTH_MEI_KEY));
-    const waveformsRoot = document.getElementById("waveforms");
-    // determine which group this filename belongs to (match by header.fileGroups or local groups)
-    // Score waveform goes into the Score group container
-    let parentList = null;
-    let placed = false;
-    if (filename === SYNTH_MEI_KEY) {
-      parentList = waveformsRoot.querySelector(".file-group-score .group-list");
-      if (parentList) placed = true;
-    }
-    if (!parentList) {
-      parentList = waveformsRoot.querySelector(
-        ".file-group-ungrouped .group-list",
-      );
-    }
-    const groups = loadedAlignmentJSON ? _getActiveFileGroups() : [];
-    for (const g of groups) {
-      const members = new Set(g.files || []);
-      if (members.has(filename)) {
-        const fg = waveformsRoot.querySelector(
-          `.file-group[data-group='${CSS.escape(g.name)}']`,
-        );
-        if (fg) {
-          parentList = fg.querySelector(".group-list");
-          placed = true;
-          break;
-        }
-      } else if (g.pattern) {
-        try {
-          const re = new RegExp(g.pattern);
-          const short = filename.substring(filename.lastIndexOf("/") + 1);
-          if (re.test(short) || re.test(filename)) {
-            const fg = waveformsRoot.querySelector(
-              `.file-group[data-group='${CSS.escape(g.name)}']`,
-            );
-            if (fg) {
-              parentList = fg.querySelector(".group-list");
-              placed = true;
-              break;
-            }
-          }
-        } catch (_) {}
-      }
-    }
-    if (!placed) {
-      // Leave in ungrouped container (or append to root if none)
-      parentList = parentList || waveformsRoot;
-    }
-
-    // add waveform element
-    parentList.appendChild(waveform);
-    // Register the view as soon as the row exists. From here on this recording
-    // is in the working set even though it has no WaveSurfer yet; the view's
-    // canvases are filled in later, in the "ready" handler.
-    ensureWaveformView(filename, waveform);
-    // The pane has content now; the per-waveform overlays take it from here.
-    hideWaveformsPaneLoading();
-    // Add small drag handle and enable dragging
-    const handle = document.createElement("div");
-    handle.className = "wf-drag-handle";
-    waveform.appendChild(handle);
-    waveform.draggable = true;
-    waveform.addEventListener("dragstart", (ev) => {
-      // In draw mode the gesture belongs to WaveSurfer's region creation, not
-      // a native reorder drag. The CSS `-webkit-user-drag: none` guard is
-      // WebKit-only, so cancel the native drag here too — otherwise dragstart
-      // fires, adds `dragging`, and (since the drag is consumed by region
-      // drawing) no dragend arrives to remove it, leaving the waveform stuck
-      // at opacity 0.6 once edit mode's override is gone.
-      if (_drawModeActive) {
-        ev.preventDefault();
-        return;
-      }
-      ev.dataTransfer.setData("text/plain", filename);
-      ev.currentTarget.classList.add("dragging");
-    });
-    waveform.addEventListener("dragend", (ev) => {
-      ev.currentTarget.classList.remove("dragging");
-    });
-    // now resort waveforms to maintain order:
-    // 1. Score (synthesised from MEI) first
-    // 2. VPO recordings sorted alphabetically
-    // 3. Other recordings sorted alphabetically
-    const allWfChildren = [...waveforms.children];
-    const isScore = (n) => n.dataset.ix === SYNTH_MEI_KEY;
-    const isVPO = (n) =>
-      !isScore(n) && n.id.substr(n.id.lastIndexOf("/") + 1).startsWith("VPO-");
-    const score = allWfChildren.filter(isScore);
-    const vpo = allWfChildren.filter(isVPO);
-    const other = allWfChildren.filter((n) => !isScore(n) && !isVPO(n));
-    score.forEach((node) => waveforms.appendChild(node));
-    vpo
-      .sort((a, b) => (a.id > b.id ? 1 : -1))
-      .forEach((node) => waveforms.appendChild(node));
-    other
-      .sort((a, b) => (a.id > b.id ? 1 : -1))
-      .forEach((node) => waveforms.appendChild(node));
+    const waveform = createWaveformRow(filename);
 
     // Row done. Whether its renderer gets built now or when the user scrolls to
     // it is the lazy-creation decision (roadmap item L).
@@ -4294,6 +4194,10 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
  * half (a WaveSurfer instance and a full audio fetch each), so above the lazy
  * threshold it runs only when a row nears the viewport or the user asks for
  * that recording by name.
+ *
+ * The bulk of the work happens later, off the "ready" event, in
+ * _onWaveformReady. The row itself is built before any of this, by
+ * engine/waveform-layout.js's createWaveformRow.
  */
 async function materializeWaveform(filename, playPosition = 0, isPlaying = false) {
   if (filename in wavesurfers || _preparing.has(filename)) return;
@@ -4312,294 +4216,305 @@ async function materializeWaveform(filename, playPosition = 0, isPlaying = false
   // without this the row would sit as an empty reserved box, with no spinner,
   // until its turn came. The later "Loading audio…" call just retexts this.
   showWaveformOverlay(waveform, "Preparing\u2026");
-  // Bare block: the body below is prepareWaveform's second half, moved here
-  // unchanged. Keeping its indentation keeps the diff to what actually changed;
-  // it can be dedented in any later pass that touches these lines anyway.
-  {
-    // create new wavesurfer instance in the new container
-    const _regPlugin = RegionsPlugin.create();
-    const _hoverPlugin = HoverPlugin.create({
-      lineColor: "#000",
-      labelColor: "#fff",
-      labelBackground: "#000",
-      labelSize: "10px",
-      formatTimeCallback: (t) => {
-        const m = Math.floor(t / 60);
-        const s = (t % 60).toFixed(2);
-        let label = m + ":" + s.padStart(5, "0");
-        const ti = _getTempoAtTime(filename, t);
-        if (ti) label += " \u2014 " + ti.label;
-        return label;
-      },
-    });
-    setRegionsPlugin(filename, _regPlugin);
+  // create new wavesurfer instance in the new container
+  const _regPlugin = RegionsPlugin.create();
+  const _hoverPlugin = HoverPlugin.create({
+    lineColor: "#000",
+    labelColor: "#fff",
+    labelBackground: "#000",
+    labelSize: "10px",
+    formatTimeCallback: (t) => {
+      const m = Math.floor(t / 60);
+      const s = (t % 60).toFixed(2);
+      let label = m + ":" + s.padStart(5, "0");
+      const ti = _getTempoAtTime(filename, t);
+      if (ti) label += " \u2014 " + ti.label;
+      return label;
+    },
+  });
+  setRegionsPlugin(filename, _regPlugin);
 
-    // For frame-stream formats (VBR MP3 / ADTS AAC), hand WaveSurfer a windowed
-    // Web-Audio media object so seeking is sample-accurate. Returns null for
-    // formats that seek fine natively (CBR MP3, WAV, …) → default <audio> path.
-    const _windowedPlayer = await maybeBuildWindowedPlayer(filename);
-    const _wpPeaks = _windowedPlayer ? waveformPeaks[filename] : null;
-    wavesurfers[filename] = WaveSurfer.create({
-      container: `#${CSS.escape("waveform-" + filename) + "-wav"}`,
-      ...(_waveformColors()),
-      normalize: document.getElementById("normalize").checked,
-      plugins: [_regPlugin, _hoverPlugin],
-      autoScroll: false, // managed by our zoom scroll logic
-      autoCenter: false, // managed by our zoom scroll logic
-      ...(_windowedPlayer
-        ? {
-            // External media owns playback; render from pregenerated peaks.
-            media: _windowedPlayer,
-            peaks: _wpPeaks?.peaks ? [_wpPeaks.peaks] : undefined,
-            duration: _wpPeaks?.duration,
-          }
-        : { fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)) }),
-    });
-    // Past the async gap; the wavesurfers[] entry now guards re-entry.
-    _preparing.delete(filename);
-
-    // Region create/update events are handled by the V6 module's listeners
-    // wired in annotation/waveform-interactions.js — listen.js doesn't need
-    // its own.
-
-    // Start loading (deferred for synth entries until the blob URL is available)
-    const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
-    const _audioUrl = resolveAudioUrl(filename);
-    // Prefer passing the Blob directly to WaveSurfer to avoid cross-origin
-    // issues that some browsers (Firefox) have with blob: URLs via fetch().
-    const _audioBlob = fileBlobs.get(filename);
-    if (_windowedPlayer) {
-      // Windowed player already holds the audio and peaks were passed at
-      // create(); nothing to load. Overlay clears on the "ready" event.
-      showWaveformOverlay(wfEl, "Loading audio…");
-    } else if (_audioBlob || _audioUrl) {
-      // If pre-computed peaks are available, pass them to load() so WaveSurfer
-      // can render the waveform shape immediately (before full audio decode).
-      const _peakInfo = waveformPeaks[filename];
-      if (_audioBlob) {
-        wavesurfers[filename].loadBlob(
-          _audioBlob,
-          _peakInfo?.peaks ? [_peakInfo.peaks] : undefined,
-          _peakInfo?.duration,
-        );
-      } else if (_peakInfo && _peakInfo.peaks && _peakInfo.duration) {
-        wavesurfers[filename].load(
-          _audioUrl,
-          [_peakInfo.peaks],
-          _peakInfo.duration,
-        );
-      } else {
-        wavesurfers[filename].load(_audioUrl);
-      }
-      showWaveformOverlay(wfEl, "Loading audio\u2026");
-    } else {
-      showWaveformOverlay(wfEl, "Synthesising audio from MEI\u2026");
-    }
-    // Update overlay with download progress
-    wavesurfers[filename].on("loading", (pct) => {
-      if (pct < 100) {
-        updateWaveformOverlayStatus(wfEl, `Loading audio\u2026 ${pct}%`);
-      } else {
-        updateWaveformOverlayStatus(wfEl, "Rendering waveform\u2026");
-      }
-    });
-    // Handle 401 errors: prompt for credentials and retry (scoped to origin)
-    wavesurfers[filename].on("error", function (err) {
-      _materializeSettled(filename);
-      if (err && err.message && err.message.includes("401")) {
-        const url = resolveAudioUrl(filename);
-        const origin = getOrigin(url);
-        if (promptForAuth(url)) {
-          reloadWaveformsForOrigin(origin);
+  // For frame-stream formats (VBR MP3 / ADTS AAC), hand WaveSurfer a windowed
+  // Web-Audio media object so seeking is sample-accurate. Returns null for
+  // formats that seek fine natively (CBR MP3, WAV, …) → default <audio> path.
+  const _windowedPlayer = await maybeBuildWindowedPlayer(filename);
+  const _wpPeaks = _windowedPlayer ? waveformPeaks[filename] : null;
+  wavesurfers[filename] = WaveSurfer.create({
+    container: `#${CSS.escape("waveform-" + filename) + "-wav"}`,
+    ...(_waveformColors()),
+    normalize: document.getElementById("normalize").checked,
+    plugins: [_regPlugin, _hoverPlugin],
+    autoScroll: false, // managed by our zoom scroll logic
+    autoCenter: false, // managed by our zoom scroll logic
+    ...(_windowedPlayer
+      ? {
+          // External media owns playback; render from pregenerated peaks.
+          media: _windowedPlayer,
+          peaks: _wpPeaks?.peaks ? [_wpPeaks.peaks] : undefined,
+          duration: _wpPeaks?.duration,
         }
-      }
-    });
-    wavesurfers[filename].on("ready", () => {
-      // Whatever else happens below, this build is done occupying a slot.
-      _materializeSettled(filename);
-      // Wire up Web Audio GainNode for volume normalization
-      setupNormGainNode(filename);
-      // signal file is ready in filename list
-      loaded.add(filename);
-      _updateGroupCounts();
-      console.log("READY:...", filename);
-      // In WaveSurfer v7 the canvas lives inside a shadow root; we cannot
-      // query it from outside.  Size our overlay canvases to the container
-      // and keep them in sync via the "redrawcomplete" event.
-      const WAVE_HEIGHT = wavesurfers[filename].options.height || 128;
-      const readyWfContainer = document.querySelector(
-        `.waveform[data-ix='${filename}']`,
+      : { fetchParams: xhrOptionsForUrl(resolveAudioUrl(filename)) }),
+  });
+  // Past the async gap; the wavesurfers[] entry now guards re-entry.
+  _preparing.delete(filename);
+
+  // Region create/update events are handled by the V6 module's listeners
+  // wired in annotation/waveform-interactions.js — listen.js doesn't need
+  // its own.
+
+  // Start loading (deferred for synth entries until the blob URL is available)
+  const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+  const _audioUrl = resolveAudioUrl(filename);
+  // Prefer passing the Blob directly to WaveSurfer to avoid cross-origin
+  // issues that some browsers (Firefox) have with blob: URLs via fetch().
+  const _audioBlob = fileBlobs.get(filename);
+  if (_windowedPlayer) {
+    // Windowed player already holds the audio and peaks were passed at
+    // create(); nothing to load. Overlay clears on the "ready" event.
+    showWaveformOverlay(wfEl, "Loading audio…");
+  } else if (_audioBlob || _audioUrl) {
+    // If pre-computed peaks are available, pass them to load() so WaveSurfer
+    // can render the waveform shape immediately (before full audio decode).
+    const _peakInfo = waveformPeaks[filename];
+    if (_audioBlob) {
+      wavesurfers[filename].loadBlob(
+        _audioBlob,
+        _peakInfo?.peaks ? [_peakInfo.peaks] : undefined,
+        _peakInfo?.duration,
       );
+    } else if (_peakInfo && _peakInfo.peaks && _peakInfo.duration) {
+      wavesurfers[filename].load(
+        _audioUrl,
+        [_peakInfo.peaks],
+        _peakInfo.duration,
+      );
+    } else {
+      wavesurfers[filename].load(_audioUrl);
+    }
+    showWaveformOverlay(wfEl, "Loading audio\u2026");
+  } else {
+    showWaveformOverlay(wfEl, "Synthesising audio from MEI\u2026");
+  }
+  // Update overlay with download progress
+  wavesurfers[filename].on("loading", (pct) => {
+    if (pct < 100) {
+      updateWaveformOverlayStatus(wfEl, `Loading audio\u2026 ${pct}%`);
+    } else {
+      updateWaveformOverlayStatus(wfEl, "Rendering waveform\u2026");
+    }
+  });
+  // Handle 401 errors: prompt for credentials and retry (scoped to origin)
+  wavesurfers[filename].on("error", function (err) {
+    _materializeSettled(filename);
+    if (err && err.message && err.message.includes("401")) {
+      const url = resolveAudioUrl(filename);
+      const origin = getOrigin(url);
+      if (promptForAuth(url)) {
+        reloadWaveformsForOrigin(origin);
+      }
+    }
+  });
+  wavesurfers[filename].on("ready", () =>
+    _onWaveformReady(filename, playPosition, isPlaying),
+  );
+  wireWaveformEvents(filename);
 
-      // --- Overlay wrapper structure ---
-      // Canvases sit on .wf-overlays (viewport-sized, no transform).
-      // Markers sit on .wf-overlays-inner (full zoom width, translateX'd).
-      const ow = createOverlayWrapper(readyWfContainer, WAVE_HEIGHT);
-      // Register the view first: it owns `ow`, and createRegionNavArrows reads
-      // the wrapper back off it. Final DOM order is unchanged — the canvases
-      // insertBefore(ow.inner) and the arrows appendChild after it either way.
-      createWaveformOverlays(filename, readyWfContainer, WAVE_HEIGHT, ow);
-      createRegionNavArrows(filename);
+  // render anno regions
+  updateRenderAnnoRegions();
+}
 
-      // Register this waveform's position-updater so it can be called
-      // after resize (the updater reads currentTime from this file's wavesurfer
-      // and repaints every position-indicator canvas).
+/**
+ * Finish building one waveform once WaveSurfer has decoded and painted it:
+ * the overlay canvases, the correction canvas, the scroll wiring, zoom and
+ * scroll mode, the initial grid draw, and the redrawcomplete handler that keeps
+ * all of it in sync.
+ *
+ * This is materializeWaveform's `ready` callback, lifted out of the semantically
+ * empty bare block it used to sit in. Only filename, playPosition, and isPlaying
+ * cross the boundary: the correction-canvas ref, the row element, and the
+ * scroll-redraw latch are closed over by the scroll and redrawcomplete handlers
+ * registered in here, so they stay local to it.
+ */
+function _onWaveformReady(filename, playPosition, isPlaying) {
+  // Whatever else happens below, this build is done occupying a slot.
+  _materializeSettled(filename);
+  // Wire up Web Audio GainNode for volume normalization
+  setupNormGainNode(filename);
+  // signal file is ready in filename list
+  loaded.add(filename);
+  _updateGroupCounts();
+  console.log("READY:...", filename);
+  // In WaveSurfer v7 the canvas lives inside a shadow root; we cannot
+  // query it from outside.  Size our overlay canvases to the container
+  // and keep them in sync via the "redrawcomplete" event.
+  const WAVE_HEIGHT = wavesurfers[filename].options.height || 128;
+  const readyWfContainer = document.querySelector(
+    `.waveform[data-ix='${filename}']`,
+  );
 
-      // --- Alignment correction overlay canvas ---
-      const corrCanvas = document.createElement("canvas");
-      corrCanvas.classList.add("align-correction-overlay");
-      corrCanvas.width = readyWfContainer.clientWidth;
-      corrCanvas.height = WAVE_HEIGHT;
-      corrCanvas.draggable = false; // prevent native browser drag
-      const corrStyle = corrCanvas.style;
-      corrStyle.pointerEvents =
-        _alignCorrectionMode && !_drawModeActive ? "auto" : "none";
-      // Correction canvas goes on the wrapper (viewport-fixed)
-      ow.wrapper.insertBefore(corrCanvas, ow.inner);
+  // --- Overlay wrapper structure ---
+  // Canvases sit on .wf-overlays (viewport-sized, no transform).
+  // Markers sit on .wf-overlays-inner (full zoom width, translateX'd).
+  const ow = createOverlayWrapper(readyWfContainer, WAVE_HEIGHT);
+  // Register the view first: it owns `ow`, and createRegionNavArrows reads
+  // the wrapper back off it. Final DOM order is unchanged — the canvases
+  // insertBefore(ow.inner) and the arrows appendChild after it either way.
+  createWaveformOverlays(filename, readyWfContainer, WAVE_HEIGHT, ow);
+  createRegionNavArrows(filename);
 
-      // Store reference for resize
-      const _corrCanvasRef = corrCanvas;
+  // Register this waveform's position-updater so it can be called
+  // after resize (the updater reads currentTime from this file's wavesurfer
+  // and repaints every position-indicator canvas).
 
-      // Wire scroll listener on WaveSurfer's shadow-DOM scroll container
-      const _wsScrollContainer = getScrollContainer(filename);
-      let _scrollRedrawRaf = false;
-      if (_wsScrollContainer) {
-        _wsScrollContainer.addEventListener("scroll", () => {
-          syncOverlayScroll(filename);
-          // Redraw viewport-based canvases (throttled)
-          if (!_scrollRedrawRaf) {
-            _scrollRedrawRaf = true;
+  // --- Alignment correction overlay canvas ---
+  const corrCanvas = document.createElement("canvas");
+  corrCanvas.classList.add("align-correction-overlay");
+  corrCanvas.width = readyWfContainer.clientWidth;
+  corrCanvas.height = WAVE_HEIGHT;
+  corrCanvas.draggable = false; // prevent native browser drag
+  const corrStyle = corrCanvas.style;
+  corrStyle.pointerEvents =
+    _alignCorrectionMode && !_drawModeActive ? "auto" : "none";
+  // Correction canvas goes on the wrapper (viewport-fixed)
+  ow.wrapper.insertBefore(corrCanvas, ow.inner);
+
+  // Store reference for resize
+  const _corrCanvasRef = corrCanvas;
+
+  // Wire scroll listener on WaveSurfer's shadow-DOM scroll container
+  const _wsScrollContainer = getScrollContainer(filename);
+  let _scrollRedrawRaf = false;
+  if (_wsScrollContainer) {
+    _wsScrollContainer.addEventListener("scroll", () => {
+      syncOverlayScroll(filename);
+      // Redraw viewport-based canvases (throttled)
+      if (!_scrollRedrawRaf) {
+        _scrollRedrawRaf = true;
+        requestAnimationFrame(() => {
+          _scrollRedrawRaf = false;
+          drawAlignmentGrid(filename);
+          if (currentAudioIx && isWaveformRendered(currentAudioIx)) {
+            updatePositionIndicator(currentAudioIx);
+          }
+          // Cross-waveform scroll sync
+          if (!_scrollSyncLock && currentZoomLevel > 1) {
+            _scrollSyncLock = true;
+            syncAllWaveformScrolls(filename);
             requestAnimationFrame(() => {
-              _scrollRedrawRaf = false;
-              drawAlignmentGrid(filename);
-              if (currentAudioIx && isWaveformRendered(currentAudioIx)) {
-                updatePositionIndicator(currentAudioIx);
-              }
-              // Cross-waveform scroll sync
-              if (!_scrollSyncLock && currentZoomLevel > 1) {
-                _scrollSyncLock = true;
-                syncAllWaveformScrolls(filename);
-                requestAnimationFrame(() => {
-                  _scrollSyncLock = false;
-                });
-              }
-              updateAllRegionNavArrows();
+              _scrollSyncLock = false;
             });
           }
+          updateAllRegionNavArrows();
         });
-      }
-
-      // Apply current zoom level if waveform loads after zoom has been set
-      if (currentZoomLevel > 1) {
-        const containerWidth = readyWfContainer.clientWidth;
-        const duration = wavesurfers[filename].getDuration();
-        wavesurfers[filename].zoom(
-          (currentZoomLevel * containerWidth) / duration,
-        );
-      }
-      // Always sync scroll mode on ready — browser may have restored the
-      // "follow" radio before wavesurfers exist, so the pageshow handler
-      // couldn't apply it.  applyScrollMode checks zoom level internally.
-      applyScrollMode(filename);
-
-      // Initial draw
-      drawAlignmentGrid(filename);
-
-      // Hide the initial-load overlay
-      const readyWfEl = document.querySelector(
-        `.waveform[data-ix='${filename}']`,
-      );
-      if (readyWfEl) hideWaveformOverlay(readyWfEl);
-
-      // "redrawcomplete" fires after each WaveSurfer render cycle — both on the
-      // initial load and on any automatic resize triggered by its ResizeObserver.
-      wavesurfers[filename].on("redrawcomplete", () => {
-        // Resize our overlay canvases and repaint grid lines.
-        drawAlignmentGrid(filename);
-        // Resize correction overlay (viewport-sized)
-        if (_corrCanvasRef && readyWfContainer.isConnected) {
-          _corrCanvasRef.width = readyWfContainer.clientWidth;
-          _corrCanvasRef.height = wavesurfers[filename].options.height || 128;
-        }
-        // Sync overlay scroll position after redraw
-        syncOverlayScroll(filename);
-        // Restore markers (canvas has been redrawn, marker positions must refresh).
-        clearMarkers(filename);
-        ensureWfLabel(filename);
-        markers.forEach((m, i) => {
-          const t = getCorrespondingTime(filename, m);
-          const color =
-            closeListeningMode && activeMarkerIx === i ? "#8b0000" : "red";
-          addMarker(filename, { time: t, color, alignIx: m });
-        });
-
-        // Reveal this waveform once its canvas, alignment grid, and position
-        // indicator are all correctly sized and painted — but only if audio
-        // has actually finished loading (not during synthesis).
-        const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
-        if (wfEl && loaded.has(filename)) hideWaveformOverlay(wfEl);
-        // If this is an inactive waveform, reset its canvas clip-path to 0.
-        // WaveSurfer v7 applies a clip-path to the canvases div matching the
-        // playback position; the ::part(progress) CSS hides the progress bar
-        // but does not clear the clip-path, leaving the beginning blank.
-        if (filename !== currentAudioIx) {
-          const sc = getScrollContainer(filename);
-          const savedSL = sc ? sc.scrollLeft : 0;
-          _scrollSyncLock = true;
-          wavesurfers[filename].seekTo(0);
-          // Clamp on the way back in: a position captured before a resize or a
-          // zoom-out can exceed the new maximum, and restoring it verbatim would
-          // re-park the waveform on every redraw, so the bad state never healed.
-          if (sc) {
-            sc.scrollLeft = Math.min(
-              savedSL,
-              Math.max(0, sc.scrollWidth - sc.clientWidth),
-            );
-          }
-          _scrollSyncLock = false;
-        }
-        if (currentAudioIx && isWaveformRendered(currentAudioIx)) {
-          updatePositionIndicator(currentAudioIx);
-        }
-        // Re-add annotation regions — WaveSurfer's redraw removes and recreates
-        // region SVG elements, so they must be restored after every render cycle.
-        updateRenderAnnoRegions();
-        // Ensure newly-created marker elements inherit the draggable class
-        // so that drag works without re-toggling the checkbox.
-        updateMarkerDraggableClass();
-        // No _resizeQueue needed: v7 rerenders each waveform independently.
-      });
-      let listItem = document.getElementById(filename);
-      let status = listItem.querySelector("label").classList;
-      status.remove("loading");
-      status.remove("queued");
-      status.add("ready");
-      listItem.querySelector("input").checked = true;
-      // check if we're the currentAudioIx, and if so make ourselves active and spool to provided playPosition
-      // (possible when normalize checkbox has forced a reload of waveform elements)
-      if (filename === currentAudioIx) {
-        document
-          .querySelector(`.waveform[data-ix='${filename}']`)
-          .classList.add("active");
-        wavesurfers[currentAudioIx].play(playPosition);
-        if (!isPlaying) {
-          wavesurfers[currentAudioIx].pause();
-        }
-      }
-      // restore markers from alignment JSON if they exist
-      if (
-        loadedAlignmentJSON &&
-        loadedAlignmentJSON.header &&
-        Array.isArray(loadedAlignmentJSON.header.markers)
-      ) {
-        refillArray(markers, loadedAlignmentJSON.header.markers);
-        // markers are rendered by the "redrawcomplete" handler
       }
     });
-    wireWaveformEvents(filename);
+  }
 
-    // render anno regions
+  // Apply current zoom level if waveform loads after zoom has been set
+  if (currentZoomLevel > 1) {
+    const containerWidth = readyWfContainer.clientWidth;
+    const duration = wavesurfers[filename].getDuration();
+    wavesurfers[filename].zoom(
+      (currentZoomLevel * containerWidth) / duration,
+    );
+  }
+  // Always sync scroll mode on ready — browser may have restored the
+  // "follow" radio before wavesurfers exist, so the pageshow handler
+  // couldn't apply it.  applyScrollMode checks zoom level internally.
+  applyScrollMode(filename);
+
+  // Initial draw
+  drawAlignmentGrid(filename);
+
+  // Hide the initial-load overlay
+  const readyWfEl = document.querySelector(
+    `.waveform[data-ix='${filename}']`,
+  );
+  if (readyWfEl) hideWaveformOverlay(readyWfEl);
+
+  // "redrawcomplete" fires after each WaveSurfer render cycle — both on the
+  // initial load and on any automatic resize triggered by its ResizeObserver.
+  wavesurfers[filename].on("redrawcomplete", () => {
+    // Resize our overlay canvases and repaint grid lines.
+    drawAlignmentGrid(filename);
+    // Resize correction overlay (viewport-sized)
+    if (_corrCanvasRef && readyWfContainer.isConnected) {
+      _corrCanvasRef.width = readyWfContainer.clientWidth;
+      _corrCanvasRef.height = wavesurfers[filename].options.height || 128;
+    }
+    // Sync overlay scroll position after redraw
+    syncOverlayScroll(filename);
+    // Restore markers (canvas has been redrawn, marker positions must refresh).
+    clearMarkers(filename);
+    ensureWfLabel(filename);
+    markers.forEach((m, i) => {
+      const t = getCorrespondingTime(filename, m);
+      const color =
+        closeListeningMode && activeMarkerIx === i ? "#8b0000" : "red";
+      addMarker(filename, { time: t, color, alignIx: m });
+    });
+
+    // Reveal this waveform once its canvas, alignment grid, and position
+    // indicator are all correctly sized and painted — but only if audio
+    // has actually finished loading (not during synthesis).
+    const wfEl = document.querySelector(`.waveform[data-ix='${filename}']`);
+    if (wfEl && loaded.has(filename)) hideWaveformOverlay(wfEl);
+    // If this is an inactive waveform, reset its canvas clip-path to 0.
+    // WaveSurfer v7 applies a clip-path to the canvases div matching the
+    // playback position; the ::part(progress) CSS hides the progress bar
+    // but does not clear the clip-path, leaving the beginning blank.
+    if (filename !== currentAudioIx) {
+      const sc = getScrollContainer(filename);
+      const savedSL = sc ? sc.scrollLeft : 0;
+      _scrollSyncLock = true;
+      wavesurfers[filename].seekTo(0);
+      // Clamp on the way back in: a position captured before a resize or a
+      // zoom-out can exceed the new maximum, and restoring it verbatim would
+      // re-park the waveform on every redraw, so the bad state never healed.
+      if (sc) {
+        sc.scrollLeft = Math.min(
+          savedSL,
+          Math.max(0, sc.scrollWidth - sc.clientWidth),
+        );
+      }
+      _scrollSyncLock = false;
+    }
+    if (currentAudioIx && isWaveformRendered(currentAudioIx)) {
+      updatePositionIndicator(currentAudioIx);
+    }
+    // Re-add annotation regions — WaveSurfer's redraw removes and recreates
+    // region SVG elements, so they must be restored after every render cycle.
     updateRenderAnnoRegions();
+    // Ensure newly-created marker elements inherit the draggable class
+    // so that drag works without re-toggling the checkbox.
+    updateMarkerDraggableClass();
+    // No _resizeQueue needed: v7 rerenders each waveform independently.
+  });
+  let listItem = document.getElementById(filename);
+  let status = listItem.querySelector("label").classList;
+  status.remove("loading");
+  status.remove("queued");
+  status.add("ready");
+  listItem.querySelector("input").checked = true;
+  // check if we're the currentAudioIx, and if so make ourselves active and spool to provided playPosition
+  // (possible when normalize checkbox has forced a reload of waveform elements)
+  if (filename === currentAudioIx) {
+    document
+      .querySelector(`.waveform[data-ix='${filename}']`)
+      .classList.add("active");
+    wavesurfers[currentAudioIx].play(playPosition);
+    if (!isPlaying) {
+      wavesurfers[currentAudioIx].pause();
+    }
+  }
+  // restore markers from alignment JSON if they exist
+  if (
+    loadedAlignmentJSON &&
+    loadedAlignmentJSON.header &&
+    Array.isArray(loadedAlignmentJSON.header.markers)
+  ) {
+    refillArray(markers, loadedAlignmentJSON.header.markers);
+    // markers are rendered by the "redrawcomplete" handler
   }
 }
 
@@ -5713,7 +5628,7 @@ async function setGrids(grids) {
   // header ("All recordings" / named groups) and the All/None buttons are
   // visible before any waveform is loaded. Without this, the content pane
   // would sit empty until the user clicks a file in the nav sidebar.
-  _ensureWaveformGroupContainers(
+  ensureWaveformGroupContainers(
     filenames.concat(SYNTH_MEI_KEY in alignmentGrids ? [SYNTH_MEI_KEY] : []),
   );
 

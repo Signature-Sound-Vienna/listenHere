@@ -256,4 +256,22 @@ test.describe('9. Recording Groups', () => {
     await expect(page.locator('.gm-group-card li.gm-drag-preview')).toHaveCount(0);
   });
 
+  // 9.15 Group container order in the content pane is owned by
+  // ensureWaveformGroupContainers alone: Score first, then named groups, then
+  // Ungrouped. It used to be re-scrambled by a vestigial re-sort at the end of
+  // prepareWaveform, whose comparator reversed the (id-less) container divs on
+  // every row creation — so the Score group rendered LAST for any odd number of
+  // rows, which the default fixture (4 recordings + score = 5) hits.
+  test('9.15 Score group container renders above the recordings', async ({ loadedPage: page }) => {
+    const containers = await page.evaluate(() =>
+      [...document.getElementById('waveforms')!.children]
+        .filter((n) => n.classList.contains('file-group'))
+        .map((n) => (n as HTMLElement).dataset.group),
+    );
+    expect(containers).toEqual(['Score', 'Ungrouped']);
+    // …and the score row really is inside the Score container, not merely
+    // parented somewhere that happens to sort first.
+    await expect(page.locator('.file-group-score .group-list .waveform')).toHaveCount(1);
+  });
+
 });

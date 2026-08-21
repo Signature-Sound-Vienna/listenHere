@@ -10,6 +10,9 @@
 // row in the pane?" (here) and "does that row have a renderer yet?" (the
 // lazy-creation decision, which stays in listen.js as orchestration).
 //
+// Membership — which group owns a row — is not decided here: it comes from
+// engine/grouping-model.js's resolveGroupFor, the single answer app-wide.
+//
 // Group *container* order is owned entirely by ensureWaveformGroupContainers —
 // saved groupOrder first, else Score, then named groups, then Ungrouped. This
 // module must not reorder them. Row order *within* a container is the user's, set
@@ -30,63 +33,11 @@ import {
   loadedAlignmentJSON,
   SYNTH_MEI_KEY,
   ensureWaveformGroupContainers,
-  getActiveFileGroups,
   hideWaveformsPaneLoading,
   isDrawModeActive,
 } from "../listen.js";
 import { ensureWaveformView } from "./waveform-view.js";
-
-/**
- * Does `filename` belong to group `g` — by explicit membership or by pattern?
- *
- * Returns false rather than throwing on a malformed pattern: the grouping modal
- * flags invalid regexes for the user, and a bad one saved into an alignment
- * must not stop the pane from rendering.
- */
-export function matchesGroup(filename, g) {
-  if (new Set(g.files || []).has(filename)) return true;
-  if (!g.pattern) return false;
-  try {
-    const re = new RegExp(g.pattern);
-    const short = filename.substring(filename.lastIndexOf("/") + 1);
-    return re.test(short) || re.test(filename);
-  } catch (_) {
-    return false;
-  }
-}
-
-/**
- * THE answer to "which group does this recording belong to?" — the single source
- * of truth for group membership, in every context.
- *
- * Within one grouping context (a tab, or an annotation's pinned grouping) a
- * recording belongs to **exactly one** group. Switching context may change which
- * one; overlapping membership inside a context is a defect in the alignment file,
- * normalised at load by listen.js's group-overlap check. Precedence when a
- * defective file does overlap is **first match in group order**, matching that
- * normalisation, so every site agrees even before it runs.
- *
- * Before this existed the question was answered five times over — twice
- * single-valued (row placement first-wins, tab switch last-wins) and three times
- * multi-valued (sidebar, container builder, annotation snapshot). A recording in
- * two groups therefore moved between them on a tab round-trip, and left behind a
- * container that existed, was titled and coloured, and whose badge claimed a
- * recording it never showed. See roadmap item U.
- *
- * The score row is never groupable: it has its own dedicated container, so it
- * resolves to null here no matter what a pattern says.
- *
- * @param {string} filename
- * @param {Array<{name: string, files?: string[], pattern?: string}>} groups
- * @returns {object|null} the owning group, or null when ungrouped
- */
-export function resolveGroupFor(filename, groups) {
-  if (filename === SYNTH_MEI_KEY) return null;
-  for (const g of groups || []) {
-    if (matchesGroup(filename, g)) return g;
-  }
-  return null;
-}
+import { getActiveFileGroups, resolveGroupFor } from "./grouping-model.js";
 
 /**
  * The `.group-list` that should hold `filename`'s row.

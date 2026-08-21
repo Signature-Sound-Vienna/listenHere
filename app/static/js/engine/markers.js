@@ -133,6 +133,16 @@ export function updateMarkerDraggableClass() {
   });
 }
 
+/**
+ * Mirror the marker array into loadedAlignmentJSON.header.markers.
+ *
+ * Persistence only — this does NOT mark the document dirty, despite an older
+ * comment in listen.js that said it did. It used to call _markJsonDirty(); that
+ * went when the dirty model became counter-based, and the change counter is now
+ * moved by listen.js's undo/redo machinery (_pushUndo with commit = true, and
+ * the redo path). Every call site pairs this with one of those, so calling it
+ * alone records the markers without making the document look edited.
+ */
 export function persistMarkers() {
   if (!loadedAlignmentJSON) return;
   if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};

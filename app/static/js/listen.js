@@ -11,7 +11,6 @@ import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
 import HoverPlugin from "../vendor/wavesurfer-hover.esm.js";
 import {
   maybeBuildWindowedPlayer,
-  setupNormGainNode,
   teardownNormGainNode,
   applyNormGain,
   seekAnalysis,
@@ -20,7 +19,6 @@ import {
   seekBy,
   playpause,
 } from "./engine/transport.js";
-import { drawTimeTicks } from "./engine/time-axis.js";
 import {
   interpAlignmentGrid,
   parseMidi,
@@ -33,7 +31,6 @@ import {
   isWaveformRendered,
   setRegionsPlugin,
   regionsPluginEntries,
-  createWaveformOverlays,
   drawAlignmentGrid,
   updatePositionIndicator,
   disposeWaveformView,
@@ -52,13 +49,9 @@ import {
   updateGroupCounts,
 } from "./engine/grouping-ui.js";
 import {
-  GROUP_PALETTE,
   getActiveFileGroups,
   getActiveGroupingSnapshot,
-  matchesGroup,
   migrateToGroupingTabs,
-  mintGroupId,
-  nextGroupColour,
   normaliseGroupOverlap,
   resolveGroupFor,
   warnGroupOverlap,
@@ -80,15 +73,12 @@ import {
   ZOOM_LEVELS,
   currentZoomLevel,
   scrollMode,
-  sharedTimeAxis,
   setScrollMode,
   setSharedTimeAxis,
   setCurrentZoomLevel,
   applyZoom,
   getScrollContainer,
   getZoomedWidth,
-  createOverlayWrapper,
-  ensureWfLabel,
   syncOverlayScroll,
   applyScrollMode,
   syncAllWaveformScrolls,
@@ -104,10 +94,7 @@ import {
   initMeasureInteractions,
   clearMeasureVisuals,
 } from "./engine/measure.js";
-import {
-  updateAllRegionNavArrows,
-  createRegionNavArrows,
-} from "./engine/region-nav.js";
+import { updateAllRegionNavArrows } from "./engine/region-nav.js";
 import {
   redrawAllMarkers,
   clearMarkers,
@@ -1996,7 +1983,6 @@ export function updateDirtyState() {
   }
 }
 
-/** Persist markers into the alignment JSON and mark dirty. */
 /**
  * Update the Mark button tooltip: "Remove marker" when paused at a marker,
  * "Place marker" otherwise.

@@ -4055,13 +4055,17 @@ function _openGroupModal() {
       colourRow.appendChild(clearBtn);
       card.appendChild(colourRow);
 
-      // Apply colour preview to card
+      // Apply colour preview to card. The palette is a fixed set of pale
+      // pastels that ignores the theme, so the theme's text variables are wrong
+      // inside a coloured card — in dark mode near-white filenames landed on a
+      // pale background. `gm-has-colour` lets one CSS rule hand the card's own
+      // contrast colour to the descendants that set a colour of their own
+      // (see default.css); it replaces an inline per-label sweep that had to be
+      // extended by hand for every new element type.
       if (g.color) {
-        const tc = _groupTextColor(g.color);
         card.style.backgroundColor = g.color;
-        card.style.color = tc;
-        // Override label rules that explicitly set color (specificity beats inheritance)
-        card.querySelectorAll('label').forEach(l => { l.style.color = tc; });
+        card.style.color = _groupTextColor(g.color);
+        card.classList.add("gm-has-colour");
       }
 
       // File list — every member is an explicit, removable file.

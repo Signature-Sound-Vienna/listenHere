@@ -274,4 +274,95 @@ test.describe('9. Recording Groups', () => {
     await expect(page.locator('.file-group-score .group-list .waveform')).toHaveCount(1);
   });
 
+  // 9.16 A coloured group card is legible in dark mode.
+  // The group colour palette is a fixed set of pale pastels that ignores the
+  // active theme, so the theme's own text variables are wrong inside a coloured
+  // card: in dark mode `--color-text` is near-white (#f1f5f9), and the filenames
+  // it painted were invisible on the pastel. The fix hands the card's computed
+  // contrast colour to its text via `.gm-has-colour`. Asserting a real contrast
+  // ratio rather than an expected colour keeps this about legibility, so it
+  // still holds if the palette or the contrast helper changes.
+  test('9.16 filenames in a coloured group card stay legible in dark mode', async ({ loadedPage: page }) => {
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    await openGroupModal(page);
+    await page.locator('.gm-add-group').click();
+    await page.locator('.gm-group-card .gm-addby-input').fill('audio-a');
+    await page.locator('.gm-group-card .gm-addby-btn').click();
+    await expect(page.locator(GROUP_MEMBERS)).toHaveCount(1);
+
+    // Give the card a colour from the palette, then measure the member row.
+    await page.locator('.gm-group-card .gm-swatch').first().click();
+    await expect(page.locator('.gm-group-card')).toHaveClass(/gm-has-colour/);
+
+    const ratio = await page.locator(GROUP_MEMBERS).first().evaluate((li) => {
+      // Walk up for the nearest non-transparent background, as the row itself
+      // is transparent and sits on the card.
+      const chan = (c: string) => {
+        const v = parseInt(c, 10) / 255;
+        return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+      };
+      const lum = (rgb: string) => {
+        const [r, g, b] = rgb.match(/\d+/g)!;
+        return 0.2126 * chan(r!) + 0.7152 * chan(g!) + 0.0722 * chan(b!);
+      };
+      let bgEl: HTMLElement | null = li as HTMLElement;
+      let bg = 'rgba(0, 0, 0, 0)';
+      while (bgEl) {
+        const c = getComputedStyle(bgEl).backgroundColor;
+        if (c && !/rgba\(0, 0, 0, 0\)|transparent/.test(c)) { bg = c; break; }
+        bgEl = bgEl.parentElement;
+      }
+      const l1 = lum(getComputedStyle(li).color);
+      const l2 = lum(bg);
+      return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    });
+
+    // WCAG AA for body text. Before the fix this was ~1.1 (near-white on pastel).
+    expect(ratio).toBeGreaterThan(4.5);
+  });
+
+  // 9.17 Semantic buttons keep their colour in a non-light theme.
+  // `[data-theme] button:not(…)` in default.css takes ID-level specificity from
+  // the id inside its `:not()`, so it beat every class-based button rule: in any
+  // non-light theme all twelve Group Recordings buttons flattened to the same
+  // grey, and Discard and the group-delete ✕ lost their danger red. Apply had
+  // survived only by carrying `!important`. The rule now excludes
+  // `.gm-modal button`. Asserting "Discard is not the neutral button colour"
+  // tests the reported symptom — marked in light, unmarked in dark — while also
+  // pinning it to the theme's own danger colour.
+  test('9.17 Discard stays marked as dangerous in dark mode', async ({ loadedPage: page }) => {
+    await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
+    await openGroupModal(page);
+    await page.locator('.gm-add-group').click(); // make the modal dirty
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.gm-confirm-overlay')).toBeVisible();
+
+    const seen = await page.evaluate(() => {
+      const danger = getComputedStyle(document.documentElement)
+        .getPropertyValue('--color-danger').trim();
+      const discard = document.querySelector('.gm-confirm-discard') as HTMLElement;
+      const keep = [...document.querySelectorAll('.gm-confirm-buttons button')]
+        .find((b) => b.textContent!.includes('Keep')) as HTMLElement;
+      // Resolve the declared variable to rgb() for comparison with computed values.
+      const probe = document.createElement('span');
+      probe.style.color = danger;
+      document.body.appendChild(probe);
+      const dangerRgb = getComputedStyle(probe).color;
+      probe.remove();
+      return {
+        dangerRgb,
+        discard: getComputedStyle(discard).color,
+        discardBorder: getComputedStyle(discard).borderTopColor,
+        keep: getComputedStyle(keep).color,
+      };
+    });
+
+    // Text and border both carry the danger colour…
+    expect(seen.discard).toBe(seen.dangerRgb);
+    expect(seen.discardBorder).toBe(seen.dangerRgb);
+    // …and it is visibly distinct from the neutral button beside it, which is
+    // exactly what regressed: both rendered the same grey.
+    expect(seen.discard).not.toBe(seen.keep);
+  });
+
 });

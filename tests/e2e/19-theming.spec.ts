@@ -127,9 +127,16 @@ test.describe('19. Theming', () => {
     expect(bg).toBeTruthy();
     expect(color).toBe('rgb(34, 34, 34)');
 
-    // Labels inside the card should also carry the dark text override
+    // Text inside the card should also end up dark. This reads the COMPUTED
+    // colour rather than the inline one: the dark text used to be stamped onto
+    // each label inline, and is now inherited from the card via a
+    // `.gm-has-colour` CSS rule, which also covers the filename rows the inline
+    // sweep never reached. Asserting the inline value tested the mechanism, so
+    // it could not have caught those rows being illegible; the computed value
+    // tests the outcome and holds either way.
+    await expect(card).toHaveClass(/gm-has-colour/);
     const labelColor = await card.locator('.gm-addby-row label').evaluate(
-      (el: HTMLElement) => el.style.color
+      (el: HTMLElement) => getComputedStyle(el).color
     );
     expect(labelColor).toBe('rgb(34, 34, 34)');
   });

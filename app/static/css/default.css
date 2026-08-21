@@ -1954,8 +1954,21 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
     color: var(--color-text);
   }
 
-  /* Buttons */
-  button:not(.drawer-btns button):not(#close-settings-drawer):not(.transport-btn) {
+  /* Buttons.
+     `.gm-modal button` is excluded because the Group Recordings modal styles
+     every one of its buttons itself, from the same theme variables, and this
+     blanket rule was overriding all of them: `:not(#close-settings-drawer)`
+     lends the whole selector ID-level specificity, so no class-based rule could
+     win. In a non-light theme that flattened all twelve modal buttons to the
+     identical grey — Discard and the group-delete ✕ lost their red, New Group
+     and Add lost their blue, and the bare-glyph icon buttons (`.gm-close`,
+     `.gm-remove-file`) became solid grey boxes. Apply had survived only by
+     carrying `!important`, which this makes unnecessary.
+     The ID stays inside the `:not()` on purpose: rewriting it as an attribute
+     selector would lower this rule's specificity app-wide, which is a much
+     larger change than the modal needs. Excluding is strictly narrowing, so
+     nothing outside the modal is affected. */
+  button:not(.drawer-btns button):not(#close-settings-drawer):not(.transport-btn):not(.gm-modal button) {
     background-color: var(--color-surface-raised, var(--color-surface-alt));
     color: var(--color-text);
     border-color: var(--color-border);
@@ -4121,6 +4134,34 @@ body.marker-dragging * {
   box-shadow: inset 0 0 0 2px var(--color-link, #2563eb);
 }
 
+/* A group card carrying a group colour paints itself from a fixed palette of
+   pale pastels that ignores the active theme, so the theme's text variables are
+   simply wrong inside it: in dark mode `--color-text` is near-white, and the
+   filenames became illegible on the pale card. The card's own contrast colour
+   is set inline (see _groupTextColor in listen.js); the text below each set an
+   explicit colour, which beats inheritance, so they have to be told to take the
+   card's instead.
+
+   Deliberately NOT included: `.gm-remove-file` and `.gm-icon-btn`. Both are
+   readable already (a mid-grey on a pale pastel), and both use colour as a
+   hover cue — the remove ✕ turning red, the card delete already red — which a
+   `color: inherit` at this specificity would silently override. */
+.gm-group-card.gm-has-colour label,
+.gm-group-card.gm-has-colour .gm-file-item,
+.gm-group-card.gm-has-colour .gm-empty {
+  color: inherit;
+}
+
+/* The hover background has to follow the text. `.gm-file-item:hover` uses the
+   theme's surface colour, which is dark in dark mode — fine under the old
+   near-white text, but it would put the card's dark contrast colour on a dark
+   background and reintroduce the same illegibility on hover. A translucent
+   black reads correctly on any pale pastel, and still on a dark custom colour
+   picked from the colour input, where the contrast colour is white. */
+.gm-group-card.gm-has-colour .gm-file-item:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
 /* Drag-to-create "New Group" target at the bottom of the groups list */
 .gm-newgroup-dropzone {
   border: 2px dashed var(--color-border, #cbd5e1);
@@ -4399,14 +4440,21 @@ body.marker-dragging * {
   background: var(--color-surface-alt, #f1f5f9);
 }
 
-.gm-apply {
-  background: var(--color-link, #2563eb) !important;
-  color: #fff !important;
-  border-color: var(--color-link, #2563eb) !important;
+/* Apply is the modal's one accent button, in the footer and in the confirm
+   dialog. This carried `!important` on every declaration, which was hiding two
+   separate specificity losses: the blanket `[data-theme] button` rule (which
+   borrowed ID specificity from an id inside its `:not()`, and now excludes
+   `.gm-modal button`), and `.gm-footer button` above — a plain `.gm-apply`
+   loses to that one on specificity in *every* theme, light included. Scoping to
+   `.gm-modal .gm-apply` beats both on merit, so the `!important`s are gone. */
+.gm-modal .gm-apply {
+  background: var(--color-link, #2563eb);
+  color: #fff;
+  border-color: var(--color-link, #2563eb);
 }
 
-.gm-apply:hover {
-  background: var(--color-link-hover, #1d4ed8) !important;
+.gm-modal .gm-apply:hover {
+  background: var(--color-link-hover, #1d4ed8);
 }
 
 /* Group files button in nav */

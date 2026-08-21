@@ -70,6 +70,7 @@ import {
   syncOverlayScroll,
   applyScrollMode,
   syncAllWaveformScrolls,
+  setScrollSyncLock,
 } from "./engine/zoom-scroll.js";
 import {
   DataSession,
@@ -573,23 +574,10 @@ let _resizeDebounce = null;
 // Zoom state (ZOOM_LEVELS, currentZoomLevel, scrollMode, sharedTimeAxis) moved
 // to ./engine/zoom-scroll.js and imported below; the overlay wrappers it used to
 // own are now waveform-view.js's waveformViews[filename].ow.
-// scrollSyncLock stays here, and is exported (increment 22). Its only READER is
-// now the per-waveform scroll handler in engine/waveform-events.js, which also
-// holds two of its four writes; the other two are swapCurrentAudio and
-// setCurrentAudioInactive, below. That split is deliberate rather than tidy:
-// exporting the most timing-sensitive state in this file widens the public
-// surface, but moving the lock into the events module would invert the
-// dependency direction every other engine module follows (they borrow from
-// listen.js; none owns state listen.js writes), and the lock's real destination
-// is per-viewport WaveformView state — one lock per viewport — so relocating it
-// now would move it to the wrong place twice.
-export let scrollSyncLock = false; // prevents infinite loop in cross-waveform scroll sync
-
-/** Setter for engine/waveform-events.js: ESM importers cannot assign to a live
- *  binding. Writers inside this module assign scrollSyncLock directly. */
-export function setScrollSyncLock(locked) {
-  scrollSyncLock = locked;
-}
+// The cross-waveform scroll-sync lock moved to ./engine/zoom-scroll.js too
+// (increment 23): it guards re-entry into that module's syncAllWaveformScrolls,
+// and that module is the declared per-viewport home. This file only ever WROTE
+// it — the two sites below call setScrollSyncLock.
 export const wfBgCache = {}; // filename → cached tick background colour string
 
 // ---------------------------------------------------------------------------
@@ -1819,11 +1807,11 @@ export function setCurrentAudioInactive(filename) {
     try {
       const scrollEl = getScrollContainer(filename);
       const savedScroll = scrollEl ? scrollEl.scrollLeft : 0;
-      scrollSyncLock = true;
+      setScrollSyncLock(true);
       ws.seekTo(0);
       if (scrollEl) scrollEl.scrollLeft = savedScroll;
     } finally {
-      scrollSyncLock = false;
+      setScrollSyncLock(false);
     }
   }
   const wfEl = document.getElementById(`waveform-${filename}-wav`);
@@ -1876,10 +1864,10 @@ export function swapCurrentAudio(newAudio) {
     // Save & restore scroll position so the seekTo(0) doesn't visibly jump.
     const oldScrollEl = getScrollContainer(currentAudioIx);
     const savedScroll = oldScrollEl ? oldScrollEl.scrollLeft : 0;
-    scrollSyncLock = true;
+    setScrollSyncLock(true);
     wavesurfers[currentAudioIx].seekTo(0);
     if (oldScrollEl) oldScrollEl.scrollLeft = savedScroll;
-    scrollSyncLock = false;
+    setScrollSyncLock(false);
     // swap to new audio and alignment grid
     setCurrentAudioIx(newAudio);
     console.log("new audio ix: ", currentAudioIx);

@@ -20,12 +20,13 @@
 //    bindings so listen.js keeps reading the current value; the few writes that
 //    still live in listen.js's DOMContentLoaded wiring go through the setters
 //    below (ESM importers cannot assign to a live binding directly).
-//  - `scrollSyncLock` deliberately stays in listen.js and is never touched here,
-//    even though syncAllWaveformScrolls below is the very call it guards against
-//    re-entering. The lock is held by the CALLER: its only reader is the
-//    per-waveform scroll handler in waveform-events.js, which checks it before
-//    calling in, and its writers are that handler plus listen.js's
-//    swapCurrentAudio and setCurrentAudioInactive. Nothing here needs to know.
+//  - `scrollSyncLock` is owned here (increment 23), because it exists to guard
+//    re-entry into this module's own syncAllWaveformScrolls. Nothing in here
+//    reads it, though: the guard sits at the CALL SITE, so the lock is the one
+//    piece of this module's state that this module never touches. That is a
+//    known smell, and it is the price of not changing behaviour — see the note
+//    on the declaration below for why the guard cannot simply move inside
+//    syncAllWaveformScrolls.
 
 import {
   wavesurfers,
@@ -57,6 +58,42 @@ export function setSharedTimeAxis(on) {
 /** Set the zoom level without side effects (used by form-restore). */
 export function setCurrentZoomLevel(level) {
   currentZoomLevel = level;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-waveform scroll-sync lock (owned here since increment 23)
+// ---------------------------------------------------------------------------
+// Prevents infinite recursion in cross-waveform scroll sync: syncAllWaveformScrolls
+// sets scroll on every other waveform, each of which fires its own scroll handler,
+// which would sync back.
+//
+// It lived in listen.js until increment 23 on the reasoning that engine modules
+// only ever borrow from listen.js and never own state listen.js writes. That was
+// simply wrong — currentZoomLevel, scrollMode, sharedTimeAxis and waveformViews
+// are all engine-owned and written by listen.js through setters, exactly like
+// this. Its home is here: it guards this module's function, and this module is
+// already the declared per-viewport ("WaveformView") state in the target
+// architecture, so this is the lock's final home rather than a way-station.
+//
+// WHY THE GUARD IS NOT JUST INTERNALISED into syncAllWaveformScrolls, which would
+// make the exported reader unnecessary — two reasons, both measured:
+//  1. Of its four callers, only ONE takes the lock (the per-waveform scroll
+//     handler in waveform-events.js). The audioprocess sync in that same module,
+//     the scroll-into-view sync in listen.js, and region-nav.js all sync WITHOUT
+//     it. Locking inside the function would change behaviour at those three,
+//     including on the playback path.
+//  2. swapCurrentAudio and setCurrentAudioInactive hold the lock across a
+//     seekTo(0) plus a scroll restore — suppressing sync during an operation that
+//     is not a sync at all. That use can never live inside the sync function.
+// So the lock stays externally holdable: a live-binding reader for the one
+// checker, and a setter for the writers that are not in this module.
+export let scrollSyncLock = false;
+
+/** Writers outside this module (waveform-events.js's scroll and redrawcomplete
+ *  handlers; listen.js's swapCurrentAudio and setCurrentAudioInactive) go through
+ *  here — ESM importers cannot assign to a live binding. */
+export function setScrollSyncLock(locked) {
+  scrollSyncLock = locked;
 }
 
 /** Get the shadow-DOM scroll container for a WaveSurfer instance. */

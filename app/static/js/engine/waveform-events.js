@@ -41,8 +41,6 @@ import {
   materializeSettled,
   updateGroupCounts,
   hideWaveformOverlay,
-  scrollSyncLock,
-  setScrollSyncLock,
   correctionOverlaysInteractive,
 } from "../listen.js";
 import { updateTransportIcons } from "./transport.js";
@@ -56,6 +54,8 @@ import {
   ensureWfLabel,
   getScrollContainer,
   syncOverlayScroll,
+  scrollSyncLock,
+  setScrollSyncLock,
 } from "./zoom-scroll.js";
 import {
   updatePositionIndicator,
@@ -168,11 +168,11 @@ export function wireWaveformEvents(filename) {
  * reload — orchestration, not rendering.
  *
  * On the borrowed scroll lock: `scrollSyncLock` is read through its live binding
- * and written through setScrollSyncLock, both from listen.js, which still owns
- * it. This function holds the lock's only reader and two of its four writes, so
- * owning it here would look tidier — but listen.js writes it too (swapCurrentAudio
- * and setCurrentAudioInactive), and its real destination is per-viewport
- * WaveformView state. See the comment on the declaration in listen.js.
+ * and written through setScrollSyncLock, both from engine/zoom-scroll.js, which
+ * owns it (increment 23) because it guards re-entry into that module's
+ * syncAllWaveformScrolls. The scroll handler registered below is that guard's only
+ * reader; see the declaration there for why the check cannot simply move inside
+ * the function it protects.
  */
 export function onWaveformReady(filename, playPosition, isPlaying) {
   // Whatever else happens below, this build is done occupying a slot.

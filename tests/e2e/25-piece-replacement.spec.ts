@@ -147,6 +147,43 @@ async function expectNoReplacePrompt(page: Page) {
   await expect(page.locator(CONFIRM)).toHaveCount(0);
 }
 
+/**
+ * Resolve once every waveform's geometry has stopped moving after a zoom.
+ *
+ * Zoom re-renders asynchronously — WaveSurfer redraws off its own
+ * ResizeObserver — and `playpause()` calls `wavesurfers[x].play()` without
+ * awaiting it or catching it. A zoom re-render landing mid-`play()` rejects that
+ * promise, and playback then silently never starts: `getCurrentTime()` stays
+ * exactly 0 and a poll waiting on it burns its whole timeout. That was the 25.3
+ * flake — ~25% on Firefox, and reproducible on Chrome too once the timing
+ * shifted, so it is a race and not a browser quirk.
+ *
+ * Two identical width readings rather than a guessed duration; same shape as
+ * spec 28's settled().
+ */
+async function zoomSettled(page: Page, timeout = 15_000) {
+  let previous = '';
+  await expect
+    .poll(
+      async () => {
+        const now = await page.evaluate(() => {
+          const t: any = (window as any)._listenTest;
+          return Object.keys(t.wavesurfers)
+            .map((fn) => {
+              const sc = t.wavesurfers[fn].getWrapper().parentElement as HTMLElement;
+              return `${fn}:${sc.scrollWidth}:${sc.clientWidth}`;
+            })
+            .join('|');
+        });
+        const stable = now === previous;
+        previous = now;
+        return stable;
+      },
+      { timeout, intervals: [100] },
+    )
+    .toBe(true);
+}
+
 /** Resolve once the app has finished a load that started after `since`. */
 async function waitForLoadAfter(page: Page, since: number, timeout = 60_000) {
   await expect
@@ -324,6 +361,8 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
     const zoom = page.locator('#zoom-slider');
     await zoom.fill('2');
     await zoom.dispatchEvent('input');
+    // Let the zoom finish before asking for playback — see zoomSettled.
+    await zoomSettled(page);
     await page.click('#playpause');
     // Wait for playback to actually be under way, not a fixed guess.
     await expect

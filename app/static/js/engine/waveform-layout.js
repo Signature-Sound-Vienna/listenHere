@@ -32,10 +32,10 @@ import {
   alignmentGrids,
   loadedAlignmentJSON,
   SYNTH_MEI_KEY,
-  ensureWaveformGroupContainers,
   hideWaveformsPaneLoading,
   isDrawModeActive,
 } from "../listen.js";
+import { ensureWaveformGroupContainers } from "./grouping-ui.js";
 import { ensureWaveformView } from "./waveform-view.js";
 import { getActiveFileGroups, resolveGroupFor } from "./grouping-model.js";
 

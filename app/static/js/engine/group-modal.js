@@ -36,8 +36,6 @@ import {
   bumpChangeCounter,
   loadedAlignmentJSON,
   reloadWaveforms,
-  renderGroupingTabPills,
-  renderSidebarFileList,
   setLoadedAlignmentJSON,
   SYNTH_MEI_KEY,
   updateDirtyState,
@@ -51,6 +49,10 @@ import {
   mintGroupId,
   nextGroupColour,
 } from "./grouping-model.js";
+import {
+  renderGroupingTabPills,
+  renderSidebarFileList,
+} from "./grouping-ui.js";
 
 /** Open the grouping modal. */
 export function openGroupModal() {

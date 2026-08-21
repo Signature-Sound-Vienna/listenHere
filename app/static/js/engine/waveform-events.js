@@ -39,10 +39,10 @@ import {
   markers,
   updateRenderAnnoRegions,
   materializeSettled,
-  updateGroupCounts,
   hideWaveformOverlay,
   correctionOverlaysInteractive,
 } from "../listen.js";
+import { updateGroupCounts } from "./grouping-ui.js";
 import { updateTransportIcons } from "./transport.js";
 import {
   currentZoomLevel,

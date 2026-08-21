@@ -36,7 +36,11 @@ import {
   wireWaveformEvents,
   onWaveformReady,
 } from "./engine/waveform-events.js";
-import { createWaveformRow } from "./engine/waveform-layout.js";
+import {
+  createWaveformRow,
+  resolveGroupFor,
+  matchesGroup,
+} from "./engine/waveform-layout.js";
 import {
   initAlignPanel,
   configure as configureAlign,
@@ -790,32 +794,14 @@ function _getTempoScopeFiles(forFilename) {
   );
 
   if (_tempoScopeWithinGroup) {
-    // Restrict to files in the same group as forFilename
+    // Restrict to files in the same group as forFilename, or to the ungrouped
+    // ones when it has no group. Membership via the shared resolveGroupFor: this
+    // used to iterate every group and let the last match win, which could scope
+    // the curve to a different group than the one holding forFilename's row
+    // (roadmap item U).
     const groups = getActiveFileGroups();
-    const grouped = new Set();
-    let myGroupFiles = null;
-    for (const g of groups) {
-      const members = new Set(g.files || []);
-      if (g.pattern) {
-        try {
-          const re = new RegExp(g.pattern);
-          files.forEach((f) => {
-            const short = f.substring(f.lastIndexOf("/") + 1);
-            if (re.test(short) || re.test(f)) members.add(f);
-          });
-        } catch (_) {}
-      }
-      members.forEach((f) => grouped.add(f));
-      if (members.has(forFilename)) {
-        myGroupFiles = files.filter((fn) => members.has(fn));
-      }
-    }
-    if (myGroupFiles) {
-      files = myGroupFiles;
-    } else {
-      // forFilename is ungrouped — use all ungrouped files as the group
-      files = files.filter((fn) => !grouped.has(fn));
-    }
+    const myGroup = resolveGroupFor(forFilename, groups);
+    files = files.filter((fn) => resolveGroupFor(fn, groups) === myGroup);
   }
 
   if (_tempoScopeDisplayedOnly) {
@@ -2182,6 +2168,155 @@ export function getActiveFileGroups() {
 }
 
 /**
+ * Find, report, and normalise recordings that more than one group claims within
+ * the same grouping context.
+ *
+ * A recording belongs to exactly one group per context (a tab, or an
+ * annotation's pinned grouping). Switching context may change which one — that
+ * is the point of tabs — but two groups claiming it inside one context is a
+ * defect in the alignment file, most likely written by an older version. Every
+ * membership question in the app now goes through resolveGroupFor, which keeps
+ * the FIRST claimant, so this makes the file agree with what the user sees.
+ *
+ * Only explicit `files` entries can be normalised: a recording claimed by a
+ * later group's regex `pattern` cannot be edited out of it without expanding the
+ * pattern, which would stop it matching recordings added later. Those are still
+ * reported, and resolveGroupFor already resolves them to the first claimant, so
+ * behaviour is consistent either way. The grouping modal drops patterns the
+ * first time it opens, and its expansion honours first-wins too.
+ *
+ * Checks every tab, not just the active one: the file is being repaired as a
+ * whole, and finding out on a tab switch later would be worse.
+ *
+ * @param {string[]} filenames every recording in the alignment
+ * @returns {Array<{tab: string, file: string, kept: string, dropped: string[],
+ *   patternOnly: boolean}>} one entry per over-claimed recording
+ */
+function _normaliseGroupOverlap(filenames) {
+  const tabs = loadedAlignmentJSON?.header?.groupingTabs;
+  if (!Array.isArray(tabs)) return [];
+  const report = [];
+  for (const tab of tabs) {
+    const groups = tab.fileGroups || [];
+    if (groups.length < 2) continue;
+    for (const f of filenames) {
+      if (f === SYNTH_MEI_KEY) continue; // never groupable
+      const claimants = groups.filter((g) => matchesGroup(f, g));
+      if (claimants.length < 2) continue;
+      const [kept, ...losers] = claimants;
+      for (const g of losers) {
+        g.files = (g.files || []).filter((x) => x !== f);
+      }
+      // A loser whose claim SURVIVES the explicit removal is claiming by regex.
+      // We cannot edit one filename out of a pattern without expanding it, which
+      // would stop the pattern matching recordings added later — so the claim
+      // stays in the file and resolveGroupFor keeps ignoring it. Worth telling
+      // the user, since the group will still look like it should hold the row.
+      const patternRemains = losers.some((g) => matchesGroup(f, g));
+      report.push({
+        tab: tab.name || "Default",
+        file: f,
+        kept: kept.name || "",
+        dropped: losers.map((g) => g.name || ""),
+        patternRemains,
+      });
+    }
+  }
+  return report;
+}
+
+/**
+ * Tell the user their alignment file claimed a recording in more than one group,
+ * and what was done about it. Acknowledgement only — the normalisation has
+ * already happened, and the load is complete by the time this shows, so the
+ * dialog never sits behind the pane spinner.
+ *
+ * The repair is in memory: it persists when the user next saves, for their own
+ * reasons. Marking the document dirty here would fake user intent and would feed
+ * the unsaved-work check in the replace-piece prompt.
+ */
+async function _warnGroupOverlap(report) {
+  if (!report.length) return;
+  const multiTab =
+    new Set(report.map((r) => r.tab)).size > 1 ||
+    (loadedAlignmentJSON?.header?.groupingTabs || []).length > 1;
+  const lines = report.map((r) =>
+    el("li", { class: "lh-v6-confirm-line removed" }, [
+      el("strong", {
+        text: r.file.substring(r.file.lastIndexOf("/") + 1),
+      }),
+      document.createTextNode(
+        (multiTab ? ` (tab \u201c${r.tab}\u201d)` : "") +
+          " \u2014 also claimed by " +
+          r.dropped.map((n) => `\u201c${n}\u201d`).join(", ") +
+          `; kept in \u201c${r.kept}\u201d`,
+      ),
+    ]),
+  );
+  const anyPatternRemains = report.some((r) => r.patternRemains);
+  const body = [
+    el("p", { class: "lh-v6-confirm-target" }, [
+      "This alignment puts ",
+      el("strong", {
+        class: "lh-v6-confirm-reason",
+        text:
+          report.length === 1
+            ? "one recording"
+            : `${report.length} recordings`,
+      }),
+      " in more than one group at the same time. A recording can only belong to" +
+        " one group at a time, so the extra memberships have been dropped.",
+    ]),
+    el("ul", { class: "lh-v6-confirm-list" }, lines),
+    el("p", {
+      class: "lh-v6-confirm-detail",
+      text:
+        (anyPatternRemains
+          ? "A group that claims a recording by filename pattern keeps its" +
+            " pattern, so it may still look like it should hold the recording;" +
+            " the recording is shown in the first group only. "
+          : "") +
+        "Nothing has been saved \u2014 the corrected grouping is written the next" +
+        " time you save this alignment. Use Group / Manage recordings to change it.",
+    }),
+  ];
+  await confirmDialog({
+    title:
+      report.length === 1
+        ? "A recording was in more than one group"
+        : "Recordings were in more than one group",
+    confirmLabel: "Continue",
+    // Acknowledgement, not a destructive choice: the danger colour goes on the
+    // header indicator, and the button stays the ordinary primary one.
+    dialogClass: "lh-v6-confirm-danger",
+    cancelLabel: null,
+    body,
+  });
+}
+
+/**
+ * Resolve `filenames` into one member list per group in `groups`, in the same
+ * order as `groups`.
+ *
+ * Single-valued by construction: a recording appears in exactly one list, the
+ * first group that claims it (see resolveGroupFor). The sidebar, the content
+ * pane's container builder, and the annotation snapshot all go through here, so
+ * they cannot drift apart again — which they had, each answering "which group?"
+ * its own way (roadmap item U).
+ */
+function _resolveGroupMembers(filenames, groups) {
+  const lists = (groups || []).map(() => []);
+  const indexByGroup = new Map((groups || []).map((g, i) => [g, i]));
+  for (const f of filenames) {
+    const g = resolveGroupFor(f, groups);
+    if (!g) continue;
+    const i = indexByGroup.get(g);
+    if (i !== undefined) lists[i].push(f);
+  }
+  return lists.map((l) => l.sort());
+}
+
+/**
  * Snapshot the current grouping (active tab + resolved per-group file
  * memberships) for the V6 annotation pinned-grouping field. Resolves
  * each group's `files` list + `pattern` regex against the currently
@@ -2195,23 +2330,14 @@ export function getActiveGroupingSnapshot() {
   // Working set: this snapshot is persisted with the annotation, so it must
   // describe what the user has in the pane, not which rows happen to be built.
   const loadedFiles = Object.keys(waveformViews);
+  // One group per recording, via the shared resolver: within a grouping context
+  // — a tab, or an annotation's pinned grouping — a recording belongs to exactly
+  // one group. This snapshot is persisted with the annotation, so it used to be
+  // possible to save a recording under two groups at once (roadmap item U).
+  const members = _resolveGroupMembers(loadedFiles, groups);
   const out = { name: tab.name || "Default", groups: [] };
-  for (const g of groups) {
-    const explicit = new Set(g.files || []);
-    let pattern = null;
-    if (g.pattern) {
-      try {
-        pattern = new RegExp(g.pattern);
-      } catch (_) {}
-    }
-    const files = loadedFiles.filter((f) => {
-      if (explicit.has(f)) return true;
-      if (pattern) {
-        const short = f.substring(f.lastIndexOf("/") + 1);
-        if (pattern.test(short) || pattern.test(f)) return true;
-      }
-      return false;
-    });
+  for (const [gi, g] of groups.entries()) {
+    const files = members[gi];
     out.groups.push({
       // Stable identity for the group, independent of its display label.
       // Source groups created via the grouping modal carry a minted `id`;
@@ -2255,40 +2381,16 @@ function _renderSidebarFileList(filenames) {
   // Use active tab's groups (migrated on load)
   const groups = loadedAlignmentJSON ? getActiveFileGroups() : [];
 
-  // Determine which files belong to groups
-  const grouped = new Set();
-  groups.forEach((g) => {
-    (g.files || []).forEach((f) => grouped.add(f));
-    if (g.pattern) {
-      try {
-        const re = new RegExp(g.pattern);
-        filenames.forEach((f) => {
-          const short = f.substring(f.lastIndexOf("/") + 1);
-          if (re.test(short) || re.test(f)) grouped.add(f);
-        });
-      } catch (_) {
-        /* invalid regex — ignore */
-      }
-    }
-  });
-
-  // Build effective group membership (pattern + explicit)
-  const groupMembers = groups.map((g) => {
-    const members = new Set(g.files || []);
-    if (g.pattern) {
-      try {
-        const re = new RegExp(g.pattern);
-        filenames.forEach((f) => {
-          const short = f.substring(f.lastIndexOf("/") + 1);
-          if (re.test(short) || re.test(f)) members.add(f);
-        });
-      } catch (_) {}
-    }
-    return [...members].filter((f) => filenames.includes(f)).sort();
-  });
+  // Effective group membership: each recording resolves to exactly ONE group
+  // (or none). resolveGroupFor is the single source of truth — see roadmap
+  // item U; this used to list a recording under every group it matched, which
+  // disagreed with the pane, where its row can only have one parent.
+  const groupMembers = _resolveGroupMembers(filenames, groups);
 
   // Ungrouped files
-  const ungrouped = filenames.filter((f) => !grouped.has(f)).sort();
+  const ungrouped = filenames
+    .filter((f) => !resolveGroupFor(f, groups))
+    .sort();
 
   /** Helper: create a <fieldset class="audio-group collapsible-fieldset"> */
   function _makeGroupFieldset(
@@ -2794,40 +2896,19 @@ export function ensureWaveformGroupContainers(filenames, forceRebuild = false) {
 
   const groups = loadedAlignmentJSON ? getActiveFileGroups() : [];
 
-  // Determine membership similar to sidebar: support explicit files + pattern
-  const grouped = new Set();
-  groups.forEach((g) => {
-    (g.files || []).forEach((f) => grouped.add(f));
-    if (g.pattern) {
-      try {
-        const re = new RegExp(g.pattern);
-        filenames.forEach((f) => {
-          const short = f.substring(f.lastIndexOf("/") + 1);
-          if (re.test(short) || re.test(f)) grouped.add(f);
-        });
-      } catch (_) {}
-    }
-  });
-
-  const groupMembers = groups.map((g) => {
-    const members = new Set(g.files || []);
-    if (g.pattern) {
-      try {
-        const re = new RegExp(g.pattern);
-        filenames.forEach((f) => {
-          const short = f.substring(f.lastIndexOf("/") + 1);
-          if (re.test(short) || re.test(f)) members.add(f);
-        });
-      } catch (_) {}
-    }
-    return [...members].filter((f) => filenames.includes(f)).sort();
-  });
+  // Same single-valued membership the sidebar uses, so a container is built
+  // only for a group that will actually receive rows. Listing a recording
+  // under every group it matched built a container for the losers too — one
+  // that stayed empty for good while its badge claimed a recording, because
+  // the row itself went to the first group only (roadmap item U).
+  const groupMembers = _resolveGroupMembers(filenames, groups);
 
   // The synth/score key has its own dedicated Score container — never count
   // it as ungrouped (otherwise an empty "Ungrouped recordings" header lingers
-  // when all real recordings are placed into user groups).
+  // when all real recordings are placed into user groups). resolveGroupFor
+  // never puts it in a group either.
   const ungrouped = filenames
-    .filter((f) => f !== SYNTH_MEI_KEY && !grouped.has(f))
+    .filter((f) => f !== SYNTH_MEI_KEY && !resolveGroupFor(f, groups))
     .sort();
 
   // Build all containers keyed by group name, then append in saved order
@@ -3019,23 +3100,14 @@ function _switchActiveTab(tabName) {
   // Move existing waveform elements into their new group containers
   const waveformsRoot = document.getElementById("waveforms");
   const groups = getActiveFileGroups();
-  const groupMap = new Map(); // filename -> group name
-  groups.forEach((g) => {
-    const members = new Set(g.files || []);
-    if (g.pattern) {
-      try {
-        const re = new RegExp(g.pattern);
-        filenames.forEach((f) => {
-          const short = f.substring(f.lastIndexOf("/") + 1);
-          if (re.test(short) || re.test(f)) members.add(f);
-        });
-      } catch (_) {}
-    }
-    members.forEach((f) => groupMap.set(f, g.name));
-  });
 
   // Place each existing waveform into the correct group-list. Working set: a
   // deferred row is in the pane and must be re-parented with the rest.
+  //
+  // Membership comes from the shared resolveGroupFor, the same call row creation
+  // makes. This used to build its own filename → group map and let the LAST
+  // matching group win, while row creation took the FIRST — so a recording in
+  // two groups changed group merely by switching tabs and back (roadmap item U).
   Object.keys(waveformViews).forEach((fname) => {
     const wfEl = waveformsRoot.querySelector(
       `.waveform[data-ix='${CSS.escape(fname)}']`,
@@ -3044,11 +3116,14 @@ function _switchActiveTab(tabName) {
     let targetList;
     if (fname === SYNTH_MEI_KEY) {
       targetList = waveformsRoot.querySelector(".file-group-score .group-list");
-    } else if (groupMap.has(fname)) {
-      const fg = waveformsRoot.querySelector(
-        `.file-group[data-group='${CSS.escape(groupMap.get(fname))}']`,
-      );
-      targetList = fg?.querySelector(".group-list");
+    } else {
+      const g = resolveGroupFor(fname, groups);
+      if (g) {
+        const fg = waveformsRoot.querySelector(
+          `.file-group[data-group='${CSS.escape(g.name)}']`,
+        );
+        targetList = fg?.querySelector(".group-list");
+      }
     }
     if (!targetList) {
       targetList = waveformsRoot.querySelector(
@@ -3286,16 +3361,25 @@ function _openGroupModal() {
   // file in a group is individually removable. We only edit the modal clone;
   // nothing is persisted until Apply. (Backwards-compat: older saved groups
   // may carry a `pattern`; once expanded here we drop it.)
+  //
+  // Expansion honours first-wins within the tab: a recording already claimed by
+  // an earlier group is not added to a later one. Without that, expanding two
+  // overlapping patterns would mint the explicit double membership that the rest
+  // of the app treats as a defect (roadmap item U) — and unlike a pattern, an
+  // explicit `files` entry survives every later save.
   modalTabs.forEach((tab) => {
-    (tab.fileGroups || []).forEach((g) => {
+    const tabGroups = tab.fileGroups || [];
+    tabGroups.forEach((g, gi) => {
       if (g.pattern) {
         try {
           const re = new RegExp(g.pattern);
           if (!g.files) g.files = [];
+          const earlier = tabGroups.slice(0, gi);
           filenames.forEach((f) => {
-            if ((re.test(shortName(f)) || re.test(f)) && !g.files.includes(f)) {
-              g.files.push(f);
-            }
+            if (!(re.test(shortName(f)) || re.test(f))) return;
+            if (g.files.includes(f)) return;
+            if (earlier.some((og) => matchesGroup(f, og))) return;
+            g.files.push(f);
           });
         } catch (_) {
           /* invalid regex — just drop it */
@@ -5287,6 +5371,8 @@ async function _maybeResetForNewPiece(grids) {
 
 /** Ticks once per completed setGrids — a load-completion signal for tests. */
 let _loadGeneration = 0;
+// Group-overlap repairs from the load in progress, surfaced once it completes.
+let _pendingGroupOverlapReport = [];
 
 async function setGrids(grids) {
   console.log("received grids: ", grids);
@@ -5426,6 +5512,12 @@ async function setGrids(grids) {
   );
   filenames.sort();
 
+  // Repair overlapping group membership BEFORE anything reads the groups, so
+  // the sidebar, the pane's containers, and every later snapshot all see one
+  // group per recording. The user is told at the end of the load, not here:
+  // a dialog raised now would sit behind the pane spinner.
+  _pendingGroupOverlapReport = _normaliseGroupOverlap(filenames);
+
   // Lazy waveform creation is a property of the loaded piece, not of one batch:
   // whether a row is built now or on scroll must not depend on whether it came
   // from the auto-load, a group's All button, or a sidebar click.
@@ -5542,6 +5634,14 @@ async function setGrids(grids) {
   // One tick per completed load. Exposed on _listenTest so e2e tests can wait
   // for "this piece finished loading" instead of sleeping for a guessed duration.
   _loadGeneration++;
+  // Now that the pane is populated and its spinner retired, report any group
+  // overlap the load had to repair. Deliberately not awaited: the load IS
+  // finished, and blocking setGrids on a dialog would hold up every caller.
+  if (_pendingGroupOverlapReport.length) {
+    const report = _pendingGroupOverlapReport;
+    _pendingGroupOverlapReport = [];
+    void _warnGroupOverlap(report);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -7879,6 +7979,10 @@ window._listenTest = {
   get alignmentHeaderRef() { return loadedAlignmentJSON?.header?.ref ?? null; },
   /** What the file picker currently expects; must track the loaded piece. */
   get expectedAudioKeys() { return [...expectedAudioKeys]; },
+  /** The saved grouping tabs, post-migration and post-overlap-repair (item U). */
+  get groupingTabs() { return loadedAlignmentJSON?.header?.groupingTabs ?? null; },
+  /** Resolved single-valued membership for the active tab — what an annotation pins. */
+  get activeGroupingSnapshot() { return getActiveGroupingSnapshot(); },
   /** Object URLs awaiting revocation — should drain to 0 once renderers die. */
   get retiredBlobUrlCount() { return session.retiredBlobUrls.length; },
   /** Increments once per completed load; lets tests await a load instead of sleeping. */

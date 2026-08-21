@@ -43,7 +43,7 @@ import { ensureWaveformView } from "./waveform-view.js";
  * flags invalid regexes for the user, and a bad one saved into an alignment
  * must not stop the pane from rendering.
  */
-function _matchesGroup(filename, g) {
+export function matchesGroup(filename, g) {
   if (new Set(g.files || []).has(filename)) return true;
   if (!g.pattern) return false;
   try {
@@ -56,44 +56,71 @@ function _matchesGroup(filename, g) {
 }
 
 /**
+ * THE answer to "which group does this recording belong to?" — the single source
+ * of truth for group membership, in every context.
+ *
+ * Within one grouping context (a tab, or an annotation's pinned grouping) a
+ * recording belongs to **exactly one** group. Switching context may change which
+ * one; overlapping membership inside a context is a defect in the alignment file,
+ * normalised at load by listen.js's group-overlap check. Precedence when a
+ * defective file does overlap is **first match in group order**, matching that
+ * normalisation, so every site agrees even before it runs.
+ *
+ * Before this existed the question was answered five times over — twice
+ * single-valued (row placement first-wins, tab switch last-wins) and three times
+ * multi-valued (sidebar, container builder, annotation snapshot). A recording in
+ * two groups therefore moved between them on a tab round-trip, and left behind a
+ * container that existed, was titled and coloured, and whose badge claimed a
+ * recording it never showed. See roadmap item U.
+ *
+ * The score row is never groupable: it has its own dedicated container, so it
+ * resolves to null here no matter what a pattern says.
+ *
+ * @param {string} filename
+ * @param {Array<{name: string, files?: string[], pattern?: string}>} groups
+ * @returns {object|null} the owning group, or null when ungrouped
+ */
+export function resolveGroupFor(filename, groups) {
+  if (filename === SYNTH_MEI_KEY) return null;
+  for (const g of groups || []) {
+    if (matchesGroup(filename, g)) return g;
+  }
+  return null;
+}
+
+/**
  * The `.group-list` that should hold `filename`'s row.
  *
  * Precedence, unchanged from prepareWaveform: the Score container for the synth
  * key, then the FIRST group that claims the filename, else the ungrouped
  * container, else the pane root.
  *
- * NB this is deliberately NOT shared with _switchActiveTab's near-identical
- * resolution in listen.js — the two disagree on overlapping group membership
- * (first-wins here, last-wins there) and on whether a group may claim the Score
- * row. Unifying them is a behaviour change awaiting a decision; see the memory
- * note project_group_placement_divergence.
+ * Membership comes from resolveGroupFor, which _switchActiveTab now shares — the
+ * two used to resolve it independently and disagreed (first-wins here, last-wins
+ * there), so a recording in two groups moved between them on a tab round-trip.
+ * Roadmap item U; the score row is never groupable, which resolveGroupFor owns.
  */
 function _resolveGroupList(filename, waveformsRoot) {
-  let parentList = null;
-  let placed = false;
   if (filename === SYNTH_MEI_KEY) {
-    parentList = waveformsRoot.querySelector(".file-group-score .group-list");
-    if (parentList) placed = true;
-  }
-  if (!parentList) {
-    parentList = waveformsRoot.querySelector(
-      ".file-group-ungrouped .group-list",
+    const scoreList = waveformsRoot.querySelector(
+      ".file-group-score .group-list",
     );
+    if (scoreList) return scoreList;
   }
   const groups = loadedAlignmentJSON ? getActiveFileGroups() : [];
-  for (const g of groups) {
-    if (!_matchesGroup(filename, g)) continue;
+  const g = resolveGroupFor(filename, groups);
+  if (g) {
     const fg = waveformsRoot.querySelector(
       `.file-group[data-group='${CSS.escape(g.name)}']`,
     );
-    if (fg) {
-      parentList = fg.querySelector(".group-list");
-      placed = true;
-      break;
-    }
+    const list = fg?.querySelector(".group-list");
+    if (list) return list;
   }
   // Leave in the ungrouped container, or on the pane root if there is none.
-  return placed ? parentList : parentList || waveformsRoot;
+  return (
+    waveformsRoot.querySelector(".file-group-ungrouped .group-list") ||
+    waveformsRoot
+  );
 }
 
 /**

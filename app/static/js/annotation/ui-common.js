@@ -143,12 +143,18 @@ export function confirmDialog({
       else if (e.key === "Enter" && enterConfirms) settle(true);
     }
 
-    const cancelBtn = el("button", {
-      class: "lh-v6-confirm-cancel",
-      type: "button",
-      text: cancelLabel,
-      onclick: () => settle(false),
-    });
+    // A null or empty cancelLabel makes this an acknowledgement rather than a
+    // choice: no cancel button, while the overlay click and Escape still dismiss
+    // it (both resolve false, which such a caller ignores).
+    const cancelBtn =
+      cancelLabel == null || cancelLabel === ""
+        ? null
+        : el("button", {
+            class: "lh-v6-confirm-cancel",
+            type: "button",
+            text: cancelLabel,
+            onclick: () => settle(false),
+          });
     const confirmBtn = el("button", {
       class: confirmClass,
       type: "button",
@@ -173,7 +179,11 @@ export function confirmDialog({
           el("h2", { id: labelId, class: "lh-v6-confirm-title", text: title }),
         ]),
         el("div", { class: "lh-v6-confirm-body" }, body),
-        el("div", { class: "lh-v6-confirm-actions" }, [cancelBtn, confirmBtn]),
+        el(
+          "div",
+          { class: "lh-v6-confirm-actions" },
+          cancelBtn ? [cancelBtn, confirmBtn] : [confirmBtn],
+        ),
       ],
     );
 
@@ -189,7 +199,7 @@ export function confirmDialog({
     );
     document.body.appendChild(overlay);
     document.addEventListener("keydown", onKey);
-    (focus === "cancel" ? cancelBtn : confirmBtn).focus();
+    (focus === "cancel" && cancelBtn ? cancelBtn : confirmBtn).focus();
   });
 }
 

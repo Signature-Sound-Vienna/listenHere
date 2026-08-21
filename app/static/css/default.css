@@ -5460,6 +5460,12 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
   line-height: 1;
 }
 
+/* Danger variant: a red header indicator for a dialog reporting a defect the
+   app has already had to repair (e.g. overlapping group membership on load). */
+.lh-v6-confirm-danger .lh-v6-confirm-warning {
+  color: var(--color-danger, #dc2626);
+}
+
 .lh-v6-confirm-title {
   margin: 0;
   font-size: 16px;

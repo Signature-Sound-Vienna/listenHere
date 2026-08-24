@@ -38,6 +38,7 @@ import {
 } from "../listen.js";
 import { updateAllRegionNavArrows } from "./region-nav.js";
 import { waveformViews, drawAlignmentGrid } from "./waveform-view.js";
+import { fitPxPerSec } from "./zoom-fit.js";
 
 // ---------------------------------------------------------------------------
 // Zoom state (owned here)
@@ -157,36 +158,9 @@ export function syncOverlayScroll(filename) {
   ow.inner.style.transform = `translateX(${-scrollLeft}px)`;
 }
 
-/**
- * pxPerSec that makes a waveform fit its container exactly at zoom 1.
- *
- * Two durations are in play and they are not the same number. `ws.getDuration()`
- * reports `media.duration`, read from the MP3 container header, but WaveSurfer's
- * renderer sizes the wrapper from the DECODED buffer:
- * `Math.ceil(decodedData.duration * minPxPerSec)`, treating anything wider than
- * the container as scrollable. Fitting against the header duration therefore
- * overshoots whenever the decoded audio is even microseconds longer — measured
- * on the test fixtures, +9µs on audio-a and audio-b and +5µs on audio-short,
- * enough for the ceil to round up to `containerWidth + 1`. The row then
- * overflows by one pixel, becomes scrollable with a maxScroll of 1, and holds a
- * stale `scrollLeft` of 1 that the redrawcomplete clamp cannot heal because 1 IS
- * the maximum. Files whose decoded duration matches or undershoots the header
- * (the synthesised score, audio-c) were unaffected — hence "some but not all".
- *
- * So fit against the duration the renderer will actually use. The half-pixel
- * fallback then guards the residual case where that product still ceils high in
- * floating point. Below the overflow threshold the row is not scrollable, so
- * fillParent draws it to the container's full width with no gap either side.
- */
-function fitPxPerSec(containerWidth, ws) {
-  // The renderer's own duration, not the media header's.
-  const duration = ws.decodedData?.duration || ws.getDuration();
-  if (!(containerWidth > 0) || !(duration > 0)) return 0;
-  const exact = containerWidth / duration;
-  return Math.ceil(duration * exact) > containerWidth
-    ? (containerWidth - 0.5) / duration
-    : exact;
-}
+// fitPxPerSec — the fit-without-one-pixel-overflow arithmetic (the spec 28.3
+// bug) — moved verbatim to engine/zoom-fit.js so the exhibit can import the fix
+// rather than copy it. Full story in that file's header.
 
 /** Configure WaveSurfer autoScroll/autoCenter for a waveform based on scroll mode. */
 export function applyScrollMode(filename) {

@@ -397,6 +397,31 @@ async function boot() {
   await Promise.all(stripsReady);
   for (const vp of viewports) renderAnnotations(vp, store);
 
+  // The widened-region floor (regions.js) is derived from the strips' LIVE
+  // width, and nothing guarantees that first render ran against a settled
+  // layout: a window mid-resize during boot has been observed laying the strips
+  // out a few pixels wide, inflating every region — regions.js caps the damage,
+  // but an idle kiosk would keep the capped-yet-wrong regions forever, because
+  // only a re-render repairs specs. WaveSurfer already owns the recovery
+  // signal: its renderer re-renders on real container-width changes (100 ms
+  // debounced, width-guarded) and re-emits "resize" AFTER the wrapper has its
+  // new geometry, so re-deriving here always reads sane widths — a boot gate on
+  // "plausible" strip width would be redundant, and could strand a kiosk that
+  // never reaches one. rAF-coalesced per viewport: a column's eight strips
+  // resize together and one re-derivation covers them all.
+  for (const vp of viewports) {
+    let rederiveQueued = false;
+    const rederive = () => {
+      if (rederiveQueued) return;
+      rederiveQueued = true;
+      requestAnimationFrame(() => {
+        rederiveQueued = false;
+        renderAnnotations(vp, store);
+      });
+    };
+    for (const strip of vp.strips.values()) strip.ws.on("resize", rederive);
+  }
+
   store.subscribe((viewport) => {
     const vp = viewports[viewport];
     if (!vp) return;

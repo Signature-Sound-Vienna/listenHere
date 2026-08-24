@@ -51,7 +51,9 @@ test-results/
 # the pinned MEI ~4.2 MB, and the transcoded audio ~72 MB.
 /app/static/exhibit/data/*.json
 /app/static/exhibit/data/*.mei
-/app/static/exhibit/audio/
+# No trailing slash: a worktree may satisfy this with a SYMLINK to the main
+# checkout’s transcoded set, and dir-only patterns do not match symlinks.
+/app/static/exhibit/audio
 # ...but the *overrides.json files are AUTHORED DATA, not build products, and MUST
 # be committed: `overrides.json` holds the hand-placed region times that no
 # re-alignment may recompute (plan §5.2d), and `metadata-overrides.json` holds the

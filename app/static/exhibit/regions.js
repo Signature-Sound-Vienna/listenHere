@@ -35,6 +35,21 @@ const ALPHA = 0.34;
 const ALPHA_ACTIVE = 0.5;
 
 /**
+ * Hard ceiling on the widening floor, as a fraction of the recording. The floor
+ * is a PIXEL quantity converted through the strip's live width, so a layout
+ * that has not settled poisons the conversion: a window mid-resize during boot
+ * has been observed laying the strips out a few pixels wide, where four pixels
+ * of a 582 s overture IS the whole recording — every region inflated to
+ * 0→duration, and an idle kiosk kept them that way because only a re-render
+ * repairs specs. At any real width the computed floor sits far below this cap
+ * (4 px at fit-to-width on a ~1000 px strip is ~0.4 % of the piece), so the cap
+ * only bites when the geometry is nonsense; the lasting repair is main.js
+ * re-deriving on the renderer's own "resize" once the layout settles.
+ * Exported for spec 35.24, which pins both halves.
+ */
+export const MAX_WIDEN_FRACTION = 0.02;
+
+/**
  * Draw the regions for `annotations` across one viewport's strips.
  *
  * Reconciles rather than clears and rebuilds: the audience switch will call this
@@ -50,10 +65,11 @@ const ALPHA_ACTIVE = 0.5;
 export function syncRegions(strips, annotations, { minRegionPx = 0, activeId = null } = {}) {
   const specsByFile = computeSpecsByFile(annotations, activeId);
   for (const [file, strip] of strips) {
-    const secondsPerPx = _secondsPerPx(strip);
-    const specs = (specsByFile[file] || []).map((s) =>
-      _widen(s, minRegionPx * secondsPerPx, strip.duration),
+    const minSeconds = Math.min(
+      minRegionPx * _secondsPerPx(strip),
+      (strip.duration || 0) * MAX_WIDEN_FRACTION,
     );
+    const specs = (specsByFile[file] || []).map((s) => _widen(s, minSeconds, strip.duration));
     _reconcile(strip.regions, specs);
   }
 }

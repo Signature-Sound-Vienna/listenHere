@@ -1186,3 +1186,143 @@ test.describe('35. Feedback round 2 — the audience union mode', () => {
     expect(await page.locator('.ann-panel[data-viewport="0"] .ann-chip').count()).toBe(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 35.24 pins the widened-region floor against an UNSETTLED boot layout. The
+// floor (config.minRegionPx) is a pixel quantity converted through the strip's
+// LIVE width, and nothing guarantees boot's first render ran against a settled
+// layout: a window mid-resize during boot has been observed laying the strips
+// out a few pixels wide, where four pixels of a 582 s overture IS the whole
+// recording — every region inflated to 0→duration, and an idle kiosk kept
+// them that way, because only a re-render repairs specs. Two halves to pin,
+// each of which fails alone: the conversion is CAPPED (regions.js
+// MAX_WIDEN_FRACTION — no layout, however broken, widens a region past a
+// small fraction of the piece), and the settle is the REPAIR (WaveSurfer
+// re-renders on real container-width changes and re-emits "resize" after the
+// wrapper has its new geometry; main.js re-derives the viewport's regions
+// there — with NO interaction, because a museum kiosk gets none).
+// ---------------------------------------------------------------------------
+
+test.describe('35. Regions vs an unsettled boot layout', () => {
+  // Narrow enough that the px→seconds conversion is garbage (strips lay out
+  // ~32 px wide — measured on both engines), wide enough that both engines
+  // still lay the exhibit out and boot cleanly.
+  test.use({ viewport: { width: 60, height: 1366 } });
+
+  test('35.24 a degenerate boot layout cannot inflate regions past the cap, and the settled layout repairs them untouched', async ({
+    page,
+  }) => {
+    // The expert audience carries the sub-second hand-placement regions — the
+    // ones the floor exists for, and therefore the ones a bad conversion
+    // corrupts. Set from the URL: at 60 px the switch buttons are unclickable.
+    await boot(page, 'debug=1&audiences=expert');
+
+    // One prober for both halves: every drawn ex_ region on every strip, its
+    // span, and its TRUE span re-derived independently from the payload's own
+    // regionTimes — plus the constants, imported from the module under test so
+    // this spec cannot drift from the implementation.
+    const snapshot = () =>
+      page.evaluate(async () => {
+        const T = (window as any)._exhibitTest;
+        const { MAX_WIDEN_FRACTION, EX_REGION_PREFIX } = await import(
+          '/static/exhibit/regions.js'
+        );
+        const trueSpans = new Map<string, number>();
+        for (const ann of T.exhibit.annotations) {
+          for (const target of ann.targets || []) {
+            for (const rgn of ann.regions || []) {
+              const t = target.regionTimes?.[rgn.id];
+              if (!t) continue;
+              trueSpans.set(`${target.file}|${EX_REGION_PREFIX}${ann.id}_${rgn.id}`, t.end - t.start);
+            }
+          }
+        }
+        const strips: any[] = [];
+        for (const vp of T.viewports) {
+          for (const [file, s] of vp.strips) {
+            strips.push({
+              vp: vp.index,
+              file,
+              hostW: s.host.clientWidth,
+              wrapperW: s.ws.getWrapper().scrollWidth,
+              duration: s.duration,
+              regions: s.regions
+                .getRegions()
+                .filter((r: any) => r.id?.startsWith(EX_REGION_PREFIX))
+                .map((r: any) => ({
+                  id: r.id,
+                  span: r.end - r.start,
+                  trueSpan: trueSpans.get(`${file}|${r.id}`) ?? null,
+                })),
+            });
+          }
+        }
+        return { cap: MAX_WIDEN_FRACTION, minRegionPx: T.config.minRegionPx, strips };
+      });
+
+    const atBoot = await snapshot();
+    // The premise, asserted so a CSS change cannot quietly defuse this test:
+    // the strips are laid out — nonzero, else the widening skips entirely —
+    // but so narrow that the UNCAPPED floor would exceed the cap.
+    let capped = 0;
+    let drawn = 0;
+    for (const s of atBoot.strips) {
+      expect(s.hostW, `${s.file} (vp ${s.vp}) lost its layout entirely`).toBeGreaterThan(0);
+      expect(
+        s.hostW,
+        `${s.file} (vp ${s.vp}) is too wide for a degenerate-layout test — shrink the viewport`,
+      ).toBeLessThan(atBoot.minRegionPx / atBoot.cap);
+      const ceiling = s.duration * atBoot.cap;
+      for (const r of s.regions) {
+        drawn++;
+        expect(r.trueSpan, `${r.id} is drawn but absent from the payload`).not.toBeNull();
+        // THE CAP: nothing may be drawn wider than max(its true span, ceiling)
+        // — before the fix, every region here was floored to ~73 s (and at a
+        // few px of width, to the whole recording).
+        expect(
+          r.span,
+          `${r.id} on ${s.file} was widened past the cap at a degenerate width`,
+        ).toBeLessThanOrEqual(Math.max(r.trueSpan!, ceiling) + 0.01);
+        if (Math.abs(r.span - ceiling) < 0.01) capped++;
+      }
+    }
+    expect(drawn, 'no regions drawn at all — the premise is gone').toBeGreaterThan(0);
+    // At least one region actually HIT the ceiling, proving the degenerate
+    // conversion was exercised rather than dodged.
+    expect(capped, 'no region was capped — the layout was not degenerate').toBeGreaterThan(0);
+
+    // The kiosk scenario's second act: the window settles at the real size.
+    // No clicks, no zoom, no audience change — the repair must drive itself
+    // off the renderer's own resize signal.
+    await page.setViewportSize({ width: 1024, height: 1366 });
+
+    await expect
+      .poll(
+        async () => {
+          const now = await snapshot();
+          let worst = 0;
+          for (const s of now.strips) {
+            if (s.wrapperW <= 0) return Number.MAX_VALUE;
+            const floor = Math.min(
+              now.minRegionPx * (s.duration / s.wrapperW),
+              s.duration * now.cap,
+            );
+            for (const r of s.regions) {
+              if (r.trueSpan == null) return Number.MAX_VALUE;
+              // What the settled geometry demands: the true span, floored by
+              // the pixel minimum at the REAL width.
+              const expected = Math.max(r.trueSpan, floor);
+              worst = Math.max(worst, Math.abs(r.span - expected));
+            }
+          }
+          return worst;
+        },
+        {
+          timeout: 10_000,
+          message:
+            'the settled layout never repaired the boot-time regions — the resize re-derivation is broken',
+        },
+      )
+      .toBeLessThan(0.05);
+  });
+});

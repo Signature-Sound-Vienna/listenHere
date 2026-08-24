@@ -357,4 +357,61 @@ test.describe('34. The exhibit loader', () => {
     expect(probe.during.top, 'strips shifted while loading').toBe(probe.before);
     expect(probe.after, 'strips shifted after loading').toBe(probe.before);
   });
+
+  // 34.11 The orchestra is shown alongside the conductor — a requirement from
+  // the user's first eyeballing ("it's not enough to show the conductor"), and
+  // load-bearing rather than decorative: the annotations pin groupings like
+  // VPO-versus-other-orchestras, which a visitor can only follow if the strips
+  // say which orchestra is which. The sidecar has carried `ensemble` (with
+  // provenance) since the pipeline landed; this pins that the DISPLAY uses it.
+  test('34.11 the middle band and the strip captions name the orchestra as well as the conductor', async ({
+    page,
+  }) => {
+    const { ref } = await boot(page);
+    const shown = await page.evaluate((ref) => {
+      const T = (window as any)._exhibitTest;
+      const meta = T.exhibit.metadata.recordings[ref];
+      const strip = T.viewports[0].strips.get(ref);
+      return {
+        meta: { conductor: meta.conductor, ensemble: meta.ensemble },
+        band: {
+          conductor: T.band.el.querySelector('.mb-conductor')!.textContent,
+          ensemble: T.band.el.querySelector('.mb-ensemble')!.textContent,
+        },
+        caption: strip.caption.textContent,
+      };
+    }, ref);
+    expect(shown.meta.ensemble, 'the sidecar lost its ensemble field').toBeTruthy();
+    expect(shown.band.conductor).toBe(shown.meta.conductor);
+    expect(shown.band.ensemble).toBe(shown.meta.ensemble);
+    expect(shown.caption).toContain(shown.meta.ensemble);
+    expect(shown.caption).toContain(shown.meta.conductor);
+  });
+
+  // 34.12 The piece is named ONCE PER VIEW, in the middle band — with the
+  // composer, and with the opus number when the payload carries one (Die
+  // Fledermaus correctly has none: Strauss II's operettas are not
+  // opus-numbered, and the graph's Work entity agrees — see the prep script).
+  // Once per view because every strip is the same piece; the title on eight
+  // strips would say nothing.
+  test('34.12 the middle band names the piece and composer, once per view', async ({ page }) => {
+    await boot(page);
+    const shown = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      return {
+        piece: T.exhibit.piece,
+        title: T.band.el.querySelector('.mb-piece-title')!.textContent,
+        composer: T.band.el.querySelector('.mb-piece-composer')!.textContent,
+        titleCount: document.querySelectorAll('.mb-piece-title').length,
+      };
+    });
+    expect(shown.title).toContain(shown.piece.title.en);
+    // The opus rendering is data-driven: absent today (correctly), appended
+    // after a comma when a payload carries one — asserted both ways so the
+    // Kaiserwalzer payload exercises the other branch without a test edit.
+    if (shown.piece.opus) expect(shown.title).toContain(shown.piece.opus);
+    else expect(shown.title).toBe(shown.piece.title.en);
+    expect(shown.composer).toBe(shown.piece.composer);
+    expect(shown.titleCount).toBe(1);
+  });
 });

@@ -542,6 +542,14 @@ def step_payload(args, sets, warnings):
             "id": PIECE,
             "title": {"en": "Die Fledermaus — Overture"},
             "composer": "Johann Strauss II",
+            # No opus, and that is CORRECT rather than missing: Strauss II's
+            # dances and marches are opus-numbered, his operettas are not, and
+            # the graph agrees (the overture's Work entity is titled without one
+            # while sibling dance works all carry theirs, e.g. "Sängerslust,
+            # op. 328"). The exhibit displays `opus` when a piece carries it —
+            # Kaiserwalzer (op. 437), the attract loop's stretch piece, will be
+            # the first to use it.
+            "opus": None,
             "ref": hq_header.get("ref"),
             "meiUri": f"./{PIECE}.mei",
             "meiSource": hq_header.get("meiUri"),

@@ -217,8 +217,9 @@ async function boot() {
   window._exhibitTest.transport = transport;
 
   // The middle band, once the sidecar is known. Shared per screen: there is one
-  // audible recording, so there is one thing for it to say.
-  const band = createMiddleBand(exhibit);
+  // audible recording, so there is one thing for it to say. The piece title's
+  // language follows viewport 0 — see the documented tension in middle-band.js.
+  const band = createMiddleBand(exhibit, { language: config.languages[0] });
   for (const slot of bands) slot.replaceWith(band.el);
   window._exhibitTest.band = band;
 
@@ -292,17 +293,21 @@ async function boot() {
 // ---------------------------------------------------------------------------
 
 /**
- * The caption on each strip: conductor and year, from the sidecar.
+ * The caption on each strip: conductor, orchestra, and year, from the sidecar.
  *
- * The same two facts as the middle band, and for the same reason — a proper name
- * and a numeral are the two things that need no translation (plan §6.3). Without
- * them the stack is eight identical grey rectangles, which makes "compare these
- * interpretations" an instruction nobody can follow. The filename is the fallback
- * so a missing sidecar is visible rather than blank.
+ * The same facts as the middle band, and for the same reason — proper names and a
+ * numeral are the things that need no translation (plan §6.3). Without them the
+ * stack is eight identical grey rectangles, which makes "compare these
+ * interpretations" an instruction nobody can follow. Conductor FIRST, because
+ * five of the eight share an orchestra and a shared prefix would bury the one
+ * word that tells the strips apart. The filename is the fallback so a missing
+ * sidecar is visible rather than blank.
  */
 function stripLabel(exhibit, file) {
   const meta = metadataFor(exhibit, file);
-  const parts = [meta.conductor, meta.year].filter((v) => v != null && v !== "");
+  const parts = [meta.conductor, meta.ensemble, meta.year].filter(
+    (v) => v != null && v !== "",
+  );
   return parts.length ? parts.join(" · ") : file.replace(/\.wav$/i, "");
 }
 

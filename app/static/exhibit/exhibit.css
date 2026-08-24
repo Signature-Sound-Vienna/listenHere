@@ -212,8 +212,29 @@ html, body {
 }
 
 /* Numerals and a proper name: the two things that need no translation. */
+/* Conductor over orchestra, as one column: the conductor is the interpretation's
+ * name and stays prominent; the ensemble underneath is what lets a visitor follow
+ * the VPO-versus-other-orchestras groupings the annotations pin. Both are proper
+ * names, so the band's no-labels rule (plan §6.3) still holds. */
+.mb-who { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .mb-conductor { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.01em; }
+.mb-ensemble { font-size: 0.85rem; color: #a9a9b4; }
 .mb-year { font-size: 1.05rem; font-variant-numeric: tabular-nums; color: #a9a9b4; }
+
+/* The piece, once per view: separated from the recording cluster by a hairline,
+ * because the year belongs to the recording and the title must not read as its
+ * continuation. Same two-line shape as .mb-who. */
+.mb-piece {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-left: 16px;
+  padding-left: 32px;
+  border-left: 1px solid #26262c;
+}
+.mb-piece-title { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.01em; }
+.mb-piece-composer { font-size: 0.85rem; color: #a9a9b4; }
 
 .vp-status {
   margin: 10px 0 0;

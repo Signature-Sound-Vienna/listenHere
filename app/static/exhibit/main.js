@@ -18,7 +18,7 @@
 // tests/e2e/33-exhibit-boundary.spec.ts, ratcheted at zero. Anything the engine
 // will not give us gets copied WITH A ROW IN ENGINE-WANTS.md.
 
-import { readConfig, rotationFor } from "./config.js";
+import { readConfig, rotationFor, DEFAULTS } from "./config.js";
 import { setDebug, t } from "./strings.js";
 import {
   getClosestAlignmentIx,
@@ -31,8 +31,9 @@ import { syncRegions } from "./regions.js";
 import { Transport } from "./audio.js";
 import { AudienceStore, buildAudienceSwitch } from "./audience.js";
 import { createViewportZoom } from "./zoom.js";
+import { applyTheme, annotationSeries, recolorAnnotations } from "./themes.js";
 import { createMiddleBand } from "./middle-band.js";
-import { createAnnotationList, groupForFileIn } from "./annotation-list.js";
+import { createAnnotationList, groupForFileIn, hasGroupStory } from "./annotation-list.js";
 
 const config = readConfig();
 setDebug(config.debug);
@@ -103,7 +104,15 @@ function positionsFor(time, activeFile) {
 function buildScreen(root) {
   root.textContent = "";
   root.style.setProperty("--strip-height", config.stripHeight + "px");
-  root.style.setProperty("--middle-band-height", config.middleBandHeight + "px");
+  // Rotated band text pays for its length vertically, so that orientation gets
+  // a taller band by default — but an EXPLICIT ?middleBandHeight= always wins,
+  // because the whole point of the orientation switch is comparing variants
+  // whose geometry the user can still pin down per URL.
+  const bandHeight =
+    config.bandOrientation === "rotated" && config.middleBandHeight === DEFAULTS.middleBandHeight
+      ? config.middleBandHeightRotated
+      : config.middleBandHeight;
+  root.style.setProperty("--middle-band-height", bandHeight + "px");
   root.dataset.split = config.splitOrientation;
   // The desktop-debug stage rotation (config.js). Only the two values the CSS
   // knows how to place are honoured — a typo'd angle silently painting the
@@ -169,8 +178,25 @@ function buildScreen(root) {
 }
 
 const root = document.getElementById("screen");
+// Theme before anything renders: the CSS tokens flip instantly, and the wave
+// colours have to exist before the first strip is created (they are WaveSurfer
+// options, not CSS). Takes the whole config — the preset plus any per-category
+// pins (themeWaves, themeBand, …).
+const themeColors = applyTheme(config);
+// Non-null only when ?annotationColors=theme: the diverging series that
+// replaces the authored annotation/group colours at render time.
+const annotationPalette =
+  config.annotationColors === "theme" ? annotationSeries(config) : null;
 const { viewports, bands } = buildScreen(root);
 document.title = t("app.title", config.languages[0]);
+
+// The staff-facing study panel, opt-in and lazily imported: visitors' kiosks
+// never even fetch the module.
+if (config.studyPanel) {
+  import("./study-panel.js")
+    .then((m) => m.mountStudyPanel(config))
+    .catch((e) => console.warn("exhibit: study panel failed to load", e));
+}
 
 // Kiosk touch guards (plan §4.2). The declarative layers — `touch-action:
 // pan-x pan-y` in exhibit.css (pinch and double-tap zoom both refused, panning
@@ -192,6 +218,7 @@ window._exhibitTest = {
   config,
   data,
   viewports,
+  annotationPalette,
   projectPlayhead,
   positionsFor,
   ready: new Promise((resolve) => {
@@ -247,7 +274,14 @@ async function boot() {
   // The middle band, once the sidecar is known. Shared per screen: there is one
   // audible recording, so there is one thing for it to say. The piece title's
   // language follows viewport 0 — see the documented tension in middle-band.js.
-  const band = createMiddleBand(exhibit, { language: config.languages[0] });
+  const band = createMiddleBand(exhibit, {
+    language: config.languages[0],
+    orientation: config.bandOrientation,
+    // The band's shared play/pause. toggle() needs a fallback for the very
+    // first tap of a session, before anything is active — the same resting
+    // recording preselect names below.
+    onToggle: () => transport.toggle(exhibit.piece.ref || exhibit.order[0]),
+  });
   for (const slot of bands) slot.replaceWith(band.el);
   window._exhibitTest.band = band;
 
@@ -263,6 +297,7 @@ async function boot() {
       onSelect: (file, time) =>
         transport.select(file, file === transport.activeFile ? time : undefined),
       labelFor: (file) => stripLabel(exhibit, file),
+      colors: themeColors,
     });
     vp.strips = mounted.strips;
     stripsReady.push(mounted.ready);
@@ -289,10 +324,10 @@ async function boot() {
     });
     const toolbar = document.createElement("div");
     toolbar.className = "vp-toolbar";
-    toolbar.append(
-      buildAudienceSwitch({ viewport: vp.index, store, language: vp.language }),
-      vp.zoom.el,
-    );
+    toolbar.append(buildAudienceSwitch({ viewport: vp.index, store, language: vp.language }));
+    // The buttons are optional (config.zoomControls); the controller above is
+    // not — scroll sync and the setLevel API work with or without them.
+    if (config.zoomControls) toolbar.append(vp.zoom.el);
     vp.el.insertBefore(toolbar, vp.stripsEl);
 
     vp.annList = createAnnotationList({
@@ -367,7 +402,12 @@ function stripLabel(exhibit, file) {
 /** Redraw one viewport's annotation chips, its regions, and its group colours. */
 function renderAnnotations(vp, store) {
   const audience = store.get(vp.index);
-  const annotations = data.exhibit.byAudience[audience] || [];
+  let annotations = data.exhibit.byAudience[audience] || [];
+  // The one seam where the theme's diverging series replaces the authored
+  // colours: every consumer below (chips, region fills, group cards, strip
+  // edges) reads colours off these objects, so recolouring COPIES here retints
+  // all of them at once and the payload's own objects stay untouched.
+  if (annotationPalette) annotations = recolorAnnotations(annotations, annotationPalette);
   if (vp.focusedId && !annotations.some((a) => a.id === vp.focusedId)) {
     vp.focusedId = null;
   }
@@ -390,7 +430,11 @@ function renderAnnotations(vp, store) {
  * from `resolveGroupFor`, never from reading `files` here.
  */
 function paintGroups(vp, annotations) {
-  const focused = annotations.find((a) => a.id === vp.focusedId) || null;
+  let focused = annotations.find((a) => a.id === vp.focusedId) || null;
+  // Same predicate as the group cards (annotation-list.js): edges only when
+  // the annotation has something to say about its groups, so the legend and
+  // the stripes appear and disappear together.
+  if (focused && !hasGroupStory(focused)) focused = null;
   for (const [file, strip] of vp.strips) {
     const group = focused ? groupForFileIn(focused, file) : null;
     const colour = group ? safeColor(group.color) : null;
@@ -417,6 +461,9 @@ function onTransport(band) {
         if (at !== undefined) strip.setTime(at);
       }
     }
+    // The band's play icon and mirrored time readouts — guarded on change
+    // inside tick(), like everything else this handler drives per frame.
+    band.tick(state);
     if (state.file !== lastFile) {
       lastFile = state.file;
       for (const vp of viewports) {

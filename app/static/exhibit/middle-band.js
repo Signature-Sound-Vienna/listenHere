@@ -15,6 +15,16 @@
 // translation, and needs none of the mirrored-versus-single orientation machinery
 // week 3 will argue about for the text elsewhere.
 //
+// WHICH WAY UP, though, is a real question for a surface read from two opposite
+// sides, and it is A/B-TESTABLE BY CONFIG (`?bandOrientation=`, plan §4.3's
+// orientation question pulled forward by user feedback): "upright" favours the
+// near visitor and inverts for the far one; "rotated" turns everything 90° so it
+// is equally sideways for both; "mirrored" renders the whole cluster TWICE, the
+// far copy turned 180°, so each reader gets a right-way-up copy — at the price of
+// naming the piece once per reader rather than once per view (34.12 pins the
+// upright default only). The clusters are built by one function and updated in
+// lockstep, so the copies cannot drift apart.
+//
 // Portraits are null on all eight recordings today: they are to be generated, which
 // is an open editorial item and not a code one, so the placeholder is the
 // conductor's initials. Initials are still just their name, so the rule holds.
@@ -24,7 +34,7 @@
 // than a special case.
 
 import { metadataFor } from "./payload.js";
-import { resolveText } from "./strings.js";
+import { resolveText, t } from "./strings.js";
 
 /**
  * Build a band. Returns a handle so `update` can be called per selection without
@@ -32,17 +42,109 @@ import { resolveText } from "./strings.js";
  *
  * @param {object} data      from payload.js
  * @param {object} [opts]
- * @param {string} [opts.language]  for the piece title — see the caveat below
- * @returns {{el: HTMLElement, update: (file: string|null) => void}}
+ * @param {string} [opts.language]     for the piece title — see the caveat below
+ * @param {string} [opts.orientation]  "upright" | "rotated" | "mirrored" (config.js)
+ * @param {() => void} [opts.onToggle] the shared play/pause tap
+ * @returns {{el: HTMLElement, update: (file: string|null) => void,
+ *            tick: (state: {time: number, playing: boolean}) => void}}
  */
-export function createMiddleBand(data, { language = "en" } = {}) {
+export function createMiddleBand(
+  data,
+  { language = "en", orientation = "upright", onToggle } = {},
+) {
   const el = document.createElement("div");
   el.className = "middle-band";
+  el.dataset.orientation = orientation;
+
+  // Two copies for "mirrored", one for everything else. Same builder, same
+  // update loop — the far reader's copy is a CSS rotation of an identical
+  // cluster, never a second implementation that could drift.
+  const clusters = [buildCluster(data, language)];
+  if (orientation === "mirrored") clusters.push(buildCluster(data, language));
+  clusters.forEach((c, i) => {
+    c.root.classList.toggle("mb-flipped", i === 1);
+    el.appendChild(c.root);
+  });
+
+  // The shared transport control: one LARGE play/pause in the middle of the
+  // band (the one place both visitors own equally), with the current playback
+  // time below it TWICE, the far copy rotated — numerals, so the no-labels
+  // rule holds, and mirrored so each reader has one the right way up. In
+  // mirrored mode it sits between the two clusters; otherwise it goes inside
+  // the cluster before the piece block, which is as close to the band's centre
+  // as the flex layout naturally puts it.
+  const play = buildPlayControl(language, onToggle);
+  if (orientation === "mirrored") el.insertBefore(play.root, clusters[1].root);
+  else clusters[0].root.insertBefore(play.root, clusters[0].pieceEl);
+
+  function update(file) {
+    const meta = file ? metadataFor(data, file) : {};
+    el.dataset.file = file || "";
+    for (const c of clusters) c.update(meta);
+  }
+
+  update(null);
+  return { el, update, tick: play.tick };
+}
+
+/** The play/pause button plus the mirrored pair of time readouts. */
+function buildPlayControl(language, onToggle) {
+  const root = document.createElement("div");
+  root.className = "mb-play-wrap";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "mb-play";
+  const near = document.createElement("span");
+  near.className = "mb-time";
+  const far = document.createElement("span");
+  far.className = "mb-time mb-time-flipped";
+  // A sandwich: the times are the bread, the button is the filling — one
+  // readout on each side of the button, the far one rotated for the far
+  // reader (user feedback, 2026-08-24).
+  root.append(near, button, far);
+  button.addEventListener("click", () => onToggle?.());
+
+  let lastText = null;
+  let lastPlaying = null;
+  /** Per-frame, so both writes are guarded on change (the 34.10 discipline). */
+  function tick({ time, playing }) {
+    const text = _formatTime(time);
+    if (text !== lastText) {
+      lastText = text;
+      near.textContent = text;
+      far.textContent = text;
+    }
+    if (playing !== lastPlaying) {
+      lastPlaying = playing;
+      button.textContent = playing ? "❚❚" : "▶";
+      button.setAttribute("aria-label", t(playing ? "transport.pause" : "transport.play", language));
+      button.dataset.playing = playing ? "1" : "";
+    }
+  }
+  tick({ time: 0, playing: false });
+  return { root, tick };
+}
+
+/** m:ss — the seconds granularity a visitor can actually read at a glance. */
+function _formatTime(seconds) {
+  const s = Math.max(0, Math.floor(seconds || 0));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/**
+ * One full content cluster: portrait, conductor over ensemble, year, piece.
+ * Returns the root plus its own `update(meta)` so the band can drive one or two
+ * of these identically.
+ */
+function buildCluster(data, language) {
+  const root = document.createElement("div");
+  root.className = "mb-cluster";
 
   // The piece: title, composer, and the opus number when the payload carries one.
-  // Shown ONCE PER VIEW — every strip is the same piece, so repeating the title
-  // eight times would say nothing — and set at build time, because the piece does
-  // not change per selection (the attract loop's second piece rebuilds the band).
+  // Shown ONCE PER CLUSTER — every strip is the same piece, so repeating the
+  // title eight times would say nothing — and set at build time, because the
+  // piece does not change per selection (the attract loop's second piece
+  // rebuilds the band).
   //
   // A DOCUMENTED TENSION with the no-labels rule: the title is a language map
   // ("Overture" is an English word), and the band deliberately carries only
@@ -80,17 +182,15 @@ export function createMiddleBand(data, { language = "en" } = {}) {
   // Recording facts (portrait, conductor over ensemble, year) as one cluster,
   // then the piece, visually separated: the year belongs to the RECORDING, so it
   // stays beside the people who made it rather than drifting to the title.
-  el.append(portrait, who, year, piece);
+  root.append(portrait, who, year, piece);
 
-  function update(file) {
-    const meta = file ? metadataFor(data, file) : {};
+  function update(meta) {
     // textContent throughout, never innerHTML: these values come from MusicBrainz
     // and an RDF dump by way of the prep script, so they are external data even
     // though they were fetched offline.
     conductor.textContent = meta.conductor || "";
     ensemble.textContent = meta.ensemble || "";
     year.textContent = meta.year != null ? String(meta.year) : "";
-    el.dataset.file = file || "";
 
     portrait.textContent = "";
     portrait.style.backgroundImage = "";
@@ -104,8 +204,7 @@ export function createMiddleBand(data, { language = "en" } = {}) {
     }
   }
 
-  update(null);
-  return { el, update };
+  return { root, update, pieceEl: piece };
 }
 
 /**

@@ -106,13 +106,15 @@ export function createAnnotationList({ viewport, language, onFocus }) {
    * The focused annotation's groups as cards: the group's name, tinted with the
    * SAME resolved colour main.js paints on the strip edges, plus the authored
    * group note when the annotation carries one (`groupNotes` is keyed by
-   * groupId). Name-only cards still earn their place — they are the legend that
-   * says what the coloured edges mean — but a lone unnamed default group says
-   * nothing a visitor can use, so it renders no card at all.
+   * groupId). Rendered ONLY when the annotation actually has something to say
+   * about its groups (hasGroupStory) — a bare legend of names like "New Group"
+   * and "Ungrouped" is authoring scaffolding, not content, and user feedback
+   * (2026-08-24) ruled it noise. main.js applies the same predicate to the
+   * strip edges, so legend and edges appear and disappear together.
    */
   function renderGroups(focused) {
     groups.textContent = "";
-    const list = focused?.grouping?.groups || [];
+    const list = hasGroupStory(focused) ? focused.grouping.groups : [];
     const cards = list
       .map((g) => ({
         name: resolveText(g.label, { language }),
@@ -120,7 +122,6 @@ export function createAnnotationList({ viewport, language, onFocus }) {
         colour: safeColor(g.color),
       }))
       .filter((c) => c.name || c.note);
-    el.dataset.hasGroups = cards.length ? "1" : "";
     for (const c of cards) {
       const card = document.createElement("div");
       card.className = "ann-group-card";
@@ -143,10 +144,62 @@ export function createAnnotationList({ viewport, language, onFocus }) {
       }
       groups.appendChild(card);
     }
+
+    // Between-group comparisons, below the per-group cards. Endpoints resolve
+    // through the grouping's stable groupIds — labels are display-only, the
+    // same identity rule as the authoring tool.
+    let count = cards.length;
+    if (list.length) {
+      const byId = new Map(list.map((g) => [g.groupId, g]));
+      const groupName = (gid) =>
+        resolveText(byId.get(gid)?.label, { language }) || String(gid ?? "");
+      for (const cmp of focused.comparisons || []) {
+        const text = resolveText(cmp.text, { language });
+        if (!text) continue;
+        const card = document.createElement("div");
+        card.className = "ann-comparison-card";
+        const names = document.createElement("span");
+        names.className = "ann-cmp-names";
+        names.textContent = `${groupName(cmp.leftGroupId)} ↔ ${groupName(cmp.rightGroupId)}`;
+        const body = document.createElement("span");
+        body.className = "ann-group-note";
+        body.textContent = text;
+        card.append(names, body);
+        groups.appendChild(card);
+        count++;
+      }
+    }
+    el.dataset.hasGroups = count ? "1" : "";
   }
 
   update([], null);
   return { el, update };
+}
+
+/** A non-empty authored text value — plain string or language map. */
+function _hasText(v) {
+  if (typeof v === "string") return v.trim() !== "";
+  if (v && typeof v === "object")
+    return Object.values(v).some((s) => typeof s === "string" && s.trim() !== "");
+  return false;
+}
+
+/**
+ * Does this annotation have anything to SAY about its groups — at least one
+ * non-empty group note, or a between-group comparison (the authoring tool's
+ * `comparisons` field; none authored yet as of 2026-08-24, but the pipeline
+ * carries them)? Grouping structure alone (names, membership) is not a story:
+ * every authored annotation carries a grouping, usually the default
+ * everyone-in-one-group, and painting legends for those tells a visitor
+ * nothing.
+ *
+ * @param {object|null} ann
+ * @returns {boolean}
+ */
+export function hasGroupStory(ann) {
+  if (!ann?.grouping?.groups?.length) return false;
+  if (Object.values(ann.groupNotes || {}).some(_hasText)) return true;
+  return (ann.comparisons || []).some((c) => _hasText(c.text));
 }
 
 /**

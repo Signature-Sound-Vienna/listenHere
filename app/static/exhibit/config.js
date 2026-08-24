@@ -42,6 +42,21 @@ const DEFAULTS = {
   // eyeball comparison.
   stripHeight: 48, // CSS px per waveform strip
   middleBandHeight: 96, // conductor, year, portrait — and NO UI labels (plan §6.3)
+  // How the shared band handles being read from two opposite sides at once —
+  // plan §4.3's orientation question, pulled forward by user feedback after the
+  // week-2 eyeballing. Three candidates behind one switch so the user study can
+  // compare them live rather than argue about them:
+  //   "upright"  — as built: right-way-up for the near visitor, inverted for the far one.
+  //   "rotated"  — everything turned 90° (reads from the near visitor's right),
+  //                equally sideways for both readers. Costs band height: rotated
+  //                text pays for its length vertically, so main.js raises the
+  //                band to `middleBandHeightRotated` unless the height was
+  //                explicitly overridden.
+  //   "mirrored" — two copies, the far one rotated 180°: each reader gets a
+  //                right-way-up copy at no height cost, but the piece is named
+  //                once per READER rather than once per view.
+  bandOrientation: "upright",
+  middleBandHeightRotated: 176, // fits the longest sidecar name turned 90°
   // Desktop-debugging convenience, never set on the kiosk: rotate the WHOLE
   // composed screen 90° or 270° so a physically turned laptop or a swivelled
   // monitor shows the portrait kiosk at its intended aspect. Applied as one
@@ -69,6 +84,11 @@ const DEFAULTS = {
   // inside the canvas-memory envelope Spike C measured on the real iPad. Raise
   // this only with the §7.2 device test in hand.
   zoomLevels: [1, 2, 4, 8],
+  // Whether the −/+ zoom buttons render at all (?zoomControls=0 hides them —
+  // user feedback doubts their value on the museum floor, so the study panel
+  // can flip them off live). The zoom MACHINERY stays wired either way: the
+  // moment-synced scroll and the setLevel API do not depend on the buttons.
+  zoomControls: true,
   peakBuckets: 4096, // what the alignment JSON ships
   // Regions narrower than this vanish entirely at fit-to-width — 582 s across
   // ~1000 px is 0.58 s per pixel, and `D or E?` region (a) is 0.012–0.120 s wide
@@ -83,8 +103,32 @@ const DEFAULTS = {
   audiences: ["adults", "adults"],
   languages: ["en", "en"],
 
+  // --- appearance ---
+  // Palette preset (exhibit/themes.js): "dark" is the shipped look; the others
+  // are study-panel discussion placeholders, not candidate finals.
+  theme: "dark",
+  // Per-category pins on top of the preset — empty means "follow the preset".
+  // Eight categories so museum-staff discussions can bikeshed one component at
+  // a time and every outcome is still just a URL: ?theme=nord&themeWaves=amber.
+  themeCanvas: "",
+  themeStrips: "",
+  themeWaves: "",
+  themeCaptions: "",
+  themeText: "",
+  themeControls: "",
+  themeAccent: "",
+  themeBand: "",
+  // "authored" shows the annotators' own colours (the shipped behaviour);
+  // "theme" replaces them with the preset's 12-colour diverging series
+  // (themes.js, recolorAnnotations) — divergence strongest at the front, since
+  // real payloads carry fewer than 12. Display-only: the payload is untouched.
+  annotationColors: "authored",
+
   // --- operations ---
   attractAfterIdleMs: 0, // 0 disables the attract loop; week 4 turns it on
+  // ?studyPanel=true mounts the staff-facing cog + tabbed parameter panel
+  // (study-panel.js) for in-situ design discussion. Never on for visitors.
+  studyPanel: false,
   debug: false,
 };
 

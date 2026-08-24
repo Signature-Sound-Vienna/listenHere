@@ -12,11 +12,49 @@
 
 * { box-sizing: border-box; }
 
+/* The palette, as tokens with the shipped dark theme as the literal defaults —
+ * so the default theme costs nothing and renders identically with JS disabled.
+ * Non-default themes (?theme=, study panel's Theme tab) override these on the
+ * root element from exhibit/themes.js, which also carries the waveform colours
+ * WaveSurfer needs as JS options. Authored annotation/group colours come from
+ * the payload and deliberately do NOT re-tint with the theme. */
+:root {
+  --ex-bg: #0b0b0c;
+  --ex-text: #f2f2f4;
+  --ex-surface: #141417;
+  --ex-surface-active: #1b1b21;
+  --ex-panel: #17171b;
+  --ex-border: #26262c;
+  --ex-border-strong: #3a3a44;
+  --ex-card: #26262c;
+  --ex-text-body: #d8d8e2;
+  --ex-text-soft: #a9a9b4;
+  --ex-text-dim: #8d8d99;
+  --ex-text-faint: #6f6f7d;
+  --ex-label: #cfcfd8;
+  --ex-label-active: #fff;
+  --ex-glow: 0 1px 2px #000, 0 0 6px #000;
+  --ex-accent: #2f4d70;
+  --ex-accent-border: #5f86b4;
+  --ex-on-accent: #fff;
+  --ex-mark: rgba(255,255,255,0.7);
+  --ex-mark-dim: rgba(255,255,255,0.55);
+  /* The middle band's own tokens CHAIN to the generic ones, so the band
+   * follows the theme until ?themeBand pins it to a palette of its own
+   * (themes.js writes concrete values over these). */
+  --ex-band-bg: var(--ex-panel);
+  --ex-band-border: var(--ex-border);
+  --ex-band-card: var(--ex-card);
+  --ex-band-text: var(--ex-text);
+  --ex-band-text-soft: var(--ex-text-soft);
+  --ex-band-faint: var(--ex-text-faint);
+}
+
 html, body {
   margin: 0;
   height: 100%;
-  background: #0b0b0c;
-  color: #f2f2f4;
+  background: var(--ex-bg);
+  color: var(--ex-text);
   font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
   /* Kiosk: no text inflation, no selection, no tap flash, no rubber-banding. */
   -webkit-text-size-adjust: 100%;
@@ -90,7 +128,7 @@ html, body {
 
 .strip {
   height: var(--strip-height, 54px);
-  background: #141417;
+  background: var(--ex-surface);
   border-radius: 3px;
   position: relative;
   overflow: hidden;   /* the iOS-safe shape: viewport-sized box over a wider inner */
@@ -105,7 +143,7 @@ html, body {
 
 /* The audible recording. A brighter waveform rather than an outline: the strips
  * are 54px tall and stacked two pixels apart, so a border reads as a gap. */
-.strip.is-active { background: #1b1b21; }
+.strip.is-active { background: var(--ex-surface-active); }
 
 .strip-ws { position: absolute; inset: 0; }
 
@@ -120,21 +158,21 @@ html, body {
   pointer-events: none;
   font-size: 0.68rem;
   letter-spacing: 0.02em;
-  color: #cfcfd8;
-  text-shadow: 0 1px 2px #000, 0 0 6px #000;   /* legible over any waveform */
+  color: var(--ex-label);
+  text-shadow: var(--ex-glow);   /* legible over any waveform */
 }
-.strip.is-active .strip-label { color: #fff; }
+.strip.is-active .strip-label { color: var(--ex-label-active); }
 
 /* Regions the prep script flagged for hand placement (plan §5.2d), and regions
  * widened to stay visible at all (config.minRegionPx). Both are drawn where the
  * alignment currently says, which is not where the annotator will eventually put
  * them, so they are marked rather than presented as settled. */
-.strip [data-provisional] { outline: 1px dashed rgba(255,255,255,0.55); outline-offset: -1px; }
+.strip [data-provisional] { outline: 1px dashed var(--ex-mark-dim); outline-offset: -1px; }
 .strip [data-widened]::after {
   content: "";
   position: absolute;
   inset: 0;
-  border-left: 1px solid rgba(255,255,255,0.7);
+  border-left: 1px solid var(--ex-mark);
 }
 
 /* Provisional geometry, and deliberately so: where the switching controls go is a
@@ -168,10 +206,10 @@ html, body {
   min-width: 44px;
   min-height: 44px;
   padding: 0;
-  border: 1px solid #3a3a44;
+  border: 1px solid var(--ex-border-strong);
   border-radius: 22px;
-  background: #17171b;
-  color: #d8d8e2;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
   font: inherit;
   font-size: 1.15rem;
   cursor: pointer;
@@ -185,17 +223,17 @@ html, body {
   text-align: center;
   font-size: 0.85rem;
   font-variant-numeric: tabular-nums;
-  color: #a9a9b4;
+  color: var(--ex-text-soft);
 }
 
 .audience-btn,
 .ann-chip {
   min-height: 44px;
   padding: 0 16px;
-  border: 1px solid #3a3a44;
+  border: 1px solid var(--ex-border-strong);
   border-radius: 22px;
-  background: #17171b;
-  color: #d8d8e2;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
   font: inherit;
   font-size: 0.85rem;
   cursor: pointer;
@@ -204,9 +242,9 @@ html, body {
 }
 
 .audience-btn.is-on {
-  background: #2f4d70;
-  border-color: #5f86b4;
-  color: #fff;
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-on-accent);
 }
 
 /* Week 2's commentary panel: chips, the focused annotation's commentary, and
@@ -246,7 +284,7 @@ html, body {
   min-width: 0;
   font-size: 0.9rem;
   line-height: 1.45;
-  color: #d8d8e2;
+  color: var(--ex-text-body);
   /* The one deliberate scroll container in the kiosk (see annotation-list.js's
    * header): expert commentary is measured at 1640 characters and no fixed
    * panel on a halved portrait screen holds that. pan-y is intersected with the
@@ -256,13 +294,13 @@ html, body {
   overscroll-behavior: contain;
   touch-action: pan-y;
   scrollbar-width: thin;
-  scrollbar-color: #3a3a44 transparent;
+  scrollbar-color: var(--ex-border-strong) transparent;
   padding-right: 6px;
 }
 .ann-detail::-webkit-scrollbar { width: 6px; }
-.ann-detail::-webkit-scrollbar-thumb { background: #3a3a44; border-radius: 3px; }
+.ann-detail::-webkit-scrollbar-thumb { background: var(--ex-border-strong); border-radius: 3px; }
 .ann-detail[data-state="hint"],
-.ann-detail[data-state="empty"] { color: #8d8d99; text-align: center; align-self: center; }
+.ann-detail[data-state="empty"] { color: var(--ex-text-dim); text-align: center; align-self: center; }
 
 /* The focused annotation's groups: the legend for the strip-edge colours, plus
  * the authored comparison notes where the annotation carries them. Background
@@ -279,7 +317,7 @@ html, body {
   overscroll-behavior: contain;
   touch-action: pan-y;
   scrollbar-width: thin;
-  scrollbar-color: #3a3a44 transparent;
+  scrollbar-color: var(--ex-border-strong) transparent;
 }
 .ann-panel[data-has-groups="1"] .ann-groups { display: flex; }
 
@@ -288,39 +326,131 @@ html, body {
   padding: 5px 10px;
   font-size: 0.78rem;
   line-height: 1.35;
-  background: #26262c; /* only until safeColor sets the group's own colour */
-  color: #d8d8e2;
+  background: var(--ex-card); /* only until safeColor sets the group's own colour */
+  color: var(--ex-text-body);
 }
 .ann-group-name { font-weight: 600; }
 .ann-group-note::before { content: " — "; }
 
+/* Between-group comparisons ("VPO ↔ Other Orchestras — …"): neutral surface,
+ * because the text belongs to BOTH groups and either group's tint would claim
+ * it for one side. */
+.ann-comparison-card {
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  background: var(--ex-card);
+  border: 1px solid var(--ex-border-strong);
+  color: var(--ex-text-body);
+}
+.ann-cmp-names { font-weight: 600; }
+
 /* Shared between the halves, read from both sides at once. Portrait, conductor
- * name, and year only — no UI labels, by design (plan §6.3). */
+ * name, and year only — no UI labels, by design (plan §6.3). Which way up is an
+ * A/B question behind ?bandOrientation (config.js): the rules below implement
+ * the three candidates without touching the cluster's own structure. */
 .middle-band {
   flex: 0 0 var(--middle-band-height, 96px);
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 16px;
-  background: #17171b;
-  border-top: 1px solid #26262c;
-  border-bottom: 1px solid #26262c;
+  gap: 64px;   /* only visible in mirrored mode, where there are two clusters */
+  background: var(--ex-band-bg);
+  color: var(--ex-band-text);
+  border-top: 1px solid var(--ex-band-border);
+  border-bottom: 1px solid var(--ex-band-border);
 }
+
+.mb-cluster {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* "rotated": every text block turned 90° via writing-mode — equally sideways
+ * for both readers, reading from the near visitor's right. Per BLOCK, not one
+ * transform on the cluster: each column then only needs its own text length
+ * vertically, and a name longer than the band wraps into a second column
+ * instead of escaping the band. The portrait stays a circle; its initials
+ * rotate with their block for consistency. */
+.middle-band[data-orientation="rotated"] .mb-who,
+.middle-band[data-orientation="rotated"] .mb-year,
+.middle-band[data-orientation="rotated"] .mb-piece,
+.middle-band[data-orientation="rotated"] .mb-portrait {
+  writing-mode: vertical-rl;
+  text-orientation: sideways;
+  max-height: calc(var(--middle-band-height, 96px) - 20px);
+}
+.middle-band[data-orientation="rotated"] .mb-portrait {
+  /* keep the circle a circle; only its two-letter placeholder turns */
+  max-height: none;
+}
+
+/* "mirrored": the far reader's identical copy, turned to face them. Slightly
+ * tightened type so two full clusters share the width without truncating a
+ * proper name — an ellipsis on a conductor is not an option on a museum wall. */
+.middle-band[data-orientation="mirrored"] .mb-flipped { transform: rotate(180deg); }
+.middle-band[data-orientation="mirrored"] .mb-cluster { gap: 10px; }
+.middle-band[data-orientation="mirrored"] .mb-portrait {
+  width: calc(var(--middle-band-height, 96px) - 44px);
+  font-size: calc(var(--middle-band-height, 96px) / 5);
+}
+.middle-band[data-orientation="mirrored"] .mb-conductor,
+.middle-band[data-orientation="mirrored"] .mb-piece-title,
+.middle-band[data-orientation="mirrored"] .mb-year { font-size: 0.9rem; }
+.middle-band[data-orientation="mirrored"] .mb-ensemble,
+.middle-band[data-orientation="mirrored"] .mb-piece-composer { font-size: 0.72rem; }
+.middle-band[data-orientation="mirrored"] .mb-piece { margin-left: 6px; padding-left: 14px; }
+
+/* The shared play/pause in the middle of the band, with the current time
+ * mirrored below it — one readout per reader, numerals only, so the band's
+ * no-labels rule holds. Accent-coloured: it is the one control both visitors
+ * own equally, and the thing a first-time visitor should see first. */
+/* time · button · time — the times sandwich the button, one per reader. */
+.mb-play-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  margin: 0 12px;
+}
+.mb-play {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 1px solid var(--ex-accent-border);
+  background: var(--ex-accent);
+  color: var(--ex-on-accent);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.mb-time {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ex-band-text-soft);
+}
+.mb-time-flipped { transform: rotate(180deg); }
 
 /* Holds the band's height before the metadata sidecar has landed, so the strips
  * do not move when it does. */
 .middle-band-slot {
   flex: 0 0 var(--middle-band-height, 96px);
-  background: #17171b;
-  border-top: 1px solid #26262c;
-  border-bottom: 1px solid #26262c;
+  background: var(--ex-band-bg);
+  border-top: 1px solid var(--ex-band-border);
+  border-bottom: 1px solid var(--ex-band-border);
 }
 
 .mb-portrait {
   width: calc(var(--middle-band-height, 96px) - 24px);
   aspect-ratio: 1;
   border-radius: 50%;
-  background: #26262c center / cover no-repeat;
+  background: var(--ex-band-card) center / cover no-repeat;
   flex: 0 0 auto;
   /* Initials until the generated portraits exist (an open editorial item, not a
    * code one). Still just the conductor's name, so the no-labels rule holds. */
@@ -329,7 +459,7 @@ html, body {
   justify-content: center;
   font-size: calc(var(--middle-band-height, 96px) / 4);
   font-weight: 600;
-  color: #6f6f7d;
+  color: var(--ex-band-faint);
   letter-spacing: 0.02em;
 }
 
@@ -340,8 +470,8 @@ html, body {
  * names, so the band's no-labels rule (plan §6.3) still holds. */
 .mb-who { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .mb-conductor { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.01em; }
-.mb-ensemble { font-size: 0.85rem; color: #a9a9b4; }
-.mb-year { font-size: 1.05rem; font-variant-numeric: tabular-nums; color: #a9a9b4; }
+.mb-ensemble { font-size: 0.85rem; color: var(--ex-band-text-soft); }
+.mb-year { font-size: 1.05rem; font-variant-numeric: tabular-nums; color: var(--ex-band-text-soft); }
 
 /* The piece, once per view: separated from the recording cluster by a hairline,
  * because the year belongs to the recording and the title must not read as its
@@ -353,10 +483,10 @@ html, body {
   gap: 2px;
   margin-left: 16px;
   padding-left: 32px;
-  border-left: 1px solid #26262c;
+  border-left: 1px solid var(--ex-band-border);
 }
 .mb-piece-title { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.01em; }
-.mb-piece-composer { font-size: 0.85rem; color: #a9a9b4; }
+.mb-piece-composer { font-size: 0.85rem; color: var(--ex-band-text-soft); }
 
 /* The transient "Loading…" during a switch's fetch, overlaid on the centre of
  * the strips it is about. Absolutely positioned — OUT OF THE FLOW — which is
@@ -373,7 +503,134 @@ html, body {
   z-index: 3;
   pointer-events: none;
   text-align: center;
-  color: #d8d8e2;
+  color: var(--ex-text-body);
   font-size: 0.9rem;
-  text-shadow: 0 1px 2px #000, 0 0 6px #000;   /* legible over any waveform */
+  text-shadow: var(--ex-glow);   /* legible over any waveform */
+}
+
+/* --------------------------------------------------------------------------
+ * The study panel (?studyPanel=true, study-panel.js): staff tooling for
+ * in-situ design discussion. Appended to <body>, outside #screen, so neither
+ * the stage rotation nor the viewport transforms touch it, and always drawn in
+ * the active theme's tokens so the panel itself demonstrates the palette. */
+.study-cog {
+  position: fixed;
+  right: 10px;
+  bottom: 10px;
+  z-index: 50;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--ex-border-strong);
+  background: var(--ex-panel);
+  color: var(--ex-text-soft);
+  font-size: 1.3rem;
+  cursor: pointer;
+  opacity: 0.75;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.study-cog:hover { opacity: 1; }
+
+/* An explicit display beats the UA's [hidden] rule, so restate it — without
+ * this the closed panel renders as a ghost of tabs and footer. */
+.study-panel[hidden] { display: none; }
+
+.study-panel {
+  position: fixed;
+  right: 10px;
+  bottom: 62px;
+  z-index: 50;
+  width: 400px;
+  max-width: calc(100vw - 20px);
+  max-height: min(70vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--ex-panel);
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.45);
+  font-size: 0.82rem;
+  color: var(--ex-text-body);
+}
+
+.study-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 8px 0;
+  border-bottom: 1px solid var(--ex-border);
+}
+.study-tab {
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--ex-text-dim);
+  font: inherit;
+  cursor: pointer;
+}
+.study-tab.is-on {
+  color: var(--ex-text);
+  border-bottom-color: var(--ex-accent-border);
+}
+
+.study-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.study-row { display: flex; flex-direction: column; gap: 5px; }
+.study-label { color: var(--ex-text-dim); }
+.study-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.study-option {
+  padding: 6px 10px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 14px;
+  background: none;
+  color: var(--ex-text-body);
+  font: inherit;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.study-option.is-on {
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-on-accent);
+}
+
+.study-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--ex-border);
+}
+.study-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.72rem;
+  color: var(--ex-text-dim);
+  /* Copying the configuration URL is the point — override the kiosk's global
+   * user-select: none for exactly this element. */
+  -webkit-user-select: text;
+  user-select: text;
+}
+.study-copy {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 14px;
+  background: none;
+  color: var(--ex-text-body);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
 }

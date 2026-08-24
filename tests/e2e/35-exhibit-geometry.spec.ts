@@ -401,3 +401,408 @@ test.describe('35. Week 2 — the commentary panel', () => {
     }
   });
 });
+
+test.describe('35. Week 2 — the band orientation A/B switch', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 35.9 ?bandOrientation is the A/B switch for the user testing (user feedback,
+  // 2026-08-24): the default stays byte-for-byte the upright band 34.11/34.12
+  // pin; "rotated" turns the text blocks 90° and takes the taller band unless
+  // the height is explicitly overridden; "mirrored" renders TWO identical
+  // clusters, the far one turned 180°, and a selection updates both — the
+  // copies must not be able to drift apart.
+  test('35.9 the band orientation variants are opt-in and the mirrored copies update in lockstep', async ({
+    page,
+  }) => {
+    // Default: one cluster, upright, the standard height.
+    await boot(page);
+    const upright = await page.evaluate(() => {
+      const band = (window as any)._exhibitTest.band.el;
+      return {
+        orientation: band.dataset.orientation,
+        clusters: band.querySelectorAll('.mb-cluster').length,
+        height: Math.round(band.getBoundingClientRect().height),
+        writingMode: getComputedStyle(band.querySelector('.mb-who')).writingMode,
+      };
+    });
+    expect(upright.orientation).toBe('upright');
+    expect(upright.clusters).toBe(1);
+    expect(upright.height).toBe(96);
+    expect(upright.writingMode).toBe('horizontal-tb');
+
+    // Rotated: sideways text, the taller default height — and an explicit
+    // height override still wins.
+    await boot(page, 'debug=1&bandOrientation=rotated');
+    const rotated = await page.evaluate(() => {
+      const band = (window as any)._exhibitTest.band.el;
+      return {
+        height: Math.round(band.getBoundingClientRect().height),
+        writingMode: getComputedStyle(band.querySelector('.mb-who')).writingMode,
+        titles: band.querySelectorAll('.mb-piece-title').length,
+      };
+    });
+    expect(rotated.writingMode).toBe('vertical-rl');
+    expect(rotated.height).toBe(176);
+    expect(rotated.titles).toBe(1);
+
+    await boot(page, 'debug=1&bandOrientation=rotated&middleBandHeight=120');
+    expect(
+      await page.evaluate(() =>
+        Math.round((window as any)._exhibitTest.band.el.getBoundingClientRect().height),
+      ),
+    ).toBe(120);
+
+    // Mirrored: two clusters, the second flipped, both updated by a selection.
+    await boot(page, 'debug=1&bandOrientation=mirrored');
+    const mirrored = await page.evaluate(async () => {
+      const T = (window as any)._exhibitTest;
+      const band = T.band.el;
+      const other = T.exhibit.order.find((f: string) => f !== T.transport.activeFile);
+      await T.transport.select(other, 10, /* play */ false);
+      const conductors = [...band.querySelectorAll('.mb-conductor')].map(
+        (c: any) => c.textContent,
+      );
+      return {
+        clusters: band.querySelectorAll('.mb-cluster').length,
+        flippedTransform: getComputedStyle(band.querySelector('.mb-flipped')).transform,
+        conductors,
+        expected: T.exhibit.metadata.recordings[other].conductor,
+        height: Math.round(band.getBoundingClientRect().height),
+      };
+    });
+    expect(mirrored.clusters).toBe(2);
+    expect(mirrored.flippedTransform).not.toBe('none'); // the 180° copy
+    expect(mirrored.height).toBe(96); // mirroring costs no height
+    expect(mirrored.conductors).toEqual([mirrored.expected, mirrored.expected]);
+  });
+});
+
+test.describe('35. Week 2 — the study panel and themes', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 35.10 ?studyPanel=true is the in-situ design-discussion tool (user
+  // request, 2026-08-24): a cog that opens a tabbed panel of the A/B
+  // parameters, where a change rewrites the query string and reloads — the URL
+  // is the configuration. Absent by default: a visitor's kiosk must not even
+  // fetch the module.
+  test('35.10 the study panel is opt-in, tabbed, and a change round-trips through the URL', async ({
+    page,
+  }) => {
+    await boot(page);
+    await expect(page.locator('.study-cog')).toHaveCount(0);
+
+    await boot(page, 'debug=1&studyPanel=true');
+    const cog = page.locator('.study-cog');
+    await expect(cog).toBeVisible();
+    // Closed until the cog is tapped — display: flex must not beat [hidden].
+    await expect(page.locator('.study-panel')).toBeHidden();
+    await cog.click();
+    await expect(page.locator('.study-panel')).toBeVisible();
+    await expect(page.locator('.study-tab')).toHaveCount(4);
+
+    // Change the band orientation from the Band tab: the page reloads with the
+    // parameter in the URL — and the panel REOPENS ITSELF ON THE SAME TAB,
+    // because open-state and tab live in localStorage (never in the URL, which
+    // is reserved for parameter selections).
+    await page.click('.study-tab[data-tab="band"]');
+    await page.click('.study-option:has-text("mirrored")');
+    await page.waitForURL(/bandOrientation=mirrored/);
+    await page.evaluate(() => (window as any)._exhibitTest.ready);
+    expect(page.url()).toContain('studyPanel=true'); // the panel param survived
+    expect(page.url()).not.toContain('Tab'); // no panel state leaked into the URL
+    await expect(page.locator('.study-panel')).toBeVisible(); // reopened itself
+    await expect(page.locator('.study-tab[data-tab="band"]')).toHaveClass(/is-on/); // same tab
+    expect(
+      await page.evaluate(() => (window as any)._exhibitTest.band.el.dataset.orientation),
+    ).toBe('mirrored');
+
+    // Choosing the DEFAULT value removes the parameter — the URL stays a
+    // minimal diff against the shipped exhibit. No cog click needed: the panel
+    // is already open.
+    await page.click('.study-option:has-text("upright")');
+    await page.waitForURL((u) => !u.toString().includes('bandOrientation'));
+    expect(page.url()).toContain('studyPanel=true');
+    await expect(page.locator('.study-panel')).toBeVisible();
+
+    // The cog toggles: second click hides, third brings it back — same tab.
+    await page.click('.study-cog');
+    await expect(page.locator('.study-panel')).toBeHidden();
+    await page.click('.study-cog');
+    await expect(page.locator('.study-panel')).toBeVisible();
+    await expect(page.locator('.study-tab[data-tab="band"]')).toHaveClass(/is-on/);
+  });
+
+  // 35.11 ?theme= applies a token set and hands the strips their wave colours.
+  // The default stays byte-identical because the dark theme overrides nothing —
+  // the CSS token defaults ARE the shipped palette.
+  test('35.11 themes are opt-in token sets; the default overrides nothing', async ({ page }) => {
+    // The INACTIVE wave colour, so read a strip that is not the preselected
+    // reference — the ref boots with the active palette applied.
+    const inactiveWave = () =>
+      page.evaluate(() => {
+        const T = (window as any)._exhibitTest;
+        const other = T.exhibit.order.find((f: string) => f !== T.transport.activeFile);
+        return T.viewports[0].strips.get(other).ws.options.waveColor;
+      });
+
+    await boot(page);
+    const dark = await page.evaluate(() => ({
+      inlineTokens: document.documentElement.style.length,
+      bg: getComputedStyle(document.body).backgroundColor,
+    }));
+    const darkWave = await inactiveWave();
+    expect(dark.inlineTokens).toBe(0); // dark = no overrides at all
+    expect(dark.bg).toBe('rgb(11, 11, 12)'); // #0b0b0c, the shipped background
+    expect(darkWave).toBe('#5c5c68');
+
+    await boot(page, 'debug=1&theme=light');
+    const light = await page.evaluate(() => ({
+      bg: getComputedStyle(document.body).backgroundColor,
+      token: document.documentElement.style.getPropertyValue('--ex-bg'),
+    }));
+    const lightWave = await inactiveWave();
+    expect(light.token).toBe('#f4f4f6');
+    expect(light.bg).toBe('rgb(244, 244, 246)');
+    expect(lightWave).not.toBe(darkWave);
+  });
+
+  // 35.12 The categories mix independently of the preset — the whole point of
+  // slicing the token set: "nord's canvas with dark strips and amber
+  // waveforms" is a URL, not an argument. And the band, unpinned, FOLLOWS the
+  // theme through its var() chain; pinned, it takes the named palette while
+  // everything around it stays put.
+  test('35.12 theme categories pin independently on top of the preset', async ({ page }) => {
+    await boot(page, 'debug=1&theme=nord&themeStrips=dark&themeWaves=amber&themeBand=sepia');
+    const mixed = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const other = T.exhibit.order.find((f: string) => f !== T.transport.activeFile);
+      return {
+        bg: getComputedStyle(document.body).backgroundColor, // nord canvas
+        // :not(.is-active) — the first strip is the preselected reference and
+        // carries the ACTIVE surface colour (the 35.11 lesson).
+        strip: getComputedStyle(document.querySelector('.strip:not(.is-active)')!).backgroundColor,
+        wave: T.viewports[0].strips.get(other).ws.options.waveColor, // amber extra
+        band: getComputedStyle(T.band.el).backgroundColor, // sepia band
+        panel: getComputedStyle(document.querySelector('.zoom-btn')!).backgroundColor, // nord controls
+      };
+    });
+    expect(mixed.bg).toBe('rgb(46, 52, 64)'); // nord #2e3440
+    expect(mixed.strip).toBe('rgb(20, 20, 23)'); // dark #141417 — pinned past nord
+    expect(mixed.wave).toBe('#6b5f4a'); // the amber extra's inactive wave
+    expect(mixed.band).toBe('rgb(237, 224, 206)'); // sepia #ede0ce, band pinned alone
+    expect(mixed.panel).toBe('rgb(59, 66, 82)'); // nord #3b4252 — controls untouched
+  });
+
+  // 35.13 ?annotationColors=theme swaps the AUTHORED annotation and group
+  // colours for the preset's diverging series — annotations take the FRONT of
+  // the series (strongest divergence), the focused annotation's groups
+  // continue after the annotation block, and the payload's own objects are
+  // never mutated. Default stays authored.
+  test('35.13 the theme series recolours annotations and groups without touching the payload', async ({
+    page,
+  }) => {
+    // Default: authored colours reach the chips.
+    await boot(page);
+    const authored = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const vp = T.viewports[0];
+      const ann = T.exhibit.byAudience[vp.el.dataset.audience][0];
+      const chip = vp.annList.el.querySelector(`.ann-chip[data-ann="${ann.id}"]`) as HTMLElement;
+      return { palette: T.annotationPalette, authored: ann.color, border: chip.style.borderColor };
+    });
+    expect(authored.palette).toBeNull();
+    expect(authored.border).toBeTruthy();
+
+    await boot(page, 'debug=1&annotationColors=theme');
+    const themed = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const vp = T.viewports[0];
+      const anns = T.exhibit.byAudience[vp.el.dataset.audience];
+      const withGroups = anns.findIndex((a: any) => a.grouping?.groups?.length);
+      const ann = anns[withGroups];
+      // Focus it so the group colours land on the strip edges.
+      (vp.annList.el.querySelector(`.ann-chip[data-ann="${ann.id}"]`) as HTMLElement).click();
+      const probe = document.createElement('div');
+      document.body.appendChild(probe);
+      const asRgb = (c: string) => {
+        probe.style.borderColor = '';
+        probe.style.borderColor = c;
+        return getComputedStyle(probe).borderColor;
+      };
+      const chips = anns.map((a: any, i: number) => ({
+        border: (vp.annList.el.querySelector(`.ann-chip[data-ann="${a.id}"]`) as HTMLElement)
+          .style.borderColor,
+        expected: asRgb(T.annotationPalette[i]),
+      }));
+      const member = ann.grouping.groups[0].files.find((f: string) => vp.strips.has(f));
+      const edge = vp.strips.get(member).el.style.getPropertyValue('--group-color');
+      probe.remove();
+      return {
+        palette: T.annotationPalette,
+        chips,
+        edge,
+        expectedEdge: T.annotationPalette[anns.length], // groups continue after the annotations
+        payloadColor: ann.color, // must still be the authored value
+      };
+    });
+    expect(themed.palette).toHaveLength(12);
+    for (const c of themed.chips) expect(c.border).toBe(c.expected); // front of the series, in order
+    expect(themed.edge).toBe(themed.expectedEdge);
+    expect(themed.payloadColor).not.toBe(themed.expectedEdge); // payload untouched
+    expect(themed.palette).toContain(themed.edge);
+    expect(themed.palette).not.toContain(themed.payloadColor);
+  });
+
+  // 35.15 Group information only appears when the annotation has something to
+  // SAY about its groups — a group note today, a between-group comparison once
+  // those are authored (user feedback 2026-08-24: a bare legend of "New Group"
+  // and "Ungrouped" is noise). Legend and strip edges obey the same predicate.
+  test('35.15 group legend and strip edges hide when the annotation has no group story', async ({
+    page,
+  }) => {
+    await boot(page);
+    const probe = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const vp = T.viewports[0];
+      const anns = T.exhibit.byAudience[vp.el.dataset.audience];
+      const storyless = anns.find(
+        (a: any) =>
+          a.grouping?.groups?.length &&
+          !Object.values(a.groupNotes || {}).length &&
+          !(a.comparisons || []).length,
+      );
+      (vp.annList.el.querySelector(`.ann-chip[data-ann="${storyless.id}"]`) as HTMLElement).click();
+      const strip = [...vp.strips.values()][0];
+      return {
+        found: !!storyless,
+        cards: vp.annList.el.querySelectorAll('.ann-group-card').length,
+        hasGroups: vp.annList.el.dataset.hasGroups || '',
+        edge: strip.el.style.getPropertyValue('--group-color'),
+        grouped: strip.el.dataset.group ?? null,
+      };
+    });
+    expect(probe.found).toBe(true);
+    expect(probe.cards).toBe(0);
+    expect(probe.hasGroups).toBe('');
+    expect(probe.edge).toBe('transparent');
+    expect(probe.grouped).toBeNull();
+
+    // And a between-group comparison IS a story: a synthetic annotation with
+    // one (none are authored yet — the pipeline carries them, this pins the
+    // display path) renders the legend plus the comparison card.
+    const cmp = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const vp = T.viewports[0];
+      vp.annList.update(
+        [
+          {
+            id: 'fake_cmp',
+            label: { en: 'Fake' },
+            color: '#3b82f6',
+            description: { en: 'x' },
+            grouping: {
+              name: 'x',
+              groups: [
+                { groupId: 'A', label: { en: 'Alpha' }, color: '#ede9fe', files: [] },
+                { groupId: 'B', label: { en: 'Beta' }, color: '#dbeafe', files: [] },
+              ],
+            },
+            groupNotes: {},
+            comparisons: [
+              { id: 'c1', leftGroupId: 'A', rightGroupId: 'B', text: { en: 'Alpha broadens the upbeat' } },
+            ],
+          },
+        ],
+        'fake_cmp',
+      );
+      const card = vp.annList.el.querySelector('.ann-comparison-card');
+      return {
+        hasGroups: vp.annList.el.dataset.hasGroups,
+        names: card?.querySelector('.ann-cmp-names')?.textContent,
+        text: card?.textContent,
+      };
+    });
+    expect(cmp.hasGroups).toBe('1');
+    expect(cmp.names).toBe('Alpha ↔ Beta');
+    expect(cmp.text).toContain('Alpha broadens the upbeat');
+  });
+
+  // 35.16 ?zoomControls=0 removes the buttons but not the machinery — the
+  // setLevel API (and with it the moment-synced scroll) keeps working, so the
+  // museum build can drop the chrome without losing the capability.
+  test('35.16 zoom buttons are hidable while the zoom machinery stays wired', async ({ page }) => {
+    await boot(page, 'debug=1&zoomControls=0');
+    await expect(page.locator('.zoom-ctl')).toHaveCount(0);
+    const zoomed = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const vp = T.viewports[0];
+      vp.zoom.setLevel(4);
+      const s = [...vp.strips.values()][0];
+      return { full: s.ws.getWrapper().scrollWidth, box: s.host.clientWidth };
+    });
+    expect(zoomed.full).toBeGreaterThan(zoomed.box * 3.5);
+  });
+
+  // 35.17 The band's shared play/pause: one large button in the middle of the
+  // band starts and stops the transport, and the current time renders TWICE
+  // below it — the far copy rotated 180° so each visitor reads one the right
+  // way up (numerals only; the no-labels rule holds).
+  test('35.17 the band play button toggles the transport and mirrors the time to both readers', async ({
+    page,
+  }) => {
+    await boot(page);
+    const resting = await page.evaluate(() => {
+      const times = [...document.querySelectorAll('.mb-time')];
+      return {
+        count: times.length,
+        texts: times.map((t: any) => t.textContent),
+        flipped: getComputedStyle(times[1] as Element).transform,
+        icon: document.querySelector('.mb-play')!.textContent,
+      };
+    });
+    expect(resting.count).toBe(2);
+    expect(resting.texts).toEqual(['0:00', '0:00']);
+    expect(resting.flipped).not.toBe('none'); // the far reader's copy
+    expect(resting.icon).toBe('▶');
+
+    await page.click('.mb-play');
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.playing), {
+        timeout: 15_000,
+        message: 'the band play button never started the transport',
+      })
+      .toBe(true);
+    await expect(page.locator('.mb-play')).toHaveText('❚❚');
+    // Both readouts advance together off the shared clock.
+    await expect
+      .poll(() =>
+        page.evaluate(() => [...document.querySelectorAll('.mb-time')].map((t: any) => t.textContent)),
+      )
+      .toEqual(['0:01', '0:01']);
+
+    await page.click('.mb-play');
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.playing))
+      .toBe(false);
+    await expect(page.locator('.mb-play')).toHaveText('▶');
+  });
+
+  // 35.14 Clicking a PRESET clears every per-category pin back to "follow" —
+  // a preset click means "show me that theme", not "that theme corrupted by
+  // whatever pins are lying around".
+  test('35.14 choosing a preset clears the per-category pins', async ({ page }) => {
+    await boot(page, 'studyPanel=true&theme=nord&themeWaves=amber&themeBand=sepia');
+    await page.click('.study-cog');
+    await page.click('.study-tab[data-tab="theme"]');
+    // The preset row is the first row on the Theme tab.
+    await page
+      .locator('.study-row')
+      .first()
+      .locator('.study-option', { hasText: 'Warm dark' })
+      .click();
+    await page.waitForURL(/theme=warm/);
+    expect(page.url()).not.toContain('themeWaves');
+    expect(page.url()).not.toContain('themeBand');
+    expect(page.url()).toContain('studyPanel=true');
+  });
+});

@@ -36,12 +36,18 @@ import RegionsPlugin from "../vendor/wavesurfer-regions.esm.js";
  * meaning something. Grouping colours are the ones that carry meaning here
  * (grouping-core's palette, via the annotations), so the waveform itself stays
  * neutral and the ACTIVE strip is what changes.
+ *
+ * These are the DEFAULT (dark) theme's values; main.js passes the active
+ * theme's set through `opts.colors` (themes.js) — as options, not CSS tokens,
+ * because WaveSurfer paints them into canvases.
  */
-const WAVE = "#5c5c68";
-const WAVE_ACTIVE = "#8fb8e8";
-const PROGRESS = "#3d3d47";
-const PROGRESS_ACTIVE = "#5f86b4";
-const CURSOR = "#f2f2f4";
+const DEFAULT_COLORS = {
+  wave: "#5c5c68",
+  waveActive: "#8fb8e8",
+  progress: "#3d3d47",
+  progressActive: "#5f86b4",
+  cursor: "#f2f2f4",
+};
 
 /**
  * Create one strip inside `parent`.
@@ -58,6 +64,7 @@ const CURSOR = "#f2f2f4";
  * @returns {Strip}
  */
 export function createStrip(parent, opts) {
+  const colors = opts.colors || DEFAULT_COLORS;
   const el = document.createElement("div");
   el.className = "strip";
   el.dataset.file = opts.file;
@@ -83,9 +90,9 @@ export function createStrip(parent, opts) {
     height: opts.height,
     // 0 means fill the parent — the whole recording in the strip (config.js).
     minPxPerSec: opts.zoom || 0,
-    waveColor: WAVE,
-    progressColor: PROGRESS,
-    cursorColor: CURSOR,
+    waveColor: colors.wave,
+    progressColor: colors.progress,
+    cursorColor: colors.cursor,
     cursorWidth: 2,
     normalize: false,
     // Both off for the same reason listen.js turns them off: the exhibit owns
@@ -165,8 +172,8 @@ export function createStrip(parent, opts) {
     setActive(active) {
       el.classList.toggle("is-active", !!active);
       ws.setOptions({
-        waveColor: active ? WAVE_ACTIVE : WAVE,
-        progressColor: active ? PROGRESS_ACTIVE : PROGRESS,
+        waveColor: active ? colors.waveActive : colors.wave,
+        progressColor: active ? colors.progressActive : colors.progress,
       });
     },
     destroy() {
@@ -194,7 +201,7 @@ export function createStrip(parent, opts) {
  *   the name the payload uses. `ready` settles once every renderer knows its own
  *   duration — nothing that measures a strip may run before it (see createStrip).
  */
-export function mountStrips(parent, data, config, { onSelect, labelFor }) {
+export function mountStrips(parent, data, config, { onSelect, labelFor, colors }) {
   const strips = new Map();
   const files = data.order.slice(0, config.stackedRecordings);
   for (const file of files) {
@@ -208,6 +215,7 @@ export function mountStrips(parent, data, config, { onSelect, labelFor }) {
         zoom: config.zoom,
         label: labelFor(file),
         onSelect,
+        colors,
       }),
     );
   }

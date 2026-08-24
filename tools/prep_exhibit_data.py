@@ -407,6 +407,20 @@ def build_annotations(sets, warnings):
                     "groups": groups,
                 },
                 "groupNotes": {k: lang_map(v) for k, v in (ann.get("groupNotes") or {}).items()},
+                # Between-group descriptions (the authoring tool's `comparisons`
+                # field, keyed by stable groupIds). None are authored yet
+                # (2026-08-24) but they are planned; carrying them through now
+                # means the day one is written it appears on the glass.
+                "comparisons": [
+                    {
+                        "id": c.get("id"),
+                        "leftGroupId": c.get("leftGroupId"),
+                        "rightGroupId": c.get("rightGroupId"),
+                        "text": lang_map(c.get("text")),
+                    }
+                    for c in (ann.get("comparisons") or [])
+                    if (c.get("text") or "").strip()
+                ],
             })
     per_audience = Counter(a["audience"] for a in annotations)
     log(f"  annotations: {len(annotations)} total {dict(per_audience)}")

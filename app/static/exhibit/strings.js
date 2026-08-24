@@ -51,6 +51,10 @@ const CATALOGUE = {
   "audience.expert": { en: "Scholars" },
   "state.loading": { en: "Loading…" },
   "state.nothingForAudience": { en: "Nothing here for this view — try another." },
+  // A kiosk that fails must say so on the glass, not only in a console nobody can
+  // open. The message names no cause on purpose: the visitor cannot act on one and
+  // the technician has the console.
+  "state.dataError": { en: "This exhibit is temporarily unavailable." },
 };
 
 let _debug = false;

@@ -34,20 +34,49 @@ These are shared, so they are **not** ledger entries — they are the boundary w
 |---|---|
 | `js/engine/align-core.js` | The alignment index↔time mapping. Pure semantics: every consumer must agree what an index means. |
 | `js/engine/grouping-core.js` | The grouping read model. Annotations pin to group ids, so a divergent copy would disagree about which recordings an annotation is about. |
+| `js/windowed-audio-player.js` | Accurate VBR-MP3 seeking. The exhibit's whole content is "listen to *this* moment", and an `<audio>` element seeks VBR by estimating time from byte offset — up to ~15 s wrong. Zero imports already, so it is shared as-is; only the *builder* around it had to be copied (row 1). |
+| `js/audio-seek-index.js` | The frame index the player seeks by. Same argument, same zero imports. |
+
+The vendored WaveSurfer bundles (`vendor/wavesurfer.esm.js`, `vendor/wavesurfer-regions.esm.js`) are
+imported directly too. They are not first-party modules and cannot reach `listen.js`, so the boundary
+test ignores them and they are not ledger entries.
 
 Further candidates, all already at zero `listen.js` imports and importable when needed:
 `js/engine/data-session.js`, `js/engine/time-axis.js`, `js/engine/mei-synth.js`,
-`js/windowed-audio-player.js`, `js/audio-seek-index.js`, `js/annotation/state.js`,
-`js/annotation/mao-adapter.js`, `js/annotation/ui-common.js`, `js/theme-setup.js`, `js/utils.js`.
+`js/annotation/state.js`, `js/annotation/mao-adapter.js`, `js/annotation/ui-common.js`,
+`js/theme-setup.js`, `js/utils.js`.
 
 ## The ledger
 
 | # | what | copied from | lines | what the engine should expose | disposition |
 |---|---|---|---|---|---|
-| — | *nothing copied yet* | — | — | — | — |
+| 1 | the windowed-player builder — analyse the bytes, construct a `WindowedAudioPlayer`, kick off `init()` in the background, fall back to an element when no index is needed | `js/engine/normalization.js:59-96` (`maybeBuildWindowedPlayer`) | ~20, in `exhibit/audio.js` | a `buildWindowedPlayer(blob, bytes, {audioContext, duration})` free function. The engine's version is not callable from outside because it *finds* its own inputs: `fileBlobs`, `waveformPeaks`, and a module-private `AudioContext`, all reached through `listen.js`. The fifteen lines that matter want four arguments and no state. | **resolve before December** |
+| 2 | the annotation region **display** half — spec computation, reconcile-not-rebuild, the `_v6Meta`-style stash, and `_withAlpha` | `js/annotation/waveform-interactions.js:175-271` | ~110, in `exhibit/regions.js` | nothing. See below. | **acceptable permanent divergence** |
+
+**Row 2, because a copy always looks like laziness later.** This is plan §8's closed decision, not a
+shortcut taken here. What that module encodes is *conventions* — an id namespace, a metadata stash, drag
+and resize permissions, pointer mechanics — and the two consumers are entitled to differ about every one
+of them: the exhibit has no drag, no alt-scoped edit, no drawer, and reads its times from the prepped
+payload's `targets[].regionTimes` rather than from `annotation/state.js`. The exhibit's copy has already
+diverged in a way the engine should *not* adopt (a minimum rendered width, and a `provisional` mark for
+regions awaiting hand placement — plan §5.2d), which is the evidence that the divergence is real.
+
+What must never diverge is the annotation **serialisation** shape, and that lives in
+`annotation/state.js`, on the import side. Rule 4 is satisfied: no *semantics* were copied. The two
+things a copy would have let the exhibit disagree about — which moment an index is, which recordings a
+group holds — are imported (`align-core`, `grouping-core`).
+
+## Pushed back into the engine
+
+The mirror image of the ledger, and the more valuable half: what building a second consumer *fixed*
+upstream rather than worked around. One entry so far.
+
+| what | where | why the exhibit found it |
+|---|---|---|
+| Removed an unconditional `console.log` of every call | `js/engine/align-core.js`, `getClosestAlignmentIx` | Survivable while the only caller reacted to clicks. The exhibit calls it once per animation frame to place sixteen cursors, so it was 60 lines of console per second — which is not a diagnostic, and would have made the frame-cost measurement unreadable. |
 
 <!--
 Row template — keep the columns in this order:
 
-| 1 | the windowed-player builder | `js/engine/normalization.js:64-96` | ~15 | a `buildWindowedPlayer(blob, opts)` free function, with no normalisation state attached | resolve before December |
+| 3 | the thing | `js/engine/whatever.js:1-2` | ~n | the shape the engine should expose instead | resolve before December |
 -->

@@ -26,7 +26,10 @@
  * @returns {number} grid index, 0 when the grid is missing
  */
 export function getClosestAlignmentIx(grids, time, audioIx) {
-  console.log("Get closest alignment Ix: ", time, audioIx);
+  // No trace log here. It was an unconditional console.log of every call, which
+  // was survivable while the only caller was Listen Here reacting to clicks — and
+  // is not, now that the exhibit calls this once per animation frame to place
+  // sixteen cursors. 60 lines of console per second is not a diagnostic.
   // return alignment index closest to supplied time (default: current playback position)
   let currentGrid = grids[audioIx];
   if (!currentGrid) {

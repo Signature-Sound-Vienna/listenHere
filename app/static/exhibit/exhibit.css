@@ -36,8 +36,13 @@ html, body {
 }
 
 /* "horizontal" splits the portrait screen into stacked landscape halves — the
- * table case. "vertical" puts them side by side, which is the laptop case. */
-#screen[data-split="horizontal"] { flex-direction: column; }
+ * table case. "vertical" puts them side by side, which is the laptop case.
+ *
+ * column-REVERSE, so viewport 0 — the upright one — renders at the BOTTOM edge,
+ * where the near visitor stands, and the rotated far half sits at the top. The
+ * reversal lives here rather than in the rotations config so that `?viewports=1`
+ * (the laptop case) keeps a single upright viewport 0 with no override. */
+#screen[data-split="horizontal"] { flex-direction: column-reverse; }
 #screen[data-split="vertical"]   { flex-direction: row; }
 
 .vp {
@@ -61,7 +66,111 @@ html, body {
   border-radius: 3px;
   position: relative;
   overflow: hidden;   /* the iOS-safe shape: viewport-sized box over a wider inner */
+  /* The grouping edge. Always present, so focusing an annotation changes a colour
+   * rather than a layout — a 4px border appearing on eight strips at once would
+   * shift every waveform sideways at the moment the visitor is trying to read it.
+   * The colour comes from grouping-core's palette via the annotation's own pinned
+   * grouping (see main.js paintGroups), and is transparent when nothing is
+   * focused. */
+  border-left: 4px solid var(--group-color, transparent);
 }
+
+/* The audible recording. A brighter waveform rather than an outline: the strips
+ * are 54px tall and stacked two pixels apart, so a border reads as a gap. */
+.strip.is-active { background: #1b1b21; }
+
+.strip-ws { position: absolute; inset: 0; }
+
+/* Conductor and year, over the waveform rather than above it — vertical space is
+ * the scarce dimension once a portrait screen is halved and divided by eight.
+ * pointer-events: none so the caption never eats a tap meant for the waveform. */
+.strip-label {
+  position: absolute;
+  top: 2px;
+  left: 6px;
+  z-index: 2;
+  pointer-events: none;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  color: #cfcfd8;
+  text-shadow: 0 1px 2px #000, 0 0 6px #000;   /* legible over any waveform */
+}
+.strip.is-active .strip-label { color: #fff; }
+
+/* Regions the prep script flagged for hand placement (plan §5.2d), and regions
+ * widened to stay visible at all (config.minRegionPx). Both are drawn where the
+ * alignment currently says, which is not where the annotator will eventually put
+ * them, so they are marked rather than presented as settled. */
+.strip [data-provisional] { outline: 1px dashed rgba(255,255,255,0.55); outline-offset: -1px; }
+.strip [data-widened]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-left: 1px solid rgba(255,255,255,0.7);
+}
+
+/* Provisional geometry, and deliberately so: where the switching controls go is a
+ * museum-feedback and user-study question (plan §6.3), so this is built to be
+ * moved. What is NOT provisional is the hit-target size — 44px is the smallest a
+ * finger reliably lands on, and the iPad is the delivery device. */
+.audience-switch {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  flex: 0 0 auto;
+}
+
+.audience-btn,
+.ann-chip {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid #3a3a44;
+  border-radius: 22px;
+  background: #17171b;
+  color: #d8d8e2;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.audience-btn.is-on {
+  background: #2f4d70;
+  border-color: #5f86b4;
+  color: #fff;
+}
+
+/* The minimal stand-in for week 2's commentary panel: the audience's annotations
+ * as chips, and the focused one's text. */
+.ann-panel {
+  flex: 0 0 auto;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.ann-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+
+.ann-chip { border-width: 2px; }
+
+.ann-detail {
+  margin: 0;
+  max-width: 62ch;
+  text-align: center;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: #d8d8e2;
+  /* Reserve two lines so focusing an annotation does not move the strips above
+   * it. A layout that jumps under a finger is the one interaction a kiosk cannot
+   * afford. */
+  min-height: 2.9em;
+}
+.ann-detail[data-state="hint"],
+.ann-detail[data-state="empty"] { color: #8d8d99; }
 
 /* Shared between the halves, read from both sides at once. Portrait, conductor
  * name, and year only — no UI labels, by design (plan §6.3). */
@@ -76,12 +185,30 @@ html, body {
   border-bottom: 1px solid #26262c;
 }
 
+/* Holds the band's height before the metadata sidecar has landed, so the strips
+ * do not move when it does. */
+.middle-band-slot {
+  flex: 0 0 var(--middle-band-height, 96px);
+  background: #17171b;
+  border-top: 1px solid #26262c;
+  border-bottom: 1px solid #26262c;
+}
+
 .mb-portrait {
   width: calc(var(--middle-band-height, 96px) - 24px);
   aspect-ratio: 1;
   border-radius: 50%;
-  background: #26262c;
+  background: #26262c center / cover no-repeat;
   flex: 0 0 auto;
+  /* Initials until the generated portraits exist (an open editorial item, not a
+   * code one). Still just the conductor's name, so the no-labels rule holds. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(var(--middle-band-height, 96px) / 4);
+  font-weight: 600;
+  color: #6f6f7d;
+  letter-spacing: 0.02em;
 }
 
 /* Numerals and a proper name: the two things that need no translation. */

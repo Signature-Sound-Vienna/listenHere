@@ -22,6 +22,13 @@
  * at dpr 2, so each half gets 1024×~640 and eight 54 px strips use 432 px of it.
  */
 const DEFAULTS = {
+  // --- content selection ---
+  // Which prepped payload to load. The stretch goal for the attract loop is a
+  // second piece (Kaiserwalzer, which needs no annotations to autoplay), so the
+  // piece is a parameter from the start rather than a path spelled out in the
+  // loader — `?piece=kaiserwalzer` is the whole change.
+  piece: "fledermaus",
+
   // --- geometry ---
   viewports: 2,
   splitOrientation: "horizontal", // "horizontal" = stacked halves; "vertical" = side by side
@@ -31,8 +38,22 @@ const DEFAULTS = {
   middleBandHeight: 96, // conductor, year, portrait — and NO UI labels (plan §6.3)
 
   // --- waveform ---
-  zoom: 30, // minPxPerSec at rest
+  // 0 means FIT THE WHOLE RECORDING INTO THE STRIP, which is WaveSurfer's
+  // `fillParent` behaviour when `minPxPerSec` is 0. That is the right resting
+  // state for this interface and not merely a convenient default: the exhibit's
+  // whole proposition is seeing eight interpretations of the *same* moment at
+  // once, and at the previous default of 30 px/s a 582 s overture shows about 3%
+  // of itself, so the stacked comparison has nothing to compare. Per-viewport
+  // zoom and scroll arrive in week 2 (plan §4.2); until then `?zoom=30` is still
+  // one query parameter away.
+  zoom: 0,
   peakBuckets: 4096, // what the alignment JSON ships
+  // Regions narrower than this vanish entirely at fit-to-width — 582 s across
+  // ~1000 px is 0.58 s per pixel, and `D or E?` region (a) is 0.012–0.120 s wide
+  // (plan §5.2d). Sub-pixel regions are widened symmetrically to at least this,
+  // and marked provisional when they were flagged for hand placement, rather than
+  // being silently dropped or silently drawn at a misleading width.
+  minRegionPx: 4,
 
   // --- content ---
   // Audience and language are resolved PER VIEWPORT, never swapped globally, so

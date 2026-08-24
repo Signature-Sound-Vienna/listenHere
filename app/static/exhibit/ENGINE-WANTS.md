@@ -52,6 +52,7 @@ Further candidates, all already at zero `listen.js` imports and importable when 
 |---|---|---|---|---|---|
 | 1 | the windowed-player builder — analyse the bytes, construct a `WindowedAudioPlayer`, kick off `init()` in the background, fall back to an element when no index is needed | `js/engine/normalization.js:59-96` (`maybeBuildWindowedPlayer`) | ~20, in `exhibit/audio.js` | a `buildWindowedPlayer(blob, bytes, {audioContext, duration})` free function. The engine's version is not callable from outside because it *finds* its own inputs: `fileBlobs`, `waveformPeaks`, and a module-private `AudioContext`, all reached through `listen.js`. The fifteen lines that matter want four arguments and no state. | **resolve before December** |
 | 2 | the annotation region **display** half — spec computation, reconcile-not-rebuild, the `_v6Meta`-style stash, and `_withAlpha` | `js/annotation/waveform-interactions.js:175-271` | ~110, in `exhibit/regions.js` | nothing. See below. | **acceptable permanent divergence** |
+| 3 | the alignment-based scroll sync — centre-of-view time, projected per recording, written back as scrollLeft | rebuilt against `js/engine/zoom-scroll.js:344-370` (`syncAllWaveformScrolls`, alignment branch) | ~25, in `exhibit/zoom.js` | nothing, probably. The SEMANTICS (which moment corresponds) go through `align-core` in both consumers; what was rebuilt is scroll-position arithmetic plus each side's own conventions — the engine's version serves three scroll modes, a shared time axis, and overlay canvases the exhibit does not have, and the exhibit's centres ALL strips including the source, holds a per-viewport sync lock, and rAF-coalesces momentum-scroll bursts. If a third consumer ever appears, extract a `centreScrollFor(time, duration, viewW, fullW)` pair then. | **acceptable permanent divergence** |
 
 **Row 2, because a copy always looks like laziness later.** This is plan §8's closed decision, not a
 shortcut taken here. What that module encodes is *conventions* — an id namespace, a metadata stash, drag
@@ -74,6 +75,7 @@ upstream rather than worked around. One entry so far.
 | what | where | why the exhibit found it |
 |---|---|---|
 | Removed an unconditional `console.log` of every call | `js/engine/align-core.js`, `getClosestAlignmentIx` | Survivable while the only caller reacted to clicks. The exhibit calls it once per animation frame to place sixteen cursors, so it was 60 lines of console per second — which is not a diagnostic, and would have made the frame-cost measurement unreadable. |
+| Extracted `fitPxPerSec` into `js/engine/zoom-fit.js` (new, uncoupled; zoom-scroll.js now imports it) | was private in `js/engine/zoom-scroll.js` | The exhibit's first zoom-out probe reproduced the spec 28.3 one-pixel overflow exactly (wrapper 997 over a 996 container, scroll stuck at 1) — on a PEAKS-ONLY renderer, where the overshooting duration is the mock buffer's float arithmetic rather than an MP3 header. The function encodes a bug fix two consumers must share, which is rule 4's definition of extract-don't-copy. |
 
 <!--
 Row template — keep the columns in this order:

@@ -23,8 +23,15 @@ html, body {
   -webkit-user-select: none;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
   overscroll-behavior: none;
-  touch-action: manipulation;
+  /* pan-x pan-y, NOT manipulation: manipulation still permits pinch-zoom, and a
+   * pinched kiosk stays pinched for the next visitor. Panning is kept because
+   * the zoomed strips and the commentary text scroll natively (week 2); the
+   * effective touch-action of any descendant is intersected with this, so
+   * nothing below can quietly re-enable pinch. iOS belt-and-braces lives in
+   * main.js's gesture-event guards. */
+  touch-action: pan-x pan-y;
 }
 
 #screen {
@@ -45,6 +52,27 @@ html, body {
 #screen[data-split="horizontal"] { flex-direction: column-reverse; }
 #screen[data-split="vertical"]   { flex-direction: row; }
 
+/* Desktop-debugging stage rotation (?stageRotation=90|270, config.js): paint the
+ * whole composed screen sideways so a physically turned laptop or a swivelled
+ * monitor shows the portrait kiosk at its intended aspect. A FINAL-TOUCH
+ * transform on this root element only: the screen is laid out at swapped
+ * viewport dimensions and rotated as one unit after layout, so nothing inside —
+ * canvas sizing, clientWidth, the 180° viewport rotation — can tell. No inner
+ * rule may key on data-stage-rotation; that is the whole contract. Fixed
+ * position because the swapped layout box (100vh × 100vw) overflows a landscape
+ * window, and a scrollable body would break the mapping this exists for. */
+#screen[data-stage-rotation="90"],
+#screen[data-stage-rotation="270"] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vh;
+  height: 100vw;
+  transform-origin: top left;
+}
+#screen[data-stage-rotation="90"]  { transform: rotate(90deg) translateY(-100%); }
+#screen[data-stage-rotation="270"] { transform: rotate(270deg) translateX(-100%); }
+
 .vp {
   flex: 1 1 0;
   min-height: 0;   /* so the strips column can actually shrink */
@@ -58,7 +86,7 @@ html, body {
   transform-origin: 50% 50%;
 }
 
-.strips { display: flex; flex-direction: column; gap: 2px; }
+.strips { display: flex; flex-direction: column; gap: 2px; position: relative; }
 
 .strip {
   height: var(--strip-height, 54px);
@@ -113,12 +141,51 @@ html, body {
  * museum-feedback and user-study question (plan §6.3), so this is built to be
  * moved. What is NOT provisional is the hit-target size — 44px is the smallest a
  * finger reliably lands on, and the iPad is the delivery device. */
+.vp-toolbar {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 28px;
+  margin: 0 0 8px;
+  flex: 0 0 auto;
+}
+
 .audience-switch {
   display: flex;
   justify-content: center;
   gap: 8px;
-  margin: 0 0 8px;
-  flex: 0 0 auto;
+}
+
+/* The per-viewport zoom control: −, the current level as a numeral (nothing to
+ * translate), +. Same chip styling as its toolbar neighbours. */
+.zoom-ctl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.zoom-btn {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid #3a3a44;
+  border-radius: 22px;
+  background: #17171b;
+  color: #d8d8e2;
+  font: inherit;
+  font-size: 1.15rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.zoom-btn:disabled { opacity: 0.35; cursor: default; }
+
+.zoom-level {
+  min-width: 2.4em;
+  text-align: center;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  color: #a9a9b4;
 }
 
 .audience-btn,
@@ -142,10 +209,15 @@ html, body {
   color: #fff;
 }
 
-/* The minimal stand-in for week 2's commentary panel: the audience's annotations
- * as chips, and the focused one's text. */
+/* Week 2's commentary panel: chips, the focused annotation's commentary, and
+ * its group-note cards. The panel absorbs ALL of the viewport's remaining
+ * height (flex: 1) so its contents can change without anything above it ever
+ * moving — the strips' position stops depending on how much text is focused,
+ * which the week-1 stand-in got wrong. min-height: 0 so the scroll area inside
+ * can actually shrink to what is left. */
 .ann-panel {
-  flex: 0 0 auto;
+  flex: 1 1 0;
+  min-height: 0;
   margin-top: 10px;
   display: flex;
   flex-direction: column;
@@ -153,24 +225,74 @@ html, body {
   gap: 8px;
 }
 
-.ann-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
+.ann-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; flex: 0 0 auto; }
 
 .ann-chip { border-width: 2px; }
+
+/* Commentary beside the group cards. Centred as a unit; each half scrolls
+ * internally rather than growing. */
+.ann-body {
+  flex: 1 1 0;
+  min-height: 0;
+  align-self: stretch;
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+}
 
 .ann-detail {
   margin: 0;
   max-width: 62ch;
-  text-align: center;
+  min-width: 0;
   font-size: 0.9rem;
   line-height: 1.45;
   color: #d8d8e2;
-  /* Reserve two lines so focusing an annotation does not move the strips above
-   * it. A layout that jumps under a finger is the one interaction a kiosk cannot
-   * afford. */
-  min-height: 2.9em;
+  /* The one deliberate scroll container in the kiosk (see annotation-list.js's
+   * header): expert commentary is measured at 1640 characters and no fixed
+   * panel on a halved portrait screen holds that. pan-y is intersected with the
+   * page's pan-x pan-y, so a vertical finger-drag scrolls the text and nothing
+   * else; contain stops the end of the text rubber-banding the screen. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a44 transparent;
+  padding-right: 6px;
 }
+.ann-detail::-webkit-scrollbar { width: 6px; }
+.ann-detail::-webkit-scrollbar-thumb { background: #3a3a44; border-radius: 3px; }
 .ann-detail[data-state="hint"],
-.ann-detail[data-state="empty"] { color: #8d8d99; }
+.ann-detail[data-state="empty"] { color: #8d8d99; text-align: center; align-self: center; }
+
+/* The focused annotation's groups: the legend for the strip-edge colours, plus
+ * the authored comparison notes where the annotation carries them. Background
+ * and text colour are set inline from the payload's own palette through
+ * safeColor/groupTextColor — never from theme variables, which is the coloured-
+ * card contrast lesson (spec 9.16). */
+.ann-groups {
+  flex: 0 1 38%;
+  min-width: 0;
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: thin;
+  scrollbar-color: #3a3a44 transparent;
+}
+.ann-panel[data-has-groups="1"] .ann-groups { display: flex; }
+
+.ann-group-card {
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  background: #26262c; /* only until safeColor sets the group's own colour */
+  color: #d8d8e2;
+}
+.ann-group-name { font-weight: 600; }
+.ann-group-note::before { content: " — "; }
 
 /* Shared between the halves, read from both sides at once. Portrait, conductor
  * name, and year only — no UI labels, by design (plan §6.3). */
@@ -236,15 +358,22 @@ html, body {
 .mb-piece-title { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.01em; }
 .mb-piece-composer { font-size: 0.85rem; color: #a9a9b4; }
 
+/* The transient "Loading…" during a switch's fetch, overlaid on the centre of
+ * the strips it is about. Absolutely positioned — OUT OF THE FLOW — which is
+ * the stronger form of the 34.10 fix: the week-1 version reserved the line's
+ * height so it could not shift the strips; this one cannot shift anything by
+ * construction, and gives its 30 px back to the commentary panel. */
 .vp-status {
-  margin: 10px 0 0;
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  transform: translateY(-50%);
+  margin: 0;
+  z-index: 3;
+  pointer-events: none;
   text-align: center;
-  color: #8d8d99;
+  color: #d8d8e2;
   font-size: 0.9rem;
-  /* Reserve the line even when empty. The vp column is justify-content: center,
-   * so a status line popping in ("Loading…" during a switch's fetch) used to grow
-   * this from 0 to one line box and shift every strip by half of it — measured at
-   * 10 px, on both viewports at once, then snapping back. The same rule as
-   * .ann-detail's min-height: a kiosk layout must never move under a finger. */
-  min-height: 1.4em;
+  text-shadow: 0 1px 2px #000, 0 0 6px #000;   /* legible over any waveform */
 }

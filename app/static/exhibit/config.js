@@ -34,8 +34,23 @@ const DEFAULTS = {
   splitOrientation: "horizontal", // "horizontal" = stacked halves; "vertical" = side by side
   rotations: [0, 180], // per viewport, degrees; index beyond the end means 0
   stackedRecordings: 8,
-  stripHeight: 54, // CSS px per waveform strip
+  // 48, down from week 1's 54: the commentary panel absorbs whatever height the
+  // strips leave over, and at 54 the longest authored text showed two lines on
+  // the iPad's halves (measured; annotation-list.js). Six pixels a strip buys
+  // the panel ~78 px — the waveforms are the overview, the commentary is the
+  // exhibit's voice, and `?stripHeight=54` puts the week-1 look back for an
+  // eyeball comparison.
+  stripHeight: 48, // CSS px per waveform strip
   middleBandHeight: 96, // conductor, year, portrait — and NO UI labels (plan §6.3)
+  // Desktop-debugging convenience, never set on the kiosk: rotate the WHOLE
+  // composed screen 90° or 270° so a physically turned laptop or a swivelled
+  // monitor shows the portrait kiosk at its intended aspect. Applied as one
+  // final-touch transform on #screen (see exhibit.css) — layout, measurement,
+  // and WaveSurfer's canvas sizing all run untransformed, and the browser maps
+  // pointer coordinates back through the transform, so nothing inside can tell.
+  // A query parameter rather than any environment sniffing, by the §7.8 rule:
+  // laptop, iPad, and table are configurations of one build.
+  stageRotation: 0,
 
   // --- waveform ---
   // 0 means FIT THE WHOLE RECORDING INTO THE STRIP, which is WaveSurfer's
@@ -47,6 +62,13 @@ const DEFAULTS = {
   // zoom and scroll arrive in week 2 (plan §4.2); until then `?zoom=30` is still
   // one query parameter away.
   zoom: 0,
+  // The steps the per-viewport zoom buttons walk (1 = fit-to-width, the resting
+  // state above). Capped at 8× deliberately: the renderer draws lazily in
+  // container-width chunks (measured, see exhibit/zoom.js), but chunks
+  // accumulate as a visitor scrolls, and at 8× a fully-scrolled viewport stays
+  // inside the canvas-memory envelope Spike C measured on the real iPad. Raise
+  // this only with the §7.2 device test in hand.
+  zoomLevels: [1, 2, 4, 8],
   peakBuckets: 4096, // what the alignment JSON ships
   // Regions narrower than this vanish entirely at fit-to-width — 582 s across
   // ~1000 px is 0.58 s per pixel, and `D or E?` region (a) is 0.012–0.120 s wide

@@ -30,6 +30,7 @@ import { mountStrips } from "./strips.js";
 import { syncRegions } from "./regions.js";
 import { Transport } from "./audio.js";
 import { AudienceStore, buildAudienceSwitch } from "./audience.js";
+import { createViewportZoom } from "./zoom.js";
 import { createMiddleBand } from "./middle-band.js";
 import { createAnnotationList, groupForFileIn } from "./annotation-list.js";
 
@@ -104,6 +105,18 @@ function buildScreen(root) {
   root.style.setProperty("--strip-height", config.stripHeight + "px");
   root.style.setProperty("--middle-band-height", config.middleBandHeight + "px");
   root.dataset.split = config.splitOrientation;
+  // The desktop-debug stage rotation (config.js). Only the two values the CSS
+  // knows how to place are honoured — a typo'd angle silently painting the
+  // screen off-viewport would be a miserable thing to debug on a rotated laptop.
+  if (config.stageRotation) {
+    if (config.stageRotation === 90 || config.stageRotation === 270) {
+      root.dataset.stageRotation = String(config.stageRotation);
+    } else {
+      console.warn(
+        `exhibit: stageRotation ${config.stageRotation} is not 90 or 270 — ignored`,
+      );
+    }
+  }
 
   const viewports = [];
   const bands = [];
@@ -131,10 +144,14 @@ function buildScreen(root) {
     strips.className = "strips";
     vp.appendChild(strips);
 
+    // Inside the strips container, absolutely positioned over it (exhibit.css):
+    // out of the flow entirely, so the transient "Loading…" can never move a
+    // strip — the stronger form of 34.10's reserved-height fix, adopted when
+    // week 2's commentary panel needed the line's 30 px back.
     const status = document.createElement("p");
     status.className = "vp-status";
     status.textContent = t("state.loading", vp.dataset.language);
-    vp.appendChild(status);
+    strips.appendChild(status);
 
     root.appendChild(vp);
     viewports.push({
@@ -154,6 +171,17 @@ function buildScreen(root) {
 const root = document.getElementById("screen");
 const { viewports, bands } = buildScreen(root);
 document.title = t("app.title", config.languages[0]);
+
+// Kiosk touch guards (plan §4.2). The declarative layers — `touch-action:
+// pan-x pan-y` in exhibit.css (pinch and double-tap zoom both refused, panning
+// kept) and the viewport meta's maximum-scale — cover every engine that honours
+// them; iOS Safari's page pinch predates touch-action and can ignore both, and
+// its proprietary gesture events are the reliable veto. Belt and braces,
+// because the failure mode is a visitor pinching the whole exhibit sideways
+// and the next visitor finding it that way.
+for (const type of ["gesturestart", "gesturechange", "gestureend"]) {
+  document.addEventListener(type, (e) => e.preventDefault(), { passive: false });
+}
 
 // A single hook for the Playwright smoke tests, mirroring listen.js's
 // `_listenTest` convention so the exhibit is drivable the same way. `ready`
@@ -225,10 +253,6 @@ async function boot() {
 
   const stripsReady = [];
   for (const vp of viewports) {
-    vp.el.insertBefore(
-      buildAudienceSwitch({ viewport: vp.index, store, language: vp.language }),
-      vp.stripsEl,
-    );
     const mounted = mountStrips(vp.stripsEl, exhibit, config, {
       // The tap-time is only honoured on the strip that is already active — the
       // same semantics as the engine (waveform-events.js): tapping ANOTHER strip
@@ -242,6 +266,35 @@ async function boot() {
     });
     vp.strips = mounted.strips;
     stripsReady.push(mounted.ready);
+
+    // One toolbar row above the strips: the audience switch and the zoom
+    // buttons share it so the controls cost one strip-height of the column, not
+    // two. The zoom controller needs the mounted strips, which is why the
+    // toolbar is built after them even though it renders above.
+    vp.zoom = createViewportZoom({
+      viewport: vp.index,
+      strips: mounted.strips,
+      levels: config.zoomLevels,
+      language: vp.language,
+      project: (time, from, to) => projectPlayhead(time, from, [to])[to],
+      // The playhead is the anchor: zoom keeps the moment the visitor is
+      // hearing (or would hear) centred. See zoom.js's header for why not the
+      // viewport centre.
+      anchor: () => ({ file: transport.activeFile, time: transport.time }),
+      // The minimum-width floor on regions is in SECONDS-per-pixel terms, so a
+      // zoom change moves it: re-derive this viewport's regions at the new
+      // scale rather than leaving kids-region slivers widened for a zoom level
+      // that is no longer current.
+      onChange: () => renderAnnotations(vp, store),
+    });
+    const toolbar = document.createElement("div");
+    toolbar.className = "vp-toolbar";
+    toolbar.append(
+      buildAudienceSwitch({ viewport: vp.index, store, language: vp.language }),
+      vp.zoom.el,
+    );
+    vp.el.insertBefore(toolbar, vp.stripsEl);
+
     vp.annList = createAnnotationList({
       viewport: vp.index,
       language: vp.language,

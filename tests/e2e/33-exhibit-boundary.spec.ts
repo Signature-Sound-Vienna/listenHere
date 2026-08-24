@@ -37,11 +37,20 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 }
 
 /**
- * Relative module specifiers in `file`, resolved to absolute paths.
+ * First-party module specifiers in `file`, resolved to absolute paths.
  *
  * Static `import`/`export ... from` and dynamic `import(...)` with a literal
- * argument. Bare specifiers are ignored: there is no bundler and no import map,
- * so every first-party edge in this codebase is a relative path.
+ * argument. Two specifier shapes count, and both must, or the closure has a hole
+ * a future import could walk straight through:
+ *
+ *   * RELATIVE (`./x.js`, `../js/engine/x.js`) — the convention everywhere in
+ *     this codebase, since there is no bundler and no import map;
+ *   * SERVER-ABSOLUTE (`/static/js/engine/x.js`) — legal in a browser and
+ *     therefore legal here, so it is resolved against app/static/ rather than
+ *     ignored. Nothing uses it today; the point is that it cannot be used to
+ *     smuggle listen.js past this test tomorrow.
+ *
+ * Genuinely bare specifiers (`lodash`) stay ignored: they cannot resolve at all.
  */
 function importsOf(file: string): string[] {
   const src = fs.readFileSync(file, 'utf8');
@@ -57,9 +66,16 @@ function importsOf(file: string): string[] {
   }
   const out: string[] = [];
   for (const spec of specs) {
-    if (!spec.startsWith('.')) continue;
-    const resolved = path.resolve(path.dirname(file), spec);
-    if (fs.existsSync(resolved)) out.push(resolved);
+    let resolved: string | null = null;
+    if (spec.startsWith('.')) {
+      resolved = path.resolve(path.dirname(file), spec);
+    } else if (spec.startsWith('/static/')) {
+      resolved = path.join(STATIC_ROOT, spec.slice('/static/'.length));
+    } else if (spec.startsWith('/')) {
+      // Some other server-absolute path; only meaningful if it lands in static/.
+      resolved = path.join(STATIC_ROOT, spec.slice(1));
+    }
+    if (resolved && fs.existsSync(resolved)) out.push(resolved);
   }
   return out;
 }

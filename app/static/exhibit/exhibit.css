@@ -1,0 +1,96 @@
+/* exhibit/exhibit.css
+ *
+ * Kiosk styling for the doubled-up listening interface. Deliberately NOT sharing
+ * Listen Here's stylesheets: those carry a settings drawer, a sidebar, an
+ * annotation ribbon, and a theme switcher that the exhibit has none of. This is a
+ * conventions divergence rather than a semantics one, so it is not a ledger entry.
+ *
+ * Geometry comes from exhibit/config.js via custom properties on #screen. Nothing
+ * here may hard-code the viewport count, the split, or a rotation — that is the
+ * §7.8 rule that makes laptop / iPad / table one build.
+ */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #0b0b0c;
+  color: #f2f2f4;
+  font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* Kiosk: no text inflation, no selection, no tap flash, no rubber-banding. */
+  -webkit-text-size-adjust: 100%;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+}
+
+#screen {
+  display: flex;
+  height: 100%;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+  gap: 0;
+}
+
+/* "horizontal" splits the portrait screen into stacked landscape halves — the
+ * table case. "vertical" puts them side by side, which is the laptop case. */
+#screen[data-split="horizontal"] { flex-direction: column; }
+#screen[data-split="vertical"]   { flex-direction: row; }
+
+.vp {
+  flex: 1 1 0;
+  min-height: 0;   /* so the strips column can actually shrink */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 12px;
+  /* The far half is rotated 180° about its own centre, so a visitor on the other
+   * side of the table reads it the right way up. */
+  transform-origin: 50% 50%;
+}
+
+.strips { display: flex; flex-direction: column; gap: 2px; }
+
+.strip {
+  height: var(--strip-height, 54px);
+  background: #141417;
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;   /* the iOS-safe shape: viewport-sized box over a wider inner */
+}
+
+/* Shared between the halves, read from both sides at once. Portrait, conductor
+ * name, and year only — no UI labels, by design (plan §6.3). */
+.middle-band {
+  flex: 0 0 var(--middle-band-height, 96px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: #17171b;
+  border-top: 1px solid #26262c;
+  border-bottom: 1px solid #26262c;
+}
+
+.mb-portrait {
+  width: calc(var(--middle-band-height, 96px) - 24px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: #26262c;
+  flex: 0 0 auto;
+}
+
+/* Numerals and a proper name: the two things that need no translation. */
+.mb-conductor { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.01em; }
+.mb-year { font-size: 1.05rem; font-variant-numeric: tabular-nums; color: #a9a9b4; }
+
+.vp-status {
+  margin: 10px 0 0;
+  text-align: center;
+  color: #8d8d99;
+  font-size: 0.9rem;
+}

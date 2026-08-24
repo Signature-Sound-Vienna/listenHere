@@ -220,4 +220,10 @@ html, body {
   text-align: center;
   color: #8d8d99;
   font-size: 0.9rem;
+  /* Reserve the line even when empty. The vp column is justify-content: center,
+   * so a status line popping in ("Loading…" during a switch's fetch) used to grow
+   * this from 0 to one line box and shift every strip by half of it — measured at
+   * 10 px, on both viewports at once, then snapping back. The same rule as
+   * .ann-detail's min-height: a kiosk layout must never move under a finger. */
+  min-height: 1.4em;
 }

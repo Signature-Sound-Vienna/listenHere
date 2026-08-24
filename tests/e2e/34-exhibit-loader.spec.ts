@@ -324,4 +324,37 @@ test.describe('34. The exhibit loader', () => {
     expect(rotated.length).toBeGreaterThan(0);
     for (const u of upright) for (const r of rotated) expect(u.top).toBeGreaterThan(r.top);
   });
+
+  // 34.10 Nothing may MOVE during a switch. The "Loading…" status line used to
+  // grow from 0 to one line box while the new recording fetched, and because the
+  // vp column is justify-content: center that shifted every strip ~10 px up and
+  // back — the whole screen twitching on every switch. The status line's height
+  // is now reserved (.vp-status min-height); this measures a strip's rect while
+  // the loading text is actually showing, in the same JS turn that started the
+  // switch, so a reintroduced shift cannot hide between polls.
+  test('34.10 the loading status does not shift the strips during a switch', async ({ page }) => {
+    const { order } = await boot(page);
+    const probe = await page.evaluate(async (order) => {
+      const T = (window as any)._exhibitTest;
+      const vp = T.viewports[0];
+      const stripEl = [...vp.strips.values()][0].el;
+      const before = stripEl.getBoundingClientRect().top;
+      // A file with no built player, so select() really fetches and the loading
+      // state really shows; the emit is synchronous, so measuring in this same
+      // turn catches the layout exactly while "Loading…" is on screen.
+      const fresh = order.find((f: string) => f !== T.transport.activeFile);
+      const done = T.transport.select(fresh, undefined, /* play */ false);
+      const during = {
+        top: stripEl.getBoundingClientRect().top,
+        statusText: vp.statusEl.textContent,
+        statusHeight: vp.statusEl.getBoundingClientRect().height,
+      };
+      await done;
+      return { before, during, after: stripEl.getBoundingClientRect().top };
+    }, order);
+    expect(probe.during.statusText, 'the probe never saw the loading state').toBe('Loading…');
+    expect(probe.during.statusHeight).toBeGreaterThan(0);
+    expect(probe.during.top, 'strips shifted while loading').toBe(probe.before);
+    expect(probe.after, 'strips shifted after loading').toBe(probe.before);
+  });
 });

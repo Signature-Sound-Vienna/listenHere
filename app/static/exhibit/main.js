@@ -350,6 +350,7 @@ function paintGroups(vp, annotations) {
  */
 function onTransport(band) {
   let lastFile = null;
+  let lastLoading = null;
   return (state) => {
     const positions = positionsFor(state.time, state.file);
     for (const vp of viewports) {
@@ -365,10 +366,16 @@ function onTransport(band) {
       }
       band.update(state.file);
     }
-    for (const vp of viewports) {
-      const loading = !!state.loading;
-      vp.statusEl.textContent = loading ? t("state.loading", vp.language) : "";
-      vp.statusEl.dataset.state = loading ? "loading" : "";
+    // Guarded like the band above, and for the same reason: this runs per frame
+    // while playing, and the loading flag changes on a tap, not sixty times a
+    // second.
+    const loading = !!state.loading;
+    if (loading !== lastLoading) {
+      lastLoading = loading;
+      for (const vp of viewports) {
+        vp.statusEl.textContent = loading ? t("state.loading", vp.language) : "";
+        vp.statusEl.dataset.state = loading ? "loading" : "";
+      }
     }
   };
 }

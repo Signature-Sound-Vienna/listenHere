@@ -331,7 +331,9 @@ html, body {
   scrollbar-width: thin;
   scrollbar-color: var(--ex-border-strong) transparent;
 }
-.ann-panel[data-has-groups="1"] .ann-groups { display: flex; }
+/* Keyed on the BODY, not the panel: the split layout (side slot below) moves
+ * the body out of the panel, and the group story must show in either home. */
+.ann-body[data-has-groups="1"] .ann-groups { display: flex; }
 
 .ann-group-card {
   border-radius: 6px;
@@ -359,30 +361,48 @@ html, body {
 .ann-cmp-names { font-weight: 600; }
 
 /* --------------------------------------------------------------------------
- * The generic side slot (?sideSlot=<tenant>, feedback item 5). The viewport
- * becomes a two-column grid: toolbar and strips keep the left, the slot takes
- * the right at --side-slot-w (config.sideSlotWidth). NOTHING here knows what
- * the tenant is — the score view (plan §2.3) is the confirmed second occupant
- * of exactly this split — and every rule keys on the data attribute, so the
- * shipped below-strips layout is untouched CSS-wise when the slot is off.
- * "Right" is per READER for free: the slot is inside the viewport and rotates
- * with it. The strips centre vertically in their column — with the panel gone
- * from below them, top-anchoring would leave all the leftover height as a
- * void under the waveforms.
+ * The generic side slot (?sideSlot=<tenant>, feedback item 5, reshaped by the
+ * follow-up feedback). The screen has a MAIN CONTENT area (toolbar + strips)
+ * and a BELOW CONTENT area (the annotation chips, always). The side panel is
+ * an OVERLAY ON THE WIDTH of the main area only: while it is open
+ * (data-side-open, driven by main.js's chip/× machine) the viewport becomes a
+ * grid — strips left, panel right at --side-slot-w, chips row spanning both —
+ * and while it is closed the viewport is the shipped column layout with
+ * full-width strips, the slot display:none. NOTHING here knows what the
+ * tenant is — the score view (plan §2.3) is the confirmed second occupant —
+ * and every rule keys on the data attributes, so the below-strips default is
+ * untouched CSS-wise when the slot is off. "Right" is per READER for free:
+ * the slot is inside the viewport and rotates with it. The strips centre
+ * vertically in their column: with the body gone to the side, top-anchoring
+ * would leave the leftover height as a void under the waveforms.
  * -------------------------------------------------------------------------- */
+.vp-side-slot { display: none; }
+
+/* The grid is active WHENEVER the slot layout is configured, not only while
+ * the panel is open: the rows — toolbar, the strips' band, the chips row —
+ * are identical in both states, and opening only swaps the COLUMN track from
+ * zero to --side-slot-w. That is what keeps the below-content row from
+ * bouncing when the panel toggles (user feedback): the main area changes
+ * WIDTH only, never height. */
 .vp[data-side-slot] {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, var(--side-slot-w, 40%));
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   grid-template-areas:
     "toolbar side"
-    "strips  side";
+    "strips  side"
+    "below   below";
+  column-gap: 0;
+}
+.vp[data-side-slot][data-side-open="1"] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--side-slot-w, 40%));
   column-gap: 14px;
 }
 .vp[data-side-slot] .vp-toolbar { grid-area: toolbar; }
 .vp[data-side-slot] .strips { grid-area: strips; align-self: center; }
+.vp[data-side-slot] > .ann-panel { grid-area: below; }
 
-.vp-side-slot {
+.vp[data-side-open="1"] .vp-side-slot {
   grid-area: side;
   min-height: 0;
   min-width: 0;
@@ -390,39 +410,47 @@ html, body {
   flex-direction: column;
 }
 
-/* The commentary panel in its slot home: same component, narrower column, so
- * the commentary and the group story stack instead of sitting side by side —
- * 62ch plus a 38% card column cannot share ~40% of a halved screen. The group
- * block gets a bounded share and scrolls internally, same discipline as the
- * text. */
-.vp-side-slot .ann-panel { flex: 1 1 0; min-height: 0; margin-top: 0; }
-.vp-side-slot .ann-body { flex-direction: column; align-items: stretch; gap: 8px; }
-.vp-side-slot .ann-detail { max-width: none; flex: 1 1 auto; }
-.vp-side-slot .ann-groups { flex: 0 1 45%; }
-
-/* The slot's show/hide control for the group story (annotation-list.js).
- * Rendered only when the panel was built with the toggle; SHOWN only while
- * there are details to toggle, so it can never dangle over an empty block.
- * Both attributes outrank the single-attribute show rule above, no !important
- * needed. */
-.ann-details-toggle {
-  display: none;
-  min-height: 32px;
-  padding: 0 12px;
+/* The panel's close control — the machine's ONE unfocus. A flex header row
+ * rather than an absolute corner, so the tenant's text never runs under it;
+ * 44px because it is finger-first, like every control here. */
+.side-close {
+  align-self: flex-end;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
   border: 1px solid var(--ex-border-strong);
-  border-radius: 16px;
+  border-radius: 22px;
   background: var(--ex-panel);
   color: var(--ex-text-soft);
   font: inherit;
-  font-size: 0.72rem;
+  font-size: 1.1rem;
+  line-height: 1;
   cursor: pointer;
   -webkit-appearance: none;
   appearance: none;
-  align-self: center;
-  flex: 0 0 auto;
 }
-.ann-panel[data-has-groups="1"] .ann-details-toggle { display: inline-flex; align-items: center; }
-.ann-panel[data-has-groups="1"][data-details-hidden="1"] .ann-groups { display: none; }
+
+/* The commentary body in its panel home: same component, narrower column, so
+ * the commentary and the group story stack instead of sitting side by side —
+ * 62ch plus a 38% card column cannot share ~40% of a halved screen. The group
+ * story is ALWAYS visible when the annotation has one (no fold control, by
+ * feedback); it gets a bounded share and scrolls internally, same discipline
+ * as the text. */
+.vp-side-slot .ann-body {
+  flex: 1 1 0;
+  min-height: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 4px;
+}
+.vp-side-slot .ann-detail { max-width: none; flex: 1 1 auto; }
+.vp-side-slot .ann-groups { flex: 0 1 45%; }
+
+/* An audience with nothing to show must still say so where the visitor looks:
+ * under split, the body (and its empty state) lives in a panel that only
+ * opens on focus, so the message renders in the chips row instead. */
+.ann-chips-empty { color: var(--ex-text-dim); font-size: 0.85rem; align-self: center; }
 
 /* Shared between the halves, read from both sides at once. Portrait, conductor
  * name, and year only — no UI labels, by design (plan §6.3). Which way up is an

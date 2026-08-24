@@ -96,18 +96,21 @@ function positionsFor(time, activeFile) {
 }
 
 // ---------------------------------------------------------------------------
-// The side slot's tenants (?sideSlot=<name>, feedback item 5). The slot is a
-// GENERIC region beside the strips — the layout, the CSS, and the parameter
-// know nothing about annotations, because the Verovio score view (plan §2.3)
-// is the confirmed second tenant of exactly this split. A tenant is a function
-// from a booted viewport to the element that fills its slot, called once per
-// viewport; adding a tenant is one entry here plus its module.
+// The side slot's tenants (?sideSlot=<name>, feedback item 5). The screen has
+// a MAIN CONTENT area (the strips, full width or sharing with the side panel)
+// and a BELOW CONTENT area (the annotation chips, always — plus the
+// commentary body whenever no tenant has taken it to the side). The slot, the
+// CSS, and the parameter know nothing about annotations, because the Verovio
+// score view (plan §2.3) is the confirmed second tenant — and when the score
+// takes the panel, the annotations body simply stays below with the chips,
+// which is its default rendering. A tenant is a function from a booted
+// viewport to the element that fills the PANEL; adding one is an entry here
+// plus its module.
 // ---------------------------------------------------------------------------
 const SIDE_TENANTS = {
-  // First tenant: the commentary panel, rehomed from below the strips. The
-  // panel itself is unchanged — same chips, same group cards, same update
-  // path — so everything spec 35.7/35.8 pin holds in either home.
-  annotations: (vp) => vp.annList.el,
+  // First tenant: the commentary BODY (text + group story) — the chips stay
+  // below the strips in either layout, so the same cards drive both.
+  annotations: (vp) => vp.annList.bodyEl,
 };
 
 // ---------------------------------------------------------------------------
@@ -207,6 +210,7 @@ function buildScreen(root) {
       strips: new Map(),
       annList: null,
       focusedId: null,
+      panelOpen: false,
     });
   }
   return { viewports, bands };
@@ -372,20 +376,46 @@ async function boot() {
     vp.annList = createAnnotationList({
       viewport: vp.index,
       language: vp.language,
-      // The details toggle exists only in the slot: the below-strips panel has
-      // the viewport's whole leftover height and hiding the group story there
-      // would just leave a hole, while the slot's fixed column is where the
-      // cards and the commentary genuinely compete for room.
-      detailsToggle: !!vp.sideSlotEl,
-      onFocus: (annId) => {
-        vp.focusedId = annId;
+      split: !!vp.sideSlotEl,
+      // What a chip tap MEANS depends on the layout, so the machine lives
+      // here, not in the component. Below the strips (default): a plain focus
+      // toggle, as shipped. With the side panel: the chip is a pure PANEL
+      // control and the panel's × is the only unfocus — tap to focus + open,
+      // tap again to close KEEPING focus (highlights stay, waveforms back to
+      // full width), tap once more to reopen. Chosen (user, 2026-08-24)
+      // because it decouples "what is focused" from "is the panel showing":
+      // focus is expected to become playhead-driven later (as in the main
+      // listening interface), and chip-toggles-panel / ×-dismisses are the
+      // two primitives that survive that change.
+      onChipTap: (annId) => {
+        if (!vp.sideSlotEl) {
+          vp.focusedId = vp.focusedId === annId ? null : annId;
+        } else if (vp.focusedId !== annId) {
+          vp.focusedId = annId;
+          setPanelOpen(vp, true);
+        } else {
+          setPanelOpen(vp, !vp.panelOpen);
+        }
         renderAnnotations(vp, store);
       },
     });
-    // The panel's home: the side slot when a tenant claims it (SIDE_TENANTS —
-    // today that tenant IS the panel), below the strips otherwise.
-    if (vp.sideSlotEl) vp.sideSlotEl.appendChild(SIDE_TENANTS[config.sideSlot](vp));
-    else vp.el.appendChild(vp.annList.el);
+    // The chips are BELOW CONTENT in either layout; the slot, when a tenant
+    // claims it, receives that tenant's panel content plus the × that closes
+    // the panel and clears focus — the machine's one unfocus.
+    vp.el.appendChild(vp.annList.el);
+    if (vp.sideSlotEl) {
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "side-close";
+      close.textContent = "×";
+      close.setAttribute("aria-label", t("panel.close", vp.language));
+      close.addEventListener("click", () => {
+        vp.focusedId = null;
+        setPanelOpen(vp, false);
+        renderAnnotations(vp, store);
+      });
+      vp.sideSlotEl.append(close, SIDE_TENANTS[config.sideSlot](vp));
+    }
     vp.statusEl.textContent = "";
   }
 
@@ -402,8 +432,10 @@ async function boot() {
     if (!vp) return;
     // Focus does not survive a mode change: the annotation being read belongs to
     // the audience that was on screen, and carrying its id across would leave a
-    // highlighted chip that is no longer in the list.
+    // highlighted chip that is no longer in the list. The side panel closes
+    // with it — it was showing that annotation's text.
     vp.focusedId = null;
+    setPanelOpen(vp, false);
     vp.el.dataset.audience = store.get(viewport);
     renderAnnotations(vp, store);
   });
@@ -444,6 +476,22 @@ function stripLabel(exhibit, file) {
     (v) => v != null && v !== "",
   );
   return parts.length ? parts.join(" · ") : file.replace(/\.wav$/i, "");
+}
+
+/**
+ * Open or close one viewport's side panel. The CSS keys the two-column grid on
+ * `data-side-open`, so this is also the moment the strips column changes width
+ * — the current zoom level's geometry is re-run against the new widths, else a
+ * zoomed strip keeps pixels-per-second derived from a container it no longer
+ * has (the same failure spec 28 fixed for the listen page's resize).
+ */
+function setPanelOpen(vp, open) {
+  vp.panelOpen = !!open;
+  const had = vp.el.dataset.sideOpen === "1";
+  if (vp.panelOpen === had) return;
+  if (vp.panelOpen) vp.el.dataset.sideOpen = "1";
+  else delete vp.el.dataset.sideOpen;
+  vp.zoom?.refit();
 }
 
 /** Redraw one viewport's annotation chips, its regions, and its group colours. */

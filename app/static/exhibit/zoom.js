@@ -45,7 +45,8 @@ import { t } from "./strings.js";
  * @param {(time: number, from: string, to: string) => number|undefined} opts.project
  * @param {() => {file: string|null, time: number}} opts.anchor   the transport's now
  * @param {(level: number) => void} [opts.onChange] fires after strips re-render
- * @returns {{el: HTMLElement, level: () => number, setLevel: (l: number) => void}}
+ * @returns {{el: HTMLElement, level: () => number, setLevel: (l: number) => void,
+ *   centerAllOn: (file: string, time: number) => void, refit: () => void}}
  */
 export function createViewportZoom({
   viewport,
@@ -102,9 +103,14 @@ export function createViewportZoom({
     });
   }
 
-  function setLevel(next) {
-    if (!Number.isFinite(next) || !levels.includes(next) || next === level) return;
-    level = next;
+  /**
+   * Re-run the CURRENT level's geometry against the strips' present widths,
+   * keeping the anchored moment centred. Exists because the widths can change
+   * under a live zoom level — the side panel opening or closing resizes the
+   * strips column — and every zoomed width here is derived from the container
+   * width the strips had when the level was set.
+   */
+  function refit() {
     const { file, time } = anchor();
     _withSyncLock(() => {
       for (const strip of strips.values()) {
@@ -119,6 +125,12 @@ export function createViewportZoom({
       }
     });
     centerAllOn(file, time);
+  }
+
+  function setLevel(next) {
+    if (!Number.isFinite(next) || !levels.includes(next) || next === level) return;
+    level = next;
+    refit();
     _paint();
     onChange?.(level);
   }
@@ -175,7 +187,7 @@ export function createViewportZoom({
   }
   _paint();
 
-  return { el, level: () => level, setLevel, centerAllOn };
+  return { el, level: () => level, setLevel, centerAllOn, refit };
 }
 
 function _button(kind, glyph, label) {

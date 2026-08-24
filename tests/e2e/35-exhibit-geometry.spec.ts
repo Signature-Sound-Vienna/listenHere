@@ -936,98 +936,185 @@ test.describe('35. Feedback round 2 — tap-to-seek through the stage rotation',
 });
 
 // ---------------------------------------------------------------------------
-// 35.21/35.22 pin the GENERIC SIDE SLOT (?sideSlot=<tenant>, feedback item 5):
-// an opt-in second column beside the strips, on each viewport's own right —
-// per READER, because the slot rotates with its viewport. The seam is
-// tenant-agnostic (main.js SIDE_TENANTS; the score view is the confirmed
-// second tenant), and the first tenant is the commentary panel, rehomed from
-// below the strips. What is worth pinning: the slot is OPT-IN (default DOM
-// unchanged), an unknown tenant changes nothing, the panel actually moves,
-// the columns do not overlap, the narrowed strips still FIT exactly (the
-// spec-28.3 discipline at the new width), and the details toggle folds the
-// group story without moving a strip.
+// 35.21/35.22 pin the GENERIC SIDE SLOT (?sideSlot=<tenant>, feedback item 5,
+// reshaped by the follow-up feedback). The screen is a MAIN CONTENT area
+// (toolbar + strips, full width or sharing with the side panel) over a BELOW
+// CONTENT area (the chips, always). The panel holds only the tenant's content
+// — the commentary body: text plus the group story, which is ALWAYS visible
+// when relevant (no fold control) — and visibility follows main.js's machine:
+// chip focuses + opens, the same chip toggles the panel KEEPING focus, and
+// the panel's × is the one unfocus. What is worth pinning: the default DOM is
+// unchanged, an unknown tenant changes nothing, the split puts chips below
+// and body beside, the strips genuinely change width with the panel (exact
+// fit both ways — the spec-28.3 discipline), and the machine's transitions,
+// including keeping focus through a close and refitting a ZOOMED strip.
 // ---------------------------------------------------------------------------
 
 test.describe('35. Feedback round 2 — the generic side slot', () => {
   test.use({ viewport: { width: 1024, height: 1366 } });
 
-  test('35.21 the side slot is opt-in, tenant-checked, and rehomes the commentary panel beside exactly-fitting strips', async ({
+  /** Layout facts read in LAYOUT coordinates (offset*), transform-free. */
+  async function slotLayout(page: Page, vpIndex: number) {
+    return page.evaluate((i) => {
+      const T = (window as any)._exhibitTest;
+      const vp = T.viewports[i];
+      const slot = vp.el.querySelector('.vp-side-slot') as HTMLElement;
+      const strip = [...vp.strips.values()][0];
+      return {
+        open: vp.el.dataset.sideOpen === '1',
+        slotVisible: !!slot && getComputedStyle(slot).display !== 'none',
+        stripsRight: vp.stripsEl.offsetLeft + vp.stripsEl.offsetWidth,
+        slotLeft: slot ? slot.offsetLeft : null,
+        slotWidth: slot ? slot.offsetWidth : null,
+        vpWidth: vp.el.clientWidth,
+        hostW: strip.host.clientWidth,
+        wrapperW: strip.ws.getWrapper().clientWidth,
+        scroll: strip.ws.getScroll(),
+        focusedId: vp.focusedId,
+      };
+    }, vpIndex);
+  }
+
+  test('35.21 the side slot is opt-in and tenant-checked; opening splits chips below from the body beside, exact fit both ways', async ({
     page,
   }) => {
-    // Default: no slot, no toggle, the panel below the strips as shipped.
+    // Default: no slot, no close control, body inside the below-strips panel.
     await boot(page);
     expect(await page.locator('.vp-side-slot').count()).toBe(0);
-    expect(await page.locator('.ann-details-toggle').count()).toBe(0);
-    expect(await page.locator('.vp > .ann-panel').count()).toBe(2);
+    expect(await page.locator('.side-close').count()).toBe(0);
+    expect(await page.locator('.vp > .ann-panel .ann-body').count()).toBe(2);
 
     // An unknown tenant must not reshape the layout for an empty column.
     await boot(page, 'debug=1&sideSlot=bogus');
     expect(await page.locator('.vp-side-slot').count()).toBe(0);
-    expect(await page.locator('.vp > .ann-panel').count()).toBe(2);
+    expect(await page.locator('.vp > .ann-panel .ann-body').count()).toBe(2);
 
+    // Slot mode, resting state: chips below in BOTH viewports, the body
+    // relocated into the (closed) panel, strips at FULL width and exactly fit.
     await boot(page, 'debug=1&sideSlot=annotations');
     expect(await page.locator('.vp-side-slot[data-tenant="annotations"]').count()).toBe(2);
-    expect(await page.locator('.vp-side-slot > .ann-panel').count()).toBe(2);
-    expect(await page.locator('.vp > .ann-panel').count()).toBe(0);
+    expect(await page.locator('.vp > .ann-panel').count()).toBe(2);
+    expect(await page.locator('.vp > .ann-panel .ann-body').count()).toBe(0);
+    expect(await page.locator('.vp-side-slot .ann-body').count()).toBe(2);
+    const rest = await slotLayout(page, 0);
+    expect(rest.open).toBe(false);
+    expect(rest.slotVisible).toBe(false);
+    expect(rest.wrapperW).toBe(rest.hostW);
+    // Full width: the strips span their viewport's content box (± padding).
+    expect(rest.stripsRight).toBeGreaterThan(0.9 * rest.vpWidth);
 
-    const layout = await page.evaluate(() => {
-      const T = (window as any)._exhibitTest;
-      return T.viewports.map((vp: any) => {
-        const slot = vp.el.querySelector('.vp-side-slot') as HTMLElement;
-        const strip = [...vp.strips.values()][0];
-        return {
-          // offset* are LAYOUT values, untouched by the viewport rotation, so
-          // one comparison covers both halves without transform arithmetic.
-          stripsRight: vp.stripsEl.offsetLeft + vp.stripsEl.offsetWidth,
-          slotLeft: slot.offsetLeft,
-          slotWidth: slot.offsetWidth,
-          vpWidth: vp.el.clientWidth,
-          // The 28.3 discipline at the narrowed width: the fit must be exact —
-          // wrapper equal to its container, nothing to scroll.
-          hostW: strip.host.clientWidth,
-          wrapperW: strip.ws.getWrapper().clientWidth,
-          scroll: strip.ws.getScroll(),
-        };
-      });
-    });
-    for (const vp of layout) {
-      expect(vp.stripsRight).toBeLessThanOrEqual(vp.slotLeft);
-      // The default 40% split, within a pixel of rounding.
-      expect(Math.abs(vp.slotWidth - 0.4 * vp.vpWidth)).toBeLessThanOrEqual(12);
-      expect(vp.wrapperW).toBe(vp.hostW);
-      expect(vp.scroll).toBe(0);
-    }
+    // Focus a chip: the panel opens in THIS viewport only, columns disjoint,
+    // the narrowed strips exactly fit again, and the text is on show.
+    // The first chip the DEFAULT audience actually shows — the payload's own
+    // first annotation belongs to another audience and has no chip here.
+    const first = await page.evaluate(
+      () => (window as any)._exhibitTest.exhibit.byAudience.adults[0].id,
+    );
+    const chipsRow = page.locator('.vp[data-viewport="0"] > .ann-panel');
+    const rowBefore = await chipsRow.boundingBox();
+    await page.click(`.ann-panel[data-viewport="0"] .ann-chip[data-ann="${first}"]`);
+    const open = await slotLayout(page, 0);
+    expect(open.open).toBe(true);
+    expect(open.slotVisible).toBe(true);
+    expect(open.stripsRight).toBeLessThanOrEqual(open.slotLeft!);
+    expect(Math.abs(open.slotWidth! - 0.4 * open.vpWidth)).toBeLessThanOrEqual(12);
+    expect(open.wrapperW).toBe(open.hostW);
+    expect(open.scroll).toBe(0);
+    await expect(
+      page.locator('.vp[data-viewport="0"] .vp-side-slot .ann-detail'),
+    ).toBeVisible();
+    expect((await slotLayout(page, 1)).open).toBe(false);
+
+    // The no-bounce rule (user feedback): the panel changes the main area's
+    // WIDTH only. The chips row must hold its exact vertical band — position
+    // and height — through open and close alike.
+    const rowOpen = await chipsRow.boundingBox();
+    expect(rowOpen!.y).toBe(rowBefore!.y);
+    expect(rowOpen!.height).toBe(rowBefore!.height);
+    await page.click('.vp[data-viewport="0"] .side-close');
+    const rowClosed = await chipsRow.boundingBox();
+    expect(rowClosed!.y).toBe(rowBefore!.y);
+    expect(rowClosed!.height).toBe(rowBefore!.height);
   });
 
-  test('35.22 the details toggle folds the group story away and back without moving a strip', async ({
+  test('35.22 the chip toggles the panel keeping focus, × is the one unfocus, and a zoomed strip refits on both transitions', async ({
     page,
   }) => {
     await boot(page, 'debug=1&sideSlot=annotations');
+    // An annotation WITH a group story, so "focus kept" is observable on the
+    // strip edges (the same recipe as 35.8), and the group cards are ALWAYS
+    // visible while it is focused and open — the fold control is gone.
     const ann = await page.evaluate(() => {
       const T = (window as any)._exhibitTest;
       return T.exhibit.annotations.find((a: any) => a.groupNotes && Object.keys(a.groupNotes).length);
     });
     expect(ann, 'no annotation with groupNotes left in the payload — re-point this test').toBeTruthy();
 
-    await page.click(`.ann-panel[data-viewport="0"] .ann-chip[data-ann="${ann.id}"]`);
-    const panel = page.locator('.ann-panel[data-viewport="0"]');
-    const toggle = panel.locator('.ann-details-toggle');
-    const groups = panel.locator('.ann-groups');
-    await expect(toggle).toBeVisible();
-    await expect(toggle).toHaveText(/hide details/i);
-    await expect(groups).toBeVisible();
+    const chip = page.locator(`.ann-panel[data-viewport="0"] .ann-chip[data-ann="${ann.id}"]`);
+    const facts = () =>
+      page.evaluate(() => {
+        const T = (window as any)._exhibitTest;
+        const vp = T.viewports[0];
+        const edges = [...vp.strips.values()].filter(
+          (s: any) => s.el.style.getPropertyValue('--group-color') !== 'transparent',
+        ).length;
+        const strip = [...vp.strips.values()][0];
+        return {
+          open: vp.el.dataset.sideOpen === '1',
+          focusedId: vp.focusedId,
+          edges,
+          hostW: strip.host.clientWidth,
+          wrapperW: strip.ws.getWrapper().clientWidth,
+        };
+      });
 
-    const before = await page.locator('.vp[data-viewport="0"] .strips').boundingBox();
-    await toggle.click();
-    await expect(groups).toBeHidden();
-    await expect(toggle).toHaveText(/show details/i);
-    // Folding the details is a change INSIDE the slot; the strips column must
-    // not feel it (the exhibit's nothing-may-move rule).
-    expect(await page.locator('.vp[data-viewport="0"] .strips').boundingBox()).toEqual(before);
+    // chip → focus + open. Edges painted, group cards on show, no fold control.
+    await chip.click();
+    let f = await facts();
+    expect(f.open).toBe(true);
+    expect(f.focusedId).toBe(ann.id);
+    expect(f.edges).toBeGreaterThan(0);
+    await expect(
+      page.locator('.vp[data-viewport="0"] .vp-side-slot .ann-group-card').first(),
+    ).toBeVisible();
+    expect(await page.locator('.ann-details-toggle').count()).toBe(0);
 
-    await toggle.click();
-    await expect(groups).toBeVisible();
-    await expect(toggle).toHaveText(/hide details/i);
+    // chip again → panel CLOSED, focus KEPT: highlights stay while the strips
+    // go back to full width — and stay exactly fit at the new width.
+    const narrowW = f.hostW;
+    await chip.click();
+    f = await facts();
+    expect(f.open).toBe(false);
+    expect(f.focusedId, 'closing via the chip must keep focus').toBe(ann.id);
+    expect(f.edges).toBeGreaterThan(0);
+    expect(f.hostW).toBeGreaterThan(narrowW);
+    expect(f.wrapperW).toBe(f.hostW);
+
+    // chip a third time → reopen, still focused.
+    await chip.click();
+    f = await facts();
+    expect(f.open).toBe(true);
+    expect(f.focusedId).toBe(ann.id);
+
+    // × → the ONE unfocus: panel closed, highlights cleared, full width.
+    await page.click('.vp[data-viewport="0"] .side-close');
+    f = await facts();
+    expect(f.open).toBe(false);
+    expect(f.focusedId).toBeNull();
+    expect(f.edges).toBe(0);
+    expect(f.wrapperW).toBe(f.hostW);
+
+    // The zoomed case: a 2× strip's pixels-per-second is derived from its
+    // container width, so opening the panel must REFIT — wrapper ≈ 2× the
+    // narrowed width, not 2× the stale full width (the spec-28 failure mode).
+    await page.evaluate(() => (window as any)._exhibitTest.viewports[0].zoom.setLevel(2));
+    await chip.click();
+    f = await facts();
+    expect(f.open).toBe(true);
+    expect(Math.abs(f.wrapperW - 2 * f.hostW)).toBeLessThanOrEqual(2);
+    await page.click('.vp[data-viewport="0"] .side-close');
+    f = await facts();
+    expect(Math.abs(f.wrapperW - 2 * f.hostW)).toBeLessThanOrEqual(2);
   });
 });
 

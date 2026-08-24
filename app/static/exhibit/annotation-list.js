@@ -42,13 +42,21 @@ import { resolveGroupFor, safeColor, groupTextColor } from "../js/engine/groupin
  * @param {object} opts
  * @param {number} opts.viewport
  * @param {string} opts.language          resolved per viewport, so passed in
- * @param {boolean} [opts.detailsToggle]  render a show/hide control for the
- *   group story (used in the side slot, where cards and commentary compete for
- *   a fixed column; the below-strips panel has room for both)
- * @param {(annId: string|null) => void} opts.onFocus
- * @returns {{el: HTMLElement, update: (annotations: object[], focusedId: string|null) => void}}
+ * @param {boolean} [opts.split]  the side-slot arrangement: the BODY (text +
+ *   group story) lives elsewhere — main.js moves `bodyEl` into the side panel
+ *   — so states the body normally reports while nothing is focused would be
+ *   invisible there. Under split, the empty-audience message renders in the
+ *   chips row instead, and the idle hint is simply dropped: bare chips under
+ *   full-width waveforms ARE the resting state.
+ * @param {(annId: string) => void} opts.onChipTap  every chip tap, with its
+ *   annotation id — including taps on the already-focused chip. What a tap
+ *   MEANS (focus toggle below the strips; the panel state machine in the side
+ *   slot) is the caller's decision, because it depends on the layout, and this
+ *   component deliberately does not know which layout it is in.
+ * @returns {{el: HTMLElement, chipsEl: HTMLElement, bodyEl: HTMLElement,
+ *   update: (annotations: object[], focusedId: string|null, opts?: object) => void}}
  */
-export function createAnnotationList({ viewport, language, onFocus, detailsToggle = false }) {
+export function createAnnotationList({ viewport, language, onChipTap, split = false }) {
   const el = document.createElement("div");
   el.className = "ann-panel";
   el.dataset.viewport = String(viewport);
@@ -64,27 +72,6 @@ export function createAnnotationList({ viewport, language, onFocus, detailsToggl
   body.append(detail, groups);
   el.append(chips, body);
 
-  // The show/hide control for the group story. CSS shows it only while there
-  // ARE details to toggle (data-has-groups), and the hidden state survives
-  // update() — a visitor who folded the cards away to read a long commentary
-  // keeps their choice when they focus the next annotation.
-  if (detailsToggle) {
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "ann-details-toggle";
-    const paint = () => {
-      const hidden = el.dataset.detailsHidden === "1";
-      toggle.textContent = t(hidden ? "details.show" : "details.hide", language);
-      toggle.setAttribute("aria-pressed", hidden ? "false" : "true");
-    };
-    toggle.addEventListener("click", () => {
-      el.dataset.detailsHidden = el.dataset.detailsHidden === "1" ? "" : "1";
-      paint();
-    });
-    paint();
-    el.insertBefore(toggle, body);
-  }
-
   /**
    * @param {object[]} annotations
    * @param {string|null} focusedId
@@ -98,6 +85,15 @@ export function createAnnotationList({ viewport, language, onFocus, detailsToggl
    */
   function update(annotations, focusedId, { markAudience = false } = {}) {
     chips.textContent = "";
+    // Under split the body may be hidden while nothing is focused, so the one
+    // state a visitor must not miss — this audience has nothing at all — is
+    // said where the chips would have been.
+    if (split && !annotations.length) {
+      const empty = document.createElement("span");
+      empty.className = "ann-chips-empty";
+      empty.textContent = t("state.nothingForAudience", language);
+      chips.appendChild(empty);
+    }
     for (const ann of annotations) {
       const chip = document.createElement("button");
       chip.type = "button";
@@ -121,9 +117,9 @@ export function createAnnotationList({ viewport, language, onFocus, detailsToggl
         chip.style.backgroundColor = colour;
         chip.style.color = groupTextColor(colour);
       }
-      // A second tap on the focused chip clears focus, so a visitor can get back
-      // to the plain waveforms without hunting for a close button.
-      chip.addEventListener("click", () => onFocus(on ? null : ann.id));
+      // Every tap is reported with its id, the focused chip's included — the
+      // caller decides what it means (see the opts.onChipTap note above).
+      chip.addEventListener("click", () => onChipTap(ann.id));
       chips.appendChild(chip);
     }
 
@@ -212,11 +208,18 @@ export function createAnnotationList({ viewport, language, onFocus, detailsToggl
         count++;
       }
     }
+    // On the body as well as the panel: the CSS visibility rule follows the
+    // body (which the split layout moves into the side panel), while the
+    // panel's copy stays for anything probing the component from outside.
     el.dataset.hasGroups = count ? "1" : "";
+    body.dataset.hasGroups = count ? "1" : "";
   }
 
   update([], null);
-  return { el, update };
+  // chipsEl and bodyEl are the two mountable halves: below the strips they
+  // stay together inside `el`; the side-slot layout moves bodyEl into the
+  // panel while chipsEl (inside `el`) keeps the below-content row.
+  return { el, chipsEl: chips, bodyEl: body, update };
 }
 
 /** A non-empty authored text value — plain string or language map. */

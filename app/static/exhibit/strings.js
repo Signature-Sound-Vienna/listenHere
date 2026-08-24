@@ -58,9 +58,9 @@ const CATALOGUE = {
   "zoom.out": { en: "Zoom out" },
   "transport.play": { en: "Play" },
   "transport.pause": { en: "Pause" },
-  // The side slot's group-story control (annotation-list.js, ?sideSlot=…).
-  "details.show": { en: "Show details" },
-  "details.hide": { en: "Hide details" },
+  // aria-label only: the side panel's close control shows an × glyph
+  // (main.js, ?sideSlot=…) — nothing to translate on the glass itself.
+  "panel.close": { en: "Close the side panel" },
   "state.loading": { en: "Loading…" },
   "state.nothingForAudience": { en: "Nothing here for this view — try another." },
   // A kiosk that fails must say so on the glass, not only in a console nobody can

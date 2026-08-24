@@ -11,7 +11,7 @@
 // lazy-creation decision, which stays in listen.js as orchestration).
 //
 // Membership — which group owns a row — is not decided here: it comes from
-// engine/grouping-model.js's resolveGroupFor, the single answer app-wide.
+// engine/grouping-core.js's resolveGroupFor, the single answer app-wide.
 //
 // Group *container* order is owned entirely by ensureWaveformGroupContainers —
 // saved groupOrder first, else Score, then named groups, then Ungrouped. This
@@ -37,7 +37,7 @@ import {
 } from "../listen.js";
 import { ensureWaveformGroupContainers } from "./grouping-ui.js";
 import { ensureWaveformView } from "./waveform-view.js";
-import { getActiveFileGroups, resolveGroupFor } from "./grouping-model.js";
+import { getActiveFileGroups, resolveGroupFor } from "./grouping-core.js";
 
 /**
  * The `.group-list` that should hold `filename`'s row.

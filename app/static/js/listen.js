@@ -49,11 +49,14 @@ import {
   updateGroupCounts,
 } from "./engine/grouping-ui.js";
 import {
+  configureGroupingCore,
   getActiveFileGroups,
+  resolveGroupFor,
+} from "./engine/grouping-core.js";
+import {
   getActiveGroupingSnapshot,
   migrateToGroupingTabs,
   normaliseGroupOverlap,
-  resolveGroupFor,
   warnGroupOverlap,
 } from "./engine/grouping-model.js";
 import {
@@ -95,6 +98,12 @@ import {
   clearMeasureVisuals,
 } from "./engine/measure.js";
 import { updateAllRegionNavArrows } from "./engine/region-nav.js";
+// Aliased because listen.js keeps wrappers under the historic names, which every
+// existing call site (here and in six sibling modules) still uses.
+import {
+  getClosestAlignmentIx as _coreClosestAlignmentIx,
+  getCorrespondingTime as _coreCorrespondingTime,
+} from "./engine/align-core.js";
 import {
   redrawAllMarkers,
   clearMarkers,
@@ -466,6 +475,16 @@ let _fromAlignmentHandoff = false;
 
 // Synthesised MEI waveform: key used in wavesurfers / alignmentGrids for the synth track
 export const SYNTH_MEI_KEY = "Score (synthesised from MEI)";
+
+// Point the grouping read model (engine/grouping-core.js, zero imports) at this
+// application's state. Done here rather than in an init function because the
+// grouping question can be asked from any render path, and because a getter for
+// `loadedAlignmentJSON` reads the live binding on each call — it is declared
+// further down, but only ever read from inside a function body.
+configureGroupingCore({
+  getAlignment: () => loadedAlignmentJSON,
+  SYNTH_MEI_KEY,
+});
 // Maps SYNTH_MEI_KEY -> blob URL once synthesis is done, or the sentinel '__pending__'
 const _synthBlobUrls = session.synthBlobUrls; // DataSession-owned (Wave A)
 
@@ -1702,54 +1721,19 @@ export function setDrawModeActive(active) {
     ?.classList.toggle("draw-mode-active", active);
 }
 
-/** Toggle .draggable class on all marker elements. */
+// The index↔time arithmetic itself lives in engine/align-core.js, which every
+// consumer of an alignment grid must agree with. These wrappers own only the two
+// defaults — current playback time and current recording — and the grid
+// collection to read them from.
 function getClosestAlignmentIx(
   time = wavesurfers[currentAudioIx].getCurrentTime(),
   audioIx = currentAudioIx,
 ) {
-  console.log("Get closest alignment Ix: ", time, audioIx);
-  // return alignment index closest to supplied time (default: current playback position)
-  let currentGrid = alignmentGrids[audioIx];
-  if (!currentGrid) {
-    _warnMissingGrid("getClosestAlignmentIx", audioIx);
-    return 0;
-  }
-  // find the last grid entry at or below target time
-  const lower = currentGrid.filter((t) => t <= time);
-  const belowIx = lower.length - 1; // last index at or below time
-  const aboveIx = lower.length; // first index above time
-  if (belowIx < 0) return 0; // time is before grid start
-  if (aboveIx >= currentGrid.length) return belowIx; // time is past grid end
-  // return whichever is closer (prefer earlier on tie)
-  const distBelow = time - currentGrid[belowIx];
-  const distAbove = currentGrid[aboveIx] - time;
-  return distAbove < distBelow ? aboveIx : belowIx;
+  return _coreClosestAlignmentIx(alignmentGrids, time, audioIx);
 }
 
 export function getCorrespondingTime(audioIx, alignmentIx) {
-  // get time position corresponding to current position of current audio,
-  // in the alternative audio with index audioIx
-  let grid = alignmentGrids[audioIx];
-  if (!grid) {
-    // A waveform outliving its alignment grid means state got mixed (#32).
-    // Degrade instead of throwing, and name the key so it stays diagnosable.
-    _warnMissingGrid("getCorrespondingTime", audioIx);
-    return undefined;
-  }
-  return grid[alignmentIx];
-}
-
-// Missing-grid warnings, one per key, so a repeating render loop can't flood
-// the console while still reporting every distinct offender.
-const _warnedMissingGrids = new Set();
-function _warnMissingGrid(where, audioIx) {
-  const key = where + "|" + audioIx;
-  if (_warnedMissingGrids.has(key)) return;
-  _warnedMissingGrids.add(key);
-  console.warn(
-    `${where}: no alignment grid for "${audioIx}" — ` +
-      `known keys: ${Object.keys(alignmentGrids).join(", ")}`,
-  );
+  return _coreCorrespondingTime(alignmentGrids, audioIx, alignmentIx);
 }
 
 export function onClickRenditionName(e) {

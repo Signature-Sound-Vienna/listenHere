@@ -126,6 +126,7 @@ export function seekToActiveMarker() {
   updateMarkBtnTooltip();
 }
 
+/** Toggle .draggable class on all marker elements. */
 export function updateMarkerDraggableClass() {
   const draggable = dragMarkersEnabled;
   document.querySelectorAll(".ws-marker[data-align-ix]").forEach((el) => {

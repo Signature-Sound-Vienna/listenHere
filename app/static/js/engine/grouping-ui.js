@@ -19,7 +19,8 @@
 //
 // What is NOT decided here: which group owns a recording, what a group is
 // called, what colour it is, and where any of it is persisted — all of that is
-// engine/grouping-model.js, and resolveGroupFor is the single answer app-wide
+// engine/grouping-core.js (reads) and engine/grouping-model.js (authoring), and
+// grouping-core's resolveGroupFor is the single answer app-wide
 // (roadmap item U). This module only draws the answers. The editor for them is
 // engine/group-modal.js, which calls back in here to re-render after Apply.
 //
@@ -55,13 +56,15 @@ import {
 } from "../listen.js";
 import {
   buildGroupTitle,
-  emitGroupingChanged,
   getActiveFileGroups,
-  getActiveGroupOrder,
   groupTextColor,
   resolveGroupFor,
   resolveGroupMembers,
   safeColor,
+} from "./grouping-core.js";
+import {
+  emitGroupingChanged,
+  getActiveGroupOrder,
   setActiveFileGroups,
   setActiveGroupOrder,
 } from "./grouping-model.js";

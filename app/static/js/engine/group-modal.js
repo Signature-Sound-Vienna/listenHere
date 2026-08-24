@@ -22,7 +22,8 @@
 // has diverged from the snapshot taken when the dialog opened.
 //
 // Membership, colours, and persistence are NOT decided here — they come from
-// engine/grouping-model.js. The one exception is the pattern→files expansion at
+// engine/grouping-core.js (the read half) and engine/grouping-model.js (the
+// authoring half). The one exception is the pattern→files expansion at
 // the top of openGroupModal, which is a migration rather than a view concern:
 // older saved groups could claim recordings by regex `pattern`, and the modal
 // replaces that with explicit, individually removable members. The expansion is
@@ -42,12 +43,14 @@ import {
 } from "../listen.js";
 import {
   GROUP_PALETTE,
-  emitGroupingChanged,
   groupTextColor,
   matchesGroup,
+  nextGroupColour,
+} from "./grouping-core.js";
+import {
+  emitGroupingChanged,
   migrateToGroupingTabs,
   mintGroupId,
-  nextGroupColour,
 } from "./grouping-model.js";
 import {
   renderGroupingTabPills,

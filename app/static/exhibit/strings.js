@@ -49,12 +49,18 @@ const CATALOGUE = {
   "audience.kids": { en: "Kids" },
   "audience.adults": { en: "Adults" },
   "audience.expert": { en: "Scholars" },
+  // The ?audienceAll=1 union mode (config.js) — a UI pseudo-audience, so it is
+  // catalogue chrome here rather than a payload id like the three above.
+  "audience.all": { en: "All" },
   // aria-labels only: the buttons themselves show +/− glyphs, which need no
   // translation on a two-language surface (same rule as the middle band).
   "zoom.in": { en: "Zoom in" },
   "zoom.out": { en: "Zoom out" },
   "transport.play": { en: "Play" },
   "transport.pause": { en: "Pause" },
+  // The side slot's group-story control (annotation-list.js, ?sideSlot=…).
+  "details.show": { en: "Show details" },
+  "details.hide": { en: "Hide details" },
   "state.loading": { en: "Loading…" },
   "state.nothingForAudience": { en: "Nothing here for this view — try another." },
   // A kiosk that fails must say so on the glass, not only in a console nobody can

@@ -42,10 +42,13 @@ import { resolveGroupFor, safeColor, groupTextColor } from "../js/engine/groupin
  * @param {object} opts
  * @param {number} opts.viewport
  * @param {string} opts.language          resolved per viewport, so passed in
+ * @param {boolean} [opts.detailsToggle]  render a show/hide control for the
+ *   group story (used in the side slot, where cards and commentary compete for
+ *   a fixed column; the below-strips panel has room for both)
  * @param {(annId: string|null) => void} opts.onFocus
  * @returns {{el: HTMLElement, update: (annotations: object[], focusedId: string|null) => void}}
  */
-export function createAnnotationList({ viewport, language, onFocus }) {
+export function createAnnotationList({ viewport, language, onFocus, detailsToggle = false }) {
   const el = document.createElement("div");
   el.className = "ann-panel";
   el.dataset.viewport = String(viewport);
@@ -61,7 +64,39 @@ export function createAnnotationList({ viewport, language, onFocus }) {
   body.append(detail, groups);
   el.append(chips, body);
 
-  function update(annotations, focusedId) {
+  // The show/hide control for the group story. CSS shows it only while there
+  // ARE details to toggle (data-has-groups), and the hidden state survives
+  // update() — a visitor who folded the cards away to read a long commentary
+  // keeps their choice when they focus the next annotation.
+  if (detailsToggle) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "ann-details-toggle";
+    const paint = () => {
+      const hidden = el.dataset.detailsHidden === "1";
+      toggle.textContent = t(hidden ? "details.show" : "details.hide", language);
+      toggle.setAttribute("aria-pressed", hidden ? "false" : "true");
+    };
+    toggle.addEventListener("click", () => {
+      el.dataset.detailsHidden = el.dataset.detailsHidden === "1" ? "" : "1";
+      paint();
+    });
+    paint();
+    el.insertBefore(toggle, body);
+  }
+
+  /**
+   * @param {object[]} annotations
+   * @param {string|null} focusedId
+   * @param {object} [opts]
+   * @param {boolean} [opts.markAudience]  tag each chip with the audience its
+   *   annotation targets — the union mode's job (?audienceAll=1), where the
+   *   switch position no longer implies it. A marker, not a second line: the
+   *   audience name in the chip's own type, smaller and dimmed, after the
+   *   label. Whether that stays legible without cluttering the chips is
+   *   exactly what the Oct/Nov user testing is for.
+   */
+  function update(annotations, focusedId, { markAudience = false } = {}) {
     chips.textContent = "";
     for (const ann of annotations) {
       const chip = document.createElement("button");
@@ -69,6 +104,14 @@ export function createAnnotationList({ viewport, language, onFocus }) {
       chip.className = "ann-chip";
       chip.dataset.ann = ann.id;
       chip.textContent = resolveText(ann.label, { language });
+      if (markAudience && ann.audience) {
+        const mark = document.createElement("span");
+        mark.className = "ann-chip-audience";
+        // The same catalogue lookup as the switch buttons, so the marker and
+        // the button a visitor just left can never disagree about a name.
+        mark.textContent = t("audience." + ann.audience, language);
+        chip.appendChild(mark);
+      }
       const colour = safeColor(ann.color);
       if (colour) chip.style.borderColor = colour;
       const on = ann.id === focusedId;

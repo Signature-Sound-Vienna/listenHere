@@ -806,3 +806,296 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     expect(page.url()).toContain('studyPanel=true');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 35.18–35.20 pin the TAP→TIME MAPPING through the exhibit's transforms
+// (feedback round 2, 2026-08-24). The bug they guard: WaveSurfer's own
+// `interaction` event computes the tapped position as `clientX −
+// boundingRect.left` over the PAINTED box, which is transform-naive — on the
+// 180° viewport a tap seeked to `duration − t` (the playhead landing
+// mirror-image from the finger), and under ?stageRotation every tap collapsed
+// to the visual x-axis. strips.js now owns the mapping (`interact: false` +
+// offsetX + the scroll offset); these pin the three geometries that proved it:
+// fit-width in both viewport rotations, the stage rotation, and zoom+scroll.
+//
+// The mapped time is read at the seam the fix owns: `transport.select` is
+// wrapped to record its arguments (and to pass play=false, so no audio loads
+// and nothing asynchronous can race the read — the transport's own emissions
+// arrive on their own schedule and poisoned two earlier drafts of these pins).
+// Tolerance ±2 s: one pixel at fit-width is ~0.58 s, and offsetX is integer.
+// ---------------------------------------------------------------------------
+
+/** Record every select() a tap produces, without starting audio. */
+async function armTapRecorder(page: Page) {
+  await page.evaluate(() => {
+    const T = (window as any)._exhibitTest;
+    (window as any)._taps = [];
+    const orig = T.transport.select.bind(T.transport);
+    T.transport.select = (file: string, time: number) => {
+      (window as any)._taps.push({ file, time });
+      return orig(file, time, false);
+    };
+  });
+}
+
+/** Click at a fraction of the strip host's PAINTED (visual) box. */
+async function clickStripAt(page: Page, vp: number, file: string, fx: number, fy = 0.5) {
+  const box = await page
+    .locator(`.vp[data-viewport="${vp}"] .strip[data-file="${file}"] .strip-ws`)
+    .boundingBox();
+  await page.mouse.click(box!.x + fx * box!.width, box!.y + fy * box!.height);
+}
+
+async function lastTap(page: Page) {
+  return page.evaluate(() => (window as any)._taps.at(-1) as { file: string; time: number });
+}
+
+test.describe('35. Feedback round 2 — tap-to-seek through transforms', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 35.18 The far (180°) viewport seeks to the moment DRAWN under the finger.
+  // A tap at 25% of the painted box sits on content at 75% of the recording
+  // there — the drawn waveform is rotated with the viewport. The unrotated
+  // half is the control: same visual fraction, mirrored expectation.
+  test('35.18 a tap seeks to the drawn moment under the finger in both viewport rotations', async ({
+    page,
+  }) => {
+    const { ref } = await boot(page);
+    const duration = await page.evaluate(
+      () => (window as any)._exhibitTest.exhibit.durations[(window as any)._exhibitTest.exhibit.piece.ref] as number,
+    );
+
+    await armTapRecorder(page);
+    await clickStripAt(page, 0, ref, 0.25);
+    expect(Math.abs((await lastTap(page)).time - 0.25 * duration)).toBeLessThanOrEqual(2);
+
+    await clickStripAt(page, 1, ref, 0.25);
+    expect(
+      Math.abs((await lastTap(page)).time - 0.75 * duration),
+      'the 180° viewport seeked mirror-image from the finger — the transform-naive mapping is back',
+    ).toBeLessThanOrEqual(2);
+
+    // Both taps were on the already-active strip: position honoured, no switch.
+    const active = await page.evaluate(() => (window as any)._exhibitTest.transport.activeFile);
+    expect(active).toBe(ref);
+  });
+
+  // 35.20 The scroll term: zoomed in and panned, the mapping must add the
+  // scroll offset to the (viewport-relative) offsetX. The expectation is
+  // derived independently from the painted box and the scroll the test set,
+  // not from the implementation's own internals.
+  test('35.20 tap-to-seek holds while zoomed and scrolled', async ({ page }) => {
+    const { ref } = await boot(page);
+    const duration = await page.evaluate(
+      () => (window as any)._exhibitTest.exhibit.durations[(window as any)._exhibitTest.exhibit.piece.ref] as number,
+    );
+    const box = await page
+      .locator(`.vp[data-viewport="0"] .strip[data-file="${ref}"] .strip-ws`)
+      .boundingBox();
+
+    const scrollPx = 400;
+    await page.evaluate((s) => {
+      const T = (window as any)._exhibitTest;
+      T.viewports[0].zoom.setLevel(2);
+      T.viewports[0].strips.get(T.exhibit.piece.ref).ws.setScroll(s);
+    }, scrollPx);
+    await page.waitForTimeout(200); // let the re-render and the scroll settle
+
+    await armTapRecorder(page);
+    await clickStripAt(page, 0, ref, 0.25);
+    const expected = ((scrollPx + 0.25 * box!.width) / (2 * box!.width)) * duration;
+    expect(Math.abs((await lastTap(page)).time - expected)).toBeLessThanOrEqual(2);
+  });
+});
+
+test.describe('35. Feedback round 2 — tap-to-seek through the stage rotation', () => {
+  // The landscape laptop case, like 35.1 — the whole screen turned 90°, so a
+  // strip's local time axis runs visually DOWN the painted (tall, thin) box.
+  test.use({ viewport: { width: 1366, height: 1024 } });
+
+  // 35.19 Before the fix every tap here collapsed to the visual x-axis (any
+  // position on the strip seeked to ~50% — the strip's visual centre), so the
+  // pin is that the position ALONG the strip is what maps: 25% down the
+  // painted box is 25% of the recording on the unrotated viewport, and 75% on
+  // the 180° one (its composite is 270°, so its time axis runs visually up).
+  test('35.19 taps through ?stageRotation=90 map along the strip axis in both viewports', async ({
+    page,
+  }) => {
+    const { ref } = await boot(page, 'debug=1&stageRotation=90');
+    const duration = await page.evaluate(
+      () => (window as any)._exhibitTest.exhibit.durations[(window as any)._exhibitTest.exhibit.piece.ref] as number,
+    );
+
+    await armTapRecorder(page);
+    await clickStripAt(page, 0, ref, 0.5, 0.25);
+    expect(Math.abs((await lastTap(page)).time - 0.25 * duration)).toBeLessThanOrEqual(2);
+
+    await clickStripAt(page, 1, ref, 0.5, 0.25);
+    expect(Math.abs((await lastTap(page)).time - 0.75 * duration)).toBeLessThanOrEqual(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 35.21/35.22 pin the GENERIC SIDE SLOT (?sideSlot=<tenant>, feedback item 5):
+// an opt-in second column beside the strips, on each viewport's own right —
+// per READER, because the slot rotates with its viewport. The seam is
+// tenant-agnostic (main.js SIDE_TENANTS; the score view is the confirmed
+// second tenant), and the first tenant is the commentary panel, rehomed from
+// below the strips. What is worth pinning: the slot is OPT-IN (default DOM
+// unchanged), an unknown tenant changes nothing, the panel actually moves,
+// the columns do not overlap, the narrowed strips still FIT exactly (the
+// spec-28.3 discipline at the new width), and the details toggle folds the
+// group story without moving a strip.
+// ---------------------------------------------------------------------------
+
+test.describe('35. Feedback round 2 — the generic side slot', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  test('35.21 the side slot is opt-in, tenant-checked, and rehomes the commentary panel beside exactly-fitting strips', async ({
+    page,
+  }) => {
+    // Default: no slot, no toggle, the panel below the strips as shipped.
+    await boot(page);
+    expect(await page.locator('.vp-side-slot').count()).toBe(0);
+    expect(await page.locator('.ann-details-toggle').count()).toBe(0);
+    expect(await page.locator('.vp > .ann-panel').count()).toBe(2);
+
+    // An unknown tenant must not reshape the layout for an empty column.
+    await boot(page, 'debug=1&sideSlot=bogus');
+    expect(await page.locator('.vp-side-slot').count()).toBe(0);
+    expect(await page.locator('.vp > .ann-panel').count()).toBe(2);
+
+    await boot(page, 'debug=1&sideSlot=annotations');
+    expect(await page.locator('.vp-side-slot[data-tenant="annotations"]').count()).toBe(2);
+    expect(await page.locator('.vp-side-slot > .ann-panel').count()).toBe(2);
+    expect(await page.locator('.vp > .ann-panel').count()).toBe(0);
+
+    const layout = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      return T.viewports.map((vp: any) => {
+        const slot = vp.el.querySelector('.vp-side-slot') as HTMLElement;
+        const strip = [...vp.strips.values()][0];
+        return {
+          // offset* are LAYOUT values, untouched by the viewport rotation, so
+          // one comparison covers both halves without transform arithmetic.
+          stripsRight: vp.stripsEl.offsetLeft + vp.stripsEl.offsetWidth,
+          slotLeft: slot.offsetLeft,
+          slotWidth: slot.offsetWidth,
+          vpWidth: vp.el.clientWidth,
+          // The 28.3 discipline at the narrowed width: the fit must be exact —
+          // wrapper equal to its container, nothing to scroll.
+          hostW: strip.host.clientWidth,
+          wrapperW: strip.ws.getWrapper().clientWidth,
+          scroll: strip.ws.getScroll(),
+        };
+      });
+    });
+    for (const vp of layout) {
+      expect(vp.stripsRight).toBeLessThanOrEqual(vp.slotLeft);
+      // The default 40% split, within a pixel of rounding.
+      expect(Math.abs(vp.slotWidth - 0.4 * vp.vpWidth)).toBeLessThanOrEqual(12);
+      expect(vp.wrapperW).toBe(vp.hostW);
+      expect(vp.scroll).toBe(0);
+    }
+  });
+
+  test('35.22 the details toggle folds the group story away and back without moving a strip', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&sideSlot=annotations');
+    const ann = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      return T.exhibit.annotations.find((a: any) => a.groupNotes && Object.keys(a.groupNotes).length);
+    });
+    expect(ann, 'no annotation with groupNotes left in the payload — re-point this test').toBeTruthy();
+
+    await page.click(`.ann-panel[data-viewport="0"] .ann-chip[data-ann="${ann.id}"]`);
+    const panel = page.locator('.ann-panel[data-viewport="0"]');
+    const toggle = panel.locator('.ann-details-toggle');
+    const groups = panel.locator('.ann-groups');
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveText(/hide details/i);
+    await expect(groups).toBeVisible();
+
+    const before = await page.locator('.vp[data-viewport="0"] .strips').boundingBox();
+    await toggle.click();
+    await expect(groups).toBeHidden();
+    await expect(toggle).toHaveText(/show details/i);
+    // Folding the details is a change INSIDE the slot; the strips column must
+    // not feel it (the exhibit's nothing-may-move rule).
+    expect(await page.locator('.vp[data-viewport="0"] .strips').boundingBox()).toEqual(before);
+
+    await toggle.click();
+    await expect(groups).toBeVisible();
+    await expect(toggle).toHaveText(/hide details/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 35.23 pins the AUDIENCE UNION MODE (?audienceAll=1, feedback item 4): an
+// opt-in fourth switch position that shows every audience's annotations at
+// once, each chip marked with the audience it targets — the one mode where
+// the switch position no longer implies that fact. "all" is a UI pseudo-mode:
+// the payload, its byAudience partition, and the default three-way switch are
+// untouched, and the other viewport keeps filtering independently.
+// ---------------------------------------------------------------------------
+
+test.describe('35. Feedback round 2 — the audience union mode', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  test('35.23 "All" is opt-in, unions the annotations with audience markers, and leaves the other viewport filtering', async ({
+    page,
+  }) => {
+    const btns = (vp: number) => `.audience-switch[data-viewport="${vp}"] .audience-btn`;
+
+    // Default: the shipped three-way switch, no "all" anywhere.
+    await boot(page);
+    expect(await page.locator(btns(0)).count()).toBe(3);
+    expect(await page.locator('[data-audience="all"]').count()).toBe(0);
+
+    await boot(page, 'debug=1&audienceAll=1');
+    expect(await page.locator(btns(0)).count()).toBe(4);
+    const adultsRegions = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      return [...T.viewports[0].strips.values()][0].regions.getRegions().length;
+    });
+
+    await page.click(`${btns(0)}[data-audience="all"]`);
+    const shown = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const chip = (vp: number) => [
+        ...T.viewports[vp].annList.el.querySelectorAll('.ann-chip'),
+      ];
+      return {
+        vp0: chip(0).map((c: any) => ({
+          ann: c.dataset.ann,
+          marker: c.querySelector('.ann-chip-audience')?.textContent ?? null,
+        })),
+        vp1Chips: chip(1).length,
+        vp1Markers: T.viewports[1].annList.el.querySelectorAll('.ann-chip-audience').length,
+        annotations: T.exhibit.annotations.map((a: any) => ({ id: a.id, audience: a.audience })),
+        allRegions: [...T.viewports[0].strips.values()][0].regions.getRegions().length,
+      };
+    });
+
+    // The union, in the payload's own order, every chip marked with ITS
+    // audience — through the same catalogue the switch buttons use, so the
+    // marker can never disagree with the button the visitor just left.
+    const names: Record<string, string> = { kids: 'Kids', adults: 'Adults', expert: 'Scholars' };
+    expect(shown.vp0.map((c: any) => c.ann)).toEqual(shown.annotations.map((a: any) => a.id));
+    for (let i = 0; i < shown.vp0.length; i++) {
+      expect(shown.vp0[i].marker).toBe(names[shown.annotations[i].audience]);
+    }
+    // Every audience's regions are on the strips now, not just one filter's.
+    expect(shown.allRegions).toBeGreaterThan(adultsRegions);
+    // The far half neither gained the mode nor the markers: audience stays
+    // per viewport (plan §5.3).
+    expect(shown.vp1Chips).toBe(3);
+    expect(shown.vp1Markers).toBe(0);
+
+    // Leaving the union restores the plain filtered chips, markers gone.
+    await page.click(`${btns(0)}[data-audience="adults"]`);
+    expect(await page.locator('.ann-panel[data-viewport="0"] .ann-chip-audience').count()).toBe(0);
+    expect(await page.locator('.ann-panel[data-viewport="0"] .ann-chip').count()).toBe(3);
+  });
+});

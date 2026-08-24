@@ -100,7 +100,9 @@ export function createStrip(parent, opts) {
     // itself towards its own cursor fights whatever the visitor just did.
     autoScroll: false,
     autoCenter: false,
-    interact: true,
+    // Off because WaveSurfer's own tap handling is transform-naive — see the
+    // click listener below, which owns the tap→time mapping instead.
+    interact: false,
     plugins: [regions],
     // The pair that makes this a peaks-only renderer. `duration` is the alignment
     // duration, which is also the timeline the grids and the peaks are in, so a
@@ -109,12 +111,29 @@ export function createStrip(parent, opts) {
     duration: opts.duration,
   });
 
-  // WaveSurfer emits `interaction` with the tapped time before it moves anything,
-  // which is what we want: the exhibit decides whether a tap means "play this
-  // recording from here", and the cursor then follows from the shared clock like
-  // every other cursor. Letting WaveSurfer move this one cursor on its own would
-  // reintroduce the privileged strip that the header note rules out.
-  ws.on("interaction", (time) => opts.onSelect?.(opts.file, time));
+  // The tap→time mapping is OURS (`interact: false` above), because WaveSurfer's
+  // is transform-naive: WS 7.12 computes the tapped position as `clientX −
+  // boundingRect.left` over the wrapper's PAINTED box, and this exhibit paints
+  // its strips through transforms — the far viewport is rotated 180° and
+  // ?stageRotation turns the whole screen. Measured with real input events on
+  // both engines (2026-08-24): a tap on the far half seeked to `duration − t`,
+  // the playhead landing mirror-image from the finger, and under stageRotation
+  // every tap collapsed to the visual x-axis regardless of where on the strip it
+  // fell. `offsetX` is the coordinate the browser has already mapped back
+  // through every ancestor transform, and shadow-DOM retargeting reports it
+  // relative to WS's outer div — container-sized, NOT moved by the inner scroll
+  // container, hence the explicit scroll term. In the unrotated case
+  // (scroll + offsetX)/wrapperWidth reproduced WS's own mapping exactly, so the
+  // one geometry that already worked is unchanged. This also keeps WaveSurfer
+  // from seeking its own cursor on the tap, which the header note's one-clock
+  // rule wanted anyway: the exhibit decides what a tap means, and the cursor
+  // follows from the shared clock like every other cursor.
+  host.addEventListener("click", (e) => {
+    const width = ws.getWrapper().clientWidth;
+    if (!width) return;
+    const rel = (ws.getScroll() + e.offsetX) / width;
+    opts.onSelect?.(opts.file, Math.max(0, Math.min(1, rel)) * opts.duration);
+  });
 
   // WHY THIS PROMISE EXISTS, because it looks like ceremony over a renderer that
   // decodes nothing. WaveSurfer's constructor kicks off `load(url, peaks, duration)`

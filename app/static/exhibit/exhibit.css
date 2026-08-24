@@ -267,6 +267,18 @@ html, body {
 
 .ann-chip { border-width: 2px; }
 
+/* The union mode's audience marker (?audienceAll=1): the audience name inside
+ * the chip, smaller and dimmed — it must be readable when asked for, invisible
+ * as texture otherwise. Inherits the chip's text colour, so the focused chip's
+ * composited contrast colour (groupTextColor) carries it too. */
+.ann-chip-audience {
+  margin-left: 8px;
+  font-size: 0.68em;
+  opacity: 0.65;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 /* Commentary beside the group cards. Centred as a unit; each half scrolls
  * internally rather than growing. */
 .ann-body {
@@ -345,6 +357,72 @@ html, body {
   color: var(--ex-text-body);
 }
 .ann-cmp-names { font-weight: 600; }
+
+/* --------------------------------------------------------------------------
+ * The generic side slot (?sideSlot=<tenant>, feedback item 5). The viewport
+ * becomes a two-column grid: toolbar and strips keep the left, the slot takes
+ * the right at --side-slot-w (config.sideSlotWidth). NOTHING here knows what
+ * the tenant is — the score view (plan §2.3) is the confirmed second occupant
+ * of exactly this split — and every rule keys on the data attribute, so the
+ * shipped below-strips layout is untouched CSS-wise when the slot is off.
+ * "Right" is per READER for free: the slot is inside the viewport and rotates
+ * with it. The strips centre vertically in their column — with the panel gone
+ * from below them, top-anchoring would leave all the leftover height as a
+ * void under the waveforms.
+ * -------------------------------------------------------------------------- */
+.vp[data-side-slot] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--side-slot-w, 40%));
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "toolbar side"
+    "strips  side";
+  column-gap: 14px;
+}
+.vp[data-side-slot] .vp-toolbar { grid-area: toolbar; }
+.vp[data-side-slot] .strips { grid-area: strips; align-self: center; }
+
+.vp-side-slot {
+  grid-area: side;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The commentary panel in its slot home: same component, narrower column, so
+ * the commentary and the group story stack instead of sitting side by side —
+ * 62ch plus a 38% card column cannot share ~40% of a halved screen. The group
+ * block gets a bounded share and scrolls internally, same discipline as the
+ * text. */
+.vp-side-slot .ann-panel { flex: 1 1 0; min-height: 0; margin-top: 0; }
+.vp-side-slot .ann-body { flex-direction: column; align-items: stretch; gap: 8px; }
+.vp-side-slot .ann-detail { max-width: none; flex: 1 1 auto; }
+.vp-side-slot .ann-groups { flex: 0 1 45%; }
+
+/* The slot's show/hide control for the group story (annotation-list.js).
+ * Rendered only when the panel was built with the toggle; SHOWN only while
+ * there are details to toggle, so it can never dangle over an empty block.
+ * Both attributes outrank the single-attribute show rule above, no !important
+ * needed. */
+.ann-details-toggle {
+  display: none;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 16px;
+  background: var(--ex-panel);
+  color: var(--ex-text-soft);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  align-self: center;
+  flex: 0 0 auto;
+}
+.ann-panel[data-has-groups="1"] .ann-details-toggle { display: inline-flex; align-items: center; }
+.ann-panel[data-has-groups="1"][data-details-hidden="1"] .ann-groups { display: none; }
 
 /* Shared between the halves, read from both sides at once. Portrait, conductor
  * name, and year only — no UI labels, by design (plan §6.3). Which way up is an

@@ -57,6 +57,20 @@ const DEFAULTS = {
   //                once per READER rather than once per view.
   bandOrientation: "upright",
   middleBandHeightRotated: 176, // fits the longest sidecar name turned 90°
+  // The GENERIC side slot (feedback item 5, 2026-08-24): a region beside the
+  // strips, on each viewport's own right — "right" is per READER for free,
+  // because the slot lives inside the viewport and rotates with it. The value
+  // names the TENANT occupying it; "" keeps the shipped below-strips layout.
+  // Deliberately not called "annotationsBeside": the Verovio score view (plan
+  // §2.3's optional bonus) is the confirmed second tenant of exactly this
+  // split, so the seam is tenant-agnostic and main.js dispatches by name
+  // (SIDE_TENANTS). An unknown name changes nothing and warns, rather than
+  // narrowing the strips for an empty column.
+  sideSlot: "",
+  // Percent of the viewport's width the slot takes; the strips keep the rest.
+  // 40 leaves the waveforms dominant (the resume note's "~60%" reading), and a
+  // different balance is one query parameter, per the §7.8 rule.
+  sideSlotWidth: 40,
   // Desktop-debugging convenience, never set on the kiosk: rotate the WHOLE
   // composed screen 90° or 270° so a physically turned laptop or a swivelled
   // monitor shows the portrait kiosk at its intended aspect. Applied as one
@@ -102,6 +116,15 @@ const DEFAULTS = {
   // these are only the starting values for each half (plan §5.3).
   audiences: ["adults", "adults"],
   languages: ["en", "en"],
+  // Feedback item 4 (2026-08-24): offer an "All" position on the audience
+  // switch that UNIONS every audience's annotations, each chip marked with the
+  // audience it targets (annotation-list.js). Opt-in, current three-way switch
+  // stays the default; "all" is a UI pseudo-mode, never a payload audience —
+  // the payload's byAudience index and the AUDIENCES list are untouched. In
+  // this comparison view audience is exactly an annotation filter; future
+  // views (programme listings, quizzes) will need their own answer, which is
+  // why this is a switch option and not a change to the filter's meaning.
+  audienceAll: false,
 
   // --- appearance ---
   // Palette preset (exhibit/themes.js): "dark" is the shipped look; the others

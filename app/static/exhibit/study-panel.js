@@ -51,6 +51,19 @@ const TABS = [
         options: [true, false],
         display: (v) => (v ? "show" : "hide"),
       },
+      // The generic side slot (feedback item 5): options name TENANTS, and the
+      // score view will add itself here when it lands (main.js SIDE_TENANTS).
+      {
+        key: "sideSlot",
+        label: "Side slot",
+        options: ["", "annotations"],
+        display: (v) => (v === "" ? "off" : v),
+      },
+      {
+        key: "sideSlotWidth",
+        label: "Side slot width (%)",
+        options: [30, 40, 50],
+      },
     ],
   },
   {
@@ -92,6 +105,13 @@ const TABS = [
     id: "misc",
     label: "Misc",
     params: [
+      // Feedback item 4: the audience switch's union position.
+      {
+        key: "audienceAll",
+        label: "Audience ‘All’ option",
+        options: [false, true],
+        display: (v) => (v ? "offer" : "off"),
+      },
       { key: "minRegionPx", label: "Region floor (px)", options: [2, 4, 8] },
       { key: "zoom", label: "Initial zoom (px/s; 0 = fit)", options: [0, 30] },
       { key: "debug", label: "Debug logging", options: [false, true] },

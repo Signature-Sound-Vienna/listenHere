@@ -96,6 +96,21 @@ function positionsFor(time, activeFile) {
 }
 
 // ---------------------------------------------------------------------------
+// The side slot's tenants (?sideSlot=<name>, feedback item 5). The slot is a
+// GENERIC region beside the strips — the layout, the CSS, and the parameter
+// know nothing about annotations, because the Verovio score view (plan §2.3)
+// is the confirmed second tenant of exactly this split. A tenant is a function
+// from a booted viewport to the element that fills its slot, called once per
+// viewport; adding a tenant is one entry here plus its module.
+// ---------------------------------------------------------------------------
+const SIDE_TENANTS = {
+  // First tenant: the commentary panel, rehomed from below the strips. The
+  // panel itself is unchanged — same chips, same group cards, same update
+  // path — so everything spec 35.7/35.8 pin holds in either home.
+  annotations: (vp) => vp.annList.el,
+};
+
+// ---------------------------------------------------------------------------
 // Geometry. Two halves of a portrait screen, the far one rotated, with the middle
 // band between them — carrying conductor, year, and portrait, and NO UI labels,
 // because a caption would have to pick a language for a surface two people read
@@ -104,6 +119,7 @@ function positionsFor(time, activeFile) {
 function buildScreen(root) {
   root.textContent = "";
   root.style.setProperty("--strip-height", config.stripHeight + "px");
+  root.style.setProperty("--side-slot-w", config.sideSlotWidth + "%");
   // Rotated band text pays for its length vertically, so that orientation gets
   // a taller band by default — but an EXPLICIT ?middleBandHeight= always wins,
   // because the whole point of the orientation switch is comparing variants
@@ -153,6 +169,24 @@ function buildScreen(root) {
     strips.className = "strips";
     vp.appendChild(strips);
 
+    // The side slot's shell is built HERE, before any strip mounts, because the
+    // grid narrows the strips column and WaveSurfer sizes its canvases from the
+    // width it sees at creation. The tenant's content arrives in boot; only a
+    // KNOWN tenant reshapes the layout — an empty 40% column beside narrowed
+    // waveforms is a worse failure than ignoring a typo.
+    let sideSlot = null;
+    if (config.sideSlot) {
+      if (SIDE_TENANTS[config.sideSlot]) {
+        vp.dataset.sideSlot = config.sideSlot;
+        sideSlot = document.createElement("aside");
+        sideSlot.className = "vp-side-slot";
+        sideSlot.dataset.tenant = config.sideSlot;
+        vp.appendChild(sideSlot);
+      } else if (i === 0) {
+        console.warn(`exhibit: unknown side-slot tenant "${config.sideSlot}" — ignored`);
+      }
+    }
+
     // Inside the strips container, absolutely positioned over it (exhibit.css):
     // out of the flow entirely, so the transient "Loading…" can never move a
     // strip — the stronger form of 34.10's reserved-height fix, adopted when
@@ -168,6 +202,7 @@ function buildScreen(root) {
       el: vp,
       stripsEl: strips,
       statusEl: status,
+      sideSlotEl: sideSlot,
       language: vp.dataset.language,
       strips: new Map(),
       annList: null,
@@ -256,7 +291,11 @@ async function boot() {
     Array.from({ length: config.viewports }, (_, i) =>
       config.audiences[i] ?? config.audiences[0],
     ),
-    AUDIENCES,
+    // ?audienceAll=1 appends the "all" pseudo-mode: the switch renders it like
+    // any other position, and renderAnnotations unions the lists. The store's
+    // own validation then also accepts ?audiences=all,adults as starting values
+    // — but only when the option is offered at all.
+    config.audienceAll ? [...AUDIENCES, "all"] : AUDIENCES,
   );
   window._exhibitTest.audience = store;
 
@@ -333,12 +372,20 @@ async function boot() {
     vp.annList = createAnnotationList({
       viewport: vp.index,
       language: vp.language,
+      // The details toggle exists only in the slot: the below-strips panel has
+      // the viewport's whole leftover height and hiding the group story there
+      // would just leave a hole, while the slot's fixed column is where the
+      // cards and the commentary genuinely compete for room.
+      detailsToggle: !!vp.sideSlotEl,
       onFocus: (annId) => {
         vp.focusedId = annId;
         renderAnnotations(vp, store);
       },
     });
-    vp.el.appendChild(vp.annList.el);
+    // The panel's home: the side slot when a tenant claims it (SIDE_TENANTS —
+    // today that tenant IS the panel), below the strips otherwise.
+    if (vp.sideSlotEl) vp.sideSlotEl.appendChild(SIDE_TENANTS[config.sideSlot](vp));
+    else vp.el.appendChild(vp.annList.el);
     vp.statusEl.textContent = "";
   }
 
@@ -402,7 +449,14 @@ function stripLabel(exhibit, file) {
 /** Redraw one viewport's annotation chips, its regions, and its group colours. */
 function renderAnnotations(vp, store) {
   const audience = store.get(vp.index);
-  let annotations = data.exhibit.byAudience[audience] || [];
+  // "all" (?audienceAll=1) is the union in the payload's own authored order —
+  // `annotations` IS that order, byAudience is just its partition — with each
+  // chip marked by the audience it targets, since the union is the one mode
+  // where that fact is not implied by the switch position.
+  const showAll = audience === "all";
+  let annotations = showAll
+    ? data.exhibit.annotations
+    : data.exhibit.byAudience[audience] || [];
   // The one seam where the theme's diverging series replaces the authored
   // colours: every consumer below (chips, region fills, group cards, strip
   // edges) reads colours off these objects, so recolouring COPIES here retints
@@ -411,7 +465,7 @@ function renderAnnotations(vp, store) {
   if (vp.focusedId && !annotations.some((a) => a.id === vp.focusedId)) {
     vp.focusedId = null;
   }
-  vp.annList.update(annotations, vp.focusedId);
+  vp.annList.update(annotations, vp.focusedId, { markAudience: showAll });
   syncRegions(vp.strips, annotations, {
     minRegionPx: config.minRegionPx,
     activeId: vp.focusedId,

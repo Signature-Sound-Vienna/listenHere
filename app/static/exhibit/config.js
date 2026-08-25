@@ -147,6 +147,18 @@ const DEFAULTS = {
   // real payloads carry fewer than 12. Display-only: the payload is untouched.
   annotationColors: "authored",
 
+  // --- focus (main.js's follow machinery) ---
+  // What drives each viewport's focused annotation:
+  //   "manual"   — taps only (the shipped behaviour).
+  //   "playhead" — focus follows the shared clock through region ENTRIES on
+  //                the audible recording (each side in its own audience list),
+  //                sticky between regions; a chip tap PINS focus and suspends
+  //                following until the below-layout toggle-off or the side
+  //                panel's × releases it. The chip/× machine was designed for
+  //                exactly this driver (2026-08-24); the panel never opens or
+  //                closes by itself — that stays tap-owned.
+  focus: "manual",
+
   // --- turn-taking (plan §4.3; turns.js) ---
   // Which policy a tap goes through when the OTHER side holds the clock:
   //   "hijack"      — take it instantly, silently (the shipped behaviour).

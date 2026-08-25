@@ -133,6 +133,8 @@ const TABS = [
         options: [false, true],
         display: (v) => (v ? "offer" : "off"),
       },
+      // The playhead-driven focus wash (?focus=playhead, main.js).
+      { key: "focus", label: "Focus", options: ["manual", "playhead"] },
       { key: "minRegionPx", label: "Region floor (px)", options: [2, 4, 8] },
       { key: "zoom", label: "Initial zoom (px/s; 0 = fit)", options: [0, 30] },
       { key: "debug", label: "Debug logging", options: [false, true] },

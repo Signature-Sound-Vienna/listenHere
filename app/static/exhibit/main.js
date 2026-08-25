@@ -223,6 +223,12 @@ function buildScreen(root) {
       strips: new Map(),
       annList: null,
       focusedId: null,
+      // ?focus=playhead (config.js): whether a tap has pinned the focus against
+      // the follow machinery, and the last annotation the playhead was inside —
+      // the edge detector that makes following event-driven rather than a
+      // per-frame overwrite of whatever the visitor just did.
+      focusPinned: false,
+      followLast: null,
       panelOpen: false,
     });
   }
@@ -425,12 +431,22 @@ async function boot() {
       // listening interface), and chip-toggles-panel / ×-dismisses are the
       // two primitives that survive that change.
       onChipTap: (annId) => {
+        // Under ?focus=playhead a tap also PINS: the visitor's choice outranks
+        // the wash until the machine's unfocus (below: the toggle-off; side:
+        // the ×) releases it. In manual mode the flag is set but never read.
         if (!vp.sideSlotEl) {
-          vp.focusedId = vp.focusedId === annId ? null : annId;
+          const off = vp.focusedId === annId;
+          vp.focusedId = off ? null : annId;
+          vp.focusPinned = !off;
         } else if (vp.focusedId !== annId) {
           vp.focusedId = annId;
+          vp.focusPinned = true;
           setPanelOpen(vp, true);
         } else {
+          // Toggling the panel on the focused chip is still engagement with
+          // that annotation: it pins too, else the wash could swap the panel's
+          // text mid-read the moment the clock crosses another region.
+          vp.focusPinned = true;
           setPanelOpen(vp, !vp.panelOpen);
         }
         renderAnnotations(vp, store);
@@ -448,6 +464,11 @@ async function boot() {
       close.setAttribute("aria-label", t("panel.close", vp.language));
       close.addEventListener("click", () => {
         vp.focusedId = null;
+        // The machine's one unfocus also releases the playhead pin — but the
+        // wash resumes on the NEXT region entry, not this frame: followLast
+        // still names the region the playhead may be inside, so an × mid-region
+        // stays an unfocus rather than being instantly overwritten.
+        vp.focusPinned = false;
         setPanelOpen(vp, false);
         renderAnnotations(vp, store);
       });
@@ -501,6 +522,44 @@ async function boot() {
     }
   });
 
+  // ?focus=playhead: the follow machinery. One subscriber watches the shared
+  // clock and turns region ENTRIES on the audible recording into focus — per
+  // viewport, in each viewport's own audience list. Event-driven by design:
+  // `followViewport` acts only when the annotation under the playhead CHANGES,
+  // so it can never fight a visitor mid-interaction by rewriting focus per
+  // frame, and STICKY by design: leaving a region keeps the focus (blanking
+  // the commentary at the moment the visitor started reading it is the worse
+  // wash). Containment runs on the AUTHORED spans, not the widened display
+  // spans — the widening is a visibility affordance, not a musical claim.
+  const followViewport = (vp, file, time, prevTime) => {
+    const under = annotationUnder(vp.currentAnnotations, file, time, prevTime);
+    if (under === vp.followLast) return;
+    vp.followLast = under;
+    if (under && !vp.focusPinned && under !== vp.focusedId) {
+      vp.focusedId = under;
+      renderAnnotations(vp, store);
+    }
+  };
+  if (config.focus === "playhead") {
+    let prevFile = null;
+    let prevTime = null;
+    transport.subscribe((state) => {
+      if (!state.file) return;
+      // A file switch or a jump of more than a second is a discontinuity —
+      // a seek, not playback — so only containment at the new position
+      // counts; sweeping the gap would "enter" every region it skipped over.
+      // Continuous frames sweep [prev, now] instead, so a region narrower
+      // than one frame (D or E?'s 12 ms) still raises its entry.
+      const jump =
+        state.file !== prevFile || prevTime == null || Math.abs(state.time - prevTime) > 1;
+      for (const vp of viewports) {
+        followViewport(vp, state.file, state.time, jump ? null : prevTime);
+      }
+      prevFile = state.file;
+      prevTime = state.time;
+    });
+  }
+
   store.subscribe((viewport) => {
     const vp = viewports[viewport];
     if (!vp) return;
@@ -509,9 +568,17 @@ async function boot() {
     // highlighted chip that is no longer in the list. The side panel closes
     // with it — it was showing that annotation's text.
     vp.focusedId = null;
+    vp.focusPinned = false;
     setPanelOpen(vp, false);
     vp.el.dataset.audience = store.get(viewport);
     renderAnnotations(vp, store);
+    // In playhead mode the wash re-derives against the NEW audience's list at
+    // once — a mid-region switch refocuses (or honestly clears) rather than
+    // waiting for the next entry edge.
+    if (config.focus === "playhead" && transport.activeFile) {
+      vp.followLast = undefined;
+      followViewport(vp, transport.activeFile, transport.time, null);
+    }
   });
 
   transport.subscribe(onTransport(band));
@@ -654,12 +721,56 @@ function renderAnnotations(vp, store) {
   if (vp.focusedId && !annotations.some((a) => a.id === vp.focusedId)) {
     vp.focusedId = null;
   }
+  // The list the follow machinery (?focus=playhead) scans: exactly what this
+  // viewport is showing, after the audience filter and any recolouring.
+  vp.currentAnnotations = annotations;
   vp.annList.update(annotations, vp.focusedId, { markAudience: showAll });
   syncRegions(vp.strips, annotations, {
     minRegionPx: config.minRegionPx,
     activeId: vp.focusedId,
   });
   paintGroups(vp, annotations);
+}
+
+/**
+ * The annotation whose region the clock is inside — or swept through — on the
+ * audible recording, for ?focus=playhead.
+ *
+ * `prevTime` non-null means a continuous playback frame: the whole interval
+ * [prev, now] counts, so a region narrower than one frame still registers.
+ * Null means a discontinuity (a seek, a recording switch, an audience change):
+ * only containment at `time` counts. Where several spans qualify, the latest
+ * START wins — on a sweep that is the entry closest to now, and on nested
+ * regions it is the inner one, which is the more specific thing to say.
+ *
+ * Containment uses the AUTHORED spans (`targets[].regionTimes`), not the
+ * widened spans the strips draw — widening exists so a 12 ms region is
+ * visible, not to claim 12 ms of music lasts four pixels' worth of seconds.
+ *
+ * @param {object[]} annotations  the viewport's current (audience-filtered) list
+ * @param {string} file           the audible recording
+ * @param {number} time           seconds, in `file`'s own timeline
+ * @param {number|null} prevTime  the previous clock sample, or null
+ * @returns {string|null} the annotation id, or null when outside every region
+ */
+function annotationUnder(annotations, file, time, prevTime) {
+  const lo = prevTime == null ? time : Math.min(prevTime, time);
+  const hi = prevTime == null ? time : Math.max(prevTime, time);
+  let best = null;
+  let bestStart = -Infinity;
+  for (const ann of annotations || []) {
+    const target = (ann.targets || []).find((t) => t.file === file);
+    if (!target) continue;
+    for (const region of ann.regions || []) {
+      const span = target.regionTimes?.[region.id];
+      if (!span) continue;
+      if (span.end >= lo && span.start <= hi && span.start > bestStart) {
+        best = ann.id;
+        bestStart = span.start;
+      }
+    }
+  }
+  return best;
 }
 
 /**

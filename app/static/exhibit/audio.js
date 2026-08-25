@@ -76,8 +76,14 @@ export class Transport {
 
   /** Current time in the active recording's own timeline. */
   get time() {
+    // Authoritative while nothing plays (see _time): a paused player's own
+    // report can be the uncalibrated VBR seek heuristic, a second-plus off at
+    // depth, and a select()'s async settle emitting that estimate reads as a
+    // fresh user seek downstream (it spuriously armed the focus machinery's
+    // jump countdown). The requested moment is the truth while paused; once
+    // playing, the player is the clock.
     const p = this.activeFile && this._players.get(this.activeFile);
-    return p ? p.currentTime : this._time;
+    return p && !p.paused ? p.currentTime : this._time;
   }
 
   get loadingFile() {

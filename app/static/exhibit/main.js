@@ -258,13 +258,17 @@ function buildScreen(root) {
       ringRearm: null,
       // ?detailFade: the shown text's lifecycle — when it went on show, its
       // window, whether a ring tap bumped it to the full window, the bump's
-      // deadline, a switch deferred by the focusHoldMs floor, and the two
-      // timers (the 200 ms ticker; the fade-out animation step).
-      shownAt: 0,
+      // deadline, a switch deferred by the focusHoldMs floor, the deadline a
+      // time-jump pulled forward (the "Keep reading…" countdown, ruled
+      // 2026-08-25 — relevance voids it), and the two timers (the 200 ms
+      // ticker; the fade-out animation step). All stamps and deadlines are in
+      // READING-CLOCK time (see boot), so the pause button freezes them.
+      shownAt: null,
       shownMs: 0,
       shownBumped: false,
       fadeBumpUntil: 0,
       fadePending: false,
+      fadeCapAt: 0,
       fadeTicker: 0,
       fadeTimer: 0,
       // ?focus=playhead (config.js): whether a tap has pinned the focus against
@@ -377,6 +381,33 @@ async function boot() {
     debug: config.debug,
   });
   window._exhibitTest.transport = transport;
+
+  // THE READING CLOCK (ruled 2026-08-25): every fade and expiry window counts
+  // only time the music actually runs. The pause button freezes a reader's
+  // remaining window and play resumes it where it stopped — so a paused table
+  // never quietly expires what somebody may still be reading, and a silent
+  // one never starts a countdown at all. One clock for the whole screen,
+  // because there is one transport. `advance` is the test hook: specs drive
+  // the timer machinery deterministically, the way seeks drive the follow
+  // machinery, instead of waiting out real windows against real audio.
+  let readingBase = 0;
+  let readingMark = null; // performance.now() at last play start; null while silent
+  const readingNow = () =>
+    readingBase + (readingMark != null ? performance.now() - readingMark : 0);
+  transport.subscribe((state) => {
+    if (state.playing && readingMark == null) {
+      readingMark = performance.now();
+    } else if (!state.playing && readingMark != null) {
+      readingBase += performance.now() - readingMark;
+      readingMark = null;
+    }
+  });
+  window._exhibitTest.readingClock = {
+    now: readingNow,
+    advance: (ms) => {
+      readingBase += ms;
+    },
+  };
 
   // Every strip tap goes through the turn-taking machine (turns.js), which
   // decides — by the ?turnPolicy in force — whether it reaches the transport
@@ -633,7 +664,7 @@ async function boot() {
     }, Math.max(30, next - performance.now()));
   };
 
-  const followViewport = (vp, file, time, prevTime) => {
+  const followViewport = (vp, file, time, prevTime, jump = null) => {
     const now = performance.now();
     const { ids, primary } = annotationsUnder(vp.currentAnnotations, file, time, prevTime);
     const discontinuity = prevTime == null;
@@ -644,6 +675,24 @@ async function boot() {
     if (discontinuity && vp.washHold.size) {
       vp.washHold.clear();
       dirty = true;
+    }
+    // What a visitor's jump does to the shown TEXT (ruled 2026-08-25). The
+    // text's owner keeps their agency: their own time-jump lands — it switches
+    // to what it finds, or starts the "Keep reading…" countdown on unannotated
+    // ground. The OTHER side's jump must never snatch text mid-read: it only
+    // ever starts the countdown, and the catch-up at its end switches to
+    // whatever is relevant then. A recording switch is exempt for the jumping
+    // side (comparing interpretations mid-read is the exhibit's point), and
+    // relevance is exempt for everyone — tickFade voids a countdown the moment
+    // the playhead is back inside the shown annotation's spans. Only
+    // fade-tracked text takes part: pins answer to pinExpiry alone, and
+    // detailFade=off text stays immortal.
+    const mine = !jump || jump.initiator == null || jump.initiator === vp.index;
+    const tracked = vp.shownId && vp.shownAt != null && !vp.focusPinned;
+    const stealGuard = jump && !mine && tracked;
+    if (jump && tracked && !ids.includes(vp.shownId)) {
+      if (jump.kind === "seek") armFadeCap(vp);
+      else if (!mine && primary && primary !== vp.shownId) armFadeCap(vp);
     }
     const key = ids.join("|");
     if (key !== vp.followLast) {
@@ -658,7 +707,7 @@ async function boot() {
           if (primary && primary !== vp.washId) {
             vp.washIds = [primary];
             vp.washId = primary;
-            advanceShown(vp, primary);
+            if (!stealGuard) advanceShown(vp, primary);
             dirty = true;
           }
         } else if (ids.length || vp.washIds.length) {
@@ -678,7 +727,7 @@ async function boot() {
           }
           vp.washIds = ids;
           vp.washId = primary;
-          if (primary) advanceShown(vp, primary);
+          if (primary && !stealGuard) advanceShown(vp, primary);
           dirty = true;
         }
       }
@@ -721,11 +770,13 @@ async function boot() {
         : Number(config.pinExpiry);
     if (!Number.isFinite(ms) || ms <= 0) return;
     vp.pinTotalMs = ms;
-    vp.pinDeadline = performance.now() + ms;
+    // Reading-clock time (ruled 2026-08-25): a pin's clock freezes with the
+    // pause button too — it is the same reader's clock as the fade window.
+    vp.pinDeadline = readingNow() + ms;
     vp.ringRearm = () => armPinExpiry(vp);
     const warnAt = Math.min(12000, ms / 2);
     const tick = () => {
-      const left = vp.pinDeadline - performance.now();
+      const left = vp.pinDeadline - readingNow();
       if (left <= 0) {
         expirePin(vp);
         return;
@@ -738,16 +789,32 @@ async function boot() {
     tick();
   };
 
-  // ?detailFade (ruled 2026-08-25): playback-triggered text is MORTAL. Each
-  // text the wash puts on show lives for its reading window; the ring warns
-  // before the end — squeezed earlier when the next annotation's region
-  // arrives sooner (only while playing; paused, nothing approaches), never
-  // below the focusHoldMs floor — and a ring tap BUMPS the text to its full
-  // window, deferring any switch. At the end the text catches up to whatever
-  // is relevant then (never re-showing itself — its budget is spent), or
-  // fades out entirely. Layout-agnostic: under sideSlot=annotations the same
-  // machine opens the panel on entry and closes it on fade-out. Pins are
-  // exempt throughout; a chip tap hands the ring to pinExpiry.
+  // ?detailFade (ruled 2026-08-25, edge rules same day): playback-triggered
+  // text is MORTAL, but only on the READING CLOCK — its window drains while
+  // the music runs and freezes with the pause button. Each text the wash puts
+  // on show lives for its reading window, with three amendments to the plain
+  // countdown:
+  //   RELEVANCE — while the playhead sits inside one of the shown
+  //     annotation's spans the text cannot expire: the deadline defers to the
+  //     projected region exit, so the ring drains toward the exit and the
+  //     fade lands with the end of the region, never inside it. Extends only
+  //     — a 12 ms region never shortens a window.
+  //   THE SQUEEZE — the ring is pulled earlier when the next annotation's
+  //     region arrives sooner (only while playing; paused, nothing
+  //     approaches), never below the focusHoldMs floor. Switchover is exempt
+  //     from the relevance hold: at overlaps the next entry still takes over,
+  //     ring first — the escape hatch, not a fade.
+  //   THE JUMP COUNTDOWN (fadeCapAt) — a time-jump that leaves the shown
+  //     annotation's spans pulls the deadline to one warning window out
+  //     (sooner natural ends kept; spent windows still get the full
+  //     warning), armed by followViewport per the ownership rule documented
+  //     there. Relevance voids it.
+  // A ring tap BUMPS the text to its full window, deferring any switch. At
+  // the end the text catches up to whatever is relevant then (never
+  // re-showing itself — its budget is spent), or fades out entirely.
+  // Layout-agnostic: under sideSlot=annotations the same machine opens the
+  // panel on entry and closes it on fade-out. Pins are exempt throughout; a
+  // chip tap hands the ring to pinExpiry.
   const stopFadeTicker = (vp) => {
     clearInterval(vp.fadeTicker);
     vp.fadeTicker = 0;
@@ -757,16 +824,19 @@ async function boot() {
     clearTimeout(vp.fadeTimer);
     vp.fadeTimer = 0;
     vp.annList.bodyEl.classList.remove("is-fading");
-    vp.shownAt = 0;
+    // null, not 0: the reading clock legitimately reads 0 on a silent table,
+    // so a zero stamp must stay distinguishable from "no fade-tracked text".
+    vp.shownAt = null;
     vp.shownBumped = false;
     vp.fadePending = false;
+    vp.fadeCapAt = 0;
   };
   const showText = (vp, id) => {
     clearTimeout(vp.fadeTimer);
     vp.fadeTimer = 0;
     vp.annList.bodyEl.classList.remove("is-fading");
     vp.shownId = id;
-    vp.shownAt = performance.now();
+    vp.shownAt = readingNow();
     vp.shownMs =
       config.detailFade === "auto"
         ? readingTimeMs(
@@ -777,6 +847,7 @@ async function boot() {
         : Number(config.detailFade);
     vp.shownBumped = false;
     vp.fadePending = false;
+    vp.fadeCapAt = 0;
     vp.ringRearm = () => bumpShown(vp);
     if (vp.sideSlotEl) setPanelOpen(vp, true);
     if (!vp.fadeTicker) vp.fadeTicker = setInterval(() => tickFade(vp), 200);
@@ -785,9 +856,24 @@ async function boot() {
   const bumpShown = (vp) => {
     if (!vp.shownId || vp.focusPinned) return;
     vp.shownBumped = true;
-    vp.fadeBumpUntil = performance.now() + (vp.shownMs || 15000);
+    vp.fadeBumpUntil = readingNow() + (vp.shownMs || 15000);
     vp.fadePending = false;
+    vp.fadeCapAt = 0;
     vp.expiryEl?.classList.remove("is-live");
+  };
+  // The jump countdown (see the block comment above): a qualifying jump
+  // pulls the deadline to one warning window out — or to the text's own
+  // sooner end, when less than that remains — and a window already spent
+  // during a relevance hold still gets the full warning, because the
+  // countdown is an escape hatch, never an instant vanish. The earliest
+  // jump wins; a later jump never moves the deadline back out.
+  const armFadeCap = (vp) => {
+    const now = readingNow();
+    const warnAt = Math.min(12000, vp.shownMs / 2);
+    const baseEnd = vp.shownBumped ? vp.fadeBumpUntil : vp.shownAt + vp.shownMs;
+    const remaining = baseEnd - now;
+    const at = now + (remaining > 0 ? Math.min(remaining, warnAt) : warnAt);
+    if (!vp.fadeCapAt || at < vp.fadeCapAt) vp.fadeCapAt = at;
   };
   // What a wash entry does to the DETAIL. detailFade off: follow at once (the
   // shipped loose coupling). On: a bump protects outright; a text younger
@@ -798,8 +884,8 @@ async function boot() {
       vp.shownId = primary;
       return;
     }
-    const now = performance.now();
-    if (vp.shownId && vp.shownAt) {
+    const now = readingNow();
+    if (vp.shownId && vp.shownAt != null) {
       if (vp.shownBumped && now < vp.fadeBumpUntil) return;
       if (now - vp.shownAt < config.focusHoldMs) {
         vp.fadePending = true;
@@ -825,6 +911,28 @@ async function boot() {
     }
     return next;
   };
+  // The furthest end among the shown annotation's spans containing the clock,
+  // in the audible recording's own timeline — null when the playhead is
+  // outside them all. Same containment rule as annotationsUnder (the AUTHORED
+  // spans, boundaries inclusive), and computed from the spans rather than the
+  // wash set: under focusWash=sticky the wash never empties, and the
+  // relevance hold must release when the music actually leaves. Recomputed
+  // per tick, so chained and nested spans extend the hold as the playhead
+  // crosses into them.
+  const relevanceExit = (vp) => {
+    if (!vp.shownId) return null;
+    const time = transport.time;
+    const ann = (vp.currentAnnotations || []).find((a) => a.id === vp.shownId);
+    const target = (ann?.targets || []).find((t) => t.file === transport.activeFile);
+    if (!target) return null;
+    let exit = null;
+    for (const region of ann.regions || []) {
+      const span = target.regionTimes?.[region.id];
+      if (!span || span.start > time || span.end < time) continue;
+      if (exit == null || span.end > exit) exit = span.end;
+    }
+    return exit;
+  };
   const resolveFade = (vp) => {
     // Catch up to what is relevant NOW — the wash primary, or the freshest
     // still-held paint — but never re-show the text that just expired.
@@ -840,27 +948,42 @@ async function boot() {
     vp.fadeTimer = setTimeout(() => {
       vp.annList.bodyEl.classList.remove("is-fading");
       vp.shownId = null;
-      vp.shownAt = 0;
+      vp.shownAt = null;
       vp.shownBumped = false;
       vp.fadePending = false;
+      vp.fadeCapAt = 0;
       if (vp.sideSlotEl) setPanelOpen(vp, false);
       renderAnnotations(vp, store);
     }, 400);
   };
   const tickFade = (vp) => {
     if (vp.focusPinned) return;
-    if (!vp.shownId || !vp.shownAt) {
+    if (!vp.shownId || vp.shownAt == null) {
       stopFadeTicker(vp);
       return;
     }
-    const now = performance.now();
+    const now = readingNow();
     const warnAt = Math.min(12000, vp.shownMs / 2);
+    // The relevance hold: a relevant text cannot expire (extend-only), and
+    // relevance voids any jump countdown. Projected in reading-clock terms —
+    // paused, both the clock and the playhead stand still, so the hold
+    // simply holds.
+    const exitAt = relevanceExit(vp);
+    if (exitAt != null) vp.fadeCapAt = 0;
+    // A deferred switchover stands only while something foreign is still
+    // under the playhead: if the entrant left before the floor, the handover
+    // evaporates — else its floor deadline would fade a text the relevance
+    // hold protects.
+    if (vp.fadePending && (!vp.washId || vp.washId === vp.shownId)) vp.fadePending = false;
+    const holdTo = exitAt != null ? now + (exitAt - transport.time) * 1000 : -Infinity;
     let end;
     if (vp.shownBumped) {
-      end = vp.fadeBumpUntil;
+      end = Math.max(vp.fadeBumpUntil, holdTo);
     } else {
-      end = vp.shownAt + vp.shownMs;
+      end = Math.max(vp.shownAt + vp.shownMs, holdTo);
       if (vp.fadePending) {
+        // A deferred switchover: exempt from the relevance hold (the N.b. —
+        // the ring is the escape hatch for the handover, not a fade).
         end = Math.min(end, vp.shownAt + config.focusHoldMs);
       } else if (transport.playing) {
         const next = nextForeignStart(vp);
@@ -870,6 +993,10 @@ async function boot() {
         }
       }
     }
+    // The armed countdown IS the deadline: armFadeCap already folded a sooner
+    // natural end in, and a spent window's granted warning must not be
+    // shortened back to a deadline that has already passed.
+    if (vp.fadeCapAt) end = vp.fadeCapAt;
     const left = end - now;
     if (left <= 0) {
       resolveFade(vp);
@@ -890,10 +1017,24 @@ async function boot() {
       // counts; sweeping the gap would "enter" every region it skipped over.
       // Continuous frames sweep [prev, now] instead, so a region narrower
       // than one frame (D or E?'s 12 ms) still raises its entry.
+      const switched = state.file !== prevFile && prevFile != null;
+      const jumped =
+        !switched && state.file === prevFile && prevTime != null &&
+        Math.abs(state.time - prevTime) > 1;
       const jump =
         state.file !== prevFile || prevTime == null || Math.abs(state.time - prevTime) > 1;
+      // Attribution for the ownership rule (followViewport): every real jump
+      // is tap-driven, and turns.js sets its holder BEFORE it touches the
+      // transport — the band's shared toggle never moves the clock by more
+      // than a frame — so the holder at emit time is the jump's author. Null
+      // means nothing has taken the clock yet (boot), where there is no text
+      // to protect and every side counts as its own initiator.
+      const jumpInfo =
+        switched || jumped
+          ? { kind: switched ? "switch" : "seek", initiator: turns.holder }
+          : null;
       for (const vp of viewports) {
-        followViewport(vp, state.file, state.time, jump ? null : prevTime);
+        followViewport(vp, state.file, state.time, jump ? null : prevTime, jumpInfo);
       }
       prevFile = state.file;
       prevTime = state.time;

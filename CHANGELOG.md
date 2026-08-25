@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.30.0 -- Exhibit detailFade edge rules: relevance, the reading clock, jump ownership
+* **Relevance holds off the fade**: text whose annotation is under the playhead cannot expire — the deadline defers to the region exit, the ring draining toward it (extend-only; switchover at overlaps stays exempt, ring first).
+* **The reading clock**: fade windows and pin expiry drain only while the music runs — pause freezes them, play resumes where they stopped (supersedes "paused = natural window only"). Test hook: `_exhibitTest.readingClock.advance(ms)`.
+* **Jump ownership**: your own time-jump lands — switching to an annotated landing or starting the "Keep reading…" countdown on unannotated ground (spent windows still get the full warning) — while the other viewport's text is never snatched: countdown first, catch-up after. Recording switches exempt for the jumping side; relevance voids a countdown; pins untouched. Attribution via the turn machine's holder.
+* All three folded into `?detailFade` (no new parameters; shipped default `off` untouched).
+* Fix: the transport reported a paused player's uncalibrated VBR position (a second-plus off at depth), so a `select()`'s async settle read as a fresh user seek; `_time` is now authoritative while paused.
+* Testing: spec 37 grows 20 → 24 (the genuine reading clock, jump ownership across viewports, relevance voiding the countdown, the recording-switch exemption via a payload-derived probe); 37.17–37.19 rewritten to the new semantics. 252/2 per browser, green on both.
+
 ### 0.29.0 -- Exhibit playhead-focus feedback round: the agreed definition of "in focus"
 * **Focus split into two surfaces** (agreed 2026-08-25): the WASH — all strip-side paint (chip highlight, region emphasis, group edges, deemphasis) — clears when the playhead leaves a region; the DETAIL (commentary and group cards) lingers, so text is never snatched mid-read. A tap-pin holds both regardless of the playhead. By explicit ruling this is now `?focus=playhead`'s default; `?focusWash=sticky` keeps week 3's lingering wash as the A/B comparator.
 * **Strip deemphasis**: strips the painted annotation does not target fade — waveform and caption only; background and grouping edge stay. `?focusDim=auto|on|off`; auto (default) dims in playhead mode only, keeping the manual exhibit byte-for-byte shipped.

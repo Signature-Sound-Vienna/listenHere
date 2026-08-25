@@ -86,6 +86,17 @@ async function seek(page: Page, t: number) {
   await page.evaluate((t) => (window as any)._exhibitTest.transport.seek(t), t);
 }
 
+/**
+ * Advance the READING CLOCK — the time base of every fade and expiry window
+ * (ruled 2026-08-25: those windows drain only while the music runs). Specs
+ * drive the timer machinery with this the way seeks drive the follow
+ * machinery: deterministically, without waiting out real windows against
+ * real audio. 37.21 pins the genuine clock once.
+ */
+async function advanceClock(page: Page, ms: number) {
+  await page.evaluate((ms) => (window as any)._exhibitTest.readingClock.advance(ms), ms);
+}
+
 /** The momentary wash surface — what paints on the strips and chips. */
 async function washOf(page: Page, viewport: number) {
   return page.evaluate(
@@ -699,7 +710,9 @@ test.describe('37. Playhead-driven focus', () => {
   // not hold the table. The "Keep reading…" ring warns inside the warning
   // window, a tap re-arms the full time, and expiry — unlike the × — is not
   // a dismissal: the wash re-derives IMMEDIATELY, re-grabbing the region the
-  // playhead is inside.
+  // playhead is inside. The pin runs on the READING CLOCK (rule 2,
+  // 2026-08-25 — frozen while the music is not running), so the test
+  // advances it explicitly.
   test('37.17 a pin expires on deadline: the ring warns, a tap re-arms, expiry re-derives at once', async ({
     page,
   }) => {
@@ -714,7 +727,9 @@ test.describe('37. Playhead-driven focus', () => {
 
     await page.click(`.vp[data-viewport="0"] .ann-chip[data-ann="${other.annId}"]`);
     expect(await shownOf(page, 0)).toBe(other.annId);
-    // The ring goes live for the second half of the pin's life.
+    // Silent table: the pin's clock stands still, so its second half — the
+    // ring's live phase — is reached by advancing the reading clock.
+    await advanceClock(page, 1300);
     const ring = page.locator('.vp[data-viewport="0"] .pin-expiry');
     await expect(ring).toHaveClass(/is-live/);
 
@@ -729,49 +744,64 @@ test.describe('37. Playhead-driven focus', () => {
     expect(after).toBeGreaterThan(before);
 
     // Expiry: pin released, wash re-derived at once — still inside `first`.
+    await advanceClock(page, 3000);
     await expect.poll(async () => shownOf(page, 0), { timeout: 5000 }).toBe(first.annId);
     expect(await washOf(page, 0)).toBe(first.annId);
   });
 
-  // 37.18 ?detailFade, case 1 (ruled 2026-08-25): playback-triggered text is
-  // MORTAL — shown for its window, the ring warns, then it fades out (and
-  // never re-shows itself: at expiry the playhead is still inside the same
-  // region, and that is a fade, not a refresh). Under sideSlot=annotations
-  // the same machine opens the panel on entry and closes it on fade; a fresh
-  // RE-ENTRY re-earns the display.
-  test('37.18 detailFade: shown text runs its window, warns, fades out, and closes the panel', async ({
+  // 37.18 ?detailFade with the edge rules (ruled 2026-08-25): playback-
+  // triggered text is MORTAL, but never while it is RELEVANT — parked inside
+  // the shown annotation's span, the deadline defers to the region exit,
+  // however far past the natural window (rule 1). A time-jump away starts
+  // the "Keep reading…" countdown at once — even on a window already spent
+  // during the hold (rule 3) — and its end is a fade, not a refresh: text
+  // gone, panel closed. A fresh re-entry re-earns the display.
+  test('37.18 detailFade: relevant text holds past its window; a jump away rings, then fades and closes the panel', async ({
     page,
   }) => {
     // 3000 ms: the ring's live phase is the window's second half, 1500 ms —
     // transient-state assertions need windows that survive a loaded machine.
     await boot(page, 'focus=playhead&sideSlot=annotations&detailFade=3000');
     const { spans, outside } = await spansOnActive(page, 'adults');
-    const target = cleanSpans(spans).find((s) => s.start > 1.5)!;
-    const mid = (target.start + target.end) / 2;
+    // Depth beyond the midpoint, so the deferred deadline lands measurably
+    // past the natural window while the clock is advanced beyond it.
+    const target = cleanSpans(spans).find((s) => s.end - s.start > 3);
+    expect(target, 'an uncontested adults span longer than 3 s exists').toBeTruthy();
+    const mid = (target!.start + target!.end) / 2;
     const vp0 = page.locator('.vp[data-viewport="0"]');
 
     await seek(page, mid);
-    expect(await shownOf(page, 0)).toBe(target.annId);
+    expect(await shownOf(page, 0)).toBe(target!.annId);
     await expect(vp0).toHaveAttribute('data-side-open', '1'); // auto-opened
-    const ring = page.locator('.vp[data-viewport="0"] .pin-expiry');
-    await expect(ring).toHaveClass(/is-live/); // warns inside the window
 
-    // The window ends with the playhead still inside the region: fade, not
-    // refresh — text gone, panel closed.
+    // The natural window is spent with the playhead still inside the region:
+    // the relevance hold defers the deadline to the region exit — no fade.
+    await advanceClock(page, 4000);
+    await page.waitForTimeout(500); // two fade ticks
+    expect(await shownOf(page, 0)).toBe(target!.annId);
+
+    // A jump to unannotated ground: the countdown starts immediately, the
+    // full warning granted even though the window itself is spent…
+    await seek(page, outside);
+    const ring = page.locator('.vp[data-viewport="0"] .pin-expiry');
+    await expect(ring).toHaveClass(/is-live/);
+    // …and its end is a fade, not a refresh — text gone, panel closed.
+    await advanceClock(page, 2000);
     await expect.poll(async () => shownOf(page, 0), { timeout: 5000 }).toBeNull();
     await expect(vp0).not.toHaveAttribute('data-side-open', '1');
 
     // A genuine re-entry re-earns the display.
-    await seek(page, outside);
     await seek(page, mid);
-    expect(await shownOf(page, 0)).toBe(target.annId);
+    expect(await shownOf(page, 0)).toBe(target!.annId);
     await expect(vp0).toHaveAttribute('data-side-open', '1');
   });
 
   // 37.19 ?detailFade, case 2: an unbumped text yields to the next entry at
   // once (floor 0 here); a ring tap BUMPS it to its full window, entries
-  // then defer, and the bump's expiry catches up to whatever is relevant.
-  test('37.19 detailFade: entries switch unbumped text; a bump defers them until its window ends', async ({
+  // then defer — but the reader's OWN jump still starts the countdown over
+  // the bump (their act, their clock; ruled 2026-08-25), and the countdown's
+  // end catches up to whatever is relevant then.
+  test('37.19 detailFade: entries switch unbumped text; a bump defers them; a jump countdown ends in catch-up', async ({
     page,
   }) => {
     await boot(page, 'focus=playhead&detailFade=3000&focusHoldMs=0');
@@ -784,20 +814,25 @@ test.describe('37. Playhead-driven focus', () => {
     await seek(page, (other.start + other.end) / 2);
     expect(await shownOf(page, 0)).toBe(other.annId);
 
-    // Bump: the ring goes live mid-window; tapping it grants the full window.
+    // A jump away starts the countdown (parked INSIDE its region the ring
+    // could never come: the relevance hold defers the deadline); tapping the
+    // ring BUMPS the text to its full window and the ring stands down.
+    await seek(page, outside);
     const ring = page.locator('.vp[data-viewport="0"] .pin-expiry');
     await expect(ring).toHaveClass(/is-live/);
     await ring.click();
     expect(
       await page.evaluate(() => (window as any)._exhibitTest.viewports[0].shownBumped),
     ).toBe(true);
+    await expect(ring).not.toHaveClass(/is-live/);
 
-    // A new entry now defers: paint moves, the bumped text stays…
-    await seek(page, outside);
+    // The entry at the next jump moves the paint but defers to the bump —
+    // while the jump itself re-arms the countdown over it…
     await seek(page, (first.start + first.end) / 2);
     expect(await washOf(page, 0)).toBe(first.annId);
     expect(await shownOf(page, 0)).toBe(other.annId);
-    // …until the bump expires and the text catches up to what is relevant.
+    // …whose end catches the text up to what is relevant.
+    await advanceClock(page, 2000);
     await expect.poll(async () => shownOf(page, 0), { timeout: 5000 }).toBe(first.annId);
   });
 
@@ -818,6 +853,212 @@ test.describe('37. Playhead-driven focus', () => {
     );
     await seek(page, (other.start + other.end) / 2);
     expect(await shownOf(page, 0)).toBe(other.annId); // followed instantly
+  });
+
+  // 37.21 THE READING CLOCK (rule 2, 2026-08-25): every fade and expiry
+  // window counts only time the music actually runs — the pause button
+  // freezes a reader's remaining window, play resumes it where it stopped,
+  // and a silent table never starts a countdown at all. The genuine path,
+  // once: real playback drives the clock, the pause button stops it. The
+  // other timer specs drive this clock through the advance() hook.
+  test('37.21 the reading clock advances with playback and freezes on pause', async ({
+    page,
+  }) => {
+    await boot(page, 'focus=playhead&detailFade=3000');
+    const clock = () =>
+      page.evaluate(() => (window as any)._exhibitTest.readingClock.now() as number);
+    // Silent table: the clock stands at zero, however long the boot took.
+    expect(await clock()).toBe(0);
+
+    await page.click('.mb-play');
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.playing), {
+        timeout: 15_000,
+        message: 'the band play button never started the transport',
+      })
+      .toBe(true);
+    const t1 = await clock();
+    await page.waitForTimeout(600);
+    const t2 = await clock();
+    expect(t2, 'the clock advances while the music runs').toBeGreaterThan(t1);
+
+    await page.click('.mb-play'); // the shared toggle: now a pause
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.playing))
+      .toBe(false);
+    const t3 = await clock();
+    await page.waitForTimeout(600);
+    const t4 = await clock();
+    expect(t4, 'the pause button freezes the clock').toBe(t3);
+  });
+
+  // 37.22 OWNERSHIP OF A JUMP (ruled 2026-08-25): the jumping side keeps its
+  // agency — its own jump lands, switching to what it finds — while the
+  // OTHER side's text is never snatched mid-read: it gets the "Keep
+  // reading…" countdown instead, and the catch-up at its end switches to
+  // whatever is relevant then. Attribution comes from the turn machine,
+  // which names its holder before it touches the transport.
+  test("37.22 another side's jump never snatches text: countdown first, catch-up after", async ({
+    page,
+  }) => {
+    await boot(page, 'focus=playhead&detailFade=3000&focusHoldMs=0');
+    const { spans } = await spansOnActive(page, 'adults');
+    // Two uncontested spans of different annotations whose midpoints are far
+    // enough apart to register as a jump (the >1 s discontinuity rule).
+    const clean = cleanSpans(spans);
+    let pair: [Span, Span] | null = null;
+    outer: for (const p of clean)
+      for (const q of clean) {
+        if (p.annId === q.annId) continue;
+        if (Math.abs((p.start + p.end) / 2 - (q.start + q.end) / 2) > 1.5) {
+          pair = [p, q];
+          break outer;
+        }
+      }
+    expect(pair, 'two uncontested adults spans >1.5 s apart exist').toBeTruthy();
+    const [first, other] = pair!;
+
+    // Both halves read `first` (both default to the adults list).
+    await seek(page, (first.start + first.end) / 2);
+    expect(await shownOf(page, 0)).toBe(first.annId);
+    expect(await shownOf(page, 1)).toBe(first.annId);
+
+    // Quieten select (spec 36's discipline): the tap's seek must land its
+    // emit without fetching and playing real audio mid-test.
+    await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const orig = T.transport.select.bind(T.transport);
+      T.transport.select = (file: string, time?: number) => orig(file, time, false);
+    });
+    // Viewport 1 taps a moment inside `other` on the active strip: ITS text
+    // switches at once (floor 0); viewport 0's holds behind the countdown.
+    await page.evaluate(
+      (t) => {
+        const T = (window as any)._exhibitTest;
+        T.turns.request(1, T.transport.activeFile, t);
+      },
+      (other.start + other.end) / 2,
+    );
+    expect(await shownOf(page, 1)).toBe(other.annId);
+    expect(await shownOf(page, 0)).toBe(first.annId);
+    await expect(page.locator('.vp[data-viewport="0"] .pin-expiry')).toHaveClass(/is-live/);
+
+    // The countdown's end catches viewport 0 up to what is relevant now.
+    await advanceClock(page, 2000);
+    await expect.poll(async () => shownOf(page, 0), { timeout: 5000 }).toBe(other.annId);
+  });
+
+  // 37.23 RELEVANCE VOIDS THE COUNTDOWN (rules 1 + 3, 2026-08-25): a jump
+  // away starts the countdown; a jump back inside the shown annotation's
+  // span voids it — and the relevance hold then keeps the text alive past
+  // its natural window for as long as the playhead stays inside.
+  test('37.23 a jump back into the region voids the countdown and holds the text', async ({
+    page,
+  }) => {
+    await boot(page, 'focus=playhead&detailFade=3000');
+    const { spans, outside } = await spansOnActive(page, 'adults');
+    const target = cleanSpans(spans)[0];
+    expect(target, 'an uncontested adults span exists').toBeTruthy();
+    const mid = (target.start + target.end) / 2;
+    const ring = page.locator('.vp[data-viewport="0"] .pin-expiry');
+
+    await seek(page, mid);
+    expect(await shownOf(page, 0)).toBe(target.annId);
+    await seek(page, outside);
+    await expect(ring).toHaveClass(/is-live/); // the countdown is running…
+    await seek(page, mid);
+    await expect(ring).not.toHaveClass(/is-live/); // …and relevance voids it.
+
+    // Parked inside, the text outlives its natural window indefinitely.
+    await advanceClock(page, 5000);
+    await page.waitForTimeout(500); // two fade ticks
+    expect(await shownOf(page, 0)).toBe(target.annId);
+  });
+
+  // 37.24 THE RECORDING-SWITCH EXEMPTION (ruled 2026-08-25): the jumping
+  // side's own y-axis switch — comparing interpretations mid-read is the
+  // exhibit's point — neither switches its text nor starts a countdown when
+  // it lands on unannotated ground; the text stays mortal on its own window
+  // alone. (The other side's switch-steal deferral shares the seek path's
+  // arming branch but is not separately pinned here: it needs a projection
+  // landing inside a foreign span, which the payload need not offer.)
+  test("37.24 a recording switch neither snatches the switcher's text nor starts its countdown", async ({
+    page,
+  }) => {
+    await boot(page, 'focus=playhead&detailFade=3000');
+    // A probe: a HOST recording carrying exactly one adults annotation's span
+    // at the probed moment, and a TARGET recording the annotation does not
+    // target, where the projected moment is clear of every adults span
+    // (0.75 s margin). A switch preserves the musical moment, so an
+    // annotation spanning all eight recordings stays relevant across any
+    // switch — only a target-subset annotation (the payload has them) can
+    // land its reader on unannotated ground.
+    const pick = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const spansOn = (f: string) => {
+        const out: { annId: string; start: number; end: number }[] = [];
+        for (const ann of T.exhibit.byAudience['adults'] || []) {
+          const target = (ann.targets || []).find((t: any) => t.file === f);
+          if (!target) continue;
+          for (const region of ann.regions || []) {
+            const s = target.regionTimes?.[region.id];
+            if (s) out.push({ annId: ann.id, start: s.start, end: s.end });
+          }
+        }
+        return out;
+      };
+      for (const host of T.exhibit.order as string[]) {
+        const here = spansOn(host);
+        for (const span of here) {
+          for (let k = 1; k <= 9; k++) {
+            const t = span.start + ((span.end - span.start) * k) / 10;
+            const containing = here.filter((s) => s.start <= t && s.end >= t);
+            if (!containing.length || !containing.every((s) => s.annId === span.annId))
+              continue;
+            for (const other of T.exhibit.order as string[]) {
+              if (other === host) continue;
+              const proj = T.projectPlayhead(t, host, [other])[other];
+              if (!Number.isFinite(proj)) continue;
+              const clear = spansOn(other).every(
+                (s) => proj < s.start - 0.75 || proj > s.end + 0.75,
+              );
+              if (clear) return { host, t, annId: span.annId, toFile: other };
+            }
+          }
+        }
+      }
+      return null;
+    });
+    expect(pick, 'a target-subset adults annotation offers a clear-landing switch').toBeTruthy();
+
+    // Quieten select before any tap, then make the host audible and park
+    // inside the probed span.
+    await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const orig = T.transport.select.bind(T.transport);
+      T.transport.select = (file: string, time?: number) => orig(file, time, false);
+    });
+    await page.evaluate(
+      (f) => (window as any)._exhibitTest.turns.request(0, f),
+      pick!.host,
+    );
+    await seek(page, pick!.t);
+    expect(await shownOf(page, 0)).toBe(pick!.annId);
+    // The switch tap carries the musical moment, not a finger time.
+    await page.evaluate(
+      (f) => (window as any)._exhibitTest.turns.request(0, f),
+      pick!.toFile,
+    );
+    expect(await shownOf(page, 0)).toBe(pick!.annId);
+    expect(
+      await page.evaluate(() => (window as any)._exhibitTest.viewports[0].fadeCapAt),
+    ).toBe(0);
+    await expect(page.locator('.vp[data-viewport="0"] .pin-expiry')).not.toHaveClass(
+      /is-live/,
+    );
+    // No hold, no countdown: the natural window alone still ends the text.
+    await advanceClock(page, 4000);
+    await expect.poll(async () => shownOf(page, 0), { timeout: 5000 }).toBeNull();
   });
 
   // 37.8 The genuine path, once: real playback crossing a region start raises

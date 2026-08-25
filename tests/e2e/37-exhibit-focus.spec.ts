@@ -318,6 +318,48 @@ test.describe('37. Playhead-driven focus', () => {
     expect(await focusOf(page, 1)).toBe(target.annId); // the other half kept its own
   });
 
+  // 37.9 Chip elements SURVIVE same-list re-renders. The wash re-renders on
+  // every region entry, resize re-derivations re-render on layout settling —
+  // and a chip replaced between a finger's down and its up eats the tap (the
+  // click fires on the row, the common ancestor, instead). That raced
+  // Playwright's own taps as low-rate Firefox flakes in 35.22/37.6 before
+  // annotation-list.js reconciled chips in place; this is the deterministic
+  // pin for the reconciliation, plus its deliberate boundary: an audience
+  // switch changes the list, and THERE the row rebuilds.
+  test('37.9 a re-render updates chips in place; only a list change rebuilds them', async ({
+    page,
+  }) => {
+    await boot(page, 'focus=playhead');
+    const { spans } = await spansOnActive(page, 'adults');
+    const target = cleanSpans(spans).find((s) => s.start > 1.5)!;
+
+    const marked = await page.evaluate(() => {
+      const chip = document.querySelector('.vp[data-viewport="0"] .ann-chip') as any;
+      chip._probe = 'kept';
+      return chip.dataset.ann as string;
+    });
+    const probe = () =>
+      page.evaluate(
+        () =>
+          (document.querySelector('.vp[data-viewport="0"] .ann-chip') as any)?._probe ?? null,
+      );
+
+    // A wash render (region entry) keeps the element.
+    await seek(page, (target.start + target.end) / 2);
+    expect(await focusOf(page, 0)).toBe(target.annId);
+    expect(await probe()).toBe('kept');
+
+    // A manual focus render (chip tap) keeps it too — including the tapped
+    // chip itself.
+    await page.click(`.vp[data-viewport="0"] .ann-chip[data-ann="${marked}"]`);
+    expect(await probe()).toBe('kept');
+
+    // The boundary: an audience switch changes the list, so the row rebuilds
+    // and the marked element is legitimately gone.
+    await page.evaluate(() => (window as any)._exhibitTest.audience.set(0, 'kids'));
+    expect(await probe()).toBeNull();
+  });
+
   // 37.8 The genuine path, once: real playback crossing a region start raises
   // the entry and the wash focuses it, driven by the real per-frame clock.
   test('37.8 real playback washes focus in as the clock crosses a region start', async ({

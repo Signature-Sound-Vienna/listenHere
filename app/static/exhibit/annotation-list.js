@@ -72,6 +72,20 @@ export function createAnnotationList({ viewport, language, onChipTap, split = fa
   body.append(detail, groups);
   el.append(chips, body);
 
+  // Chips are RECONCILED, not rebuilt. A render that keeps the same annotation
+  // list — every focus change, every resize re-derivation, every zoom change,
+  // and (in ?focus=playhead) every wash entry — must update the existing
+  // elements in place, because replacing a chip between a finger's down and its
+  // up makes the click event fire on the row (the common ancestor of the two
+  // targets) instead of on any chip, and the tap is silently eaten. That is a
+  // museum-floor bug, not a test nicety — found via its Playwright shadow
+  // (specs 35.22/37.6 flaking on Firefox under load, 2026-08-25, where the
+  // boot-settling resize re-render raced the synthetic tap the same way).
+  // Only a CHANGED list (an audience switch) rebuilds the row, and there a
+  // racing tap's target legitimately vanished with the list it belonged to.
+  const chipById = new Map();
+  let lastFocusedId = null;
+
   /**
    * @param {object[]} annotations
    * @param {string|null} focusedId
@@ -84,43 +98,62 @@ export function createAnnotationList({ viewport, language, onChipTap, split = fa
    *   exactly what the Oct/Nov user testing is for.
    */
   function update(annotations, focusedId, { markAudience = false } = {}) {
-    chips.textContent = "";
-    // Under split the body may be hidden while nothing is focused, so the one
-    // state a visitor must not miss — this audience has nothing at all — is
-    // said where the chips would have been.
-    if (split && !annotations.length) {
-      const empty = document.createElement("span");
-      empty.className = "ann-chips-empty";
-      empty.textContent = t("state.nothingForAudience", language);
-      chips.appendChild(empty);
+    const sameList =
+      annotations.length > 0 &&
+      chips.children.length === annotations.length &&
+      annotations.every((a, i) => chips.children[i]?.dataset?.ann === a.id);
+    if (!sameList) {
+      chips.textContent = "";
+      chipById.clear();
+      // Under split the body may be hidden while nothing is focused, so the
+      // one state a visitor must not miss — this audience has nothing at all —
+      // is said where the chips would have been.
+      if (split && !annotations.length) {
+        const empty = document.createElement("span");
+        empty.className = "ann-chips-empty";
+        empty.textContent = t("state.nothingForAudience", language);
+        chips.appendChild(empty);
+      }
+      for (const ann of annotations) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "ann-chip";
+        chip.dataset.ann = ann.id;
+        // The label lives in its own span so in-place updates can never wipe
+        // the audience marker beside it.
+        const label = document.createElement("span");
+        label.className = "ann-chip-label";
+        chip.appendChild(label);
+        // Every tap is reported with its id, the focused chip's included — the
+        // caller decides what it means (see the opts.onChipTap note above).
+        chip.addEventListener("click", () => onChipTap(ann.id));
+        chipById.set(ann.id, chip);
+        chips.appendChild(chip);
+      }
     }
     for (const ann of annotations) {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "ann-chip";
-      chip.dataset.ann = ann.id;
-      chip.textContent = resolveText(ann.label, { language });
+      const chip = chipById.get(ann.id);
+      chip.firstChild.textContent = resolveText(ann.label, { language });
+      let mark = chip.querySelector(".ann-chip-audience");
       if (markAudience && ann.audience) {
-        const mark = document.createElement("span");
-        mark.className = "ann-chip-audience";
+        if (!mark) {
+          mark = document.createElement("span");
+          mark.className = "ann-chip-audience";
+          chip.appendChild(mark);
+        }
         // The same catalogue lookup as the switch buttons, so the marker and
         // the button a visitor just left can never disagree about a name.
         mark.textContent = t("audience." + ann.audience, language);
-        chip.appendChild(mark);
+      } else if (mark) {
+        mark.remove();
       }
       const colour = safeColor(ann.color);
-      if (colour) chip.style.borderColor = colour;
+      chip.style.borderColor = colour || "";
       const on = ann.id === focusedId;
       chip.classList.toggle("is-on", on);
       chip.setAttribute("aria-pressed", on ? "true" : "false");
-      if (on && colour) {
-        chip.style.backgroundColor = colour;
-        chip.style.color = groupTextColor(colour);
-      }
-      // Every tap is reported with its id, the focused chip's included — the
-      // caller decides what it means (see the opts.onChipTap note above).
-      chip.addEventListener("click", () => onChipTap(ann.id));
-      chips.appendChild(chip);
+      chip.style.backgroundColor = on && colour ? colour : "";
+      chip.style.color = on && colour ? groupTextColor(colour) : "";
     }
 
     const focused = annotations.find((a) => a.id === focusedId) || null;
@@ -134,9 +167,12 @@ export function createAnnotationList({ viewport, language, onChipTap, split = fa
       detail.textContent = t("listen.tapToListen", language);
       detail.dataset.state = "hint";
     }
-    // A new annotation's text starts at its beginning, not wherever the last
-    // reader left the previous one.
-    detail.scrollTop = 0;
+    // A NEW annotation's text starts at its beginning, not wherever the last
+    // reader left the previous one — but only on an actual focus change: a
+    // re-render of the same focus (a resize re-derivation, a zoom step) must
+    // not yank a mid-read text back to the top.
+    if (focusedId !== lastFocusedId) detail.scrollTop = 0;
+    lastFocusedId = focusedId;
 
     renderGroups(focused);
   }

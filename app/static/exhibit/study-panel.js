@@ -142,6 +142,8 @@ const TABS = [
       { key: "focusHoldMs", label: "Wash hold (ms)", options: [0, 2500, 5000] },
       { key: "pinExpiry", label: "Pin expiry", options: ["off", "auto"] },
       { key: "detailFade", label: "Text fade-out", options: ["off", "auto"] },
+      { key: "detailTitle", label: "Detail title", options: ["auto", "on", "off"] },
+      { key: "detailJump", label: "Jump button", options: ["on", "off"] },
       { key: "minRegionPx", label: "Region floor (px)", options: [2, 4, 8] },
       { key: "zoom", label: "Initial zoom (px/s; 0 = fit)", options: [0, 30] },
       { key: "debug", label: "Debug logging", options: [false, true] },

@@ -439,6 +439,35 @@ test.describe('36. Turn-taking policies', () => {
     expect(s.activeFile).toBe(other);
     expect(s.holder).toBe(0);
   });
+
+  // 36.17 turns.jump (the detail header's "Jump to annotation", ruled
+  // 2026-08-25): unlike a strip tap, a jump's time is MEANINGFUL on another
+  // recording, so it survives the seek-vs-switch rule — and the pending
+  // capture keeps it, so a contended jump granted later still lands on the
+  // annotation, not on wherever the clock has drifted to.
+  test('36.17 a jump keeps its seek time across a recording switch, pending included', async ({
+    page,
+  }) => {
+    const { order, ref } = await boot(page, 'turnPolicy=request');
+    await armQuietTransport(page);
+    await tap(page, 0, ref); // side 0 takes the clock…
+    await setPlaying(page, true); // …and is listening: the table is contended
+
+    await page.evaluate(
+      ({ file, t }) => (window as any)._exhibitTest.turns.jump(1, file, t),
+      { file: order[1], t: 12.34 },
+    );
+    let s = await turnState(page);
+    expect(s.pending).toEqual({ viewport: 1, file: order[1] });
+
+    await page.evaluate(() => (window as any)._exhibitTest.turns.grant());
+    const taps = await page.evaluate(() => (window as any)._taps);
+    // The granted jump switched recording AND kept the annotation's moment.
+    expect(taps[taps.length - 1]).toEqual({ file: order[1], time: 12.34 });
+    s = await turnState(page);
+    expect(s.holder).toBe(1);
+    expect(s.activeFile).toBe(order[1]);
+  });
 });
 
 test.describe('36b. The AudioArbiter', () => {

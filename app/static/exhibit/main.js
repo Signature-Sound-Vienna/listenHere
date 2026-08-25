@@ -450,6 +450,29 @@ async function boot() {
   for (const slot of bands) slot.replaceWith(band.el);
   window._exhibitTest.band = band;
 
+  // Where the detail header's "Jump to annotation" lands (ruled 2026-08-25):
+  // the ACTIVE recording when the annotation targets it — a jump should not
+  // lose the listening thread — else the first targeted strip in stack
+  // order; at the earliest region start there (playback order, not authoring
+  // order; zero-extent spans skipped, the playAnnotation precedent).
+  const jumpTarget = (ann, vp) => {
+    if (!ann) return null;
+    const targeted = new Set((ann.targets || []).map((t) => t.file));
+    const file = targeted.has(transport.activeFile)
+      ? transport.activeFile
+      : [...vp.strips.keys()].find((f) => targeted.has(f));
+    if (!file) return null;
+    const target = ann.targets.find((t) => t.file === file);
+    let start = null;
+    for (const region of ann.regions || []) {
+      const span = target.regionTimes?.[region.id];
+      if (span && span.end > span.start && (start == null || span.start < start)) {
+        start = span.start;
+      }
+    }
+    return start == null ? null : { file, time: start };
+  };
+
   const stripsReady = [];
   for (const vp of viewports) {
     const mounted = mountStrips(vp.stripsEl, exhibit, config, {
@@ -496,6 +519,24 @@ async function boot() {
       viewport: vp.index,
       language: vp.language,
       split: !!vp.sideSlotEl,
+      // ?detailTitle (ruled 2026-08-25): auto = title under playhead focus
+      // only (the focusDim pattern), on/off force it either way.
+      showTitle:
+        config.detailTitle === "on" ||
+        (config.detailTitle === "auto" && config.focus === "playhead"),
+      // ?detailJump (ruled 2026-08-25, ON everywhere): routed through the
+      // turn machine like any tap — the jump keeps its time across a
+      // recording switch (turns.jump), plays if paused, and lands as this
+      // reader's own seek for the fade machinery, whose relevance hold then
+      // protects the very text they jumped from.
+      showJump: config.detailJump !== "off",
+      onJumpTap: (annId) => {
+        const spot = jumpTarget(
+          vp.currentAnnotations?.find((a) => a.id === annId),
+          vp,
+        );
+        if (spot) turns.jump(vp.index, spot.file, spot.time);
+      },
       // What a chip tap MEANS depends on the layout, so the machine lives
       // here, not in the component. Below the strips (default): a plain focus
       // toggle, as shipped. With the side panel: the chip is a pure PANEL

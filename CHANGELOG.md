@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.31.0 -- Exhibit detail header: the annotation's title, and a jump to its music
+* **Title above the commentary** (`?detailTitle=auto|on|off`, auto = playhead mode only): playback-driven switching makes "which annotation am I reading?" forgettable — the shown text now carries its chip's label and colour swatch, pinned above the scrolling text.
+* **"Jump to annotation"** (`?detailJump=on|off`, ON everywhere by explicit ruling — manual mode's chips are pure focus controls, so this is the only direct route from a text to its music): makes a recording the annotation targets audible at its earliest region start — the active recording when targeted, else the first targeted strip in stack order; plays if paused. Routed through the turn machine via a new jump request whose time survives a recording switch (and a contended grant); to the fade machinery it is the reader's own seek, so the relevance hold protects the very text they jumped from.
+* Both parameters in the study panel.
+* Testing: 37.25/37.26 pin the header's two controls, 36.17 pins the jump's kept time across a pending switch; 37.4's synthetic-span plant hardened against re-render races. 255/2 per browser, green on both.
+
 ### 0.30.0 -- Exhibit detailFade edge rules: relevance, the reading clock, jump ownership
 * **Relevance holds off the fade**: text whose annotation is under the playhead cannot expire — the deadline defers to the region exit, the ring draining toward it (extend-only; switchover at overlaps stays exempt, ring first).
 * **The reading clock**: fade windows and pin expiry drain only while the music runs — pause freezes them, play resumes where they stopped (supersedes "paused = natural window only"). Test hook: `_exhibitTest.readingClock.advance(ms)`.

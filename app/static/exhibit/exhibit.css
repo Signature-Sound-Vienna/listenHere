@@ -375,9 +375,66 @@ html, body {
   opacity: 0;
 }
 
+/* The text column: the optional title (?detailTitle) pinned above the
+ * scrolling commentary — orientation must not scroll away with the text. The
+ * wrapper exists in both layouts, title or no title, so there is one
+ * structure to lay out. */
+.ann-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  max-width: 62ch;
+}
+/* The header row above the commentary: the title (?detailTitle) and the jump
+ * button (?detailJump) share it; it collapses when both are off. */
+.ann-head {
+  margin: 0 0 6px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ann-title {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ex-text-body);
+}
+.ann-jump {
+  flex: 0 0 auto;
+  margin-left: auto;
+  min-height: 44px; /* touch target, same floor as the pin-expiry pill */
+  padding: 0 14px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font-size: 0.8rem;
+}
+/* display:flex above would silently beat the UA's [hidden] { display:none } —
+ * the hidden attribute is these controls' off switch, so honour it. */
+.ann-head[hidden],
+.ann-title[hidden],
+.ann-jump[hidden] { display: none; }
+/* Inline colour from the payload through safeColor, same as the chip border —
+ * never a theme variable (the coloured-surface lesson, spec 9.16). */
+.ann-title-swatch {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
 .ann-detail {
   margin: 0;
-  max-width: 62ch;
+  flex: 1 1 auto;
+  min-height: 0;
   min-width: 0;
   font-size: 0.9rem;
   line-height: 1.45;
@@ -396,8 +453,10 @@ html, body {
 }
 .ann-detail::-webkit-scrollbar { width: 6px; }
 .ann-detail::-webkit-scrollbar-thumb { background: var(--ex-border-strong); border-radius: 3px; }
+/* Auto margins, not align-self: the detail now lives in the .ann-text column,
+ * where margin:auto centres the hint both ways. */
 .ann-detail[data-state="hint"],
-.ann-detail[data-state="empty"] { color: var(--ex-text-dim); text-align: center; align-self: center; }
+.ann-detail[data-state="empty"] { color: var(--ex-text-dim); text-align: center; margin: auto; }
 
 /* The focused annotation's groups: the legend for the strip-edge colours, plus
  * the authored comparison notes where the annotation carries them. Background
@@ -535,7 +594,8 @@ html, body {
   gap: 8px;
   margin-top: 4px;
 }
-.vp-side-slot .ann-detail { max-width: none; flex: 1 1 auto; }
+.vp-side-slot .ann-text { max-width: none; flex: 1 1 auto; }
+.vp-side-slot .ann-detail { max-width: none; }
 .vp-side-slot .ann-groups { flex: 0 1 45%; }
 
 /* An audience with nothing to show must still say so where the visitor looks:

@@ -53,10 +53,31 @@ import { resolveGroupFor, safeColor, groupTextColor } from "../js/engine/groupin
  *   MEANS (focus toggle below the strips; the panel state machine in the side
  *   slot) is the caller's decision, because it depends on the layout, and this
  *   component deliberately does not know which layout it is in.
+ * @param {boolean} [opts.showTitle]  render the shown annotation's TITLE above
+ *   its commentary (?detailTitle, ruled 2026-08-25): once playback switches
+ *   the text and detailFade removes it, "which annotation am I reading?" needs
+ *   answering where the reader is looking, not two surfaces away on a chip.
+ *   The title sits OUTSIDE the scrolling text, so it cannot scroll away — it
+ *   is orientation, and orientation that leaves is none. The caller decides
+ *   (config), same as the layout.
+ * @param {boolean} [opts.showJump]  render the "Jump to annotation" button in
+ *   the same header (?detailJump, ruled 2026-08-25): reading without jumping
+ *   stays possible, jumping is one tap. What the jump DOES (which recording,
+ *   which region, the turn machine) is the caller's business — this component
+ *   only reports the tap with the shown annotation's id.
+ * @param {(annId: string) => void} [opts.onJumpTap]
  * @returns {{el: HTMLElement, chipsEl: HTMLElement, bodyEl: HTMLElement,
  *   update: (annotations: object[], focus: object|null, opts?: object) => void}}
  */
-export function createAnnotationList({ viewport, language, onChipTap, split = false }) {
+export function createAnnotationList({
+  viewport,
+  language,
+  onChipTap,
+  split = false,
+  showTitle = false,
+  showJump = false,
+  onJumpTap,
+}) {
   const el = document.createElement("div");
   el.className = "ann-panel";
   el.dataset.viewport = String(viewport);
@@ -65,11 +86,39 @@ export function createAnnotationList({ viewport, language, onChipTap, split = fa
   chips.className = "ann-chips";
   const body = document.createElement("div");
   body.className = "ann-body";
+  // The text column: the (optional) header — title and jump button — pinned
+  // above the scrolling commentary. The wrapper exists in both layouts so the
+  // CSS has one structure to lay out, header or no header.
+  const textCol = document.createElement("div");
+  textCol.className = "ann-text";
+  const head = document.createElement("div");
+  head.className = "ann-head";
+  head.hidden = true;
+  const title = document.createElement("h3");
+  title.className = "ann-title";
+  title.hidden = true;
+  const titleSwatch = document.createElement("span");
+  titleSwatch.className = "ann-title-swatch";
+  const titleLabel = document.createElement("span");
+  titleLabel.className = "ann-title-label";
+  title.append(titleSwatch, titleLabel);
+  const jump = document.createElement("button");
+  jump.type = "button";
+  jump.className = "ann-jump";
+  jump.hidden = true;
+  jump.textContent = t("panel.jumpToAnnotation", language);
+  // lastShownId always names the text on show — the same field the scroll
+  // reset reads.
+  jump.addEventListener("click", () => {
+    if (lastShownId) onJumpTap?.(lastShownId);
+  });
+  head.append(title, jump);
   const detail = document.createElement("p");
   detail.className = "ann-detail";
   const groups = document.createElement("div");
   groups.className = "ann-groups";
-  body.append(detail, groups);
+  textCol.append(head, detail);
+  body.append(textCol, groups);
   el.append(chips, body);
 
   // Chips are RECONCILED, not rebuilt. A render that keeps the same annotation
@@ -183,6 +232,20 @@ export function createAnnotationList({ viewport, language, onChipTap, split = fa
       detail.textContent = t("listen.tapToListen", language);
       detail.dataset.state = "hint";
     }
+    // The header follows the shown text. The title: same source as its chip's
+    // label, and the chip's colour as a swatch, so text and chip visibly agree
+    // about which annotation this is. The jump button rides beside it. Both
+    // hidden with nothing shown (the hint and empty states are their own
+    // orientation), and the row collapses when neither is on.
+    if (showTitle && shown) {
+      titleLabel.textContent = resolveText(shown.label, { language });
+      titleSwatch.style.backgroundColor = safeColor(shown.color) || "transparent";
+      title.hidden = false;
+    } else {
+      title.hidden = true;
+    }
+    jump.hidden = !(showJump && shown);
+    head.hidden = title.hidden && jump.hidden;
     // A NEW annotation's text starts at its beginning, not wherever the last
     // reader left the previous one — but only on an actual change of what is
     // shown: a re-render of the same text (a resize re-derivation, a zoom

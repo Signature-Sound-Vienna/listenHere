@@ -91,9 +91,30 @@ export class TurnTaking {
    * @param {number} [time] seconds in `file`'s own timeline, from the tap
    */
   request(viewport, file, time) {
-    this.selected[viewport] = file;
     const seekTime =
       file === this._transport.activeFile && Number.isFinite(time) ? time : undefined;
+    this._tap(viewport, file, seekTime);
+  }
+
+  /**
+   * A JUMP: a tap whose time is MEANINGFUL on another recording — the detail
+   * header's "Jump to annotation" carries a region start in `file`'s own
+   * timeline, unlike a finger position on a different strip. The
+   * seek-vs-switch rule above therefore does not apply: the time is honoured
+   * across a recording switch, and the pending-request capture keeps it, so
+   * a contended jump granted seconds later still lands on the annotation.
+   * (Ruled 2026-08-25; precedence: explicit time > carried moment.)
+   *
+   * @param {number} viewport
+   * @param {string} file
+   * @param {number} time seconds in `file`'s own timeline
+   */
+  jump(viewport, file, time) {
+    this._tap(viewport, file, Number.isFinite(time) ? time : undefined);
+  }
+
+  _tap(viewport, file, seekTime) {
+    this.selected[viewport] = file;
 
     const contended =
       this.policy === "request" &&

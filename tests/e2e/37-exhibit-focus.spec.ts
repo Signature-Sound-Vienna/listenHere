@@ -225,7 +225,14 @@ test.describe('37. Playhead-driven focus', () => {
     expect(gapSize, 'the reference has a >1 s gap free of adults regions').toBeGreaterThan(1);
     expect(spans.length).toBeGreaterThan(0);
 
-    const planted = await page.evaluate((outside) => {
+    // Plant and sweep in ONE synchronous task: a boot-settling resize
+    // re-render (rAF-coalesced, main.js) re-derives currentAnnotations from
+    // the payload, and one landing between a plant and its sweep silently
+    // unplants the probe — it flaked exactly so in mixed runs (2026-08-25).
+    // Inside a single evaluate nothing can interleave; the re-render the
+    // sweep itself triggers runs AFTER the wash was computed, and the planted
+    // id is a real annotation's, so the present() filter keeps it.
+    const result = await page.evaluate((outside) => {
       const T = (window as any)._exhibitTest;
       const vp = T.viewports[0];
       const real = vp.currentAnnotations[0];
@@ -242,18 +249,24 @@ test.describe('37. Playhead-driven focus', () => {
           ],
         },
       ];
-      return { annId: real.id as string };
+      T.transport.seek(outside - 0.3); // a discontinuity: parks OUTSIDE the span
+      const parked = vp.washId;
+      T.transport.seek(outside + 0.3); // one continuous step across it
+      return {
+        annId: real.id as string,
+        parked,
+        swept: vp.washId,
+        other: T.viewports[1].washId,
+      };
     }, outside);
 
-    await seek(page, outside - 0.3); // a discontinuity: parks OUTSIDE the span
-    expect(await washOf(page, 0)).toBeNull();
-    await seek(page, outside + 0.3); // one continuous step across it
+    expect(result.parked).toBeNull();
     // The sweep raised the entry, and with no further clock sample the wash
     // has seen no exit edge yet — it still says the swept annotation.
-    expect(await washOf(page, 0)).toBe(planted.annId);
+    expect(result.swept).toBe(result.annId);
     // The other half scans its own (real) list: the sweep crossed a real gap,
     // so nothing focused there — per-viewport lists really are per viewport.
-    expect(await washOf(page, 1)).toBeNull();
+    expect(result.other).toBeNull();
   });
 
   // 37.5 The pin, in the default below-strips layout: a chip tap outranks the
@@ -1059,6 +1072,122 @@ test.describe('37. Playhead-driven focus', () => {
     // No hold, no countdown: the natural window alone still ends the text.
     await advanceClock(page, 4000);
     await expect.poll(async () => shownOf(page, 0), { timeout: 5000 }).toBeNull();
+  });
+
+  // 37.25 THE DETAIL TITLE (?detailTitle, ruled 2026-08-25): playback-driven
+  // switching makes "which annotation am I reading?" forgettable, so the
+  // shown text carries its own title — pinned above the scrolling commentary,
+  // same label source and colour as its chip. auto = playhead mode only (the
+  // focusDim pattern, so the manual exhibit stays byte-for-byte shipped);
+  // on/off force it either way.
+  test('37.25 the detail title follows the shown annotation; auto keeps manual mode shipped', async ({
+    page,
+  }) => {
+    // Playhead mode, auto: the shown text carries its title.
+    await boot(page, 'focus=playhead');
+    const { spans } = await spansOnActive(page, 'adults');
+    const target = cleanSpans(spans)[0];
+    await seek(page, (target.start + target.end) / 2);
+    expect(await shownOf(page, 0)).toBe(target.annId);
+    const title = page.locator('.vp[data-viewport="0"] .ann-title');
+    await expect(title).toBeVisible();
+    const chipLabel = await page
+      .locator(
+        `.vp[data-viewport="0"] .ann-chip[data-ann="${target.annId}"] .ann-chip-label`,
+      )
+      .textContent();
+    await expect(title.locator('.ann-title-label')).toHaveText(chipLabel!);
+
+    // Manual mode, auto: focused text but NO title — the shipped panel.
+    await boot(page, 'debug=1');
+    await page.click(`.vp[data-viewport="0"] .ann-chip[data-ann="${target.annId}"]`);
+    expect(await shownOf(page, 0)).toBe(target.annId);
+    await expect(page.locator('.vp[data-viewport="0"] .ann-title')).toBeHidden();
+
+    // Forced on in manual mode; forced off under playhead focus.
+    await boot(page, 'detailTitle=on');
+    await page.click(`.vp[data-viewport="0"] .ann-chip[data-ann="${target.annId}"]`);
+    await expect(page.locator('.vp[data-viewport="0"] .ann-title')).toBeVisible();
+    await boot(page, 'focus=playhead&detailTitle=off');
+    await seek(page, (target.start + target.end) / 2);
+    expect(await shownOf(page, 0)).toBe(target.annId);
+    await expect(page.locator('.vp[data-viewport="0"] .ann-title')).toBeHidden();
+  });
+
+  // 37.26 THE JUMP BUTTON (?detailJump, ruled 2026-08-25 — ON everywhere, the
+  // one deliberate on-by-default: in manual mode chips are pure focus
+  // controls, so this is the only direct route from a text to its music).
+  // The jump stays on the ACTIVE recording when the annotation targets it;
+  // otherwise it switches to the first targeted strip in stack order — and
+  // lands at the earliest region start in playback order either way.
+  test('37.26 the jump button makes a targeted recording audible at the earliest region start', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1'); // manual mode: the button is on by default
+    // Expected landings, from the payload itself: one annotation that targets
+    // the resting reference (jump must NOT switch), and one that does not
+    // (jump must switch to its first targeted recording in stack order).
+    const picks = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const ref = T.transport.activeFile as string;
+      const earliest = (ann: any, f: string) => {
+        const tg = (ann.targets || []).find((t: any) => t.file === f);
+        if (!tg) return null;
+        let s: number | null = null;
+        for (const r of ann.regions || []) {
+          const sp = tg.regionTimes?.[r.id];
+          if (sp && sp.end > sp.start && (s == null || sp.start < s)) s = sp.start;
+        }
+        return s;
+      };
+      const anns = T.exhibit.byAudience['adults'] || [];
+      const stayAnn = anns.find((a: any) => earliest(a, ref) != null);
+      const awayAnn = anns.find((a: any) => !(a.targets || []).some((t: any) => t.file === ref));
+      let away = null;
+      if (awayAnn) {
+        const f = (T.exhibit.order as string[]).find((f) =>
+          (awayAnn.targets || []).some((t: any) => t.file === f),
+        )!;
+        away = { id: awayAnn.id, file: f, start: earliest(awayAnn, f) };
+      }
+      return {
+        ref,
+        stay: stayAnn ? { id: stayAnn.id, start: earliest(stayAnn, ref) } : null,
+        away,
+      };
+    });
+    expect(picks.stay, 'an adults annotation targets the reference').toBeTruthy();
+    expect(picks.away, 'an adults annotation does not target the reference').toBeTruthy();
+    // Quieten select: the jump must land its seek without playing real audio.
+    await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const orig = T.transport.select.bind(T.transport);
+      T.transport.select = (file: string, time?: number) => orig(file, time, false);
+    });
+    const state = () =>
+      page.evaluate(() => {
+        const T = (window as any)._exhibitTest;
+        return { file: T.transport.activeFile as string, time: T.transport.time as number };
+      });
+
+    // Targeted recording already audible: jump seeks, does not switch.
+    await page.click(`.vp[data-viewport="0"] .ann-chip[data-ann="${picks.stay!.id}"]`);
+    await page.click('.vp[data-viewport="0"] .ann-jump');
+    let s = await state();
+    expect(s.file).toBe(picks.ref);
+    expect(s.time).toBeCloseTo(picks.stay!.start!, 3);
+
+    // Untargeted recording audible: jump switches AND keeps its time.
+    await page.click(`.vp[data-viewport="0"] .ann-chip[data-ann="${picks.away!.id}"]`);
+    await page.click('.vp[data-viewport="0"] .ann-jump');
+    s = await state();
+    expect(s.file).toBe(picks.away!.file);
+    expect(s.time).toBeCloseTo(picks.away!.start!, 3);
+
+    // The A/B off switch hides the button.
+    await boot(page, 'detailJump=off');
+    await page.click(`.vp[data-viewport="0"] .ann-chip[data-ann="${picks.stay!.id}"]`);
+    await expect(page.locator('.vp[data-viewport="0"] .ann-jump')).toBeHidden();
   });
 
   // 37.8 The genuine path, once: real playback crossing a region start raises

@@ -64,6 +64,11 @@ const CATALOGUE = {
   // The pin-expiry warning (config.pinExpiry, main.js): shown near the
   // deadline; tapping re-arms the reading time.
   "panel.keepReading": { en: "Keep reading…" },
+  // The detail header's jump control (config.detailJump, main.js): make a
+  // recording this annotation targets audible at its first region — reading
+  // without jumping stays possible, jumping is one tap. PROVISIONAL wording,
+  // to be settled by the Oct/Nov user testing.
+  "panel.jumpToAnnotation": { en: "Jump to annotation" },
   // Turn-taking (plan §4.3; ?turnPolicy=…, turns.js). These render on the
   // viewports' own surfaces, so unlike the middle band they MAY carry language
   // — each half shows its own reader's copy. PROVISIONAL wording, to be

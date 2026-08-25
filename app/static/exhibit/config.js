@@ -200,6 +200,21 @@ const DEFAULTS = {
   // ?sideSlot=annotations the same machine opens the panel on entry and
   // closes it on fade; a chip tap still pins, exempt from all of this.
   detailFade: "off",
+  // The shown annotation's TITLE above its commentary (ruled 2026-08-25):
+  // once playback switches the text (?focus=playhead) and ?detailFade removes
+  // it, "which annotation am I reading?" needs answering where the reader is
+  // looking. "auto" = title under ?focus=playhead only, so the manual exhibit
+  // stays byte-for-byte the shipped behaviour per the A/B rule (the focusDim
+  // pattern); "on"/"off" force it either way.
+  detailTitle: "auto",
+  // The detail header's "Jump to annotation" button: make a recording the
+  // shown annotation targets audible at its earliest region start — the
+  // active recording when targeted, else the first targeted strip in stack
+  // order. ON EVERYWHERE by explicit ruling (user, 2026-08-25) — a deliberate
+  // departure from params-keep-defaults, because in manual mode the chips are
+  // pure focus controls and this is the only direct route from a text to its
+  // music; "off" keeps it A/B-testable.
+  detailJump: "on",
 
   // --- turn-taking (plan §4.3; turns.js) ---
   // Which policy a tap goes through when the OTHER side holds the clock:

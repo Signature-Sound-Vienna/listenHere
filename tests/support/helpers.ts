@@ -108,6 +108,40 @@ export async function showWaveform(page: Page, filename: string) {
 }
 
 /**
+ * Resolve once every waveform's geometry has stopped moving after a zoom.
+ *
+ * Zoom re-renders asynchronously — WaveSurfer redraws off its own
+ * ResizeObserver — so anything that reads zoom geometry right after setting
+ * the slider is racing it. Two identical width readings 100 ms apart rather
+ * than a guessed duration; same shape as spec 28's settled(). This wait fixed
+ * the 25.3 flake (a zoom re-render rejecting an unawaited play()) and the
+ * 20.3 flake (a region-nav jump computing its target against a stale zoomed
+ * width under load, landing short, and honestly leaving the arrow visible).
+ */
+export async function zoomSettled(page: Page, timeout = 15_000) {
+  let previous = '';
+  await expect
+    .poll(
+      async () => {
+        const now = await page.evaluate(() => {
+          const t: any = (window as any)._listenTest;
+          return Object.keys(t.wavesurfers)
+            .map((fn) => {
+              const sc = t.wavesurfers[fn].getWrapper().parentElement as HTMLElement;
+              return `${fn}:${sc.scrollWidth}:${sc.clientWidth}`;
+            })
+            .join('|');
+        });
+        const stable = now === previous;
+        previous = now;
+        return stable;
+      },
+      { timeout, intervals: [100] },
+    )
+    .toBe(true);
+}
+
+/**
  * Hide a waveform via its sidebar checkbox.
  */
 export async function hideWaveform(page: Page, filename: string) {

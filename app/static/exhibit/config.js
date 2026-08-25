@@ -151,13 +151,55 @@ const DEFAULTS = {
   // What drives each viewport's focused annotation:
   //   "manual"   — taps only (the shipped behaviour).
   //   "playhead" — focus follows the shared clock through region ENTRIES on
-  //                the audible recording (each side in its own audience list),
-  //                sticky between regions; a chip tap PINS focus and suspends
-  //                following until the below-layout toggle-off or the side
-  //                panel's × releases it. The chip/× machine was designed for
-  //                exactly this driver (2026-08-24); the panel never opens or
-  //                closes by itself — that stays tap-owned.
+  //                the audible recording (each side in its own audience list);
+  //                a chip tap PINS focus and suspends following until the
+  //                below-layout toggle-off or the side panel's × releases it.
+  //                The chip/× machine was designed for exactly this driver
+  //                (2026-08-24); the panel never opens or closes by itself —
+  //                that stays tap-owned.
   focus: "manual",
+  // The agreed definition of "in focus" (2026-08-25) splits it into two
+  // surfaces: the WASH — everything painted on or beside the strips (chip
+  // highlight, region emphasis, group edges, strip deemphasis) — and the
+  // DETAIL — the commentary text, which lingers so playback moving on never
+  // snatches away text mid-read. focusWash sets the wash's lifetime:
+  //   "clear"  — the wash paints while the playhead is inside a region and
+  //              clears when it leaves; the lingering detail keeps a subtle
+  //              chip anchor (.is-shown) so the text stays findable.
+  //   "sticky" — the wash lingers after exit along with the detail: week 3's
+  //              shipped behaviour, kept as the A/B comparator.
+  focusWash: "clear",
+  // Deemphasize the strips the painted annotation does not target: waveform
+  // and caption fade, the background and the grouping edge stay. "auto" = on
+  // under ?focus=playhead and off in manual mode, so the untouched manual
+  // exhibit stays byte-for-byte the shipped behaviour per the A/B rule;
+  // "on"/"off" force it either way.
+  focusDim: "auto",
+  // Minimum lifetime of the wash's paint, in ms (focusWash=clear only): a
+  // region shorter than this — the sub-frame "D or E?" spans — keeps its paint
+  // for the bound instead of blinking for one frame. Exits from longer regions
+  // clear immediately, and a discontinuity (seek, recording switch) drops held
+  // paint at once: jumps land, they do not carry. 0 disables.
+  focusHoldMs: 2500,
+  // Pin auto-expiry (feedback round, 2026-08-25): "off" (default — pins hold
+  // until the machine's unfocus), "auto" (a reading-time heuristic over the
+  // shown text: length, audience speed, group story), or a fixed ms value.
+  // Near the deadline a "Keep reading…" ring appears; tapping it re-arms the
+  // full time. Expiry unfocuses AND re-derives the wash immediately — a
+  // timeout is not a dismissal, so the table comes back to life at once.
+  pinExpiry: "off",
+  // Playback-triggered text fades out (feedback round, 2026-08-25): "off"
+  // (the default — the detail is sticky and follows entries instantly),
+  // "auto" (each shown text lives for its reading time, the pinExpiry
+  // heuristic), or a fixed window ms. When on: text summoned by the wash is
+  // displayed for its window, the "Keep reading…" ring warns before the end —
+  // squeezed earlier when the next annotation's region arrives sooner (while
+  // playing), never below the focusHoldMs floor — and a ring tap bumps the
+  // text to its full time, deferring any switch. At the window's end the text
+  // catches up to whatever is relevant then, or fades out entirely. Under
+  // ?sideSlot=annotations the same machine opens the panel on entry and
+  // closes it on fade; a chip tap still pins, exempt from all of this.
+  detailFade: "off",
 
   // --- turn-taking (plan §4.3; turns.js) ---
   // Which policy a tap goes through when the OTHER side holds the clock:

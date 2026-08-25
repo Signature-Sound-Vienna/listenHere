@@ -133,14 +133,40 @@ const TABS = [
         options: [false, true],
         display: (v) => (v ? "offer" : "off"),
       },
-      // The playhead-driven focus wash (?focus=playhead, main.js).
+      // The playhead-driven focus wash (?focus=playhead, main.js), and the two
+      // halves of the agreed definition (2026-08-25): the wash's lifetime and
+      // the strip deemphasis.
       { key: "focus", label: "Focus", options: ["manual", "playhead"] },
+      { key: "focusWash", label: "Focus wash", options: ["clear", "sticky"] },
+      { key: "focusDim", label: "Strip deemphasis", options: ["auto", "on", "off"] },
+      { key: "focusHoldMs", label: "Wash hold (ms)", options: [0, 2500, 5000] },
+      { key: "pinExpiry", label: "Pin expiry", options: ["off", "auto"] },
+      { key: "detailFade", label: "Text fade-out", options: ["off", "auto"] },
       { key: "minRegionPx", label: "Region floor (px)", options: [2, 4, 8] },
       { key: "zoom", label: "Initial zoom (px/s; 0 = fit)", options: [0, 30] },
       { key: "debug", label: "Debug logging", options: [false, true] },
     ],
   },
 ];
+
+// THE STAFF DEBUG PRESET (user, 2026-08-25): what the footer's "Defaults"
+// button resets the URL to — the most convenient configuration to debug with
+// right now. These are NOT the shipped defaults: DEFAULTS (config.js) stays
+// the A/B baseline and the • markers keep pointing at it; every parameter and
+// value stays selectable. Update this object as debugging tastes change.
+const STUDY_PRESET = {
+  focus: "playhead",
+  studyPanel: true,
+  sideSlot: "annotations",
+  detailFade: "auto",
+  stageRotation: 90,
+  zoomControls: false,
+  bandOrientation: "mirrored",
+  annotationColors: "theme",
+  turnPolicy: "attribution",
+  audienceAll: true,
+  pinExpiry: "auto",
+};
 
 // PANEL STATE LIVES IN localStorage, NEVER IN THE URL — the URL is reserved
 // for parameter selections (the configuration), while whether the panel is
@@ -205,7 +231,19 @@ export function mountStudyPanel(config) {
       setTimeout(() => (copy.textContent = "Copy URL"), 2000);
     }
   });
-  footer.append(url, copy);
+  // A RESET, not a merge: the button rewrites the whole query to the preset,
+  // dropping any other experiment the discussion had layered on.
+  const reset = document.createElement("button");
+  reset.type = "button";
+  reset.className = "study-copy study-defaults";
+  reset.textContent = "Defaults";
+  reset.title = "Reset to the staff debug preset";
+  reset.addEventListener("click", () => {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(STUDY_PRESET)) params.set(key, String(value));
+    location.href = location.pathname + `?${params.toString()}`;
+  });
+  footer.append(url, reset, copy);
 
   panel.append(tabs, body, footer);
 

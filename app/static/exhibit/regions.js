@@ -60,10 +60,11 @@ export const MAX_WIDEN_FRACTION = 0.02;
  * @param {object[]} annotations           already filtered to one audience
  * @param {object} [opts]
  * @param {number} [opts.minRegionPx]      widen anything narrower than this
- * @param {string|null} [opts.activeId]    annotation to emphasise, if any
+ * @param {string[]} [opts.activeIds]      annotations to emphasise — plural,
+ *   because the wash paints the UNION at overlaps (ruled 2026-08-25)
  */
-export function syncRegions(strips, annotations, { minRegionPx = 0, activeId = null } = {}) {
-  const specsByFile = computeSpecsByFile(annotations, activeId);
+export function syncRegions(strips, annotations, { minRegionPx = 0, activeIds = [] } = {}) {
+  const specsByFile = computeSpecsByFile(annotations, activeIds);
   for (const [file, strip] of strips) {
     const minSeconds = Math.min(
       minRegionPx * _secondsPerPx(strip),
@@ -82,10 +83,10 @@ export function syncRegions(strips, annotations, { minRegionPx = 0, activeId = n
  * and `regionTimes` was already re-derived through the canonical index pairs, so a
  * target that is not in this exhibit simply is not here to skip.
  */
-export function computeSpecsByFile(annotations, activeId = null) {
+export function computeSpecsByFile(annotations, activeIds = []) {
   const byFile = {};
   for (const ann of annotations) {
-    const isActive = ann.id === activeId;
+    const isActive = activeIds.includes(ann.id);
     const handPlaced = new Set(
       (ann.regions || []).filter((r) => r.needsHandPlacement).map((r) => r.id),
     );

@@ -155,6 +155,16 @@ html, body {
 
 .strip-ws { position: absolute; inset: 0; }
 
+/* The agreed focus definition (2026-08-25): strips the painted annotation does
+ * not target fade — waveform and caption only. The background keeps the strip
+ * present, the left edge keeps the grouping legend anchored, and opacity never
+ * costs the 44px tap target. Transitioned both ways so a wash moving between
+ * regions dims and undims without strobing. */
+.strip-ws,
+.strip-label { transition: opacity 200ms ease; }
+.strip.is-dimmed .strip-ws { opacity: 0.3; }
+.strip.is-dimmed .strip-label { opacity: 0.45; }
+
 /* Conductor and year, over the waveform rather than above it — vertical space is
  * the scarce dimension once a portrait screen is halved and divided by eight.
  * pointer-events: none so the caption never eats a tap meant for the waveform. */
@@ -275,6 +285,25 @@ html, body {
 
 .ann-chip { border-width: 2px; }
 
+/* The chip's three focus states (agreed definition, 2026-08-25). `is-on` is
+ * the PAINT — the wash, or a pin — and fills with the annotation's own colour
+ * (inline, from update()). `is-pinned` marks a visitor's explicit hold as
+ * distinct from the passing wash: an accent ring. `is-shown` is the subtle
+ * anchor for commentary still on show after the wash has moved on — enough to
+ * find the chip the panel is quoting, quiet enough not to read as a second
+ * focus. Box-shadow rings, not borders or outlines: the chip's box never
+ * moves, and a shadow FADES in and out with the transition below, where an
+ * outline would pop. The transition also softens the wash lighting chips up
+ * and down (inline background/text colours transition all the same). */
+.ann-chip {
+  transition:
+    background-color 200ms ease,
+    color 200ms ease,
+    box-shadow 200ms ease;
+}
+.ann-chip.is-pinned { box-shadow: 0 0 0 2px var(--ex-accent); }
+.ann-chip.is-shown { box-shadow: 0 0 0 2px var(--ex-mark-dim); }
+
 /* The union mode's audience marker (?audienceAll=1): the audience name inside
  * the chip, smaller and dimmed — it must be readable when asked for, invisible
  * as texture otherwise. Inherits the chip's text colour, so the focused chip's
@@ -287,15 +316,63 @@ html, body {
   text-transform: uppercase;
 }
 
+/* The pin-expiry warning (config.pinExpiry): a pill with a depleting conic
+ * ring and "Keep reading…", anchored to the body's corner so the split layout
+ * carries it into the side panel with the text it is warning about. Always in
+ * the DOM, faded by class, so it eases in and out; pointer-events off while
+ * hidden so a ghost pill can never eat a tap. */
+.pin-expiry {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 300ms ease;
+}
+.pin-expiry.is-live {
+  opacity: 0.94;
+  pointer-events: auto;
+}
+.pin-ring {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: conic-gradient(var(--ex-accent) calc(var(--pin-frac, 1) * 360deg), transparent 0);
+  -webkit-mask: radial-gradient(circle at center, transparent 55%, #000 56%);
+  mask: radial-gradient(circle at center, transparent 55%, #000 56%);
+}
+
 /* Commentary beside the group cards. Centred as a unit; each half scrolls
- * internally rather than growing. */
+ * internally rather than growing. The opacity transition is ?detailFade's
+ * disappearance: main.js adds .is-fading, waits it out, then clears the
+ * state — so the text leaves gently instead of blinking off. */
 .ann-body {
+  position: relative;
   flex: 1 1 0;
   min-height: 0;
   align-self: stretch;
   display: flex;
   justify-content: center;
   gap: 16px;
+  transition: opacity 400ms ease;
+}
+.ann-body.is-fading {
+  opacity: 0;
 }
 
 .ann-detail {
@@ -336,6 +413,12 @@ html, body {
   overflow-y: auto;
   overscroll-behavior: contain;
   touch-action: pan-y;
+  /* EXPLICIT stacking, under the "Keep reading…" pill (z-index 3). Without
+   * it, Firefox's implicit layer for scroll containers can win the HIT TEST
+   * over the absolutely positioned pill — the pill looked tappable but a
+   * group note underneath swallowed the tap (37.17, Firefox, 2026-08-25). */
+  position: relative;
+  z-index: 0;
   scrollbar-width: thin;
   scrollbar-color: var(--ex-border-strong) transparent;
 }

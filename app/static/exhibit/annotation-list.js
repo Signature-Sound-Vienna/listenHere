@@ -54,7 +54,7 @@ import { resolveGroupFor, safeColor, groupTextColor } from "../js/engine/groupin
  *   slot) is the caller's decision, because it depends on the layout, and this
  *   component deliberately does not know which layout it is in.
  * @returns {{el: HTMLElement, chipsEl: HTMLElement, bodyEl: HTMLElement,
- *   update: (annotations: object[], focusedId: string|null, opts?: object) => void}}
+ *   update: (annotations: object[], focus: object|null, opts?: object) => void}}
  */
 export function createAnnotationList({ viewport, language, onChipTap, split = false }) {
   const el = document.createElement("div");
@@ -84,11 +84,22 @@ export function createAnnotationList({ viewport, language, onChipTap, split = fa
   // Only a CHANGED list (an audience switch) rebuilds the row, and there a
   // racing tap's target legitimately vanished with the list it belonged to.
   const chipById = new Map();
-  let lastFocusedId = null;
+  let lastShownId = null;
 
   /**
    * @param {object[]} annotations
-   * @param {string|null} focusedId
+   * @param {object|null} focus  the caller's focus state, per the agreed
+   *   definition (2026-08-25) — two surfaces, three chip states:
+   *   `paintIds` are the annotations whose strip-side paint is on (the wash —
+   *   the union at overlaps — or the pin): their chips get the strong
+   *   `is-on`. `shownId` is the annotation whose commentary shows: with
+   *   `pinned` its chip adds `is-pinned` (an explicit hold looks held, not
+   *   merely washed); unpinned and no longer painted, it gets the subtle
+   *   `is-shown` — the anchor tying the lingering text back to its chip after
+   *   the wash has moved on.
+   * @param {string[]} [focus.paintIds]
+   * @param {string|null} [focus.shownId]
+   * @param {boolean} [focus.pinned]
    * @param {object} [opts]
    * @param {boolean} [opts.markAudience]  tag each chip with the audience its
    *   annotation targets — the union mode's job (?audienceAll=1), where the
@@ -97,7 +108,8 @@ export function createAnnotationList({ viewport, language, onChipTap, split = fa
    *   label. Whether that stays legible without cluttering the chips is
    *   exactly what the Oct/Nov user testing is for.
    */
-  function update(annotations, focusedId, { markAudience = false } = {}) {
+  function update(annotations, focus, { markAudience = false } = {}) {
+    const { paintIds = [], shownId = null, pinned = false } = focus || {};
     const sameList =
       annotations.length > 0 &&
       chips.children.length === annotations.length &&
@@ -149,43 +161,51 @@ export function createAnnotationList({ viewport, language, onChipTap, split = fa
       }
       const colour = safeColor(ann.color);
       chip.style.borderColor = colour || "";
-      const on = ann.id === focusedId;
+      const on = paintIds.includes(ann.id);
       chip.classList.toggle("is-on", on);
+      chip.classList.toggle("is-pinned", pinned && ann.id === shownId);
+      chip.classList.toggle("is-shown", !pinned && ann.id === shownId && !on);
       chip.setAttribute("aria-pressed", on ? "true" : "false");
       chip.style.backgroundColor = on && colour ? colour : "";
       chip.style.color = on && colour ? groupTextColor(colour) : "";
     }
 
-    const focused = annotations.find((a) => a.id === focusedId) || null;
+    // The detail is the STICKY surface: it reads shownId, not paintId, so the
+    // text (and its group cards below) outlives a wash that has cleared.
+    const shown = annotations.find((a) => a.id === shownId) || null;
     if (!annotations.length) {
       detail.textContent = t("state.nothingForAudience", language);
       detail.dataset.state = "empty";
-    } else if (focused) {
-      detail.textContent = resolveText(focused.description, { language });
+    } else if (shown) {
+      detail.textContent = resolveText(shown.description, { language });
       delete detail.dataset.state;
     } else {
       detail.textContent = t("listen.tapToListen", language);
       detail.dataset.state = "hint";
     }
     // A NEW annotation's text starts at its beginning, not wherever the last
-    // reader left the previous one — but only on an actual focus change: a
-    // re-render of the same focus (a resize re-derivation, a zoom step) must
-    // not yank a mid-read text back to the top.
-    if (focusedId !== lastFocusedId) detail.scrollTop = 0;
-    lastFocusedId = focusedId;
+    // reader left the previous one — but only on an actual change of what is
+    // shown: a re-render of the same text (a resize re-derivation, a zoom
+    // step, a wash clearing around it) must not yank a mid-read text back to
+    // the top.
+    if (shownId !== lastShownId) detail.scrollTop = 0;
+    lastShownId = shownId;
 
-    renderGroups(focused);
+    renderGroups(shown);
   }
 
   /**
-   * The focused annotation's groups as cards: the group's name, tinted with the
+   * The SHOWN annotation's groups as cards: the group's name, tinted with the
    * SAME resolved colour main.js paints on the strip edges, plus the authored
    * group note when the annotation carries one (`groupNotes` is keyed by
    * groupId). Rendered ONLY when the annotation actually has something to say
    * about its groups (hasGroupStory) — a bare legend of names like "New Group"
    * and "Ungrouped" is authoring scaffolding, not content, and user feedback
    * (2026-08-24) ruled it noise. main.js applies the same predicate to the
-   * strip edges, so legend and edges appear and disappear together.
+   * strip edges. While the annotation paints (a pin, or the wash inside its
+   * region) card and edge cannot disagree — same annotation, same groups, same
+   * safeColor; under focusWash=clear the cards may honestly OUTLIVE the edges
+   * while lingering text waits for the next wash (agreed 2026-08-25).
    */
   function renderGroups(focused) {
     groups.textContent = "";

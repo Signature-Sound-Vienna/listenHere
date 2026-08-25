@@ -61,6 +61,9 @@ const CATALOGUE = {
   // aria-label only: the side panel's close control shows an × glyph
   // (main.js, ?sideSlot=…) — nothing to translate on the glass itself.
   "panel.close": { en: "Close the side panel" },
+  // The pin-expiry warning (config.pinExpiry, main.js): shown near the
+  // deadline; tapping re-arms the reading time.
+  "panel.keepReading": { en: "Keep reading…" },
   // Turn-taking (plan §4.3; ?turnPolicy=…, turns.js). These render on the
   // viewports' own surfaces, so unlike the middle band they MAY carry language
   // — each half shows its own reader's copy. PROVISIONAL wording, to be

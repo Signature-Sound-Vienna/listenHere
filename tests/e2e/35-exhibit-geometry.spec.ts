@@ -714,7 +714,8 @@ test.describe('35. Week 2 — the study panel and themes', () => {
             ],
           },
         ],
-        'fake_cmp',
+        // The new focus shape (agreed 2026-08-25): the cards read shownId.
+        { paintId: 'fake_cmp', shownId: 'fake_cmp', pinned: true },
       );
       const card = vp.annList.el.querySelector('.ann-comparison-card');
       return {
@@ -805,6 +806,37 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     expect(page.url()).not.toContain('themeWaves');
     expect(page.url()).not.toContain('themeBand');
     expect(page.url()).toContain('studyPanel=true');
+  });
+
+  // 35.25 The footer's Defaults button is the staff DEBUG preset (user,
+  // 2026-08-25) — a RESET, not a merge: the whole query becomes the preset,
+  // other experiments drop away, and the exhibit boots under it. The shipped
+  // config defaults are untouched by this feature (they stay the A/B baseline
+  // the • markers point at).
+  test('35.25 the Defaults button resets the URL to the staff debug preset', async ({ page }) => {
+    await boot(page, 'studyPanel=true&stripHeight=60');
+    await page.click('.study-cog');
+    await page.click('.study-defaults');
+    await page.waitForURL(/turnPolicy=attribution/);
+    const search = await page.evaluate(() => location.search);
+    for (const pair of [
+      'focus=playhead',
+      'studyPanel=true',
+      'sideSlot=annotations',
+      'detailFade=auto',
+      'stageRotation=90',
+      'zoomControls=false',
+      'bandOrientation=mirrored',
+      'annotationColors=theme',
+      'turnPolicy=attribution',
+      'audienceAll=true',
+      'pinExpiry=auto',
+    ]) {
+      expect(search).toContain(pair);
+    }
+    expect(search).not.toContain('stripHeight'); // a reset, not a merge
+    const ok = await page.evaluate(() => (window as any)._exhibitTest.ready);
+    expect(ok, 'the exhibit boots under the preset').toBe(true);
   });
 });
 
@@ -971,7 +1003,8 @@ test.describe('35. Feedback round 2 — the generic side slot', () => {
         hostW: strip.host.clientWidth,
         wrapperW: strip.ws.getWrapper().clientWidth,
         scroll: strip.ws.getScroll(),
-        focusedId: vp.focusedId,
+        // Manual mode: the sticky detail (shownId) IS the old single focus.
+        focusedId: vp.shownId,
       };
     }, vpIndex);
   }
@@ -1062,7 +1095,8 @@ test.describe('35. Feedback round 2 — the generic side slot', () => {
         const strip = [...vp.strips.values()][0];
         return {
           open: vp.el.dataset.sideOpen === '1',
-          focusedId: vp.focusedId,
+          // Manual mode: the sticky detail (shownId) IS the old single focus.
+          focusedId: vp.shownId,
           edges,
           hostW: strip.host.clientWidth,
           wrapperW: strip.ws.getWrapper().clientWidth,

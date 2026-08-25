@@ -9,7 +9,7 @@ import { test, expect, Page } from '@playwright/test';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { stubExternalMei, FIXTURES_DIR } from '../support/helpers';
+import { stubExternalMei, FIXTURES_DIR, zoomSettled } from '../support/helpers';
 
 const A_KEYS = ['audio-a.mp3', 'audio-b.mp3', 'audio-c.mp3'];
 const B_KEYS = ['audio-1.mp3', 'audio-2.mp3', 'audio-3.mp3'];
@@ -147,42 +147,10 @@ async function expectNoReplacePrompt(page: Page) {
   await expect(page.locator(CONFIRM)).toHaveCount(0);
 }
 
-/**
- * Resolve once every waveform's geometry has stopped moving after a zoom.
- *
- * Zoom re-renders asynchronously — WaveSurfer redraws off its own
- * ResizeObserver — and `playpause()` calls `wavesurfers[x].play()` without
- * awaiting it or catching it. A zoom re-render landing mid-`play()` rejects that
- * promise, and playback then silently never starts: `getCurrentTime()` stays
- * exactly 0 and a poll waiting on it burns its whole timeout. That was the 25.3
- * flake — ~25% on Firefox, and reproducible on Chrome too once the timing
- * shifted, so it is a race and not a browser quirk.
- *
- * Two identical width readings rather than a guessed duration; same shape as
- * spec 28's settled().
- */
-async function zoomSettled(page: Page, timeout = 15_000) {
-  let previous = '';
-  await expect
-    .poll(
-      async () => {
-        const now = await page.evaluate(() => {
-          const t: any = (window as any)._listenTest;
-          return Object.keys(t.wavesurfers)
-            .map((fn) => {
-              const sc = t.wavesurfers[fn].getWrapper().parentElement as HTMLElement;
-              return `${fn}:${sc.scrollWidth}:${sc.clientWidth}`;
-            })
-            .join('|');
-        });
-        const stable = now === previous;
-        previous = now;
-        return stable;
-      },
-      { timeout, intervals: [100] },
-    )
-    .toBe(true);
-}
+// zoomSettled — the wait that fixed the 25.3 flake (a zoom re-render rejecting
+// an unawaited play(), ~25% on Firefox and reproducible on Chrome) — now lives
+// in support/helpers.ts, shared with spec 20, which hit the same race from the
+// region-nav side.
 
 /** Resolve once the app has finished a load that started after `since`. */
 async function waitForLoadAfter(page: Page, since: number, timeout = 60_000) {

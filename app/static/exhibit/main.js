@@ -19,7 +19,7 @@
 // will not give us gets copied WITH A ROW IN ENGINE-WANTS.md.
 
 import { readConfig, rotationFor, DEFAULTS } from "./config.js";
-import { setDebug, t } from "./strings.js";
+import { resolveText, setDebug, t } from "./strings.js";
 import {
   getClosestAlignmentIx,
   getCorrespondingTime,
@@ -222,10 +222,55 @@ function buildScreen(root) {
       language: vp.dataset.language,
       strips: new Map(),
       annList: null,
-      focusedId: null,
+      // Focus state, split per the agreed definition (2026-08-25):
+      //   washIds — the MOMENTARY wash: every annotation with a region under
+      //             the playhead paints its strip-side surfaces (chip
+      //             highlight, region emphasis, strip deemphasis) — the UNION
+      //             at overlaps (ruled 2026-08-25). Under focusWash=clear it
+      //             empties when the playhead leaves; under =sticky it holds
+      //             the single latest-start winner, week 3's comparator.
+      //   washId  — the latest-start PRIMARY of that set (null when empty):
+      //             the one annotation whose group edges paint, and the one
+      //             the detail follows.
+      //   shownId — the STICKY detail: the annotation whose commentary shows.
+      //             Exits never blank it — only the machine's unfocus (the
+      //             below-layout toggle-off, the side panel's ×, an audience
+      //             switch, a pin expiry) does, so text is never snatched
+      //             mid-read.
+      //   washEntries/washHold/washTimer — the minimum-lifetime bookkeeping
+      //             (config.focusHoldMs): entry timestamps, exited ids held to
+      //             their deadline, and the timer that repaints when a hold
+      //             runs out.
+      washIds: [],
+      washId: null,
+      shownId: null,
+      washEntries: new Map(),
+      washHold: new Map(),
+      washTimer: 0,
+      // The "Keep reading…" countdown (config.pinExpiry, config.panelFollow):
+      // deadline, total, ticker, the ring element, and what a ring tap
+      // re-arms — the pin's expiry clock or the wash's reading window,
+      // whichever armed last.
+      pinDeadline: null,
+      pinTotalMs: 0,
+      pinTicker: 0,
+      expiryEl: null,
+      ringRearm: null,
+      // ?detailFade: the shown text's lifecycle — when it went on show, its
+      // window, whether a ring tap bumped it to the full window, the bump's
+      // deadline, a switch deferred by the focusHoldMs floor, and the two
+      // timers (the 200 ms ticker; the fade-out animation step).
+      shownAt: 0,
+      shownMs: 0,
+      shownBumped: false,
+      fadeBumpUntil: 0,
+      fadePending: false,
+      fadeTicker: 0,
+      fadeTimer: 0,
       // ?focus=playhead (config.js): whether a tap has pinned the focus against
-      // the follow machinery, and the last annotation the playhead was inside —
-      // the edge detector that makes following event-driven rather than a
+      // the follow machinery (paint AND detail hold on shownId), and the last
+      // SET of annotations the playhead was inside (as a joined key) — the
+      // edge detector that makes following event-driven rather than a
       // per-frame overwrite of whatever the visitor just did.
       focusPinned: false,
       followLast: null,
@@ -431,27 +476,55 @@ async function boot() {
       // listening interface), and chip-toggles-panel / ×-dismisses are the
       // two primitives that survive that change.
       onChipTap: (annId) => {
+        // A tap takes manual control of the text: whatever fade window was
+        // running is over, one way or the other.
+        cancelDetailFade(vp);
         // Under ?focus=playhead a tap also PINS: the visitor's choice outranks
         // the wash until the machine's unfocus (below: the toggle-off; side:
         // the ×) releases it. In manual mode the flag is set but never read.
         if (!vp.sideSlotEl) {
-          const off = vp.focusedId === annId;
-          vp.focusedId = off ? null : annId;
+          const off = vp.shownId === annId;
+          vp.shownId = off ? null : annId;
+          // The unfocus takes the paint with it, but followLast still names
+          // the regions the clock may be inside, so the wash resumes on the
+          // NEXT entry rather than instantly re-grabbing this one.
+          if (off) clearWash(vp);
           vp.focusPinned = !off;
-        } else if (vp.focusedId !== annId) {
-          vp.focusedId = annId;
+        } else if (vp.shownId !== annId) {
+          vp.shownId = annId;
           vp.focusPinned = true;
           setPanelOpen(vp, true);
         } else {
-          // Toggling the panel on the focused chip is still engagement with
+          // Toggling the panel on the shown chip is still engagement with
           // that annotation: it pins too, else the wash could swap the panel's
           // text mid-read the moment the clock crosses another region.
           vp.focusPinned = true;
           setPanelOpen(vp, !vp.panelOpen);
         }
         renderAnnotations(vp, store);
+        // Any tap is engagement: a pin (re-)arms its expiry clock, an
+        // unfocus cancels it.
+        armPinExpiry(vp);
       },
     });
+    // The "Keep reading…" ring (config.pinExpiry, config.panelFollow),
+    // hidden until a deadline nears; a tap re-arms whichever countdown is
+    // running — the pin's expiry clock or the wash's reading window. It
+    // lives in the BODY, so the split layout carries it into the side panel
+    // along with the text it is warning about.
+    if (config.pinExpiry !== "off" || config.detailFade !== "off") {
+      const keep = document.createElement("button");
+      keep.type = "button";
+      keep.className = "pin-expiry";
+      const arc = document.createElement("span");
+      arc.className = "pin-ring";
+      const lab = document.createElement("span");
+      lab.textContent = t("panel.keepReading", vp.language);
+      keep.append(arc, lab);
+      keep.addEventListener("click", () => vp.ringRearm?.());
+      vp.annList.bodyEl.appendChild(keep);
+      vp.expiryEl = keep;
+    }
     // The chips are BELOW CONTENT in either layout; the slot, when a tenant
     // claims it, receives that tenant's panel content plus the × that closes
     // the panel and clears focus — the machine's one unfocus.
@@ -463,14 +536,17 @@ async function boot() {
       close.textContent = "×";
       close.setAttribute("aria-label", t("panel.close", vp.language));
       close.addEventListener("click", () => {
-        vp.focusedId = null;
+        cancelDetailFade(vp);
+        vp.shownId = null;
+        clearWash(vp);
         // The machine's one unfocus also releases the playhead pin — but the
         // wash resumes on the NEXT region entry, not this frame: followLast
-        // still names the region the playhead may be inside, so an × mid-region
+        // still names the regions the playhead may be inside, so an × mid-region
         // stays an unfocus rather than being instantly overwritten.
         vp.focusPinned = false;
         setPanelOpen(vp, false);
         renderAnnotations(vp, store);
+        armPinExpiry(vp);
       });
       vp.sideSlotEl.append(close, SIDE_TENANTS[config.sideSlot](vp));
     }
@@ -525,21 +601,285 @@ async function boot() {
   // ?focus=playhead: the follow machinery. One subscriber watches the shared
   // clock and turns region ENTRIES on the audible recording into focus — per
   // viewport, in each viewport's own audience list. Event-driven by design:
-  // `followViewport` acts only when the annotation under the playhead CHANGES,
-  // so it can never fight a visitor mid-interaction by rewriting focus per
-  // frame, and STICKY by design: leaving a region keeps the focus (blanking
+  // `followViewport` acts only when the SET of annotations under the playhead
+  // changes, so it can never fight a visitor mid-interaction by rewriting
+  // focus per frame. Entries advance both surfaces (the wash and, via the
+  // latest-start primary, the detail); an exit clears only the wash, and only
+  // under focusWash=clear — the detail lingers either way, because blanking
   // the commentary at the moment the visitor started reading it is the worse
-  // wash). Containment runs on the AUTHORED spans, not the widened display
-  // spans — the widening is a visibility affordance, not a musical claim.
+  // wash. Exits within config.focusHoldMs of their entry are HELD to that
+  // bound, so a sub-frame region paints perceivably instead of blinking.
+  // Containment runs on the AUTHORED spans, not the widened display spans —
+  // the widening is a visibility affordance, not a musical claim.
+
+  // Repaint when the earliest hold runs out — the one paint change that has
+  // no transport event to carry it.
+  const scheduleHoldSweep = (vp) => {
+    clearTimeout(vp.washTimer);
+    vp.washTimer = 0;
+    if (!vp.washHold.size) return;
+    const next = Math.min(...vp.washHold.values());
+    vp.washTimer = setTimeout(() => {
+      const now = performance.now();
+      let dropped = false;
+      for (const [id, deadline] of vp.washHold) {
+        if (deadline <= now + 20) {
+          vp.washHold.delete(id);
+          dropped = true;
+        }
+      }
+      if (dropped) renderAnnotations(vp, store);
+      scheduleHoldSweep(vp);
+    }, Math.max(30, next - performance.now()));
+  };
+
   const followViewport = (vp, file, time, prevTime) => {
-    const under = annotationUnder(vp.currentAnnotations, file, time, prevTime);
-    if (under === vp.followLast) return;
-    vp.followLast = under;
-    if (under && !vp.focusPinned && under !== vp.focusedId) {
-      vp.focusedId = under;
-      renderAnnotations(vp, store);
+    const now = performance.now();
+    const { ids, primary } = annotationsUnder(vp.currentAnnotations, file, time, prevTime);
+    const discontinuity = prevTime == null;
+    const sticky = config.focusWash === "sticky";
+    let dirty = false;
+    // Jumps land, they do not carry: a seek or a recording switch drops any
+    // paint still held past its exit.
+    if (discontinuity && vp.washHold.size) {
+      vp.washHold.clear();
+      dirty = true;
+    }
+    const key = ids.join("|");
+    if (key !== vp.followLast) {
+      vp.followLast = key;
+      // The pin holds paint and detail alike; the edge tracking above still
+      // runs, so a release resumes the wash on the NEXT change, not this
+      // frame. The wash set is left frozen here — it is unpainted while
+      // pinned, and every release path empties it explicitly.
+      if (!vp.focusPinned) {
+        if (sticky) {
+          // Week 3's comparator: the single latest-start winner, kept on exit.
+          if (primary && primary !== vp.washId) {
+            vp.washIds = [primary];
+            vp.washId = primary;
+            advanceShown(vp, primary);
+            dirty = true;
+          }
+        } else if (ids.length || vp.washIds.length) {
+          // Entries stamp their time and cancel any hold on the same id;
+          // exits within the bound are held to it.
+          for (const id of ids) {
+            if (!vp.washEntries.has(id)) vp.washEntries.set(id, now);
+            vp.washHold.delete(id);
+          }
+          for (const id of vp.washIds) {
+            if (ids.includes(id)) continue;
+            const entered = vp.washEntries.get(id) ?? 0;
+            if (!discontinuity && config.focusHoldMs > 0 && now - entered < config.focusHoldMs) {
+              vp.washHold.set(id, entered + config.focusHoldMs);
+            }
+            vp.washEntries.delete(id);
+          }
+          vp.washIds = ids;
+          vp.washId = primary;
+          if (primary) advanceShown(vp, primary);
+          dirty = true;
+        }
+      }
+    }
+    if (dirty) renderAnnotations(vp, store);
+    scheduleHoldSweep(vp);
+  };
+
+  // Pin auto-expiry (config.pinExpiry): a pin is a reader's hold, and an
+  // abandoned one must not hold the table for the next visitor. Near the
+  // deadline the "Keep reading…" ring counts down over the warning window; a
+  // tap re-arms the full time. Expiry unfocuses AND re-derives the wash at
+  // once — unlike the ×, a timeout is not a dismissal, so the table comes
+  // back to life immediately with whatever is playing.
+  const cancelPinExpiry = (vp) => {
+    clearInterval(vp.pinTicker);
+    vp.pinTicker = 0;
+    vp.pinDeadline = null;
+    vp.expiryEl?.classList.remove("is-live");
+  };
+  const expirePin = (vp) => {
+    cancelPinExpiry(vp);
+    vp.shownId = null;
+    clearWash(vp);
+    vp.focusPinned = false;
+    setPanelOpen(vp, false);
+    renderAnnotations(vp, store);
+    if (config.focus === "playhead" && transport.activeFile) {
+      vp.followLast = undefined;
+      followViewport(vp, transport.activeFile, transport.time, null);
     }
   };
+  const armPinExpiry = (vp) => {
+    cancelPinExpiry(vp);
+    if (config.pinExpiry === "off" || !vp.focusPinned || !vp.shownId) return;
+    const ann = vp.currentAnnotations?.find((a) => a.id === vp.shownId);
+    const ms =
+      config.pinExpiry === "auto"
+        ? readingTimeMs(ann, store.get(vp.index), vp.language)
+        : Number(config.pinExpiry);
+    if (!Number.isFinite(ms) || ms <= 0) return;
+    vp.pinTotalMs = ms;
+    vp.pinDeadline = performance.now() + ms;
+    vp.ringRearm = () => armPinExpiry(vp);
+    const warnAt = Math.min(12000, ms / 2);
+    const tick = () => {
+      const left = vp.pinDeadline - performance.now();
+      if (left <= 0) {
+        expirePin(vp);
+        return;
+      }
+      if (!vp.expiryEl) return;
+      vp.expiryEl.classList.toggle("is-live", left <= warnAt);
+      vp.expiryEl.style.setProperty("--pin-frac", String(Math.max(0, Math.min(1, left / warnAt))));
+    };
+    vp.pinTicker = setInterval(tick, 200);
+    tick();
+  };
+
+  // ?detailFade (ruled 2026-08-25): playback-triggered text is MORTAL. Each
+  // text the wash puts on show lives for its reading window; the ring warns
+  // before the end — squeezed earlier when the next annotation's region
+  // arrives sooner (only while playing; paused, nothing approaches), never
+  // below the focusHoldMs floor — and a ring tap BUMPS the text to its full
+  // window, deferring any switch. At the end the text catches up to whatever
+  // is relevant then (never re-showing itself — its budget is spent), or
+  // fades out entirely. Layout-agnostic: under sideSlot=annotations the same
+  // machine opens the panel on entry and closes it on fade-out. Pins are
+  // exempt throughout; a chip tap hands the ring to pinExpiry.
+  const stopFadeTicker = (vp) => {
+    clearInterval(vp.fadeTicker);
+    vp.fadeTicker = 0;
+  };
+  const cancelDetailFade = (vp) => {
+    stopFadeTicker(vp);
+    clearTimeout(vp.fadeTimer);
+    vp.fadeTimer = 0;
+    vp.annList.bodyEl.classList.remove("is-fading");
+    vp.shownAt = 0;
+    vp.shownBumped = false;
+    vp.fadePending = false;
+  };
+  const showText = (vp, id) => {
+    clearTimeout(vp.fadeTimer);
+    vp.fadeTimer = 0;
+    vp.annList.bodyEl.classList.remove("is-fading");
+    vp.shownId = id;
+    vp.shownAt = performance.now();
+    vp.shownMs =
+      config.detailFade === "auto"
+        ? readingTimeMs(
+            vp.currentAnnotations?.find((a) => a.id === id),
+            store.get(vp.index),
+            vp.language,
+          )
+        : Number(config.detailFade);
+    vp.shownBumped = false;
+    vp.fadePending = false;
+    vp.ringRearm = () => bumpShown(vp);
+    if (vp.sideSlotEl) setPanelOpen(vp, true);
+    if (!vp.fadeTicker) vp.fadeTicker = setInterval(() => tickFade(vp), 200);
+    renderAnnotations(vp, store);
+  };
+  const bumpShown = (vp) => {
+    if (!vp.shownId || vp.focusPinned) return;
+    vp.shownBumped = true;
+    vp.fadeBumpUntil = performance.now() + (vp.shownMs || 15000);
+    vp.fadePending = false;
+    vp.expiryEl?.classList.remove("is-live");
+  };
+  // What a wash entry does to the DETAIL. detailFade off: follow at once (the
+  // shipped loose coupling). On: a bump protects outright; a text younger
+  // than the floor defers the switch to its floor moment; otherwise switch.
+  const advanceShown = (vp, primary) => {
+    if (!primary || primary === vp.shownId) return;
+    if (config.detailFade === "off") {
+      vp.shownId = primary;
+      return;
+    }
+    const now = performance.now();
+    if (vp.shownId && vp.shownAt) {
+      if (vp.shownBumped && now < vp.fadeBumpUntil) return;
+      if (now - vp.shownAt < config.focusHoldMs) {
+        vp.fadePending = true;
+        return;
+      }
+    }
+    showText(vp, primary);
+  };
+  // The earliest start of a DIFFERENT annotation's span ahead of the clock on
+  // the audible recording — what squeezes the ring while playing.
+  const nextForeignStart = (vp) => {
+    const file = transport.activeFile;
+    const time = transport.time;
+    let next = null;
+    for (const ann of vp.currentAnnotations || []) {
+      if (ann.id === vp.shownId) continue;
+      const target = (ann.targets || []).find((t) => t.file === file);
+      if (!target) continue;
+      for (const region of ann.regions || []) {
+        const span = target.regionTimes?.[region.id];
+        if (span && span.start > time && (next == null || span.start < next)) next = span.start;
+      }
+    }
+    return next;
+  };
+  const resolveFade = (vp) => {
+    // Catch up to what is relevant NOW — the wash primary, or the freshest
+    // still-held paint — but never re-show the text that just expired.
+    const held = [...vp.washHold.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];
+    const target = vp.washId || held || null;
+    if (target && target !== vp.shownId) showText(vp, target);
+    else fadeOutDetail(vp);
+  };
+  const fadeOutDetail = (vp) => {
+    stopFadeTicker(vp);
+    vp.expiryEl?.classList.remove("is-live");
+    vp.annList.bodyEl.classList.add("is-fading");
+    vp.fadeTimer = setTimeout(() => {
+      vp.annList.bodyEl.classList.remove("is-fading");
+      vp.shownId = null;
+      vp.shownAt = 0;
+      vp.shownBumped = false;
+      vp.fadePending = false;
+      if (vp.sideSlotEl) setPanelOpen(vp, false);
+      renderAnnotations(vp, store);
+    }, 400);
+  };
+  const tickFade = (vp) => {
+    if (vp.focusPinned) return;
+    if (!vp.shownId || !vp.shownAt) {
+      stopFadeTicker(vp);
+      return;
+    }
+    const now = performance.now();
+    const warnAt = Math.min(12000, vp.shownMs / 2);
+    let end;
+    if (vp.shownBumped) {
+      end = vp.fadeBumpUntil;
+    } else {
+      end = vp.shownAt + vp.shownMs;
+      if (vp.fadePending) {
+        end = Math.min(end, vp.shownAt + config.focusHoldMs);
+      } else if (transport.playing) {
+        const next = nextForeignStart(vp);
+        if (next != null) {
+          const wallAtNext = now + (next - transport.time) * 1000;
+          end = Math.min(end, Math.max(wallAtNext, vp.shownAt + config.focusHoldMs));
+        }
+      }
+    }
+    const left = end - now;
+    if (left <= 0) {
+      resolveFade(vp);
+      return;
+    }
+    if (!vp.expiryEl) return;
+    vp.expiryEl.classList.toggle("is-live", left <= warnAt);
+    vp.expiryEl.style.setProperty("--pin-frac", String(Math.max(0, Math.min(1, left / warnAt))));
+  };
+
   if (config.focus === "playhead") {
     let prevFile = null;
     let prevTime = null;
@@ -567,8 +907,11 @@ async function boot() {
     // the audience that was on screen, and carrying its id across would leave a
     // highlighted chip that is no longer in the list. The side panel closes
     // with it — it was showing that annotation's text.
-    vp.focusedId = null;
+    clearWash(vp);
+    vp.shownId = null;
     vp.focusPinned = false;
+    cancelPinExpiry(vp);
+    cancelDetailFade(vp);
     setPanelOpen(vp, false);
     vp.el.dataset.audience = store.get(viewport);
     renderAnnotations(vp, store);
@@ -718,30 +1061,96 @@ function renderAnnotations(vp, store) {
   // edges) reads colours off these objects, so recolouring COPIES here retints
   // all of them at once and the payload's own objects stay untouched.
   if (annotationPalette) annotations = recolorAnnotations(annotations, annotationPalette);
-  if (vp.focusedId && !annotations.some((a) => a.id === vp.focusedId)) {
-    vp.focusedId = null;
-  }
+  const present = (id) => annotations.some((a) => a.id === id);
+  if (vp.shownId && !present(vp.shownId)) vp.shownId = null;
+  if (vp.washId && !present(vp.washId)) vp.washId = null;
+  vp.washIds = vp.washIds.filter(present);
+  for (const id of [...vp.washHold.keys()]) if (!present(id)) vp.washHold.delete(id);
   // The list the follow machinery (?focus=playhead) scans: exactly what this
   // viewport is showing, after the audience filter and any recolouring.
   vp.currentAnnotations = annotations;
-  vp.annList.update(annotations, vp.focusedId, { markAudience: showAll });
+  // The one derivation of "what paints": a pin holds every strip-side surface
+  // on the visitor's choice; otherwise the UNION of the wash and any ids held
+  // past their exit (focusHoldMs) paints. The detail (the commentary text and
+  // its group cards) reads shownId instead — the agreed loose coupling, so
+  // text outlives the paint rather than the reverse — and the group edges
+  // follow the single PRIMARY, because one grouping must own the edges for
+  // the legend cards to agree with them.
+  const paintIds = vp.focusPinned
+    ? vp.shownId
+      ? [vp.shownId]
+      : []
+    : [...new Set([...vp.washIds, ...vp.washHold.keys()])];
+  const paintPrimary = vp.focusPinned
+    ? vp.shownId
+    : paintIds.includes(vp.washId)
+      ? vp.washId
+      : paintIds.includes(vp.shownId)
+        ? vp.shownId
+        : (paintIds[0] ?? null);
+  vp.annList.update(
+    annotations,
+    { paintIds, shownId: vp.shownId, pinned: vp.focusPinned },
+    { markAudience: showAll },
+  );
   syncRegions(vp.strips, annotations, {
     minRegionPx: config.minRegionPx,
-    activeId: vp.focusedId,
+    activeIds: paintIds,
   });
-  paintGroups(vp, annotations);
+  paintGroups(vp, annotations, paintPrimary);
+  paintDim(vp, annotations, paintIds);
+}
+
+/** Empty the wash set and its hold bookkeeping — every unfocus path's job. */
+function clearWash(vp) {
+  vp.washIds = [];
+  vp.washId = null;
+  vp.washEntries.clear();
+  vp.washHold.clear();
+  clearTimeout(vp.washTimer);
+  vp.washTimer = 0;
 }
 
 /**
- * The annotation whose region the clock is inside — or swept through — on the
- * audible recording, for ?focus=playhead.
+ * The "auto" pin-expiry heuristic (user, 2026-08-25): a reading time over
+ * everything the pin puts on show — the commentary plus any group story —
+ * scaled by the audience's pace (kids read slower). Six seconds of
+ * orientation plus the word count at the audience's rate, clamped so a
+ * two-line kids caption is never snatched at speed and no essay holds the
+ * table past three minutes. The union pseudo-audience "all" reads at the
+ * adult rate.
+ */
+function readingTimeMs(ann, audience, language) {
+  if (!ann) return 30000;
+  const bits = [resolveText(ann.description, { language })];
+  for (const g of ann.grouping?.groups || []) {
+    bits.push(resolveText(g.label, { language }));
+    bits.push(resolveText(ann.groupNotes?.[g.groupId], { language }));
+  }
+  for (const c of ann.comparisons || []) bits.push(resolveText(c.text, { language }));
+  const words = bits
+    .filter(Boolean)
+    .join(" ")
+    .split(/\s+/)
+    .filter(Boolean).length;
+  const wpm = { kids: 110, adults: 220, expert: 240 }[audience] || 220;
+  const ms = 6000 + (words / wpm) * 60000;
+  return Math.max(15000, Math.min(180000, ms));
+}
+
+/**
+ * Every annotation whose region the clock is inside — or swept through — on
+ * the audible recording, for ?focus=playhead, plus the latest-start PRIMARY.
  *
  * `prevTime` non-null means a continuous playback frame: the whole interval
  * [prev, now] counts, so a region narrower than one frame still registers.
  * Null means a discontinuity (a seek, a recording switch, an audience change):
- * only containment at `time` counts. Where several spans qualify, the latest
- * START wins — on a sweep that is the entry closest to now, and on nested
- * regions it is the inner one, which is the more specific thing to say.
+ * only containment at `time` counts. The full set paints (chips, region
+ * emphasis, deemphasis — the union ruling, 2026-08-25); where several spans
+ * qualify, the latest START is the primary — on a sweep that is the entry
+ * closest to now, and on nested regions it is the inner one, the more
+ * specific thing to say — and the primary is what the detail text and the
+ * group edges follow.
  *
  * Containment uses the AUTHORED spans (`targets[].regionTimes`), not the
  * widened spans the strips draw — widening exists so a 12 ms region is
@@ -751,40 +1160,50 @@ function renderAnnotations(vp, store) {
  * @param {string} file           the audible recording
  * @param {number} time           seconds, in `file`'s own timeline
  * @param {number|null} prevTime  the previous clock sample, or null
- * @returns {string|null} the annotation id, or null when outside every region
+ * @returns {{ids: string[], primary: string|null}} ids in payload order;
+ *   primary null when the set is empty
  */
-function annotationUnder(annotations, file, time, prevTime) {
+function annotationsUnder(annotations, file, time, prevTime) {
   const lo = prevTime == null ? time : Math.min(prevTime, time);
   const hi = prevTime == null ? time : Math.max(prevTime, time);
-  let best = null;
+  const ids = [];
+  let primary = null;
   let bestStart = -Infinity;
   for (const ann of annotations || []) {
     const target = (ann.targets || []).find((t) => t.file === file);
     if (!target) continue;
+    let inside = false;
     for (const region of ann.regions || []) {
       const span = target.regionTimes?.[region.id];
       if (!span) continue;
-      if (span.end >= lo && span.start <= hi && span.start > bestStart) {
-        best = ann.id;
-        bestStart = span.start;
+      if (span.end >= lo && span.start <= hi) {
+        inside = true;
+        if (span.start > bestStart) {
+          bestStart = span.start;
+          primary = ann.id;
+        }
       }
     }
+    if (inside) ids.push(ann.id);
   }
-  return best;
+  return { ids, primary };
 }
 
 /**
- * Colour each strip's edge by the group it belongs to in the FOCUSED annotation's
+ * Colour each strip's edge by the group it belongs to in the PAINTED annotation's
  * pinned grouping.
  *
  * Per annotation, not per screen, because that is what a grouping is here: "Die
  * Glocke" pins VPO against Other Orchestras, "The Viennese Lilt" pins Viennese
  * against Other. There is no such thing as the exhibit's current grouping, so
- * nothing is painted until a visitor focuses an annotation — and the answer comes
- * from `resolveGroupFor`, never from reading `files` here.
+ * nothing is painted until an annotation paints — a visitor's pin or the wash —
+ * and the answer comes from `resolveGroupFor`, never from reading `files` here.
+ * Strip paint follows the wash (agreed 2026-08-25), so under focusWash=clear
+ * the edges leave with the playhead while the panel's group cards, which read
+ * shownId, may honestly outlive them.
  */
-function paintGroups(vp, annotations) {
-  let focused = annotations.find((a) => a.id === vp.focusedId) || null;
+function paintGroups(vp, annotations, paintId) {
+  let focused = annotations.find((a) => a.id === paintId) || null;
   // Same predicate as the group cards (annotation-list.js): edges only when
   // the annotation has something to say about its groups, so the legend and
   // the stripes appear and disappear together.
@@ -795,6 +1214,36 @@ function paintGroups(vp, annotations) {
     strip.el.style.setProperty("--group-color", colour || "transparent");
     if (group) strip.el.dataset.group = group.groupId || "";
     else delete strip.el.dataset.group;
+  }
+}
+
+/**
+ * Deemphasize the strips the painted annotation does not TARGET — the second
+ * half of the agreed focus definition (2026-08-25). Targeting is the payload's
+ * own fact (`targets[].file`): an annotation is about the recordings it has
+ * regions on, and while it paints, the other strips fade. Only the waveform
+ * and the caption fade (.is-dimmed, exhibit.css): the background keeps the
+ * strip present as a tap target, and the grouping edge stays at full strength
+ * because "you are not hearing this strip's region" and "this strip is in the
+ * story's Other group" are both true at once — the edge is the legend's
+ * anchor, not part of the region paint.
+ *
+ * config.focusDim: "auto" dims only under ?focus=playhead, so the untouched
+ * manual exhibit stays byte-for-byte the shipped behaviour per the A/B rule;
+ * "on"/"off" force it either way (on = manual taps dim too; off = strips never
+ * fade even in playhead mode). At overlaps the whole painted set counts (the
+ * union ruling, 2026-08-25): a strip stays at full strength if ANY painted
+ * annotation targets it.
+ */
+function paintDim(vp, annotations, paintIds) {
+  const enabled =
+    config.focusDim === "on" || (config.focusDim === "auto" && config.focus === "playhead");
+  const painted = enabled ? annotations.filter((a) => paintIds.includes(a.id)) : [];
+  for (const [file, strip] of vp.strips) {
+    const dim =
+      painted.length > 0 &&
+      !painted.some((a) => (a.targets || []).some((t) => t.file === file));
+    strip.el.classList.toggle("is-dimmed", dim);
   }
 }
 

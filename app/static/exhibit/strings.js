@@ -61,6 +61,16 @@ const CATALOGUE = {
   // aria-label only: the side panel's close control shows an × glyph
   // (main.js, ?sideSlot=…) — nothing to translate on the glass itself.
   "panel.close": { en: "Close the side panel" },
+  // Turn-taking (plan §4.3; ?turnPolicy=…, turns.js). These render on the
+  // viewports' own surfaces, so unlike the middle band they MAY carry language
+  // — each half shows its own reader's copy. PROVISIONAL wording, to be
+  // settled by the Oct/Nov user testing like the audience labels above.
+  "turn.prompt": { en: "The other side wants to choose the music." },
+  "turn.grant": { en: "Go ahead" },
+  "turn.deny": { en: "Not yet" },
+  "turn.waiting": { en: "Waiting for the other side…" },
+  "turn.denied": { en: "The other side is still listening." },
+  "turn.taken": { en: "The other side changed the recording." },
   "state.loading": { en: "Loading…" },
   "state.nothingForAudience": { en: "Nothing here for this view — try another." },
   // A kiosk that fails must say so on the glass, not only in a console nobody can

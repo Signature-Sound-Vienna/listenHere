@@ -145,6 +145,14 @@ html, body {
  * are 54px tall and stacked two pixels apart, so a border reads as a gap. */
 .strip.is-active { background: var(--ex-surface-active); }
 
+/* THIS side's own last choice (turns.js): active is the screen's audible truth,
+ * selected is one side's expressed desire, and under ?turnPolicy=request they
+ * differ while a request is pending. A right-edge accent as an inset shadow —
+ * a real border would shrink the padding box and shift the waveform sideways
+ * (the .strip-ws overlay is inset against it), and the LEFT edge already
+ * belongs to the grouping colour. */
+.strip.is-selected { box-shadow: inset -4px 0 0 var(--ex-accent); }
+
 .strip-ws { position: absolute; inset: 0; }
 
 /* Conductor and year, over the waveform rather than above it — vertical space is
@@ -612,6 +620,56 @@ html, body {
   color: var(--ex-text-body);
   font-size: 0.9rem;
   text-shadow: var(--ex-glow);   /* legible over any waveform */
+}
+
+/* The turn-taking surface (?turnPolicy=…, turns.js + main.js paintTurn): the
+ * request prompt on the holder's half, the waiting note on the requester's,
+ * and the transient notices. Overlaid on the strips like .vp-status, but near
+ * the TOP so the two never collide — and INTERACTIVE, because it carries the
+ * grant and deny buttons, which are museum-floor touch targets (44px, the same
+ * floor as the toolbar chips). It lives inside the viewport, so the far half's
+ * 180° rotation presents it right-way-up to its own reader for free. */
+.vp-turn {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 94%;
+  padding: 6px 16px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 26px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+/* An explicit display beats the UA's [hidden] rule (same note as the study
+ * panel below): without this the flex rule above resurrects the hidden pill. */
+.vp-turn[hidden] { display: none; }
+
+.vp-turn button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font: inherit;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+/* Granting is the generous act the prompt exists to invite, so it gets the
+ * accent; denying stays quiet but present. */
+.vp-turn .turn-grant {
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-bg);
 }
 
 /* --------------------------------------------------------------------------

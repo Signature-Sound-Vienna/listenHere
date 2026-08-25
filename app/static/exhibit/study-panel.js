@@ -102,6 +102,27 @@ const TABS = [
     ],
   },
   {
+    // The central §1 feedback question gets its own tab: which of the three
+    // turn-taking policies the exhibit should ship is exactly the kind of
+    // decision this panel exists to let staff FEEL rather than argue about.
+    id: "turns",
+    label: "Turns",
+    params: [
+      {
+        key: "turnPolicy",
+        label: "Policy",
+        options: ["hijack", "attribution", "request"],
+      },
+      {
+        key: "turnGrantMs",
+        label: "Auto-grant (ms; 0 = explicit only)",
+        options: [0, 4000, 8000, 15000],
+      },
+      { key: "turnNoticeMs", label: "Notice duration (ms)", options: [2000, 4000, 8000] },
+      { key: "arbiter", label: "Audio arbiter", options: ["local", "broadcast"] },
+    ],
+  },
+  {
     id: "misc",
     label: "Misc",
     params: [

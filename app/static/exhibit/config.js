@@ -147,6 +147,25 @@ const DEFAULTS = {
   // real payloads carry fewer than 12. Display-only: the payload is untouched.
   annotationColors: "authored",
 
+  // --- turn-taking (plan §4.3; turns.js) ---
+  // Which policy a tap goes through when the OTHER side holds the clock:
+  //   "hijack"      — take it instantly, silently (the shipped behaviour).
+  //   "attribution" — take it instantly, but tell the side that lost it.
+  //   "request"     — while the other side is actually listening, a tap becomes
+  //                   a request they grant or deny (auto-grant below).
+  // "hijack" stays the default so the variants are opt-in per the A/B rule.
+  turnPolicy: "hijack",
+  // request policy: a pending request is granted by itself after this many ms,
+  // so an absent visitor can never lock the table. 0 = explicit grant only.
+  turnGrantMs: 8000,
+  // How long the transient notices stay ("the other side changed the
+  // recording", "…is still listening") before fading. UI only.
+  turnNoticeMs: 4000,
+  // Room-level audio arbitration (arbiter.js): "local" is inert single-screen
+  // behaviour; "broadcast" pauses this screen when another same-profile window
+  // claims the room's audio. Last claimant wins.
+  arbiter: "local",
+
   // --- operations ---
   attractAfterIdleMs: 0, // 0 disables the attract loop; week 4 turns it on
   // ?studyPanel=true mounts the staff-facing cog + tabbed parameter panel

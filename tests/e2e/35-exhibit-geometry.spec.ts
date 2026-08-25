@@ -498,7 +498,8 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     await expect(page.locator('.study-panel')).toBeHidden();
     await cog.click();
     await expect(page.locator('.study-panel')).toBeVisible();
-    await expect(page.locator('.study-tab')).toHaveCount(4);
+    // 5 tabs since week 3 added Turns (spec 36's subject) to the panel.
+    await expect(page.locator('.study-tab')).toHaveCount(5);
 
     // Change the band orientation from the Band tab: the page reloads with the
     // parameter in the URL — and the panel REOPENS ITSELF ON THE SAME TAB,

@@ -29,6 +29,8 @@ import { AUDIENCES, loadExhibitData, metadataFor } from "./payload.js";
 import { mountStrips } from "./strips.js";
 import { syncRegions } from "./regions.js";
 import { Transport } from "./audio.js";
+import { TurnTaking } from "./turns.js";
+import { createArbiter } from "./arbiter.js";
 import { AudienceStore, buildAudienceSwitch } from "./audience.js";
 import { createViewportZoom } from "./zoom.js";
 import { applyTheme, annotationSeries, recolorAnnotations } from "./themes.js";
@@ -199,12 +201,23 @@ function buildScreen(root) {
     status.textContent = t("state.loading", vp.dataset.language);
     strips.appendChild(status);
 
+    // The turn-taking surface (turns.js): the request prompt on the holder's
+    // half, the waiting note on the requester's, and the transient notices.
+    // Overlaid like the status line, but interactive — it carries the grant
+    // and deny buttons — so it is its own element rather than a status state.
+    const turn = document.createElement("div");
+    turn.className = "vp-turn";
+    turn.hidden = true;
+    strips.appendChild(turn);
+
     root.appendChild(vp);
     viewports.push({
       index: i,
       el: vp,
       stripsEl: strips,
       statusEl: status,
+      turnEl: turn,
+      turnNotice: 0,
       sideSlotEl: sideSlot,
       language: vp.dataset.language,
       strips: new Map(),
@@ -314,6 +327,33 @@ async function boot() {
   });
   window._exhibitTest.transport = transport;
 
+  // Every strip tap goes through the turn-taking machine (turns.js), which
+  // decides — by the ?turnPolicy in force — whether it reaches the transport
+  // now, announced, or as a request the other side grants. The default policy
+  // is a transparent pass-through, so the shipped tap behaviour is unchanged.
+  const turns = new TurnTaking({
+    transport,
+    policy: config.turnPolicy,
+    grantMs: config.turnGrantMs,
+  });
+  window._exhibitTest.turns = turns;
+
+  // Room-level audio arbitration (arbiter.js): claim on every silence-to-sound
+  // transition, pause when another screen claims. The default "local" arbiter
+  // is inert, so this wiring costs nothing until ?arbiter=broadcast opts in.
+  // The claim hangs off the transport's own state rather than off the taps, so
+  // the band's shared play button claims exactly like a strip tap does.
+  const arbiter = createArbiter(config.arbiter);
+  window._exhibitTest.arbiter = arbiter;
+  arbiter.onRevoked(() => transport.pause());
+  {
+    let wasAudible = false;
+    transport.subscribe((state) => {
+      if (state.playing && !wasAudible) arbiter.claim();
+      wasAudible = state.playing;
+    });
+  }
+
   // The middle band, once the sidecar is known. Shared per screen: there is one
   // audible recording, so there is one thing for it to say. The piece title's
   // language follows viewport 0 — see the documented tension in middle-band.js.
@@ -331,14 +371,11 @@ async function boot() {
   const stripsReady = [];
   for (const vp of viewports) {
     const mounted = mountStrips(vp.stripsEl, exhibit, config, {
-      // The tap-time is only honoured on the strip that is already active — the
-      // same semantics as the engine (waveform-events.js): tapping ANOTHER strip
-      // means "switch to this recording", and the moment is carried across by the
-      // transport, not read from the finger. At fit-to-width a pixel is ~0.58 s,
-      // so honouring the tap position on a switch would jump tens of seconds to
-      // wherever the finger happened to land.
-      onSelect: (file, time) =>
-        transport.select(file, file === transport.activeFile ? time : undefined),
+      // Taps go through the turn machine, which owns the seek-vs-switch rule
+      // (a tap's time is only honoured on the already-active strip — see
+      // turns.request) and knows WHOSE tap this is, which the transport never
+      // needs to.
+      onSelect: (file, time) => turns.request(vp.index, file, time),
       labelFor: (file) => stripLabel(exhibit, file),
       colors: themeColors,
     });
@@ -452,6 +489,18 @@ async function boot() {
     for (const strip of vp.strips.values()) strip.ws.on("resize", rederive);
   }
 
+  // The turn machine drives two per-viewport surfaces: the selection marks
+  // ("what did MY side choose") and the turn element (prompt, waiting note,
+  // transient notices). Both are per viewport because that is the whole point
+  // — the two halves see different things at the same moment.
+  turns.subscribe((state, event) => {
+    for (const vp of viewports) {
+      const chosen = state.selected[vp.index];
+      for (const [file, strip] of vp.strips) strip.setSelected(file === chosen);
+      paintTurn(vp, state, event, turns);
+    }
+  });
+
   store.subscribe((viewport) => {
     const vp = viewports[viewport];
     if (!vp) return;
@@ -517,6 +566,73 @@ function setPanelOpen(vp, open) {
   if (vp.panelOpen) vp.el.dataset.sideOpen = "1";
   else delete vp.el.dataset.sideOpen;
   vp.zoom?.refit();
+}
+
+/**
+ * One viewport's turn surface (turns.js). Three shapes share the element: the
+ * holder's prompt with the grant and deny buttons, the requester's waiting
+ * note, and the transient notices ("taken", "denied") that outlive the state
+ * that raised them by config.turnNoticeMs. The transients are addressed to ONE
+ * side — the events carry the viewport they are for — while the pending shapes
+ * are derived from state, so a repaint mid-notice must not clear a notice the
+ * new state knows nothing about: hence the turnNotice guard on the clear.
+ */
+function paintTurn(vp, state, event, turns) {
+  if (event?.type === "taken" && event.from === vp.index) {
+    flashTurnNotice(vp, t("turn.taken", vp.language));
+    return;
+  }
+  if (event?.type === "denied" && event.to === vp.index) {
+    flashTurnNotice(vp, t("turn.denied", vp.language));
+    return;
+  }
+  const pending = state.pending;
+  if (pending && vp.index === state.holder) {
+    cancelTurnNotice(vp);
+    vp.turnEl.textContent = "";
+    const label = document.createElement("span");
+    label.textContent = t("turn.prompt", vp.language);
+    const grant = document.createElement("button");
+    grant.type = "button";
+    grant.className = "turn-grant";
+    grant.textContent = t("turn.grant", vp.language);
+    grant.addEventListener("click", () => turns.grant());
+    const deny = document.createElement("button");
+    deny.type = "button";
+    deny.className = "turn-deny";
+    deny.textContent = t("turn.deny", vp.language);
+    deny.addEventListener("click", () => turns.deny());
+    vp.turnEl.append(label, grant, deny);
+    vp.turnEl.dataset.role = "prompt";
+    vp.turnEl.hidden = false;
+  } else if (pending && vp.index === pending.viewport) {
+    cancelTurnNotice(vp);
+    vp.turnEl.textContent = t("turn.waiting", vp.language);
+    vp.turnEl.dataset.role = "waiting";
+    vp.turnEl.hidden = false;
+  } else if (!vp.turnNotice) {
+    vp.turnEl.hidden = true;
+    vp.turnEl.textContent = "";
+    delete vp.turnEl.dataset.role;
+  }
+}
+
+function flashTurnNotice(vp, text) {
+  cancelTurnNotice(vp);
+  vp.turnEl.textContent = text;
+  vp.turnEl.dataset.role = "notice";
+  vp.turnEl.hidden = false;
+  vp.turnNotice = setTimeout(() => {
+    vp.turnNotice = 0;
+    vp.turnEl.hidden = true;
+    vp.turnEl.textContent = "";
+    delete vp.turnEl.dataset.role;
+  }, config.turnNoticeMs);
+}
+
+function cancelTurnNotice(vp) {
+  if (vp.turnNotice) clearTimeout(vp.turnNotice);
+  vp.turnNotice = 0;
 }
 
 /** Redraw one viewport's annotation chips, its regions, and its group colours. */

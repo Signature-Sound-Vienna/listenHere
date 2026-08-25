@@ -195,6 +195,15 @@ export function createStrip(parent, opts) {
         progressColor: active ? colors.progressActive : colors.progress,
       });
     },
+    /**
+     * Mark this strip as THIS viewport's own last choice (turns.js). Distinct
+     * from setActive on purpose: active is the screen's audible truth, selected
+     * is one side's expressed desire — under the request policy they differ for
+     * as long as the request is pending. A class only, no canvas repaint.
+     */
+    setSelected(on) {
+      el.classList.toggle("is-selected", !!on);
+    },
     destroy() {
       try {
         ws.destroy();

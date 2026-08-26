@@ -30,12 +30,13 @@
 import { analyzeAudio } from "../js/audio-seek-index.js";
 import { WindowedAudioPlayer } from "../js/windowed-audio-player.js";
 
-// How many built players to keep alive. Each holds its compressed blob (~9 MB) and
-// an LRU of decoded chunks, so keeping all eight would be ~72 MB of blob before
-// any decoding — and week 4's one-hour soak (plan §7.4) is the open question about
-// this tier, so the conservative number is the right one to start from. Two keeps
-// an A/B comparison instant, which is the interaction visitors will actually
-// repeat; anything older is re-fetched from the HTTP cache.
+// How many built players to keep alive by default. Each holds its compressed blob
+// (~9 MB) and an LRU of decoded chunks, so keeping all eight would be ~72 MB of
+// blob before any decoding — and week 4's one-hour soak (plan §7.4) is the open
+// question about this tier, so the conservative number is the right one to start
+// from. Two keeps an A/B comparison instant, which is the interaction visitors
+// will actually repeat; anything older is re-fetched from the HTTP cache. The
+// kiosk can raise it (?playerCache=8) once the soak blesses the memory cost.
 const PLAYER_CACHE = 2;
 
 export class Transport {
@@ -47,17 +48,20 @@ export class Transport {
    *        map a time in `from`'s timeline to `to`'s. This is the alignment, handed
    *        in rather than imported so the transport has no opinion about how the
    *        projection is done — main.js owns the align-core wiring.
+   * @param {number} [opts.playerCache]  built players kept alive (LRU)
    * @param {boolean} [opts.debug]
    */
-  constructor({ audio, durations, project, debug = false }) {
+  constructor({ audio, durations, project, playerCache = PLAYER_CACHE, debug = false }) {
     this._audio = audio;
     this._durations = durations;
     this._project = project;
+    this._cacheSize = Math.max(1, playerCache);
     this._debug = debug;
 
     this._ctx = null;
     this._players = new Map(); // file -> player, in LRU order (oldest first)
     this._pending = new Map(); // file -> in-flight build promise
+    this._bytes = new Map(); // file -> {buf, type} warmed by preloadAll, consumed by _build
     this._listeners = new Set();
     this._raf = 0;
 
@@ -185,10 +189,59 @@ export class Transport {
     this._emit();
   }
 
+  /**
+   * Warm every recording's bytes so no visitor ever meets a cold cache
+   * (?preload=on — user ruling 2026-08-26, from the iPad device test: the
+   * exhibit must not be half-ready for its first visitor).
+   *
+   * Bytes only, one file at a time: players are still built on first use, so
+   * decoded memory stays governed by the player cache, and the sequential
+   * fetches never gang up on the network. A visitor's tap always wins — the
+   * loop yields to any in-flight user build before starting its next fetch,
+   * and a file the visitor got to first is simply skipped. Deliberately never
+   * touches `_loading`: warming is invisible, "Loading…" belongs to taps.
+   *
+   * @param {string[]} files
+   * @returns {Promise<{warmed: number, skipped: number, failed: number}>}
+   */
+  async preloadAll(files) {
+    const out = { warmed: 0, skipped: 0, failed: 0 };
+    for (const file of files) {
+      while (this._pending.size) {
+        await Promise.allSettled([...this._pending.values()]);
+      }
+      if (!this._audio[file] || this._players.has(file) || this._bytes.has(file)) {
+        out.skipped++;
+        continue;
+      }
+      try {
+        const res = await fetch(this._audio[file]);
+        if (!res.ok) throw new Error(`${res.status} for ${this._audio[file]}`);
+        const buf = await res.arrayBuffer();
+        const type = res.headers.get("content-type") || "audio/mpeg";
+        // Re-check: a tap may have built this player while the bytes streamed.
+        if (this._players.has(file) || this._pending.has(file)) {
+          out.skipped++;
+          continue;
+        }
+        this._bytes.set(file, { buf, type });
+        out.warmed++;
+      } catch (e) {
+        // A failed warm costs nothing but the head start — the tap path will
+        // retry the fetch itself and report its own failure.
+        console.warn(`exhibit transport: preload of ${file} failed`, e);
+        out.failed++;
+      }
+    }
+    if (this._debug) console.log("exhibit transport: preload", out);
+    return out;
+  }
+
   destroy() {
     this._stopTicking();
     for (const [, p] of this._players) p.destroy();
     this._players.clear();
+    this._bytes.clear();
     this._listeners.clear();
   }
 
@@ -245,20 +298,29 @@ export class Transport {
     this._loading = file;
     this._emit();
     try {
-      const res = await fetch(this._audio[file]);
-      if (!res.ok) throw new Error(`${res.status} for ${this._audio[file]}`);
-      const buf = await res.arrayBuffer();
-      // The type matters only for the <audio> fallback below — `decodeAudioData`
-      // sniffs the bytes — but an untyped blob URL is one an element may refuse,
-      // and a fallback that cannot play is not a fallback.
-      const type = res.headers.get("content-type") || "audio/mpeg";
+      // Bytes warmed by preloadAll skip the fetch entirely — consumed on use,
+      // so the warm store never holds what a living player already owns.
+      let warm = this._bytes.get(file);
+      if (warm) this._bytes.delete(file);
+      if (!warm) {
+        const res = await fetch(this._audio[file]);
+        if (!res.ok) throw new Error(`${res.status} for ${this._audio[file]}`);
+        // The type matters only for the <audio> fallback below — `decodeAudioData`
+        // sniffs the bytes — but an untyped blob URL is one an element may refuse,
+        // and a fallback that cannot play is not a fallback.
+        warm = {
+          buf: await res.arrayBuffer(),
+          type: res.headers.get("content-type") || "audio/mpeg",
+        };
+      }
+      const { buf, type } = warm;
       const player = buildWindowedPlayer(new Blob([buf], { type }), buf, {
         audioContext: this._context(),
         duration: this._durations[file],
         label: file,
       });
       this._players.set(file, player);
-      while (this._players.size > PLAYER_CACHE) {
+      while (this._players.size > this._cacheSize) {
         const [oldest, victim] = this._players.entries().next().value;
         if (oldest === file || oldest === this.activeFile) break;
         this._players.delete(oldest);

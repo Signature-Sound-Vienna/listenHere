@@ -414,4 +414,136 @@ test.describe('34. The exhibit loader', () => {
     expect(shown.composer).toBe(shown.piece.composer);
     expect(shown.titleCount).toBe(1);
   });
+
+  // 34.13 ?preload=on (user ruling 2026-08-26, from the iPad device test: the
+  // exhibit must not be half-ready for its first visitor). The pin is
+  // behavioral, not structural: after the warm loop reports done, the audio
+  // network is KILLED entirely — and switches must still work, because warm
+  // bytes carry them. A preload that warmed the wrong URLs, or a build path
+  // that quietly re-fetched, fails here rather than on the museum's network.
+  test('34.13 ?preload=on warms every recording, so a switch needs no network at all', async ({
+    page,
+  }) => {
+    const { order } = await boot(page, 'preload=on&debug=1');
+    const warm = await page.evaluate(() => (window as any)._exhibitTest.preloaded);
+    expect(warm).toEqual({ warmed: 8, skipped: 0, failed: 0 });
+
+    await page.route('**/static/exhibit/audio/**', (route) => route.abort());
+    const after = await page.evaluate(async (order) => {
+      const T = (window as any)._exhibitTest;
+      const fresh = order.filter((f: string) => f !== T.transport.activeFile).slice(0, 2);
+      for (const f of fresh) await T.transport.select(f, undefined, /* play */ false);
+      return {
+        built: fresh.map((f: string) => T.transport._players.has(f)),
+        active: T.transport.activeFile,
+        expected: fresh[1],
+      };
+    }, order);
+    expect(after.built, 'a switch reached for the (dead) network despite warm bytes').toEqual([
+      true,
+      true,
+    ]);
+    expect(after.active).toBe(after.expected);
+  });
+
+  // 34.14 ?playerCache sizes the transport's LRU. The shipped 2 is a memory
+  // decision pending the week-4 soak (plan §7.4), so both sides are pinned:
+  // the default evicts the oldest at the third build, and ?playerCache=8
+  // keeps everything — the kiosk's all-switches-stay-instant configuration.
+  test('34.14 ?playerCache sizes the player LRU: default 2 evicts, 8 retains', async ({
+    page,
+  }) => {
+    const { order } = await boot(page);
+    const evicted = await page.evaluate(async (order) => {
+      const T = (window as any)._exhibitTest;
+      const files = order.slice(0, 3);
+      for (const f of files) await T.transport.select(f, undefined, /* play */ false);
+      return {
+        size: T.transport._players.size,
+        oldestGone: !T.transport._players.has(files[0]),
+      };
+    }, order);
+    expect(evicted.size).toBe(2);
+    expect(evicted.oldestGone, 'the default LRU kept a third player').toBe(true);
+
+    await boot(page, 'playerCache=8&preload=on&debug=1');
+    await page.evaluate(() => (window as any)._exhibitTest.preloaded);
+    const retained = await page.evaluate(async (order) => {
+      const T = (window as any)._exhibitTest;
+      const files = order.slice(0, 4);
+      for (const f of files) await T.transport.select(f, undefined, /* play */ false);
+      return files.map((f: string) => T.transport._players.has(f));
+    }, order);
+    expect(retained, 'playerCache=8 evicted a player it had room for').toEqual([
+      true,
+      true,
+      true,
+      true,
+    ]);
+  });
+
+  // 34.15 ?loadingGrace: a WARM switch never shows "Loading…" at all (user,
+  // 2026-08-26: a text that flashes for two frames between seamless switches
+  // reads as a glitch). Observer planted, switch run, and result collected in
+  // ONE evaluate — the 37.4 pattern — so no rAF or poll gap can miss a flash.
+  test('34.15 under ?loadingGrace a warm switch never flashes the loading text', async ({
+    page,
+  }) => {
+    const { order } = await boot(page, 'preload=on&loadingGrace=1500&debug=1');
+    await page.evaluate(() => (window as any)._exhibitTest.preloaded);
+    const probe = await page.evaluate(async (order) => {
+      const T = (window as any)._exhibitTest;
+      const vp = T.viewports[0];
+      const seen: string[] = [];
+      const mo = new MutationObserver(() =>
+        seen.push(vp.statusEl.dataset.state || '(cleared)'),
+      );
+      mo.observe(vp.statusEl, { attributes: true, attributeFilter: ['data-state'] });
+      const fresh = order.find((f: string) => f !== T.transport.activeFile);
+      await T.transport.select(fresh, undefined, /* play */ false);
+      // The grace timer may still be pending; give it a beat past the window
+      // to prove it was cancelled, not merely not-yet-fired.
+      await new Promise((r) => setTimeout(r, 1800));
+      mo.disconnect();
+      return { seen, built: T.transport._players.has(fresh) };
+    }, order);
+    expect(probe.built).toBe(true);
+    expect(
+      probe.seen.filter((s) => s === 'loading'),
+      'a warm switch flashed the loading state',
+    ).toEqual([]);
+  });
+
+  // 34.16 ?loadingGrace: a GENUINE wait still explains itself — the text
+  // appears once the grace elapses and clears on arrival. The audio route is
+  // held for 4 s; the empty and showing phases are each ≥1.2 s wide (the
+  // transient-window rule), sampled at 500 ms and 2500 ms.
+  test('34.16 under ?loadingGrace a genuine wait shows the loading text after the grace', async ({
+    page,
+  }) => {
+    const { order } = await boot(page, 'loadingGrace=1500');
+    await page.route('**/static/exhibit/audio/**', async (route) => {
+      await new Promise((r) => setTimeout(r, 4000));
+      await route.continue();
+    });
+    const probe = await page.evaluate(async (order) => {
+      const T = (window as any)._exhibitTest;
+      const vp = T.viewports[0];
+      const states: string[] = [];
+      const sample = (label: string, ms: number) =>
+        new Promise<void>((r) =>
+          setTimeout(() => {
+            states.push(`${label}:${vp.statusEl.dataset.state || 'empty'}`);
+            r();
+          }, ms),
+        );
+      const fresh = order.find((f: string) => f !== T.transport.activeFile);
+      const done = T.transport.select(fresh, undefined, /* play */ false);
+      await Promise.all([sample('inGrace', 500), sample('afterGrace', 2500)]);
+      await done;
+      states.push(`settled:${vp.statusEl.dataset.state || 'empty'}`);
+      return states;
+    }, order);
+    expect(probe).toEqual(['inGrace:empty', 'afterGrace:loading', 'settled:empty']);
+  });
 });

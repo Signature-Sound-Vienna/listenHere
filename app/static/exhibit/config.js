@@ -236,6 +236,24 @@ const DEFAULTS = {
   arbiter: "local",
 
   // --- operations ---
+  // Warm the audio at boot (user ruling 2026-08-26, from the iPad §7.2 round:
+  // the exhibit must not be half-ready for its first visitor). "off" is the
+  // shipped behaviour — each recording's first tap pays its ~9 MB fetch; "on"
+  // fetches every recording's bytes sequentially after boot, reference first,
+  // so every later first tap builds from warm bytes. Bytes only: players are
+  // still built on first use, so decoded memory stays governed by playerCache.
+  preload: "off",
+  // How many built players the transport keeps alive (LRU). 2 keeps an A/B
+  // comparison instant at ~18 MB of blob; 8 pins every player once built and
+  // makes all switches permanent-instant — pending the week-4 soak's memory
+  // verdict (plan §7.4) before it becomes the kiosk value.
+  playerCache: 2,
+  // Show "Loading…" only after a wait this long, in ms (0 = immediately, the
+  // shipped behaviour). Once the cache is warm a switch completes in well
+  // under half a second, and a text that flashes for two frames between
+  // seamless switches reads as a glitch (user, 2026-08-26); with a grace it
+  // appears only when there is a genuine wait to explain.
+  loadingGrace: 0,
   attractAfterIdleMs: 0, // 0 disables the attract loop; week 4 turns it on
   // ?studyPanel=true mounts the staff-facing cog + tabbed parameter panel
   // (study-panel.js) for in-situ design discussion. Never on for visitors.

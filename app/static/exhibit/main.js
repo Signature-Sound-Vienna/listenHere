@@ -378,6 +378,7 @@ async function boot() {
     // it has no opinion about how a moment maps between recordings — it only knows
     // that switching recording should preserve one.
     project: (time, from, to) => projectPlayhead(time, from, [to])[to],
+    playerCache: config.playerCache,
     debug: config.debug,
   });
   window._exhibitTest.transport = transport;
@@ -1111,8 +1112,21 @@ async function boot() {
   // The resting state: the reference recording is the subject, so the band has a
   // conductor to show and one strip is marked as what a tap would play. No audio
   // is fetched — nine megabytes before anybody has touched the table would be
-  // rude to the museum's network and pointless on a kiosk.
+  // rude to the museum's network and pointless on a casual load. The KIOSK is
+  // the opposite case, and says so with ?preload=on below.
   transport.preselect(exhibit.piece.ref || exhibit.order[0]);
+
+  // ?preload=on: warm every recording's bytes after boot, reference first, so
+  // the exhibit is never half-ready for its first visitor (user ruling
+  // 2026-08-26). Kicked off a beat after boot returns — the specs' `ready`
+  // gate stays a first-paint signal, not a 72 MB download — and exposed as a
+  // promise so a spec (or the week-4 soak) can await the warm state.
+  if (config.preload === "on") {
+    const files = [...new Set([exhibit.piece.ref || exhibit.order[0], ...exhibit.order])];
+    window._exhibitTest.preloaded = new Promise((resolve) => {
+      setTimeout(() => transport.preloadAll(files).then(resolve), 0);
+    });
+  }
 
   if (config.debug) {
     console.log("exhibit: config", config);
@@ -1438,6 +1452,13 @@ function paintDim(vp, annotations, paintIds) {
 function onTransport(band) {
   let lastFile = null;
   let lastLoading = null;
+  let graceTimer = 0;
+  const showLoading = (show) => {
+    for (const vp of viewports) {
+      vp.statusEl.textContent = show ? t("state.loading", vp.language) : "";
+      vp.statusEl.dataset.state = show ? "loading" : "";
+    }
+  };
   return (state) => {
     const positions = positionsFor(state.time, state.file);
     for (const vp of viewports) {
@@ -1458,13 +1479,30 @@ function onTransport(band) {
     }
     // Guarded like the band above, and for the same reason: this runs per frame
     // while playing, and the loading flag changes on a tap, not sixty times a
-    // second.
+    // second. ?loadingGrace delays the text: a warm switch that completes
+    // inside the grace never shows it — "Loading…" flashing between seamless
+    // switches reads as a glitch (user, 2026-08-26) — while a genuine wait
+    // still explains itself. The falling edge always clears immediately.
     const loading = !!state.loading;
     if (loading !== lastLoading) {
       lastLoading = loading;
-      for (const vp of viewports) {
-        vp.statusEl.textContent = loading ? t("state.loading", vp.language) : "";
-        vp.statusEl.dataset.state = loading ? "loading" : "";
+      if (!loading) {
+        if (graceTimer) {
+          clearTimeout(graceTimer);
+          graceTimer = 0;
+        }
+        showLoading(false);
+      } else if (config.loadingGrace > 0) {
+        // A single timer per rising edge; the loading FILE changing mid-wait
+        // keeps the original deadline — the visitor has been waiting since then.
+        if (!graceTimer) {
+          graceTimer = setTimeout(() => {
+            graceTimer = 0;
+            if (lastLoading) showLoading(true);
+          }, config.loadingGrace);
+        }
+      } else {
+        showLoading(true);
       }
     }
   };

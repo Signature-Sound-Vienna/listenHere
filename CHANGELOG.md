@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.33.0 -- Exhibit readiness: audio preload, player cache, loading grace
+* `?preload=on` (default off): after boot, every recording's bytes are fetched sequentially — reference first — so the exhibit is never half-ready for its first visitor; a visitor's tap always outranks the warm loop. Bytes only; players still build on first use.
+* `?playerCache=N` (default 2, the shipped LRU): 8 keeps every built player, making all switches permanently instant — kiosk adoption pending the week-4 soak's memory verdict.
+* `?loadingGrace=ms` (default 0): "Loading…" appears only after a genuine wait this long, so warm switches never flash it.
+* All three in the study panel; the staff "Defaults" preset now carries `preload=on&playerCache=8&loadingGrace=500`.
+
 ### 0.32.0 -- Exhibit "parchment" theme
 * New `?theme=parchment` preset: aged-paper ground with procedural staining, foxing, grain, and vignette (inline SVG turbulence — no asset, no fetch); iron-gall-ink waveforms on clean untextured lanes; bronze accent; an old-style system serif stack (Iowan/Palatino/Georgia); a historical-pigment annotation series for `?annotationColors=theme`.
 * The structured stain layer renders as ONE non-repeating cover image (tiling drummed a visible repeat); only the scale-critical fine grain tiles. Full-screen rasterization cost noted for the iPad/soak watch list.

@@ -146,6 +146,11 @@ const TABS = [
       { key: "detailJump", label: "Jump button", options: ["on", "off"] },
       { key: "minRegionPx", label: "Region floor (px)", options: [2, 4, 8] },
       { key: "zoom", label: "Initial zoom (px/s; 0 = fit)", options: [0, 30] },
+      // Readiness (user, 2026-08-26, iPad round): warm bytes at boot, players
+      // kept, and the grace before "Loading…" earns its place on the glass.
+      { key: "preload", label: "Warm audio at boot", options: ["off", "on"] },
+      { key: "playerCache", label: "Players kept (LRU)", options: [2, 4, 8] },
+      { key: "loadingGrace", label: "‘Loading…’ grace (ms)", options: [0, 250, 500, 1000] },
       { key: "debug", label: "Debug logging", options: [false, true] },
     ],
   },
@@ -168,6 +173,11 @@ const STUDY_PRESET = {
   turnPolicy: "attribution",
   audienceAll: true,
   pinExpiry: "auto",
+  // The warm-kiosk experience asked for on the iPad (2026-08-26): everything
+  // fetched at boot, all eight players kept once built, no "Loading…" flash.
+  preload: "on",
+  playerCache: 8,
+  loadingGrace: 500,
 };
 
 // PANEL STATE LIVES IN localStorage, NEVER IN THE URL — the URL is reserved

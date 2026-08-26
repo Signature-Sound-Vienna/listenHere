@@ -546,4 +546,91 @@ test.describe('34. The exhibit loader', () => {
     }, order);
     expect(probe).toEqual(['inGrace:empty', 'afterGrace:loading', 'settled:empty']);
   });
+
+  // 34.17 ?tapMode=direct (alpha-tester feedback, 2026-08-26): a tap on another
+  // strip is taken literally on BOTH axes — switch to that recording AND seek
+  // to the tapped x-position. The mirror image of 34.8, which pins the shipped
+  // aligned carry at the default; the same far-right tap that 34.8 requires to
+  // be IGNORED must land here.
+  test('34.17 ?tapMode=direct takes a tap on another strip literally on both axes', async ({
+    page,
+  }) => {
+    const { order } = await boot(page, 'tapMode=direct');
+    const [fileA, fileB] = order;
+    await page.evaluate(
+      ({ fileA }) => (window as any)._exhibitTest.transport.select(fileA, 42, /* play */ false),
+      { fileA },
+    );
+
+    const strip = page.locator(`.vp[data-viewport="0"] .strip[data-file="${fileB}"] .strip-ws`);
+    const box = (await strip.boundingBox())!;
+    await strip.click({ position: { x: Math.round(box.width * 0.8), y: 10 } });
+
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.activeFile))
+      .toBe(fileB);
+    const { time, expected } = await page.evaluate(
+      ({ fileB }) => {
+        const T = (window as any)._exhibitTest;
+        return { time: T.transport._time, expected: 0.8 * T.exhibit.durations[fileB] };
+      },
+      { fileB },
+    );
+    // Tolerance: the tap's pixel quantum (~0.6 s at fit-to-width) plus however
+    // far playback ran before the poll landed — the tap plays, by the ruled
+    // jump semantics. Either failure mode is hundreds of seconds out: an
+    // aligned carry lands near the projection of 42 s, a time-less switch at 0.
+    expect(Math.abs(time - expected)).toBeLessThan(5);
+  });
+
+  // 34.18 The switch strap: absent at the default, present in direct mode —
+  // one button per recording, beside its strip, labelled with the conductor's
+  // initials and year (ruled 2026-08-26) — and a button tap does the ALIGNED
+  // carry that direct mode removed from the strips, marked active afterwards.
+  test('34.18 the switch strap appears only in direct mode and its buttons carry the moment', async ({
+    page,
+  }) => {
+    await boot(page);
+    expect(await page.locator('.vp-strap').count(), 'the default mode grew a strap').toBe(0);
+
+    const { order } = await boot(page, 'tapMode=direct');
+    const [fileA, fileB] = order;
+    const buttons = page.locator('.vp[data-viewport="0"] .vp-strap .strap-btn');
+    await expect(buttons).toHaveCount(8);
+
+    const probe = await page.evaluate(
+      async ({ fileA, fileB }) => {
+        const T = (window as any)._exhibitTest;
+        await T.transport.select(fileA, 42, /* play */ false);
+        const meta = T.exhibit.metadata.recordings[fileB];
+        const initials = meta.conductor
+          .split(/[\s-]+/)
+          .filter(Boolean)
+          .map((p: string) => p[0])
+          .join('');
+        const btn = document.querySelector(
+          `.vp[data-viewport="0"] .vp-strap .strap-btn[data-file="${fileB}"]`,
+        )!;
+        return {
+          label: btn.textContent,
+          expectedLabel: `${initials} ’${String(meta.year).slice(-2)}`,
+          expectedTime: T.positionsFor(42, fileA)[fileB],
+        };
+      },
+      { fileA, fileB },
+    );
+    expect(probe.label).toBe(probe.expectedLabel);
+
+    await page.click(`.vp[data-viewport="0"] .vp-strap .strap-btn[data-file="${fileB}"]`);
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.activeFile))
+      .toBe(fileB);
+    const time = await page.evaluate(() => (window as any)._exhibitTest.transport._time);
+    // The aligned carry, 34.8's own assertion shape: near the projected moment,
+    // give or take real playback milliseconds — nowhere near a literal-x seek.
+    expect(Math.abs(time - probe.expectedTime)).toBeLessThan(5);
+    await expect(
+      page.locator(`.vp[data-viewport="0"] .vp-strap .strap-btn[data-file="${fileB}"]`),
+    ).toHaveClass(/is-active/);
+  });
 });

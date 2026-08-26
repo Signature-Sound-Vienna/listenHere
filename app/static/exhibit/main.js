@@ -27,6 +27,7 @@ import {
 import { configureGroupingCore, safeColor } from "../js/engine/grouping-core.js";
 import { AUDIENCES, loadExhibitData, metadataFor } from "./payload.js";
 import { mountStrips } from "./strips.js";
+import { createStrap } from "./strap.js";
 import { syncRegions } from "./regions.js";
 import { Transport } from "./audio.js";
 import { TurnTaking } from "./turns.js";
@@ -167,6 +168,11 @@ function buildScreen(root) {
     // independently and may differ at the same moment.
     vp.dataset.audience = config.audiences[i] ?? config.audiences[0];
     vp.dataset.language = config.languages[i] ?? config.languages[0];
+    // Set BEFORE any strip mounts, like the side slot below: the strap's
+    // reserved padding narrows the strips column, and WaveSurfer sizes its
+    // canvases from the width it sees at creation. The strap element itself
+    // mounts later (it is absolutely positioned, so it costs no re-measure).
+    if (config.tapMode === "direct") vp.dataset.tapMode = "direct";
     const rot = rotationFor(config, i);
     if (rot) vp.style.transform = `rotate(${rot}deg)`;
 
@@ -480,13 +486,32 @@ async function boot() {
       // Taps go through the turn machine, which owns the seek-vs-switch rule
       // (a tap's time is only honoured on the already-active strip — see
       // turns.request) and knows WHOSE tap this is, which the transport never
-      // needs to.
-      onSelect: (file, time) => turns.request(vp.index, file, time),
+      // needs to. Under ?tapMode=direct the tap is instead taken literally on
+      // both axes via the jump path (ruled 2026-08-25: explicit time honoured
+      // across a switch, plays if paused, the reader's own seek to the fade
+      // machinery) — the aligned switch moves to the strap below.
+      onSelect: (file, time) =>
+        config.tapMode === "direct"
+          ? turns.jump(vp.index, file, time)
+          : turns.request(vp.index, file, time),
       labelFor: (file) => stripLabel(exhibit, file),
       colors: themeColors,
     });
     vp.strips = mounted.strips;
     stripsReady.push(mounted.ready);
+
+    // The switch strap (?tapMode=direct — alpha-tester feedback, 2026-08-26):
+    // one button per recording, beside its strip, doing the aligned
+    // carry-the-moment switch that direct mode removed from the strips. A
+    // button tap is a request with no time — exactly what a strip tap was.
+    if (config.tapMode === "direct") {
+      vp.strap = createStrap(vp.stripsEl, {
+        files: [...mounted.strips.keys()],
+        labelFor: (file) => strapLabel(exhibit, file),
+        titleFor: (file) => stripLabel(exhibit, file),
+        onPick: (file) => turns.request(vp.index, file, undefined),
+      });
+    }
 
     // One toolbar row above the strips: the audience switch and the zoom
     // buttons share it so the controls cost one strip-height of the column, not
@@ -1159,6 +1184,27 @@ function stripLabel(exhibit, file) {
 }
 
 /**
+ * The strap button's placeholder text until the gen-AI portrait excerpts exist
+ * (plan §5.5): conductor initials and the year — "HvK ’87", "CK ’89" (ruled
+ * 2026-08-26). Initials keep each name part's own case, so the particle in
+ * "Herbert von Karajan" reads as the lowercase v it is, and hyphenated
+ * surnames contribute each half ("Franz Bauer-Theussl" → FBT). All eight
+ * conductors are distinct where four ensembles are not, which is why the
+ * conductor and not the ensemble. The filename fallback keeps a missing
+ * sidecar visible, the stripLabel precedent.
+ */
+function strapLabel(exhibit, file) {
+  const meta = metadataFor(exhibit, file);
+  const name = meta.conductor || file.replace(/\.wav$/i, "");
+  const initials = name
+    .split(/[\s-]+/)
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join("");
+  return meta.year ? `${initials} ’${String(meta.year).slice(-2)}` : initials;
+}
+
+/**
  * Open or close one viewport's side panel. The CSS keys the two-column grid on
  * `data-side-open`, so this is also the moment the strips column changes width
  * — the current zoom level's geometry is re-run against the new widths, else a
@@ -1474,6 +1520,7 @@ function onTransport(band) {
       lastFile = state.file;
       for (const vp of viewports) {
         for (const [file, strip] of vp.strips) strip.setActive(file === state.file);
+        vp.strap?.setActive(state.file);
       }
       band.update(state.file);
     }

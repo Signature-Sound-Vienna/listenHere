@@ -216,6 +216,21 @@ const DEFAULTS = {
   // music; "off" keeps it A/B-testable.
   detailJump: "on",
 
+  // --- tap semantics (alpha-tester feedback, 2026-08-26) ---
+  // What a tap on a NON-ACTIVE waveform means:
+  //   "aligned" — the shipped behaviour: switch to that recording and carry
+  //               the current musical moment across through the alignment;
+  //               the tap's x-position is deliberately ignored (spec 34.8).
+  //   "direct"  — the tap is taken literally on BOTH axes: switch to that
+  //               recording AND seek to the tapped time (the turns.jump path,
+  //               so the ruled jump semantics apply — explicit time honoured
+  //               across the switch, plays if paused, the reader's own seek
+  //               for the fade rules). Because this removes the aligned
+  //               switch from the strips, direct mode also mounts the SWITCH
+  //               STRAP (strap.js): a per-recording button column left of the
+  //               waveforms whose buttons do the aligned switch instead.
+  tapMode: "aligned",
+
   // --- turn-taking (plan §4.3; turns.js) ---
   // Which policy a tap goes through when the OTHER side holds the clock:
   //   "hijack"      — take it instantly, silently (the shipped behaviour).

@@ -88,6 +88,20 @@ const PARCHMENT_GRAIN =
       "</svg>",
   );
 
+// Leather grain for the switch strap (?tapMode=direct), parchment only —
+// procedural like the paper above, by the same ruling: no asset, no fetch.
+// Dense fine turbulence reads as full-grain leather at strap scale; the
+// colour work (base tan, edge burnish) lives in the token's gradient layers.
+const PARCHMENT_LEATHER =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='96' height='96'>" +
+      "<filter id='l'><feTurbulence type='fractalNoise' baseFrequency='0.6' numOctaves='4' seed='7' stitchTiles='stitch'/>" +
+      "<feColorMatrix type='matrix' values='0 0 0 0 0.10  0 0 0 0 0.05  0 0 0 0 0.02  0 0 0 0.45 0'/></filter>" +
+      "<rect width='96' height='96' filter='url(#l)'/>" +
+      "</svg>",
+  );
+
 export const PALETTES = {
   dark: {
     label: "Dark (default)",
@@ -437,6 +451,14 @@ export const PALETTES = {
       "--ex-texture-size": "auto, cover, auto",
       "--ex-font":
         "'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, 'Times New Roman', serif",
+      // The switch strap's leather (optional tokens, like the texture above):
+      // burnished edges, the grain tile, a saddle-tan base; buttons get aged
+      // paper so the placeholder initials — and later the portrait excerpts —
+      // sit like labels sewn onto the strap.
+      "--ex-strap-bg":
+        "linear-gradient(90deg, rgba(26,14,4,0.5), rgba(26,14,4,0) 26%, rgba(26,14,4,0) 74%, rgba(26,14,4,0.5)), " +
+        `url("${PARCHMENT_LEATHER}"), linear-gradient(180deg, #6a4423, #553318)`,
+      "--ex-strap-btn": "rgba(238,226,200,0.92)",
     },
     // Iron-gall ink: aged-but-legible strokes on the resting strips (the
     // within-pane contrast ruling, eyeballed 2026-08-25), near-black ink on
@@ -579,7 +601,16 @@ const CATEGORY_SLICES = {
   strips: ["--ex-surface", "--ex-surface-active", "--ex-mark", "--ex-mark-dim"],
   captions: ["--ex-label", "--ex-label-active", "--ex-glow"],
   text: ["--ex-text-body", "--ex-text-soft", "--ex-text-dim", "--ex-text-faint", "--ex-font"],
-  controls: ["--ex-panel", "--ex-border", "--ex-border-strong", "--ex-card"],
+  // The strap pair is OPTIONAL (see the header): only parchment carries it,
+  // every other palette leaves the :root-less fallbacks (panel and card).
+  controls: [
+    "--ex-panel",
+    "--ex-border",
+    "--ex-border-strong",
+    "--ex-card",
+    "--ex-strap-bg",
+    "--ex-strap-btn",
+  ],
   accent: ["--ex-accent", "--ex-accent-border", "--ex-on-accent"],
 };
 

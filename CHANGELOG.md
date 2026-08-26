@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.34.0 -- Exhibit direct tap mode and the switch strap
+* `?tapMode=direct` (default aligned, alpha-tester feedback): a tap on another waveform is taken literally on BOTH axes — switch and seek to the tapped position — via the ruled jump path (explicit time survives the switch and contention; plays if paused; the reader's own seek to the fade rules).
+* The switch strap: in direct mode each viewport gains a per-recording button column left of the waveforms (strap.js) doing the aligned carry-the-moment switch the strips gave up. Buttons show conductor initials + year ("HvK ’87") until the §5.5 portrait excerpts exist, and mirror the active recording.
+* Parchment styles the strap as leather via two new OPTIONAL theme tokens (`--ex-strap-bg`, `--ex-strap-btn`); every other theme keeps the panel/card fallbacks.
+* `tapMode` in the study panel (Misc); the staff preset stays aligned by ruling.
+* Testing: 34.17 pins the literal both-axes tap (the mirror of 34.8's aligned carry), 34.18 the strap — direct-only, labels, aligned carry, active marking.
+
 ### 0.33.0 -- Exhibit readiness: audio preload, player cache, loading grace
 * `?preload=on` (default off): after boot, every recording's bytes are fetched sequentially — reference first — so the exhibit is never half-ready for its first visitor; a visitor's tap always outranks the warm loop. Bytes only; players still build on first use.
 * `?playerCache=N` (default 2, the shipped LRU): 8 keeps every built player, making all switches permanently instant — kiosk adoption pending the week-4 soak's memory verdict.

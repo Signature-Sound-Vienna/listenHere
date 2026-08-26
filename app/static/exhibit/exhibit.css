@@ -195,6 +195,56 @@ html, body {
 }
 .strip.is-active .strip-label { color: var(--ex-label-active); }
 
+/* The switch strap (?tapMode=direct — alpha-tester feedback, 2026-08-26). In
+ * direct mode a waveform tap is taken literally on both axes, so the ALIGNED
+ * switch — the exhibit's carry-the-moment comparison — moves to this column of
+ * per-recording buttons left of the waveforms. The strips column reserves the
+ * width as padding BEFORE any strip mounts (main.js sets data-tap-mode at
+ * viewport creation, the side-slot precedent), and the strap itself is
+ * absolutely positioned inside that padding: mounting it never re-measures a
+ * waveform. Its rows copy the strip stack's own height and gap, so each button
+ * sits exactly beside the strip it switches to — the border is an inset shadow
+ * for the same reason as .strip.is-selected: a real border would shift the
+ * rows off their strips by a pixel. Themed by the OPTIONAL --ex-strap tokens
+ * (parchment's leather); everything else falls back to the panel palette. */
+.vp[data-tap-mode="direct"] .strips { padding-left: calc(var(--ex-strap-w, 52px) + 6px); }
+.vp-strap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--ex-strap-w, 52px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--ex-strap-bg, var(--ex-panel));
+  box-shadow: inset 0 0 0 1px var(--ex-border);
+  border-radius: 4px;
+  z-index: 1;
+}
+.strap-btn {
+  flex: 0 0 var(--strip-height, 54px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 3px;
+  padding: 0 2px;
+  border: none;
+  border-radius: 3px;
+  background: var(--ex-strap-btn, var(--ex-card));
+  color: var(--ex-text-soft);
+  font-family: inherit;
+  font-size: 0.66rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.strap-btn.is-active {
+  background: var(--ex-accent);
+  color: var(--ex-on-accent);
+}
+
 /* Regions the prep script flagged for hand placement (plan §5.2d), and regions
  * widened to stay visible at all (config.minRegionPx). Both are drawn where the
  * alignment currently says, which is not where the annotator will eventually put

@@ -144,6 +144,9 @@ const TABS = [
       { key: "detailFade", label: "Text fade-out", options: ["off", "auto"] },
       { key: "detailTitle", label: "Detail title", options: ["auto", "on", "off"] },
       { key: "detailJump", label: "Jump button", options: ["on", "off"] },
+      // The alpha-tester tap question (2026-08-26): aligned carry vs literal
+      // both-axes taps with the switch strap. See config.js's tapMode.
+      { key: "tapMode", label: "Waveform tap", options: ["aligned", "direct"] },
       { key: "minRegionPx", label: "Region floor (px)", options: [2, 4, 8] },
       { key: "zoom", label: "Initial zoom (px/s; 0 = fit)", options: [0, 30] },
       // Readiness (user, 2026-08-26, iPad round): warm bytes at boot, players

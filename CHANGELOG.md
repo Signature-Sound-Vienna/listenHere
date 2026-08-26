@@ -1,5 +1,15 @@
 # Listen Here! CHANGELOG.md
 
+### 0.35.0 -- Exhibit listening marker (the magnifying glass), and the Scholz display copy
+* `?marker=glass` (default off): one marker per viewport, anchored as an alignment index (align-core; the listen.js mark-button semantic). The glass rests on a stitched hook in the left rail — the strap's column; aligned mode reserves the column for the hook alone — dragged onto a waveform to place, dragged off to remove.
+* Tap path: tapping the glass lifts it into expect-placement (the strip stack pulses); the next waveform tap places it; a tap anywhere else rests the glass on its hook while still performing its own action.
+* Placement, moving, and adoption are the reader's own jump — the placed moment plays. While a marker stands, bare switches (aligned cross-strip taps, strap picks, nav arrows) land on it instead of carrying the moment; explicit times still win. Marker-snap switches count as seeks for the fade rules.
+* The other viewport's marker appears as a mirrored translucent ghost, interactive only while this side's glass is in hand; dropping or tapping the glass onto it adopts that moment (merge = snap-assisted placement, no persistent merged object).
+* Projected ticks on every strip: salient and live-tracking while the glass is in hand, briefly prominent after placement, then settled-subtle but visible.
+* The glass wears the theme accent (parchment's bronze was specified as this metal); one new optional token, `--ex-marker-lens`. `marker` in the study panel (Misc).
+* Scholz display copy (option b, ruled; pending Chanda's confirmation): the Warren recording shows "Orchestra and conductor unidentified — a pseudonymous Alfred Scholz production, first issued 1982." in the band (sidecar `displayNote`, a language map), "Unidentified orchestra" in the strip caption (`displayShort`), and a "?" strap medallion; decided-empty conductor/ensemble in the overrides.
+* Testing: spec 38 (13 tests), including the rotated-viewport drag mapping and the seek-classification A/B pin. 552/4 combined = 276/2 per browser.
+
 ### 0.34.1 -- Strap leather reveal: full height, medallions, arrows, stitching everywhere
 * The leather band now runs the viewport's full height — from the page edge up underneath the middle band, which paints above it — so the strap reads as binding the two halves; the toolbar and commentary sit beside it. Buttons stay on a separate rail keeping exact strip-row alignment.
 * Labels sit on circular medallions (discs sized to strap and strip geometry, two-line stacked — the §5.5 portrait-excerpt shape); tap targets still fill the whole row.

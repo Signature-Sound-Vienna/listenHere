@@ -105,9 +105,14 @@
     ]
   },
   "Philharmonia Orchestra London, Georg Randolph Warren (1982).wav": {
-    "ensemble": "Philharmonia Orchestra London",
+    "conductor": "",
+    "ensemble": "",
+    "displayNote": {
+      "en": "Orchestra and conductor unidentified — a pseudonymous Alfred Scholz production, first issued 1982."
+    },
+    "displayShort": { "en": "Unidentified orchestra" },
     "_disposition": "editorial",
-    "_why": "RECLASSIFIED 2026-08-24 from 'until-upstream-fixed' to 'editorial'. MusicBrainz is NOT wrong here: 'London Philharmonia Orchestra' is its deliberate, disambiguated name for an Alfred Scholz-related budget-label ensemble. Keeping the corpus form is therefore an editorial choice, and arguably the WORSE one, since 'Philharmonia Orchestra London' more strongly implies the real Philharmonia — which is exactly the false impression to avoid. HELD pending the decision in _scholzConcern; do not treat this entry as settled."
+    "_why": "THE B-SHAPE RULING (user, 2026-08-27; to be confirmed with Chanda): the honest label. Empty-string conductor/ensemble are DECIDED-EMPTY (distinct from null, which apply_overrides treats as still-unanswered): the credited names are pseudonymous inventions (see _scholzConcern) and displaying them with museum authority is the false impression to avoid. displayNote is the middle band's explanation where the names would be; displayShort takes the ensemble's slot in the strip caption; the strap medallion renders a '?' disc (main.js strapLabel). Both display fields are language maps — German is in-house translation work, the strings.js discipline. Previous entry (kept for the record): the corpus-form ensemble override, RECLASSIFIED 2026-08-24 from 'until-upstream-fixed' to 'editorial' and HELD pending this decision."
   },
   "Wiener Volksopernorchester, Franz Bauer-Theussl (1985).wav": {
     "ensemble": "Wiener Volksopernorchester",
@@ -122,6 +127,12 @@
     "  filename is only a key.)"
   ],
   "_scholzConcern": [
+    "*** DECIDED 2026-08-27 (user): OPTION B, the honest label — pending Chanda's",
+    "confirmation. Implemented in this file's Warren entry (displayNote/displayShort,",
+    "decided-empty names) plus the '?' strap medallion; the researcher-suggested",
+    "short form below is the shipped display copy verbatim. The record below is",
+    "kept as the evidence. ***",
+    "",
     "*** NEEDS A DECISION BEFORE THE MIDDLE BAND SHIPS — raised 2026-08-24 ***",
     "",
     "'Philharmonia Orchestra London, Georg Randolph Warren (1982)' appears to come",

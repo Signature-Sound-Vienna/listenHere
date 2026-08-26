@@ -147,6 +147,8 @@ const TABS = [
       // The alpha-tester tap question (2026-08-26): aligned carry vs literal
       // both-axes taps with the switch strap. See config.js's tapMode.
       { key: "tapMode", label: "Waveform tap", options: ["aligned", "direct"] },
+      // The week-4 listening marker (ruled 2026-08-27; marker.js).
+      { key: "marker", label: "Listening marker", options: ["off", "glass"] },
       { key: "minRegionPx", label: "Region floor (px)", options: [2, 4, 8] },
       { key: "zoom", label: "Initial zoom (px/s; 0 = fit)", options: [0, 30] },
       // Readiness (user, 2026-08-26, iPad round): warm bytes at boot, players

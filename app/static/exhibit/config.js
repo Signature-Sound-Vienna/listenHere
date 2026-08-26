@@ -231,6 +231,17 @@ const DEFAULTS = {
   //               waveforms whose buttons do the aligned switch instead.
   tapMode: "aligned",
 
+  // --- the listening marker (week 4, ruled 2026-08-27; marker.js) ---
+  // "glass" mounts one magnifying-glass marker per viewport, resting on a hook
+  // in the left rail (the strap's column; aligned mode reserves the same
+  // column for the hook alone). Anchored as an alignment index: while YOUR
+  // marker exists, your bare recording switches land on it instead of
+  // carrying the moment — the marker's existence IS the mode. Placement,
+  // moving, and adoption route through the jump path as the reader's own
+  // seek; a marker-snap switch counts as a SEEK for the fade rules (ruled).
+  // "off" is the shipped behaviour, byte-identical per the A/B rule.
+  marker: "off",
+
   // --- turn-taking (plan §4.3; turns.js) ---
   // Which policy a tap goes through when the OTHER side holds the clock:
   //   "hijack"      — take it instantly, silently (the shipped behaviour).

@@ -28,6 +28,7 @@ import { configureGroupingCore, safeColor } from "../js/engine/grouping-core.js"
 import { AUDIENCES, loadExhibitData, metadataFor } from "./payload.js";
 import { mountStrips } from "./strips.js";
 import { createStrap } from "./strap.js";
+import { createMarkerLayer } from "./marker.js";
 import { syncRegions } from "./regions.js";
 import { Transport } from "./audio.js";
 import { TurnTaking } from "./turns.js";
@@ -180,6 +181,11 @@ function buildScreen(root) {
       strapBand.className = "vp-strap-band";
       vp.appendChild(strapBand);
     }
+    // The marker's hook rail lives in the same reserved column as the strap,
+    // and aligned mode has no strap — so the marker reserves the column
+    // itself (the CSS unions the two selectors into one padding), and it must
+    // do so HERE for the same canvas-sizing reason as the strap above.
+    if (config.marker === "glass") vp.dataset.marker = "glass";
     const rot = rotationFor(config, i);
     if (rot) vp.style.transform = `rotate(${rot}deg)`;
 
@@ -463,6 +469,13 @@ async function boot() {
   });
   for (const slot of bands) slot.replaceWith(band.el);
   window._exhibitTest.band = band;
+  window._exhibitTest.marker = (i) => viewports[i]?.marker?.state() ?? null;
+  // Programmatic placement for the specs (the readingClock.advance precedent):
+  // the semantic path without the pointer choreography, so tests of the SNAP
+  // and fade rules do not have to re-prove the gestures each time.
+  window._exhibitTest.placeMarker = (i, file, time) => {
+    if (viewports[i]?.marker) placeMarker(viewports[i], file, time);
+  };
 
   // Where the detail header's "Jump to annotation" lands (ruled 2026-08-25):
   // the ACTIVE recording when the annotation targets it — a jump should not
@@ -487,6 +500,63 @@ async function boot() {
     return start == null ? null : { file, time: start };
   };
 
+  // ?marker=glass (week 4, ruled 2026-08-27): the SEMANTIC state — which
+  // moment each viewport's marker names, as an alignment index — lives here
+  // beside the machines that consume it; marker.js owns only the physical
+  // object and reports gestures. Three rulings wired below:
+  //   * placement, moving, and adoption are the reader's own JUMP (a placed
+  //     glass plays there — "listen here" is the product; the turn policies
+  //     arbitrate the audio exactly as for any tap, while the marker itself
+  //     is per-viewport and never contended);
+  //   * a bare switch with a marker up LANDS ON IT instead of carrying the
+  //     moment (listen.js's swapCurrentAudio semantic — the marker's
+  //     existence is the mode); explicit times still win;
+  //   * every marker-driven jump is flagged so the discontinuity classifier
+  //     reads it as a SEEK even when it switches recording (ruled: a
+  //     deliberate jump to elsewhere, not a moment-preserving switch).
+  let markerSeek = null; // { file, time } of the last marker-driven jump
+  const markerJump = (vp, file, time) => {
+    markerSeek = { file, time };
+    turns.jump(vp.index, file, time);
+  };
+  const syncGhosts = () => {
+    for (const vp of viewports) {
+      const other = viewports.find((o) => o.index !== vp.index && o.markerIx != null);
+      vp.marker?.setGhost(other ? other.markerIx : null, other ? other.markerFile : null);
+    }
+  };
+  const placeMarker = (vp, file, time) => {
+    vp.markerIx = getClosestAlignmentIx(exhibit.grids, time, file);
+    vp.markerFile = file;
+    vp.marker.setMarker(vp.markerIx, file);
+    syncGhosts();
+    markerJump(vp, file, time);
+  };
+  const adoptMarker = (vp) => {
+    const other = viewports.find((o) => o.index !== vp.index && o.markerIx != null);
+    // The ghost can vanish mid-gesture (the other side pulled their glass
+    // off): repaint what is true rather than adopting a moment that is gone.
+    if (!other) return vp.marker.setMarker(vp.markerIx, vp.markerFile);
+    vp.markerIx = other.markerIx;
+    vp.markerFile = other.markerFile;
+    vp.marker.setMarker(vp.markerIx, vp.markerFile);
+    syncGhosts();
+    const landing = getCorrespondingTime(exhibit.grids, vp.markerFile, vp.markerIx);
+    if (Number.isFinite(landing)) markerJump(vp, vp.markerFile, landing);
+  };
+  const removeMarker = (vp) => {
+    vp.markerIx = null;
+    vp.markerFile = null;
+    vp.marker.setMarker(null, null);
+    syncGhosts();
+  };
+  const markerSnapSwitch = (vp, file) => {
+    const landing = getCorrespondingTime(exhibit.grids, file, vp.markerIx);
+    // A grid gap degrades to the aligned carry rather than a dead button.
+    if (!Number.isFinite(landing)) return turns.request(vp.index, file, undefined);
+    markerJump(vp, file, landing);
+  };
+
   const stripsReady = [];
   for (const vp of viewports) {
     const mounted = mountStrips(vp.stripsEl, exhibit, config, {
@@ -497,11 +567,20 @@ async function boot() {
       // both axes via the jump path (ruled 2026-08-25: explicit time honoured
       // across a switch, plays if paused, the reader's own seek to the fade
       // machinery) — the aligned switch moves to the strap below.
-      onSelect: (file, time) =>
-        config.tapMode === "direct"
-          ? turns.jump(vp.index, file, time)
-          : turns.request(vp.index, file, time),
-      labelFor: (file) => stripLabel(exhibit, file),
+      onSelect: (file, time) => {
+        // The lifted glass turns the next waveform tap into PLACEMENT
+        // (marker.js's expect-placement mode) — reusing the strips' own
+        // transform-proof tap→time mapping rather than growing a second one.
+        if (vp.marker?.lifted) return placeMarker(vp, file, time);
+        if (config.tapMode === "direct") return turns.jump(vp.index, file, time);
+        // Aligned mode: a cross-strip tap is a bare switch, so a standing
+        // marker catches it; a same-strip tap keeps its explicit time (ruled).
+        if (vp.markerIx != null && file !== transport.activeFile) {
+          return markerSnapSwitch(vp, file);
+        }
+        return turns.request(vp.index, file, time);
+      },
+      labelFor: (file) => stripLabel(exhibit, file, vp.language),
       colors: themeColors,
     });
     vp.strips = mounted.strips;
@@ -512,23 +591,54 @@ async function boot() {
     // carry-the-moment switch that direct mode removed from the strips. A
     // button tap is a request with no time — exactly what a strip tap was.
     if (config.tapMode === "direct") {
+      // A strap pick or arrow step is exactly the BARE switch the marker
+      // ruling names, so a standing marker catches both (markerSnapSwitch);
+      // without one they stay the aligned carry they always were.
+      const bareSwitch = (file) =>
+        vp.markerIx != null
+          ? markerSnapSwitch(vp, file)
+          : turns.request(vp.index, file, undefined);
       vp.strap = createStrap(vp.stripsEl, {
         files: [...mounted.strips.keys()],
         labelFor: (file) => strapLabel(exhibit, file),
-        titleFor: (file) => stripLabel(exhibit, file),
-        onPick: (file) => turns.request(vp.index, file, undefined),
+        titleFor: (file) => stripLabel(exhibit, file, vp.language),
+        onPick: bareSwitch,
         // The arrows: the same aligned switch, one strip up or down from the
         // audible recording, wrapping at the ends (always set post-boot — the
         // resting preselect names the reference).
         onNav: (delta) => {
           const files = [...mounted.strips.keys()];
           const ix = Math.max(0, files.indexOf(transport.activeFile));
-          turns.request(vp.index, files[(ix + delta + files.length) % files.length], undefined);
+          bareSwitch(files[(ix + delta + files.length) % files.length]);
         },
         navLabels: {
           up: t("strap.prev", vp.language),
           down: t("strap.next", vp.language),
         },
+      });
+    }
+
+    // The listening marker (?marker=glass — marker.js has the design record;
+    // the semantic-state helpers above have the routing).
+    if (config.marker === "glass") {
+      vp.markerIx = null;
+      vp.markerFile = null;
+      vp.marker = createMarkerLayer({
+        stripsEl: vp.stripsEl,
+        strips: mounted.strips,
+        ixFor: (file, time) => getClosestAlignmentIx(exhibit.grids, time, file),
+        timeFor: (file, ix) => getCorrespondingTime(exhibit.grids, file, ix),
+        // For the drag's client→local mapping: the viewport's own rotation
+        // composed with the debug stage rotation (both right angles).
+        rotationOf: () =>
+          rotationFor(config, vp.index) + (Number(config.stageRotation) || 0),
+        labels: {
+          glass: t("marker.glass", vp.language),
+          ghost: t("marker.ghost", vp.language),
+        },
+        onPlace: (file, time) => placeMarker(vp, file, time),
+        onAdopt: () => adoptMarker(vp),
+        onRemove: () => removeMarker(vp),
       });
     }
 
@@ -549,8 +659,12 @@ async function boot() {
       // The minimum-width floor on regions is in SECONDS-per-pixel terms, so a
       // zoom change moves it: re-derive this viewport's regions at the new
       // scale rather than leaving kids-region slivers widened for a zoom level
-      // that is no longer current.
-      onChange: () => renderAnnotations(vp, store),
+      // that is no longer current. The marker's projections re-derive with
+      // them — same scale, same reason.
+      onChange: () => {
+        renderAnnotations(vp, store);
+        vp.marker?.reposition();
+      },
     });
     const toolbar = document.createElement("div");
     toolbar.className = "vp-toolbar";
@@ -1115,10 +1229,22 @@ async function boot() {
       // than a frame — so the holder at emit time is the jump's author. Null
       // means nothing has taken the clock yet (boot), where there is no text
       // to protect and every side counts as its own initiator.
+      // A marker-driven jump that switches recording still counts as a SEEK
+      // (ruled 2026-08-27): the visitor deliberately jumped elsewhere, so the
+      // fade rules treat it like one — their own text gets the countdown on
+      // unannotated ground, the other side's the steal guard. Matched on the
+      // flagged landing rather than on a mode flag, so a request-policy grant
+      // executing seconds later still classifies when it finally lands; any
+      // other discontinuity spends the flag.
+      const markerLanded =
+        markerSeek != null &&
+        markerSeek.file === state.file &&
+        Math.abs(state.time - markerSeek.time) <= 1;
       const jumpInfo =
         switched || jumped
-          ? { kind: switched ? "switch" : "seek", initiator: turns.holder }
+          ? { kind: switched && !markerLanded ? "switch" : "seek", initiator: turns.holder }
           : null;
+      if (switched || jumped) markerSeek = null;
       for (const vp of viewports) {
         followViewport(vp, state.file, state.time, jump ? null : prevTime, jumpInfo);
       }
@@ -1194,9 +1320,16 @@ async function boot() {
  * word that tells the strips apart. The filename is the fallback so a missing
  * sidecar is visible rather than blank.
  */
-function stripLabel(exhibit, file) {
+function stripLabel(exhibit, file, language) {
   const meta = metadataFor(exhibit, file);
-  const parts = [meta.conductor, meta.ensemble, meta.year].filter(
+  // A sidecar `displayShort` (a language map) stands in for the ensemble —
+  // the Scholz b-shape ruling (2026-08-27): "Unidentified orchestra" is a
+  // decided display, not a missing fact, so it takes the ensemble's slot
+  // rather than leaving the caption a bare year.
+  const ensemble = meta.displayShort
+    ? resolveText(meta.displayShort, { language })
+    : meta.ensemble;
+  const parts = [meta.conductor, ensemble, meta.year].filter(
     (v) => v != null && v !== "",
   );
   return parts.length ? parts.join(" · ") : file.replace(/\.wav$/i, "");
@@ -1214,6 +1347,14 @@ function stripLabel(exhibit, file) {
  */
 function strapLabel(exhibit, file) {
   const meta = metadataFor(exhibit, file);
+  // An identity DECIDED to be unknown (the Scholz b-shape ruling, 2026-08-27,
+  // pending Chanda's confirmation) is not a missing sidecar: the medallion
+  // owns up with a "?" rather than minting initials from a pseudonymous
+  // filename. Distinguished from genuine absence by the display fields the
+  // decision authored, so a broken sidecar still fails visibly below.
+  if (!meta.conductor && (meta.displayShort || meta.displayNote)) {
+    return meta.year ? `? ’${String(meta.year).slice(-2)}` : "?";
+  }
   const name = meta.conductor || file.replace(/\.wav$/i, "");
   const initials = name
     .split(/[\s-]+/)
@@ -1237,6 +1378,7 @@ function setPanelOpen(vp, open) {
   if (vp.panelOpen) vp.el.dataset.sideOpen = "1";
   else delete vp.el.dataset.sideOpen;
   vp.zoom?.refit();
+  vp.marker?.reposition();
 }
 
 /**

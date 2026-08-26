@@ -82,6 +82,10 @@ const CATALOGUE = {
   "state.loading": { en: "Loading…" },
   "strap.prev": { en: "Previous recording" },
   "strap.next": { en: "Next recording" },
+  // The listening marker (?marker=glass): aria only — the glass is a physical
+  // object and deliberately carries no words on screen.
+  "marker.glass": { en: "Listening marker" },
+  "marker.ghost": { en: "The other visitor’s marker" },
   "state.nothingForAudience": { en: "Nothing here for this view — try another." },
   // A kiosk that fails must say so on the glass, not only in a console nobody can
   // open. The message names no cause on purpose: the visitor cannot act on one and

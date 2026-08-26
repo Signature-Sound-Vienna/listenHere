@@ -67,6 +67,17 @@ What must never diverge is the annotation **serialisation** shape, and that live
 things a copy would have let the exhibit disagree about — which moment an index is, which recordings a
 group holds — are imported (`align-core`, `grouping-core`).
 
+The same verdict was reached for the MARKER (2026-08-27, plan §4.4): `exhibit/marker.js` stays
+exhibit-local because everything semantic — marker = alignment index; placement = time→index;
+landing = index→time — is already three calls into `align-core`, and a shared `marker-core` would
+be those one-liners plus state that genuinely differs per consumer (listen.js keeps a LIST with an
+active member and a close-listening mode; the exhibit has one per viewport, and the marker's
+existence IS the mode). What listen.js should eventually adopt from the exhibit's copy is the
+SHAPE, not a module: redraw-from-state rendering with the DOM never the source of truth (its
+`engine/markers.js` still reaches back into listen.js for 13 bindings — when the Wave C mirrors
+retire, converge it on this pattern), and Pointer Events with capture instead of the mouse-only
+document listeners.
+
 ## Pushed back into the engine
 
 The mirror image of the ledger, and the more valuable half: what building a second consumer *fixed*

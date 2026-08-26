@@ -483,6 +483,11 @@ export const PALETTES = {
       // leather-brown on resting paper surfaces, pale on filled bronze ones.
       "--ex-thread": "rgba(90,58,32,0.5)",
       "--ex-thread-accent": "rgba(255,243,224,0.5)",
+      // The magnifying-glass marker's lens (?marker=glass): aged glass with a
+      // faint amber cast. The metal is the accent — bronze was chosen for
+      // exactly this (see the palette note above) — so only the lens tint is
+      // parchment's to set; every other theme keeps the faint neutral fallback.
+      "--ex-marker-lens": "rgba(238, 226, 200, 0.3)",
       // The middle band as draped cloth (user, 2026-08-26): the active-
       // waveform gold with a vertical sheen, and shadows falling from its
       // long edges onto the straps it physically crosses.
@@ -642,6 +647,7 @@ const CATEGORY_SLICES = {
     "--ex-strap-btn",
     "--ex-thread",
     "--ex-thread-accent",
+    "--ex-marker-lens",
     "--ex-band-drape",
     "--ex-band-shadow",
   ],

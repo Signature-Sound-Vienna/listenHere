@@ -176,7 +176,13 @@ function buildCluster(data, language) {
   conductor.className = "mb-conductor";
   const ensemble = document.createElement("div");
   ensemble.className = "mb-ensemble";
-  who.append(conductor, ensemble);
+  // The honest label for a pseudonymous credit (the Scholz b-shape ruling,
+  // 2026-08-27): a sidecar `displayNote` — a language map, so it rides the
+  // same documented tension as the piece title rather than breaking the
+  // no-labels rule a second way — shown where the names would have been.
+  const note = document.createElement("div");
+  note.className = "mb-note";
+  who.append(conductor, ensemble, note);
   const year = document.createElement("div");
   year.className = "mb-year";
   // Recording facts (portrait, conductor over ensemble, year) as one cluster,
@@ -190,6 +196,9 @@ function buildCluster(data, language) {
     // though they were fetched offline.
     conductor.textContent = meta.conductor || "";
     ensemble.textContent = meta.ensemble || "";
+    note.textContent = meta.displayNote
+      ? resolveText(meta.displayNote, { language })
+      : "";
     year.textContent = meta.year != null ? String(meta.year) : "";
 
     portrait.textContent = "";
@@ -200,7 +209,9 @@ function buildCluster(data, language) {
       // a broken-image glyph on a museum wall.
       portrait.style.backgroundImage = `url("${encodeURI(meta.portrait)}")`;
     } else {
-      portrait.textContent = initials(meta.conductor);
+      // "?" for an identity decided to be unknown (the displayNote says why);
+      // initials otherwise. An empty circle only when the sidecar has nothing.
+      portrait.textContent = initials(meta.conductor) || (meta.displayNote ? "?" : "");
     }
   }
 

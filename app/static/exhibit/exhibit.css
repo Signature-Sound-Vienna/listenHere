@@ -211,7 +211,10 @@ html, body {
 /* The whole viewport shifts right of the strap (12px is .vp's own left
  * padding, kept): the strap runs the viewport's FULL height, so the toolbar
  * and the commentary sit beside it, not over it. */
-.vp[data-tap-mode="direct"] {
+/* The marker's hook rail (?marker=glass) shares the strap's reserved column,
+ * so either feature — or both — reserves it exactly once. */
+.vp[data-tap-mode="direct"],
+.vp[data-marker="glass"] {
   padding-left: calc(12px + var(--ex-strap-w, 52px) + 6px);
 }
 /* The leather itself, viewport-tall: from the page edge (the viewport's own
@@ -350,6 +353,163 @@ html, body {
   stroke-width: 1.5;
   stroke-dasharray: 3 3;
   stroke-linejoin: round;
+}
+
+/* The listening marker (?marker=glass — week 4, ruled 2026-08-27; marker.js
+ * has the design record). A physical magnifying glass: brass ring (the
+ * theme's accent — parchment's bronze was chosen for exactly this metal), a
+ * hairline cursor point through the lens, the medallion stitching inside the
+ * rim. It rests on a stitched hook in the left rail, floats while lifted
+ * (expect-placement), and rides under the finger while dragged. All chrome is
+ * out of the strips' flex flow — the layer, glass, and ghost are absolute, so
+ * mounting them can never move a strip. */
+.marker-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.marker-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(-1 * (var(--ex-strap-w, 52px) + 6px));
+  width: var(--ex-strap-w, 52px);
+}
+/* The empty hook doubles as the affordance: a stitched ring saying something
+ * belongs here — and, after a placement, where to put it back. It sits at the
+ * rail's OUTER end (each viewport's local bottom faces its own visitor), and
+ * in direct mode it hangs below the strap's down arrow. */
+.marker-hook {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 10px);
+  transform: translateX(-50%);
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 2px dashed var(--ex-accent);
+  opacity: 0.45;
+}
+.vp[data-tap-mode="direct"] .marker-hook { top: calc(100% + 54px); }
+
+.marker-glass {
+  position: absolute;
+  width: 56px;
+  height: 74px;
+  z-index: 3;
+  cursor: grab;
+  /* Required, not decorative: without it the browser claims a touch drag for
+   * native panning (the zoomed strips scroll natively) and pointermove never
+   * fires on the iPad. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  /* The lift-off / rest-on-hook travel: position transitions do the animating,
+   * cut while a finger has the glass. */
+  transition: left 450ms cubic-bezier(0.22, 1.1, 0.36, 1),
+    top 450ms cubic-bezier(0.22, 1.1, 0.36, 1);
+  filter: drop-shadow(0 2px 3px rgba(20, 10, 2, 0.4));
+}
+.marker-glass.is-dragging { transition: none; cursor: grabbing; }
+/* A placed glass whose moment is scrolled out of view hides honestly rather
+ * than pinning to an edge it is not at (the ticks already do). */
+.marker-glass.is-offview { visibility: hidden; }
+.marker-glass.is-lifted svg { animation: marker-bob 2.2s ease-in-out infinite; }
+@keyframes marker-bob {
+  0%, 100% { transform: translateY(0) rotate(-3deg); }
+  50% { transform: translateY(-7px) rotate(3deg); }
+}
+/* Drop verdicts, telegraphed before the finger lifts. */
+.marker-glass.will-adopt { filter: drop-shadow(0 0 7px var(--ex-accent)); }
+.marker-glass.will-remove { opacity: 0.55; }
+.marker-glass svg,
+.marker-ghost svg { display: block; width: 100%; height: 100%; }
+.marker-glass .glass-lens { fill: var(--ex-marker-lens, rgba(255, 255, 255, 0.08)); }
+.marker-glass .glass-ring,
+.marker-ghost .glass-ring {
+  fill: none;
+  stroke: var(--ex-accent);
+  stroke-width: 3.5;
+}
+.marker-glass .glass-handle,
+.marker-ghost .glass-handle {
+  fill: var(--ex-strap-btn, var(--ex-card));
+  stroke: var(--ex-accent);
+  stroke-width: 1.5;
+}
+.marker-glass .glass-stitch,
+.marker-ghost .glass-stitch {
+  fill: none;
+  stroke: var(--ex-thread, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.marker-glass .glass-point,
+.marker-ghost .glass-point {
+  stroke: var(--ex-accent);
+  stroke-width: 1.5;
+}
+
+/* The other side's marker, mirrored — their glass seen from across the table.
+ * Interactive only while THIS side's glass is in hand (is-engaged), so a
+ * resting visitor cannot press the other side's marker by accident. */
+.marker-ghost {
+  position: absolute;
+  width: 56px;
+  height: 74px;
+  z-index: 2;
+  opacity: 0.3;
+  pointer-events: none;
+  transition: opacity 250ms ease;
+}
+.marker-ghost svg { transform: rotate(180deg); }
+.marker-ghost.is-engaged {
+  opacity: 0.65;
+  pointer-events: auto;
+  cursor: pointer;
+}
+/* The [hidden]-vs-author-display trap, pre-empted per the recorded lesson. */
+.marker-ghost[hidden],
+.marker-tick[hidden] { display: none; }
+
+/* The projected moment on every strip. Salience is a lifecycle (ruled
+ * 2026-08-27): prominent while the glass is in hand — tracking the hover live
+ * during a drag — and briefly after placement (is-fresh, timed by marker.js),
+ * then settled-subtle but still visible, so a switch's landing point can be
+ * read before the switch is taken. */
+.marker-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ex-accent);
+  opacity: 0.4;
+  z-index: 2;
+  pointer-events: none;
+  transition: opacity 500ms ease, box-shadow 500ms ease;
+}
+.marker-tick.is-salient,
+.marker-tick.is-fresh {
+  opacity: 0.95;
+  box-shadow: 0 0 5px var(--ex-accent);
+}
+
+/* Expect-placement (a tap lifted the glass): the strip stack slowly pulses,
+ * saying the next tap in here places the marker. */
+.strips.marker-expect::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border: 2px solid var(--ex-accent);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 2;
+  animation: marker-expect-pulse 1.8s ease-in-out infinite;
+}
+@keyframes marker-expect-pulse {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.6; }
 }
 
 /* The stitched look for every control, both states, matching the medallions
@@ -929,6 +1089,17 @@ html, body {
 .mb-who { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .mb-conductor { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.01em; }
 .mb-ensemble { font-size: 0.85rem; color: var(--ex-band-text-soft); }
+/* The honest label for a pseudonymous credit (the Scholz b-shape ruling,
+ * 2026-08-27): a sentence where the names would be, so it wraps and stays
+ * quieter than a name. Empty for every other recording. */
+.mb-note {
+  font-size: 0.72rem;
+  font-style: italic;
+  color: var(--ex-band-text-soft);
+  max-width: 30ch;
+  line-height: 1.25;
+}
+.mb-note:empty { display: none; }
 .mb-year { font-size: 1.05rem; font-variant-numeric: tabular-nums; color: var(--ex-band-text-soft); }
 
 /* The piece, once per view: separated from the recording cluster by a hairline,

@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.34.1 -- Strap leather reveal: full height, medallions, arrows, stitching everywhere
+* The leather band now runs the viewport's full height — from the page edge up underneath the middle band, which paints above it — so the strap reads as binding the two halves; the toolbar and commentary sit beside it. Buttons stay on a separate rail keeping exact strip-row alignment.
+* Labels sit on circular medallions (discs sized to strap and strip geometry, two-line stacked — the §5.5 portrait-excerpt shape); tap targets still fill the whole row.
+* Arrow medallions above and below the rail (stitched SVG arrows) step the aligned switch one strip up or down, wrapping at the ends; spec 34.19.
+* Stitching generalized to every control button in both states via two optional tokens — `--ex-thread` (resting/paper) and `--ex-thread-accent` (filled/bronze) — parchment-only, a `?themeControls=parchment` pin away for other themes; chips and the pin-expiry pill deliberately excluded; :focus-visible ring restored.
+* The leather gained a thresholded blotch layer (wear/oiling), stretched once over the strap's height — the parchment stains lesson applied.
+* The staff cog and panel move to the window's bottom-left under a stage rotation, where the fixed bottom-right corner would land on a strap.
+
 ### 0.34.0 -- Exhibit direct tap mode and the switch strap
 * `?tapMode=direct` (default aligned, alpha-tester feedback): a tap on another waveform is taken literally on BOTH axes — switch and seek to the tapped position — via the ruled jump path (explicit time survives the switch and contention; plays if paused; the reader's own seek to the fade rules).
 * The switch strap: in direct mode each viewport gains a per-recording button column left of the waveforms (strap.js) doing the aligned carry-the-moment switch the strips gave up. Buttons show conductor initials + year ("HvK ’87") until the §5.5 portrait excerpts exist, and mirror the active recording.

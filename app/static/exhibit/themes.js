@@ -88,10 +88,29 @@ const PARCHMENT_GRAIN =
       "</svg>",
   );
 
-// Leather grain for the switch strap (?tapMode=direct), parchment only —
-// procedural like the paper above, by the same ruling: no asset, no fetch.
-// Dense fine turbulence reads as full-grain leather at strap scale; the
-// colour work (base tan, edge burnish) lives in the token's gradient layers.
+// Leather for the switch strap (?tapMode=direct), parchment only — procedural
+// like the paper above, by the same ruling: no asset, no fetch. Two layers,
+// the paper lesson applied (amplitude alone does not read as material —
+// edges do): a dense fine grain tile, and below it a THRESHOLDED low-
+// frequency blotch layer (wear, oiling, water marks) stretched once over the
+// strap's full height — stretched, not tiled, so nothing drums along its
+// length. The colour work (base tan, edge burnish) lives in the token's
+// gradient layers.
+// Rendered 1:1 and tiled (stitchTiles), never stretched: a scaled turbulence
+// render can seam at the renderer's internal tile boundaries — seen on the
+// device as a hard edge past the arrow tips. 1024 tall, so the repeat only
+// enters on a viewport half taller than that.
+const LEATHER_BLOTCH =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='52' height='1024' viewBox='0 0 52 1024'>" +
+      "<filter id='w' x='0' y='0' width='100%' height='100%'>" +
+      "<feTurbulence type='fractalNoise' baseFrequency='0.06 0.008' numOctaves='3' seed='9' stitchTiles='stitch'/>" +
+      "<feColorMatrix type='matrix' values='0 0 0 0 0.09  0 0 0 0 0.045  0 0 0 0 0.015  0 0 0 1 0'/>" +
+      "<feComponentTransfer><feFuncA type='table' tableValues='0 0 0.10 0.28 0.42 0.52'/></feComponentTransfer></filter>" +
+      "<rect width='52' height='1024' filter='url(#w)'/>" +
+      "</svg>",
+  );
 const PARCHMENT_LEATHER =
   "data:image/svg+xml," +
   encodeURIComponent(
@@ -452,13 +471,23 @@ export const PALETTES = {
       "--ex-font":
         "'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, 'Times New Roman', serif",
       // The switch strap's leather (optional tokens, like the texture above):
-      // burnished edges, the grain tile, a saddle-tan base; buttons get aged
-      // paper so the placeholder initials — and later the portrait excerpts —
-      // sit like labels sewn onto the strap.
+      // burnished edges, the stretched blotch layer, the grain tile, a
+      // saddle-tan base; buttons get aged paper so the placeholder initials —
+      // and later the portrait excerpts — sit like labels sewn onto the strap.
       "--ex-strap-bg":
         "linear-gradient(90deg, rgba(26,14,4,0.5), rgba(26,14,4,0) 26%, rgba(26,14,4,0) 74%, rgba(26,14,4,0.5)), " +
+        `url("${LEATHER_BLOTCH}") center top / 100% 1024px repeat, ` +
         `url("${PARCHMENT_LEATHER}"), linear-gradient(180deg, #6a4423, #553318)`,
       "--ex-strap-btn": "rgba(238,226,200,0.92)",
+      // The stitching threads (medallions, arrows, and every control button):
+      // leather-brown on resting paper surfaces, pale on filled bronze ones.
+      "--ex-thread": "rgba(90,58,32,0.5)",
+      "--ex-thread-accent": "rgba(255,243,224,0.5)",
+      // The middle band as draped cloth (user, 2026-08-26): the active-
+      // waveform gold with a vertical sheen, and shadows falling from its
+      // long edges onto the straps it physically crosses.
+      "--ex-band-drape": "linear-gradient(180deg, #ead9b4, #e0cfa8 30%, #d5c090)",
+      "--ex-band-shadow": "0 5px 12px rgba(46,33,16,0.35), 0 -5px 12px rgba(46,33,16,0.35)",
     },
     // Iron-gall ink: aged-but-legible strokes on the resting strips (the
     // within-pane contrast ruling, eyeballed 2026-08-25), near-black ink on
@@ -601,8 +630,9 @@ const CATEGORY_SLICES = {
   strips: ["--ex-surface", "--ex-surface-active", "--ex-mark", "--ex-mark-dim"],
   captions: ["--ex-label", "--ex-label-active", "--ex-glow"],
   text: ["--ex-text-body", "--ex-text-soft", "--ex-text-dim", "--ex-text-faint", "--ex-font"],
-  // The strap pair is OPTIONAL (see the header): only parchment carries it,
-  // every other palette leaves the :root-less fallbacks (panel and card).
+  // The strap and thread tokens are OPTIONAL (see the header): only parchment
+  // carries them; every other palette leaves the fallbacks (panel, card,
+  // invisible threads).
   controls: [
     "--ex-panel",
     "--ex-border",
@@ -610,6 +640,10 @@ const CATEGORY_SLICES = {
     "--ex-card",
     "--ex-strap-bg",
     "--ex-strap-btn",
+    "--ex-thread",
+    "--ex-thread-accent",
+    "--ex-band-drape",
+    "--ex-band-shadow",
   ],
   accent: ["--ex-accent", "--ex-accent-border", "--ex-on-accent"],
 };

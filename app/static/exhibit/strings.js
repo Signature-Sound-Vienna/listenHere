@@ -80,6 +80,8 @@ const CATALOGUE = {
   "turn.denied": { en: "The other side is still listening." },
   "turn.taken": { en: "The other side changed the recording." },
   "state.loading": { en: "Loading…" },
+  "strap.prev": { en: "Previous recording" },
+  "strap.next": { en: "Next recording" },
   "state.nothingForAudience": { en: "Nothing here for this view — try another." },
   // A kiosk that fails must say so on the glass, not only in a console nobody can
   // open. The message names no cause on purpose: the visitor cannot act on one and

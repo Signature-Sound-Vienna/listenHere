@@ -592,9 +592,11 @@ test.describe('34. The exhibit loader', () => {
   }) => {
     await boot(page);
     expect(await page.locator('.vp-strap').count(), 'the default mode grew a strap').toBe(0);
+    expect(await page.locator('.vp-strap-band').count(), 'the default mode grew a band').toBe(0);
 
     const { order } = await boot(page, 'tapMode=direct');
     const [fileA, fileB] = order;
+    expect(await page.locator('.vp-strap-band').count(), 'one leather band per viewport').toBe(2);
     const buttons = page.locator('.vp[data-viewport="0"] .vp-strap .strap-btn');
     await expect(buttons).toHaveCount(8);
 
@@ -632,5 +634,29 @@ test.describe('34. The exhibit loader', () => {
     await expect(
       page.locator(`.vp[data-viewport="0"] .vp-strap .strap-btn[data-file="${fileB}"]`),
     ).toHaveClass(/is-active/);
+  });
+
+  // 34.19 The strap's arrow buttons step to the adjacent recording — the
+  // aligned switch one strip at a time — and WRAP at the ends: a kiosk button
+  // that sometimes does nothing looks broken.
+  test('34.19 the strap arrows step to the adjacent recording and wrap at the ends', async ({
+    page,
+  }) => {
+    const { order } = await boot(page, 'tapMode=direct');
+    await page.evaluate(
+      (f) => (window as any)._exhibitTest.transport.select(f, 42, /* play */ false),
+      order[0],
+    );
+    const active = () =>
+      page.evaluate(() => (window as any)._exhibitTest.transport.activeFile);
+    const up = page.locator('.vp[data-viewport="0"] .strap-nav-up');
+    const down = page.locator('.vp[data-viewport="0"] .strap-nav-down');
+
+    await down.click();
+    await expect.poll(active).toBe(order[1]);
+    await up.click();
+    await expect.poll(active).toBe(order[0]);
+    await up.click(); // off the top end: wraps to the bottom strip
+    await expect.poll(active).toBe(order[order.length - 1]);
   });
 });

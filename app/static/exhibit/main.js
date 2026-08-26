@@ -170,9 +170,16 @@ function buildScreen(root) {
     vp.dataset.language = config.languages[i] ?? config.languages[0];
     // Set BEFORE any strip mounts, like the side slot below: the strap's
     // reserved padding narrows the strips column, and WaveSurfer sizes its
-    // canvases from the width it sees at creation. The strap element itself
-    // mounts later (it is absolutely positioned, so it costs no re-measure).
-    if (config.tapMode === "direct") vp.dataset.tapMode = "direct";
+    // canvases from the width it sees at creation. The button rail mounts
+    // later (absolutely positioned, so it costs no re-measure); the leather
+    // BAND — viewport-tall, sliding under the middle band — is pure paint
+    // and mounts here.
+    if (config.tapMode === "direct") {
+      vp.dataset.tapMode = "direct";
+      const strapBand = document.createElement("div");
+      strapBand.className = "vp-strap-band";
+      vp.appendChild(strapBand);
+    }
     const rot = rotationFor(config, i);
     if (rot) vp.style.transform = `rotate(${rot}deg)`;
 
@@ -510,6 +517,18 @@ async function boot() {
         labelFor: (file) => strapLabel(exhibit, file),
         titleFor: (file) => stripLabel(exhibit, file),
         onPick: (file) => turns.request(vp.index, file, undefined),
+        // The arrows: the same aligned switch, one strip up or down from the
+        // audible recording, wrapping at the ends (always set post-boot — the
+        // resting preselect names the reference).
+        onNav: (delta) => {
+          const files = [...mounted.strips.keys()];
+          const ix = Math.max(0, files.indexOf(transport.activeFile));
+          turns.request(vp.index, files[(ix + delta + files.length) % files.length], undefined);
+        },
+        navLabels: {
+          up: t("strap.prev", vp.language),
+          down: t("strap.next", vp.language),
+        },
       });
     }
 

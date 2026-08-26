@@ -321,6 +321,14 @@ export function mountStudyPanel(config) {
     if (!panel.hidden) paint();
   });
 
+  // Keep the staff controls off the straps: fixed positioning ignores the
+  // stage-rotation transform (they mount on body, outside #screen), so under
+  // a rotation the physical bottom-right corner lands on a strap — the CSS
+  // moves both to bottom-left when this attribute is present.
+  if (config.stageRotation === 90 || config.stageRotation === 270) {
+    cog.dataset.stageRotation = String(config.stageRotation);
+    panel.dataset.stageRotation = String(config.stageRotation);
+  }
   document.body.append(cog, panel);
   // Reopen where the discussion left off: an option change reloads the page,
   // and the panel comes straight back on the same tab.

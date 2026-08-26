@@ -129,6 +129,7 @@ html, body {
   flex: 1 1 0;
   min-height: 0;   /* so the strips column can actually shrink */
   min-width: 0;
+  position: relative;   /* the containing block for the full-height strap band */
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -207,42 +208,173 @@ html, body {
  * for the same reason as .strip.is-selected: a real border would shift the
  * rows off their strips by a pixel. Themed by the OPTIONAL --ex-strap tokens
  * (parchment's leather); everything else falls back to the panel palette. */
-.vp[data-tap-mode="direct"] .strips { padding-left: calc(var(--ex-strap-w, 52px) + 6px); }
+/* The whole viewport shifts right of the strap (12px is .vp's own left
+ * padding, kept): the strap runs the viewport's FULL height, so the toolbar
+ * and the commentary sit beside it, not over it. */
+.vp[data-tap-mode="direct"] {
+  padding-left: calc(12px + var(--ex-strap-w, 52px) + 6px);
+}
+/* The leather itself, viewport-tall: from the page edge (the viewport's own
+ * bottom) up past its top and UNDER the middle band — the band paints above
+ * it (z-index below), so the strap reads as passing beneath and binding the
+ * two halves. Pure paint: the buttons live on the rail, which stays inside
+ * .strips so its rows keep their exact strip alignment. */
+.vp-strap-band {
+  position: absolute;
+  top: -12px;   /* under the middle band; anything deeper is hidden anyway */
+  bottom: 0;
+  left: 12px;
+  width: var(--ex-strap-w, 52px);
+  background: var(--ex-strap-bg, var(--ex-panel));
+  box-shadow: inset 0 0 0 1px var(--ex-border);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 0;
+}
+.middle-band { position: relative; z-index: 1; }   /* above the strap's overhang */
 .vp-strap {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: 0;
+  left: calc(-1 * (var(--ex-strap-w, 52px) + 6px));
   width: var(--ex-strap-w, 52px);
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: var(--ex-strap-bg, var(--ex-panel));
-  box-shadow: inset 0 0 0 1px var(--ex-border);
-  border-radius: 4px;
   z-index: 1;
+}
+/* The label sits on a circular MEDALLION centred in its row — the shape the
+ * §5.5 portrait excerpts will take — so the leather shows all around it. The
+ * disc is a ::before layer and the button's own box still fills the whole
+ * row: the reveal costs zero tap target, and the rows stay exactly beside
+ * their strips. The disc diameter follows both the strap width and the strip
+ * height, so neither a narrower strap nor shorter strips can clip it. The
+ * label's two words render as stacked lines (strap.js), which is what fits a
+ * disc. Text spans are position:relative so they paint above the positioned
+ * disc without z-index games. */
+.vp-strap {
+  --ex-strap-disc: min(
+    calc(var(--ex-strap-w, 52px) - 12px),
+    calc(var(--strip-height, 54px) - 8px)
+  );
 }
 .strap-btn {
   flex: 0 0 var(--strip-height, 54px);
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.15;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ex-text-soft);
+  font-family: inherit;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.strap-btn > span { position: relative; }
+.strap-btn::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--ex-strap-disc);
+  height: var(--ex-strap-disc);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--ex-strap-btn, var(--ex-card));
+  box-shadow: 0 1px 2px rgba(20, 10, 2, 0.35);
+}
+/* The stitching runs around each medallion — a dashed thread ring just inside
+ * the disc's edge, the way a sewn-on label is stitched. Two thread tokens,
+ * both transparent (invisible) everywhere but parchment: --ex-thread on
+ * resting (paper) surfaces, --ex-thread-accent on filled (bronze) ones, so
+ * the thread stays visible on both. */
+.strap-btn::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--ex-strap-disc) - 7px);
+  height: calc(var(--ex-strap-disc) - 7px);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1px dashed var(--ex-thread, transparent);
+  pointer-events: none;
+}
+.strap-btn.is-active { color: var(--ex-on-accent); }
+.strap-btn.is-active::before { background: var(--ex-accent); }
+.strap-btn.is-active::after { border-color: var(--ex-thread-accent, transparent); }
+
+/* The arrow medallions: above the top medallion and below the bottom one,
+ * anchored to the rail's ends so the eight rows keep their strip alignment.
+ * They step to the adjacent recording along the alignment — the strap's own
+ * aligned switch, one row at a time, wrapping at the ends (a kiosk button
+ * that sometimes does nothing looks broken). Inline SVG (strap.js) because a
+ * dashed border cannot follow an arrow outline; the stitch path takes the
+ * same thread token as everything else. */
+.strap-nav {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--ex-strap-w, 52px);
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 0 3px;
-  padding: 0 2px;
+  padding: 0;
   border: none;
-  border-radius: 3px;
-  background: var(--ex-strap-btn, var(--ex-card));
-  color: var(--ex-text-soft);
-  font-family: inherit;
-  font-size: 0.66rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
+  background: none;
   cursor: pointer;
 }
-.strap-btn.is-active {
-  background: var(--ex-accent);
-  color: var(--ex-on-accent);
+.strap-nav-up { bottom: calc(100% + 2px); }
+.strap-nav-down { top: calc(100% + 2px); }
+.strap-nav svg {
+  display: block;
+  /* the 48:56 shape is taller than wide — sized by height so the stretched
+   * arrow stays inside its 44px slot beside the toolbar */
+  height: 42px;
+  width: auto;
+  filter: drop-shadow(0 1px 2px rgba(20, 10, 2, 0.35));
+}
+.strap-nav-down svg { transform: rotate(180deg); }
+.strap-nav .arrow-fill { fill: var(--ex-strap-btn, var(--ex-card)); }
+.strap-nav .arrow-stitch {
+  fill: none;
+  stroke: var(--ex-thread, transparent);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+  stroke-linejoin: round;
+}
+
+/* The stitched look for every control, both states, matching the medallions
+ * (user 2026-08-26): resting buttons carry the leather-brown thread, filled
+ * ones the light one. Both tokens are transparent outside parchment, so this
+ * is a no-op on every other theme — and one ?themeControls=parchment pin away
+ * for any of them. Deliberately excluded: the annotation chips (they speak
+ * the annotation-colour language, not the control language) and the
+ * pin-expiry pill (its conic countdown ring is already its own edge).
+ * Repurposing `outline` eats the UA focus ring, so :focus-visible restores
+ * one below. */
+.audience-btn, .zoom-btn, .ann-jump, .side-close, .mb-play,
+.vp-turn button, .study-cog, .study-tab, .study-option, .study-copy {
+  outline: 1px dashed var(--ex-thread, transparent);
+  outline-offset: -4px;
+}
+.audience-btn.is-on, .mb-play, .vp-turn .turn-grant, .study-option.is-on {
+  outline-color: var(--ex-thread-accent, transparent);
+}
+.audience-btn:focus-visible, .zoom-btn:focus-visible, .ann-jump:focus-visible,
+.side-close:focus-visible, .mb-play:focus-visible, .vp-turn button:focus-visible,
+.study-cog:focus-visible, .study-tab:focus-visible, .study-option:focus-visible,
+.study-copy:focus-visible {
+  outline: 2px solid var(--ex-accent-border);
+  outline-offset: 2px;
 }
 
 /* Regions the prep script flagged for hand placement (plan §5.2d), and regions
@@ -677,7 +809,12 @@ html, body {
   align-items: center;
   justify-content: center;
   gap: 64px;   /* only visible in mirrored mode, where there are two clusters */
-  background: var(--ex-band-bg);
+  /* The optional drape pair (parchment): a gold cloth laid across the
+   * interface, its edge shadows falling onto the straps it crosses — the
+   * z-index above (strap section) is what makes "physically over" true.
+   * Every other theme keeps the plain band tokens. */
+  background: var(--ex-band-drape, var(--ex-band-bg));
+  box-shadow: var(--ex-band-shadow, none);
   color: var(--ex-band-text);
   border-top: 1px solid var(--ex-band-border);
   border-bottom: 1px solid var(--ex-band-border);
@@ -884,6 +1021,16 @@ html, body {
  * in-situ design discussion. Appended to <body>, outside #screen, so neither
  * the stage rotation nor the viewport transforms touch it, and always drawn in
  * the active theme's tokens so the panel itself demonstrates the palette. */
+/* Under a stage rotation the window's fixed bottom-right corner lands ON a
+ * strap — the far viewport's under 90°, the near one's under 270° — so the
+ * staff cog and panel move to the window's bottom-left, which maps into
+ * strap-free commentary territory under both rotations (study-panel.js
+ * stamps the attribute from the config). The unrotated kiosk keeps them
+ * bottom-right, clear of the near reader's strap on the left. */
+.study-cog[data-stage-rotation], .study-panel[data-stage-rotation] {
+  right: auto;
+  left: 10px;
+}
 .study-cog {
   position: fixed;
   right: 10px;

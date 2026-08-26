@@ -39,6 +39,13 @@
   --ex-on-accent: #fff;
   --ex-mark: rgba(255,255,255,0.7);
   --ex-mark-dim: rgba(255,255,255,0.55);
+  /* OPTIONAL theme tokens (themes.js): a palette may layer a canvas texture
+   * (a background-image list — parchment's procedural paper) and swap the
+   * type stack; every theme without them gets these defaults untouched. */
+  --ex-texture: none;
+  --ex-texture-repeat: no-repeat;
+  --ex-texture-size: auto;
+  --ex-font: system-ui, -apple-system, "Segoe UI", sans-serif;
   /* The middle band's own tokens CHAIN to the generic ones, so the band
    * follows the theme until ?themeBand pins it to a palette of its own
    * (themes.js writes concrete values over these). */
@@ -54,8 +61,15 @@ html, body {
   margin: 0;
   height: 100%;
   background: var(--ex-bg);
+  /* After the shorthand, which resets background-image: the optional texture
+   * layers over the colour, with per-layer repeat and size lists owned by the
+   * theme (parchment: vignette, one cover image of stains, a repeating grain
+   * tile). The defaults serve the plain "none". */
+  background-image: var(--ex-texture);
+  background-repeat: var(--ex-texture-repeat, no-repeat);
+  background-size: var(--ex-texture-size, auto);
   color: var(--ex-text);
-  font: 16px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 16px/1.4 var(--ex-font);
   /* Kiosk: no text inflation, no selection, no tap flash, no rubber-banding. */
   -webkit-text-size-adjust: 100%;
   -webkit-user-select: none;

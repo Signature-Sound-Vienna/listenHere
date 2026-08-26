@@ -838,6 +838,43 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     const ok = await page.evaluate(() => (window as any)._exhibitTest.ready);
     expect(ok, 'the exhibit boots under the preset').toBe(true);
   });
+
+  // 35.26 The parchment preset (user, 2026-08-25): an aged-paper canvas via
+  // the OPTIONAL texture token (a procedural SVG — no asset, no fetch), an
+  // old-style serif via the optional font token, iron-gall-ink waveforms.
+  // Optional tokens exist only where a palette opts in: every other theme
+  // leaves the :root defaults (no texture, the system sans) untouched — and
+  // 35.11's zero-inline-tokens pin already guards the dark default.
+  test('35.26 parchment brings texture and serif through optional tokens; other themes leave the defaults', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&theme=parchment');
+    const parchment = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const other = T.exhibit.order.find((f: string) => f !== T.transport.activeFile);
+      const body = getComputedStyle(document.body);
+      return {
+        bg: body.backgroundColor,
+        texture: body.backgroundImage,
+        font: body.fontFamily,
+        wave: T.viewports[0].strips.get(other).ws.options.waveColor,
+      };
+    });
+    expect(parchment.bg).toBe('rgb(234, 223, 198)'); // #eadfc6
+    expect(parchment.texture).toContain('radial-gradient'); // the vignette…
+    expect(parchment.texture).toContain('data:image/svg+xml'); // …over the tile
+    expect(parchment.font).toContain('Iowan');
+    expect(parchment.wave).toBe('#8a7452'); // aged iron-gall ink
+
+    // A neighbouring light theme keeps both optional defaults.
+    await boot(page, 'debug=1&theme=sepia');
+    const sepia = await page.evaluate(() => {
+      const body = getComputedStyle(document.body);
+      return { texture: body.backgroundImage, font: body.fontFamily };
+    });
+    expect(sepia.texture).toBe('none');
+    expect(sepia.font).not.toContain('Iowan');
+  });
 });
 
 // ---------------------------------------------------------------------------

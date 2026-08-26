@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.32.0 -- Exhibit "parchment" theme
+* New `?theme=parchment` preset: aged-paper ground with procedural staining, foxing, grain, and vignette (inline SVG turbulence — no asset, no fetch); iron-gall-ink waveforms on clean untextured lanes; bronze accent; an old-style system serif stack (Iowan/Palatino/Georgia); a historical-pigment annotation series for `?annotationColors=theme`.
+* The structured stain layer renders as ONE non-repeating cover image (tiling drummed a visible repeat); only the scale-critical fine grain tiles. Full-screen rasterization cost noted for the iPad/soak watch list.
+* Theme machinery: palettes may carry OPTIONAL tokens (`--ex-texture`, `--ex-texture-repeat`, `--ex-texture-size`, `--ex-font`) — absent ones keep the :root defaults, so every existing theme renders byte-identically (35.11's zero-override pin holds).
+* Testing: 35.26 pins the optional-token mechanics both ways. 256/2 per browser, green on both.
+
 ### 0.31.0 -- Exhibit detail header: the annotation's title, and a jump to its music
 * **Title above the commentary** (`?detailTitle=auto|on|off`, auto = playhead mode only): playback-driven switching makes "which annotation am I reading?" forgettable — the shown text now carries its chip's label and colour swatch, pinned above the scrolling text.
 * **"Jump to annotation"** (`?detailJump=on|off`, ON everywhere by explicit ruling — manual mode's chips are pure focus controls, so this is the only direct route from a text to its music): makes a recording the annotation targets audible at its earliest region start — the active recording when targeted, else the first targeted strip in stack order; plays if paused. Routed through the turn machine via a new jump request whose time survives a recording switch (and a contended grant); to the fade machinery it is the reader's own seek, so the relevance hold protects the very text they jumped from.

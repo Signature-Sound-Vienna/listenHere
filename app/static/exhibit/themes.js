@@ -33,9 +33,60 @@
 // pastels lose contrast against a light surface — a real finding for the
 // design discussion, not a rendering error.
 
+// OPTIONAL TOKENS (--ex-texture, --ex-font): a palette may carry them, and
+// applyTheme skips the ones it does not — the :root defaults (no texture, the
+// system sans) cover everyone else, so the existing themes are untouched and
+// the dark default still writes zero inline tokens (35.11's pin).
+
 const GLOW_DARK = "0 1px 2px #000, 0 0 6px #000";
 const glowFrom = (bg) => `0 1px 2px ${bg}, 0 0 6px ${bg}`;
 const MARKS_LIGHT_BG = { "--ex-mark": "rgba(0,0,0,0.7)", "--ex-mark-dim": "rgba(0,0,0,0.55)" };
+
+// The parchment ground (user, 2026-08-25 — hand-written concert diaries,
+// programme notes; PROCEDURAL by ruling: no asset, no fetch, the whole
+// texture is these two strings). THE LESSON OF THREE TOO-FAINT CUTS (same
+// day): amplitude alone cannot make turbulence read as paper — diffuse
+// low-frequency clouds at tasteful contrast are exactly what vision is least
+// sensitive to, and a field of high-contrast ink masks them entirely. Aged
+// paper is read through EDGES, so the stains go through a non-linear alpha
+// transfer (feComponentTransfer) that keeps most of the ground clean and
+// gives the darker patches defined boundaries, plus a sparse rust-toned
+// FOXING speckle (steeply thresholded fine turbulence) and a fibre grain.
+//
+// TWO IMAGES, deliberately (user, same day — a 512px tile's stain
+// constellations drummed a visible repeat): the STRUCTURED layers cover the
+// whole screen as ONE non-repeating image (background-size: cover; SVG is
+// vector, so it re-rasterizes crisply at any screen), while the GRAIN stays a
+// small repeating tile — its ~1px fibres must not scale, and uniform noise
+// betrays no repetition. Cost of the cover layer: one full-screen
+// rasterization at load (~20 MB layer at iPad resolution) — a kiosk never
+// resizes, but it is on the §7.2 device-test and soak watch list. The
+// vignette (aged edges) rides in the same background-image list as a
+// radial-gradient. Real crumple (crease shading) is beyond turbulence — a
+// scanned image can replace these URIs without touching the machinery.
+const PARCHMENT_STAINS =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='768' height='1024' viewBox='0 0 768 1024'>" +
+      "<filter id='b'><feTurbulence type='fractalNoise' baseFrequency='0.009' numOctaves='4' seed='4'/>" +
+      "<feColorMatrix type='matrix' values='0 0 0 0 0.40  0 0 0 0 0.30  0 0 0 0 0.16  0 0 0 1 0'/>" +
+      "<feComponentTransfer><feFuncA type='table' tableValues='0 0 0.04 0.18 0.34 0.42'/></feComponentTransfer></filter>" +
+      "<filter id='f'><feTurbulence type='fractalNoise' baseFrequency='0.16' numOctaves='2' seed='23'/>" +
+      "<feColorMatrix type='matrix' values='0 0 0 0 0.42  0 0 0 0 0.24  0 0 0 0 0.10  0 0 0 1 0'/>" +
+      "<feComponentTransfer><feFuncA type='table' tableValues='0 0 0 0 0 0 0.12 0.45'/></feComponentTransfer></filter>" +
+      "<rect width='768' height='1024' filter='url(#b)'/>" +
+      "<rect width='768' height='1024' filter='url(#f)'/>" +
+      "</svg>",
+  );
+const PARCHMENT_GRAIN =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='320' height='320'>" +
+      "<filter id='g'><feTurbulence type='fractalNoise' baseFrequency='0.55' numOctaves='2' seed='11' stitchTiles='stitch'/>" +
+      "<feColorMatrix type='matrix' values='0 0 0 0 0.36  0 0 0 0 0.28  0 0 0 0 0.16  0 0 0 0.10 0'/></filter>" +
+      "<rect width='320' height='320' filter='url(#g)'/>" +
+      "</svg>",
+  );
 
 export const PALETTES = {
   dark: {
@@ -340,6 +391,72 @@ export const PALETTES = {
     ],
   },
 
+  parchment: {
+    label: "Parchment",
+    // Hand-written concert diaries and programme notes (user, 2026-08-25):
+    // aged cream a shade deeper than sepia's, iron-gall ink for text and
+    // waveforms, a bronze accent (the eventual magnifying-glass marker's
+    // metal), and the two optional tokens — the procedural paper ground and
+    // an old-style serif stack. The serif is SYSTEM fonts only for now
+    // (Iowan/Palatino/Georgia — German glyphs guaranteed, nothing to license);
+    // option (c), a bundled open-licensed display face, would prepend itself
+    // to this stack later.
+    tokens: {
+      "--ex-bg": "#eadfc6",
+      "--ex-text": "#2e2418",
+      // CLEAN LANES (user, eyeballing 2026-08-25, final ruling): the texture
+      // is removed entirely from behind the waveforms — opaque ground colour,
+      // so the ink lives on clean paper while the staining owns the margins.
+      // The audible strip keeps the soft pressed distinction.
+      "--ex-surface": "#eadfc6",
+      "--ex-surface-active": "#e0cfa8",
+      "--ex-panel": "#e3d6ba",
+      "--ex-border": "#cdbc9a",
+      "--ex-border-strong": "#b19f7a",
+      "--ex-card": "#d8caa6",
+      "--ex-text-body": "#3a2f1f",
+      "--ex-text-soft": "#5c4d35",
+      "--ex-text-dim": "#7a6848",
+      "--ex-text-faint": "#9a8760",
+      "--ex-label": "#4a3c28",
+      "--ex-label-active": "#201808",
+      "--ex-glow": glowFrom("#eadfc6"),
+      "--ex-accent": "#8a5f2a",
+      "--ex-accent-border": "#6b4a1e",
+      "--ex-on-accent": "#fff",
+      ...MARKS_LIGHT_BG,
+      // (A per-control-cluster "clearing" halo was tried and REMOVED — its
+      // rectangular sources banded visibly; user 2026-08-25. The clean strip
+      // lanes carry the legibility instead.)
+      // Three layers: vignette, the ONE cover image of stains + foxing, the
+      // repeating grain tile — repeat and size lists correspond per layer.
+      "--ex-texture":
+        "radial-gradient(120% 90% at 50% 50%, rgba(0,0,0,0) 58%, rgba(82,60,32,0.14) 100%), " +
+        `url("${PARCHMENT_STAINS}"), url("${PARCHMENT_GRAIN}")`,
+      "--ex-texture-repeat": "no-repeat, no-repeat, repeat",
+      "--ex-texture-size": "auto, cover, auto",
+      "--ex-font":
+        "'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, 'Times New Roman', serif",
+    },
+    // Iron-gall ink: aged-but-legible strokes on the resting strips (the
+    // within-pane contrast ruling, eyeballed 2026-08-25), near-black ink on
+    // the audible one.
+    wave: {
+      wave: "#8a7452",
+      waveActive: "#463a26",
+      progress: "#6f5c3e",
+      progressActive: "#2e2418",
+      cursor: "#2e2418",
+    },
+    // Historical pigments on cream, divergence-first: indigo, madder,
+    // verdigris, umber, iron-violet, ochre, prussian, dragon's blood, olive,
+    // walnut, slate, faded rose.
+    series: [
+      "#33507d", "#a03a2e", "#3d7a5c", "#6b4a2a", "#5a4a7d", "#a87f1f",
+      "#2e5d6b", "#8a2e4a", "#6b7a2e", "#7a5c3d", "#566070", "#a06a72",
+    ],
+  },
+
   solarized: {
     label: "Solarized",
     tokens: {
@@ -458,10 +575,10 @@ export const ACCENT_EXTRAS = {
 
 /** Which tokens each CSS category owns — the slicing that makes mixing work. */
 const CATEGORY_SLICES = {
-  canvas: ["--ex-bg", "--ex-text"],
+  canvas: ["--ex-bg", "--ex-text", "--ex-texture", "--ex-texture-repeat", "--ex-texture-size"],
   strips: ["--ex-surface", "--ex-surface-active", "--ex-mark", "--ex-mark-dim"],
   captions: ["--ex-label", "--ex-label-active", "--ex-glow"],
-  text: ["--ex-text-body", "--ex-text-soft", "--ex-text-dim", "--ex-text-faint"],
+  text: ["--ex-text-body", "--ex-text-soft", "--ex-text-dim", "--ex-text-faint", "--ex-font"],
   controls: ["--ex-panel", "--ex-border", "--ex-border-strong", "--ex-card"],
   accent: ["--ex-accent", "--ex-accent-border", "--ex-on-accent"],
 };
@@ -533,7 +650,12 @@ export function applyTheme(config) {
     if (extra) {
       for (const token of slice) root.setProperty(token, extra[token]);
     } else if (name !== "dark") {
-      for (const token of slice) root.setProperty(token, PALETTES[name].tokens[token]);
+      for (const token of slice) {
+        const value = PALETTES[name].tokens[token];
+        // Optional tokens (see the header): a palette that does not carry one
+        // must LEAVE the :root default, not write "undefined" over it.
+        if (value != null) root.setProperty(token, value);
+      }
     }
   }
 

@@ -19,6 +19,8 @@ import * as adapter from "./mao-adapter.js";
 import { nsp } from "../linked-data.js";
 import { solid, friendContainer, discoveryFragment, getSolidStorage } from "../solid.js";
 import {
+  correctedSynthOffsets,
+  correctedSynthOnsets,
   getAudioLinkedDataUri,
   getClosestAlignmentIx,
   getCorrespondingTime,
@@ -492,8 +494,13 @@ function _rewriteScoreChainAsAudio(graph, scoreSelUris, audioUriToFile) {
   // graph but don't collide with anything else; they're never used as
   // identifiers on the pod (this rewrite is purely in-memory).
   const newSelUris = [];
-  const onsetTimes = scoreAlignment.synth_onset || scoreAlignment.score_onset;
-  const offsetTimes = scoreAlignment.synth_offset || scoreAlignment.score_offset;
+  // Prefer the corrected synth tables (derived from the MIDI Verovio actually
+  // rendered): Verovio's tstampOn values are matched against these, and the
+  // stored synth_onset/synth_offset may carry the pre-fix tempo skew.
+  const onsetTimes =
+    correctedSynthOnsets || scoreAlignment.synth_onset || scoreAlignment.score_onset;
+  const offsetTimes =
+    correctedSynthOffsets || scoreAlignment.synth_offset || scoreAlignment.score_offset;
   if (!Array.isArray(onsetTimes) || !Array.isArray(offsetTimes)) {
     throw new Error("Score alignment doesn't expose synth_onset/synth_offset.");
   }

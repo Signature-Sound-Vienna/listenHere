@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.36.1 -- Synth timing fix: real tick-0 tempo events win, corrected tables for existing alignments
+* Alignment worker: tempo changes now sort by tick only, so a file's real tempo event at tick 0 beats the seeded 120 BPM default (Fledermaus opened 20% slow, +4.000 s by quarter 48, in synth times and in the synthesised audio fed to DTW).
+* listen.js derives corrected synth onset/offset tables from the MIDI Verovio actually renders (matching alignment-event score quarters against note ticks) and prefers them over the stored `synth_onset`/`synth_offset`; stored values remain the fallback. Tempo curves and Solid score-region projection use the corrected tables; on unskewed alignments the derived values are bit-identical to the stored ones.
+* Regenerating alignments after the worker fix may improve score↔reference DTW quality in a piece's opening (the synthesised audio was slow there).
+* Testing: spec 39 (planted-skew A/B defence, fallback survival, and the embedded Python's tempo tie-break on a synthetic MIDI).
+
 ### 0.36.0 -- Marker glass round 2: oval lens, rides the audible strip, tap-mediated seeking, real magnification
 * The lens is an OVAL sized so a placed, vertical glass covers one strip top-to-bottom; the whole rendering scales with `stripHeight`.
 * The glass RIDES THE AUDIBLE STRIP: any recording switch — strap, arrows, an aligned snap, the other side's action — hops it (on the position transition) to the marker's projection on the newly audible strip. The marker index never moves; ghosts follow.

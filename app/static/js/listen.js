@@ -3356,22 +3356,51 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // set up Verovio
+  //
+  // Readiness is probed by constructing the toolkit itself: 6.x builds no
+  // longer expose `verovio.module.calledRun`, and `onRuntimeInitialized`
+  // never fires when the wasm runtime finished before this script ran — so
+  // the callback is kept as a fast path with a poll as the backstop. The cap
+  // settles to null: an unsettled promise would hang every awaiting caller
+  // forever, which is worse than no score.
   _verovioReady = new Promise((resolve) => {
-    if (typeof verovio !== "undefined" && verovio.module.calledRun) {
-      setTk(new verovio.toolkit());
-      resolve(tk);
-    } else if (typeof verovio !== "undefined") {
-      verovio.module.onRuntimeInitialized = () => {
-        setTk(new verovio.toolkit());
-        console.log("Have Verovio toolkit:", tk);
-        resolve(tk);
-      };
-    } else {
-      // Verovio script absent: settle anyway. An unsettled promise would hang
-      // every awaiting caller forever, which is worse than no score.
+    if (typeof verovio === "undefined") {
       console.warn("Verovio not present; score synthesis unavailable");
       resolve(null);
+      return;
     }
+    const tryToolkit = () => {
+      if (tk) return true;
+      try {
+        setTk(new verovio.toolkit());
+      } catch (_) {
+        return false; // wasm runtime not ready yet
+      }
+      // Pin 5.x semantics: never auto-apply score expansions. Verovio 6
+      // otherwise applies a default expansion to MIDI/timemap output, which
+      // would skew score_onset against alignments generated under 5.x — and
+      // getTimesForElement returns all zeros when the expansion cannot be
+      // generated (as with editorial content). Revisit if expansions are
+      // ever adopted deliberately (roadmap item T).
+      tk.setOptions({ expandNever: true });
+      console.log("Have Verovio toolkit:", tk.getVersion());
+      resolve(tk);
+      return true;
+    };
+    if (tryToolkit()) return;
+    verovio.module.onRuntimeInitialized = () => tryToolkit();
+    const started = Date.now();
+    const poll = setInterval(() => {
+      if (tryToolkit() || Date.now() - started > 30000) {
+        clearInterval(poll);
+        if (!tk) {
+          console.warn(
+            "Verovio failed to initialise; score synthesis unavailable",
+          );
+          resolve(null);
+        }
+      }
+    }, 50);
   });
   setVerovioPromise(_verovioReady);
 

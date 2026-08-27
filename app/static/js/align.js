@@ -159,6 +159,12 @@ function updateScoreParamState() {
 /** Promise that resolves to a verovio.toolkit instance. */
 let _verovioPromise = null;
 
+/** Verovio version that rendered this run's score MIDI (null when no MEI was used). */
+let _meiMidiVerovioVersion = null;
+
+/** Expansion-related Verovio options live at that render (null when all default). */
+let _meiMidiVerovioOptions = null;
+
 /**
  * Called by listen.js once DOMContentLoaded fires, passing a Promise that
  * resolves to the shared verovio toolkit.
@@ -178,6 +184,27 @@ async function fetchMeiMidi(meiUri) {
   const midiBase64 = tk.renderToMIDI();
   if (!midiBase64 || midiBase64.length === 0)
     throw new Error("Verovio produced empty MIDI output");
+  _meiMidiVerovioVersion =
+    typeof tk.getVersion === "function" ? tk.getVersion() : null;
+  // Capture expansion-option status from the LIVE toolkit, not from what this
+  // module thinks was set — expansion changes the unfolded timeline, so these
+  // are score-time semantics, same class as the version itself. Any future
+  // option that changes rendered-MIDI content or timing (choiceXPathQuery and
+  // friends, transpose, midiTempoAdjustment, …) must join this capture, with
+  // an agreed reading for alignments stamped before it existed.
+  _meiMidiVerovioOptions = null;
+  try {
+    const o = typeof tk.getOptions === "function" ? tk.getOptions() : null;
+    if (o) {
+      const exp = {};
+      if (o.expand) exp.expand = o.expand;
+      if (o.expandAlways) exp.expandAlways = true;
+      if (o.expandNever) exp.expandNever = true;
+      if (Object.keys(exp).length) _meiMidiVerovioOptions = exp;
+    }
+  } catch (_) {
+    /* provenance only — never fail the render over it */
+  }
   const binary = atob(midiBase64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -479,6 +506,20 @@ async function startAlignment() {
           "Listen Here! v" + (window.versionString || "?");
         alignmentResult.header.createdAt = new Date().toISOString();
       }
+      // Score timing provenance: score_onset / synth_onset are only
+      // reproducible against the toolkit that rendered the MIDI, so the
+      // Verovio version — and any expansion options, which change the
+      // unfolded timeline — have to travel with the data. Unconditional,
+      // unlike alignmentParams: without these the score arrays cannot be
+      // interpreted, they are not a tuning nicety. An alignment with no
+      // verovioOptions stamp predates Verovio 6 here and reads as
+      // no-expansion (expandNever) semantics.
+      if (alignmentResult.header && _meiMidiVerovioVersion) {
+        alignmentResult.header.verovioVersion = _meiMidiVerovioVersion;
+      }
+      if (alignmentResult.header && _meiMidiVerovioOptions) {
+        alignmentResult.header.verovioOptions = _meiMidiVerovioOptions;
+      }
       // Inject alignment parameters if checkbox is checked
       const includeParams = document.getElementById("align-include-params");
       if (includeParams && includeParams.checked && alignmentResult.header) {
@@ -579,6 +620,8 @@ async function startAlignment() {
 
     // --- Optionally fetch MEI and render to MIDI ---
     let meiMidi = null;
+    _meiMidiVerovioVersion = null;
+    _meiMidiVerovioOptions = null;
     if (meiUri) {
       progressText.textContent = "Loading MEI and rendering to MIDI…";
       const meiLi = addStep("Render MEI → MIDI");

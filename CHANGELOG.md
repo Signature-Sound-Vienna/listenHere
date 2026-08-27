@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.37.0 -- Verovio 6.3.0 and alignment provenance
+* Vendored Verovio updated 5.6.0 → 6.3.0; toolkit init now probes readiness by construction (6.x drops `calledRun`), and `expandNever` pins the 5.x no-auto-expansion semantics for MIDI, timemap, and `getTimesForElement` (which otherwise returns zeros when the MEI's expansion cannot be generated).
+* The alignment wizard stamps `header.verovioVersion` and, when non-default, `header.verovioOptions` (`expand`, `expandAlways`, and/or `expandNever`, read from the live toolkit) into alignment JSONs whose run rendered MEI, so score-derived timing is traceable to the toolkit and expansion semantics that produced it; a missing `verovioOptions` reads as pre-6 no-expansion semantics.
+* `app/__init__.py` version re-synced with this changelog (it had stayed at 0.34.1 through 0.35.0–0.36.0).
+
 ### 0.36.0 -- Marker glass round 2: oval lens, rides the audible strip, tap-mediated seeking, real magnification
 * The lens is an OVAL sized so a placed, vertical glass covers one strip top-to-bottom; the whole rendering scales with `stripHeight`.
 * The glass RIDES THE AUDIBLE STRIP: any recording switch — strap, arrows, an aligned snap, the other side's action — hops it (on the position transition) to the marker's projection on the newly audible strip. The marker index never moves; ghosts follow.

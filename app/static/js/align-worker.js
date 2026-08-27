@@ -786,7 +786,11 @@ def parse_midi(midi_bytes):
             notes.append((st, tick, p, sv))
         pos = end
 
-    tempo_changes.sort()
+    # Sort by tick ONLY (stable): a bare tuple sort breaks the tick-0 tie by
+    # tempo VALUE, which put the seeded 500000 default AFTER a real tempo
+    # event at tick 0 — and _tick_to_sec lets the last same-tick entry win,
+    # so the default 120 BPM silently overrode the file's opening tempo.
+    tempo_changes.sort(key=lambda t: t[0])
     notes.sort()
     return tpq, tempo_changes, notes
 

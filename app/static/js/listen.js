@@ -155,6 +155,17 @@ let colorMap;
 export let currentAudioIx = session.currentAudioIx;
 export let alignmentGrids = session.alignmentGrids;
 export let scoreAlignment = session.scoreAlignment; // score tstamp to ref tstamp maps for onset and offset
+
+// Corrected synth timing tables (seconds in the client-rendered synth audio),
+// derived in _buildAndPrepareSynthWaveform by matching the alignment's score
+// quarters against the MIDI Verovio actually rendered here. Alignment JSONs
+// generated before align-worker.js's tempo-sort fix carry skewed
+// synth_onset/synth_offset wherever the MIDI opens with a real tempo event
+// (the seeded 120 BPM default won the tick-0 tie), so consumers prefer these
+// and fall back to the stored scoreAlignment values while they are null
+// (no synth waveform prepared yet, or qstamp matching failed).
+export let correctedSynthOnsets = null;
+export let correctedSynthOffsets = null;
 let mei = session.mei; // MEI XML
 let meiDOM = session.meiDOM; // MEI DOM
 let referenceAudioIx = session.referenceAudioIx;
@@ -167,6 +178,9 @@ function setAlignmentGrids(v) {
   return (alignmentGrids = session.alignmentGrids = v);
 }
 function setScoreAlignment(v) {
+  // New score alignment → any previously derived corrected tables are stale.
+  correctedSynthOnsets = null;
+  correctedSynthOffsets = null;
   return (scoreAlignment = session.scoreAlignment = v);
 }
 function setMei(v) {
@@ -693,7 +707,9 @@ function _computeRawTempo(filename) {
     if (!scoreAlignment.score_onset || scoreAlignment.score_onset.length < 2)
       return [];
     onsets = scoreAlignment.score_onset;
-    synthTimes = scoreAlignment.synth_onset || null;
+    // Prefer the corrected table: it is what the synth alignment grid was
+    // built from, and stored synth_onset may carry the pre-fix tempo skew.
+    synthTimes = correctedSynthOnsets || scoreAlignment.synth_onset || null;
   }
 
   // 1. Build deduplicated, monotonic (scoreTime → audioTime) pairs.
@@ -2268,6 +2284,65 @@ async function _fetchMeiXml(uri) {
 }
 
 /**
+ * Match alignment-event score positions (quarter notes) against the parsed
+ * MIDI's note ticks, returning each event's position in seconds within the
+ * synth audio — or null if any event finds no matching tick (the rendered
+ * MIDI differs from what the aligner saw, e.g. across Verovio versions).
+ * `tickOf` selects start (onsets) or end (offsets) ticks.
+ */
+function _matchScoreQuartersToSynthSecs(
+  quarters,
+  expectedLen,
+  notes,
+  tickOf,
+  tpq,
+  tempoChanges,
+) {
+  if (!quarters || quarters.length !== expectedLen || !notes.length || !tpq)
+    return null;
+  // Quarter positions are multiples of 1/TPQ (≥ ~1e-3 apart), so a 1e-6
+  // quantised key matches exactly without trusting float equality.
+  const qKey = (q) => Math.round(q * 1e6);
+  const secByQ = new Map();
+  for (const n of notes) {
+    const k = qKey(tickOf(n) / tpq);
+    if (!secByQ.has(k)) secByQ.set(k, tickToSec(tickOf(n), tpq, tempoChanges));
+  }
+  const out = new Array(quarters.length);
+  for (let i = 0; i < quarters.length; i++) {
+    const sec = secByQ.get(qKey(quarters[i]));
+    if (sec === undefined) return null;
+    out[i] = sec;
+  }
+  return out;
+}
+
+/**
+ * Last resort for ancient alignment JSONs with neither a usable score_onset
+ * nor synth_onset: rebuild the aligner's event list from the MIDI. Alignment
+ * events are the notes deduplicated per unique (start, end) tick pair, sorted
+ * by that pair — NOT one per note, so indexing notes[i] directly (the old
+ * fallback) drifted as soon as the first chord sounded.
+ */
+function _reconstructEventOnsetSecs(expectedLen, notes, tpq, tempoChanges) {
+  const seen = new Set();
+  const events = [];
+  for (const n of notes) {
+    const k = n.s + ":" + n.e;
+    if (!seen.has(k)) {
+      seen.add(k);
+      events.push(n);
+    }
+  }
+  events.sort((a, b) => a.s - b.s || a.e - b.e);
+  return Array.from({ length: expectedLen }, (_, i) => {
+    if (!events.length) return 0;
+    const ev = events[Math.min(i, events.length - 1)];
+    return tickToSec(ev.s, tpq, tempoChanges);
+  });
+}
+
+/**
  * Orchestrate synth-waveform creation:
  *   1. Build alignment grid synchronously (must be ready before WaveSurfer "ready" fires)
  *   2. Register key as pending → prepareWaveform shows "Synthesising..." overlay
@@ -2325,19 +2400,47 @@ async function _buildAndPrepareSynthWaveform(
   }
 
   // Compute alignment grid: map ref times → synth times.
-  // Prefer synth_onset from the JSON (populated by the latest worker);
-  // for older JSONs that lack it, derive from the MIDI note timings directly.
+  //
+  // Derive synth times from the MIDI actually being rendered, by matching
+  // each alignment event's score position in quarters (score_onset/offset =
+  // tick / TPQ, written by the aligner from the same MEI) against the parsed
+  // note ticks. Stored synth_onset is deliberately NOT preferred: alignment
+  // JSONs generated before align-worker.js's tempo-sort fix carry a constant
+  // skew wherever the MIDI opens with a real tempo event (the seeded 120 BPM
+  // default won the tick-0 tie), and regeneration cannot be assumed. Stored
+  // values remain the fallback for when matching fails (e.g. a Verovio
+  // upgrade changed the rendered MIDI since the alignment was made).
   const refOnsets = scoreData.ref_onset || [];
+  const derivedOnsets = _matchScoreQuartersToSynthSecs(
+    scoreData.score_onset,
+    refOnsets.length,
+    notes,
+    (n) => n.s,
+    tpq,
+    tempoChanges,
+  );
+  if (derivedOnsets) {
+    correctedSynthOnsets = derivedOnsets;
+    correctedSynthOffsets = _matchScoreQuartersToSynthSecs(
+      scoreData.score_offset,
+      refOnsets.length,
+      notes,
+      (n) => n.e,
+      tpq,
+      tempoChanges,
+    );
+    // Tempo curves computed against the stored tables are stale now.
+    for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
+  } else if (scoreData.score_onset) {
+    console.warn(
+      "score_onset does not match the rendered MIDI; keeping stored synth_onset",
+    );
+  }
   const synthOnsets =
-    scoreData.synth_onset && scoreData.synth_onset.length === refOnsets.length
+    derivedOnsets ||
+    (scoreData.synth_onset && scoreData.synth_onset.length === refOnsets.length
       ? scoreData.synth_onset
-      : refOnsets.map((_, i) => {
-          if (i < notes.length)
-            return tickToSec(notes[i].s, tpq, tempoChanges);
-          return i > 0
-            ? tickToSec(notes[notes.length - 1].s, tpq, tempoChanges)
-            : 0;
-        });
+      : _reconstructEventOnsetSecs(refOnsets.length, notes, tpq, tempoChanges));
   alignmentGrids[synthKey] = interpAlignmentGrid(
     alignmentGrids[refKey] || [],
     refOnsets,

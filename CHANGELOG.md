@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.37.1 -- Synth timing fix: real tick-0 tempo events win, corrected tables for existing alignments
+* Alignment worker: tempo changes now sort by tick only, so a file's real tempo event at tick 0 beats the seeded 120 BPM default (Fledermaus opened 20% slow, +4.000 s by quarter 48, in synth times and in the synthesised audio fed to DTW).
+* listen.js derives corrected synth onset/offset tables from the MIDI Verovio actually renders (matching alignment-event score quarters against note ticks) and prefers them over the stored `synth_onset`/`synth_offset`; stored values remain the fallback. Tempo curves and Solid score-region projection use the corrected tables; on unskewed alignments the derived values are bit-identical to the stored ones.
+* Regenerating alignments after the worker fix may improve score↔reference DTW quality in a piece's opening (the synthesised audio was slow there).
+* Testing: spec 39 (planted-skew A/B defence, fallback survival, and the embedded Python's tempo tie-break on a synthetic MIDI).
+* (Authored as 0.36.1 in its worktree, before 0.37.0 landed; renumbered at merge.)
+
 ### 0.37.0 -- Verovio 6.3.0 and alignment provenance
 * Vendored Verovio updated 5.6.0 → 6.3.0; toolkit init now probes readiness by construction (6.x drops `calledRun`), and `expandNever` pins the 5.x no-auto-expansion semantics for MIDI, timemap, and `getTimesForElement` (which otherwise returns zeros when the MEI's expansion cannot be generated).
 * The alignment wizard stamps `header.verovioVersion` and, when non-default, `header.verovioOptions` (`expand`, `expandAlways`, and/or `expandNever`, read from the live toolkit) into alignment JSONs whose run rendered MEI, so score-derived timing is traceable to the toolkit and expansion semantics that produced it; a missing `verovioOptions` reads as pre-6 no-expansion semantics.

@@ -63,19 +63,37 @@ const FRESH_MS = 1400;
 // hairline through the lens centre is the anchor, extended past the ring so it
 // reads as pointing INTO the waveform. Classed paths take theme tokens, the
 // strap-arrow precedent; the dashed ring inside the rim is the stitching
-// language. The anchor point is (32, 30) in this viewBox.
+// language. The chunky handle is the grip the whole design asks a finger to
+// take. The anchor point is (32, 30) in this viewBox.
+// The handle is ASSEMBLED like the tool it plays: a grip between a brass
+// ferrule at the ring and a brass end cap, with one highlight and one shade
+// strip faking the cylinder (plain alpha layers, so every theme gets the
+// rounding) and a spiral of thread lines as the leather wrap — the wrap takes
+// the stitching token, so it exists only where the stitching does. Layer
+// paint, not SVG gradients: gradient defs need document-unique ids and this
+// markup is instantiated four times per screen (two glasses, two ghosts).
 const GLASS_SVG =
-  "<svg viewBox='0 0 64 84' aria-hidden='true'>" +
+  "<svg viewBox='0 0 64 86' aria-hidden='true'>" +
   "<line class='glass-point' x1='32' y1='2' x2='32' y2='58'/>" +
   "<circle class='glass-lens' cx='32' cy='30' r='22'/>" +
-  "<rect class='glass-handle' x='27.5' y='52' width='9' height='28' rx='4.5'/>" +
+  "<rect class='glass-handle' x='25.5' y='50' width='13' height='33' rx='6'/>" +
+  "<rect class='glass-handle-hl' x='27' y='56' width='3.5' height='20' rx='1.75'/>" +
+  "<rect class='glass-handle-sh' x='34.5' y='56' width='2.8' height='20' rx='1.4'/>" +
+  "<path class='glass-handle-wrap' d='M25.5 59 L38.5 63 M25.5 63.5 L38.5 67.5 " +
+  "M25.5 68 L38.5 72 M25.5 72.5 L38.5 76.5'/>" +
+  "<rect class='glass-ferrule' x='24.5' y='49' width='15' height='6.5' rx='3'/>" +
+  "<rect class='glass-ferrule' x='24.5' y='77.5' width='15' height='6.5' rx='3'/>" +
   "<circle class='glass-ring' cx='32' cy='30' r='22'/>" +
   "<circle class='glass-stitch' cx='32' cy='30' r='18'/>" +
   "</svg>";
 const GLASS_ANCHOR = { x: 32, y: 30 };
+// The box follows the paint: a placed glass overhangs its row's neighbours,
+// and an INVISIBLE overhang would keep stealing their taps after the visible
+// one stopped covering them (the handle was trimmed 25% for exactly that).
+const GLASS_VIEW = { w: 64, h: 86 };
 /** Rendered size of the glass, px; the SVG scales with it. */
 const GLASS_W = 56;
-const GLASS_H = Math.round((GLASS_W * 84) / 64);
+const GLASS_H = Math.round((GLASS_W * GLASS_VIEW.h) / GLASS_VIEW.w);
 
 /**
  * Mount one viewport's marker layer.
@@ -178,9 +196,12 @@ export function createMarkerLayer({
     y: rail.offsetTop + hook.offsetTop + hook.offsetHeight / 2,
   });
 
-  /** Local anchor for the lifted float: rail column, level with the stack. */
+  /** Local anchor for the lifted float: hovering OVER the waveform area,
+   * upright, inside the pulsing outline that says where a tap places it —
+   * deliberately not the rail column, whose medallions it would sit on under
+   * ?tapMode=direct (user, 2026-08-27). */
   const floatAnchor = () => ({
-    x: rail.offsetLeft + rail.offsetWidth / 2,
+    x: stripsEl.clientWidth / 2,
     y: stripsEl.clientHeight / 2,
   });
 
@@ -248,9 +269,13 @@ export function createMarkerLayer({
 
   // ---- rendering ------------------------------------------------------------
 
+  const anchorPx = {
+    x: (GLASS_ANCHOR.x / GLASS_VIEW.w) * GLASS_W,
+    y: (GLASS_ANCHOR.y / GLASS_VIEW.h) * GLASS_H,
+  };
   const moveGlass = (p) => {
-    glass.style.left = `${p.x - (GLASS_ANCHOR.x / 64) * GLASS_W}px`;
-    glass.style.top = `${p.y - (GLASS_ANCHOR.y / 84) * GLASS_H}px`;
+    glass.style.left = `${p.x - anchorPx.x}px`;
+    glass.style.top = `${p.y - anchorPx.y}px`;
   };
 
   /** Paint ticks for `index` (or hide them all when null). */
@@ -271,8 +296,8 @@ export function createMarkerLayer({
     const p = stripAnchor(ghost.file, timeFor(ghost.file, ghost.ix));
     ghostEl.hidden = p == null;
     if (p) {
-      ghostEl.style.left = `${p.x - (GLASS_ANCHOR.x / 64) * GLASS_W}px`;
-      ghostEl.style.top = `${p.y - (GLASS_ANCHOR.y / 84) * GLASS_H}px`;
+      ghostEl.style.left = `${p.x - anchorPx.x}px`;
+      ghostEl.style.top = `${p.y - anchorPx.y}px`;
     }
   };
 
@@ -343,7 +368,13 @@ export function createMarkerLayer({
   glass.addEventListener("pointerdown", (e) => {
     if (drag) return;
     e.preventDefault();
-    glass.setPointerCapture(e.pointerId);
+    try {
+      glass.setPointerCapture(e.pointerId);
+    } catch (_) {
+      // A capture that cannot be taken (Safari has thrown NotFoundError on
+      // odd pointer timing) must not cost the tap — the drag then just
+      // depends on the pointer staying over the glass, which a tap does.
+    }
     drag = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, moved: false };
   });
 

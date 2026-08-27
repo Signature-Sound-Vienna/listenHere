@@ -56,20 +56,32 @@ async function drag(page: Page, from: { x: number; y: number }, to: { x: number;
 const glassBox = async (page: Page, vp = 0) =>
   (await page.locator(`.vp[data-viewport="${vp}"] .marker-glass`).boundingBox())!;
 
-/** The glass travels on a 450ms transition; wait for two identical readings
- * (the zoomSettled pattern) before aiming a pointer at it. */
-async function settledGlassBox(page: Page, vp = 0) {
-  let prev = await glassBox(page, vp);
+/** The glass travels on a 450ms transition; wait until it has ARRIVED before
+ * aiming a pointer at it. Not the two-identical-readings pattern: a janked
+ * main thread (the placement's own audio fetch) can delay the transition's
+ * START past two samples, so "stable" can be the position it has not yet
+ * left. The inline left/top name the destination, so compare against those —
+ * arrival is unambiguous, and the overshoot bezier only matches at the end.
+ * Client-space comparison — valid on the UNROTATED viewport only, which is
+ * where every drag-from-placed test lives (rotated drags start from rest). */
+async function arrivedGlassBox(page: Page, vp = 0) {
   await expect
-    .poll(async () => {
-      const cur = await glassBox(page, vp);
-      const same =
-        Math.abs(cur.x - prev.x) < 0.5 && Math.abs(cur.y - prev.y) < 0.5;
-      prev = cur;
-      return same;
-    })
-    .toBe(true);
-  return prev;
+    .poll(() =>
+      page.evaluate((i) => {
+        const g = document.querySelector(
+          `.vp[data-viewport="${i}"] .marker-glass`,
+        ) as HTMLElement;
+        const p = g.offsetParent as HTMLElement;
+        const gr = g.getBoundingClientRect();
+        const pr = p.getBoundingClientRect();
+        return (
+          Math.abs(gr.x - pr.x - parseFloat(g.style.left)) +
+          Math.abs(gr.y - pr.y - parseFloat(g.style.top))
+        );
+      }, vp),
+    )
+    .toBeLessThan(1);
+  return glassBox(page, vp);
 }
 
 test.describe('38. The listening marker', () => {
@@ -352,7 +364,7 @@ test.describe('38. The listening marker', () => {
     }, ref);
     expect((await markerState(page)).ix).not.toBeNull();
 
-    const from = await settledGlassBox(page, 0);
+    const from = await arrivedGlassBox(page, 0);
     const strips = (await page.locator('.vp[data-viewport="0"] .strips').boundingBox())!;
     // Well below the strip stack (the commentary area) — off the waveforms.
     await drag(

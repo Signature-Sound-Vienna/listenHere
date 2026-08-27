@@ -378,14 +378,17 @@ html, body {
 /* The empty hook doubles as the affordance: a stitched ring saying something
  * belongs here — and, after a placement, where to put it back. It sits at the
  * rail's OUTER end (each viewport's local bottom faces its own visitor), and
- * in direct mode it hangs below the strap's down arrow. */
+ * in direct mode it hangs below the strap's down arrow. Centred with a margin,
+ * NOT translateX — the glass's resting anchor is computed from offsetLeft,
+ * which never sees a transform (that mismatch shipped as a 19px offset). The
+ * ring is sized so the LENS sits inside it; the handle sticks out past it. */
 .marker-hook {
   position: absolute;
   left: 50%;
+  margin-left: -24px;
   top: calc(100% + 10px);
-  transform: translateX(-50%);
-  width: 38px;
-  height: 38px;
+  width: 48px;
+  height: 48px;
   border-radius: 50%;
   border: 2px dashed var(--ex-accent);
   opacity: 0.45;
@@ -395,7 +398,7 @@ html, body {
 .marker-glass {
   position: absolute;
   width: 56px;
-  height: 74px;
+  height: 75px;
   z-index: 3;
   cursor: grab;
   /* Required, not decorative: without it the browser claims a touch drag for
@@ -414,10 +417,22 @@ html, body {
 /* A placed glass whose moment is scrolled out of view hides honestly rather
  * than pinning to an edge it is not at (the ticks already do). */
 .marker-glass.is-offview { visibility: hidden; }
+/* The glass TILTS while it is IN HAND — mid-drag, or lifted awaiting a
+ * placement tap — the way a magnifier picked up by the handle swings off
+ * vertical; at rest on its hook and once placed it hangs straight (user,
+ * 2026-08-27, second round — reversing the first round's resting tilt). The
+ * pivot is the lens centre — the anchor — so the lens stays in the ring at
+ * rest and under the finger in flight; the transition swings it either way. */
+.marker-glass svg {
+  transform-origin: 50% 34.9%; /* the lens centre, (32, 30) of 64×86 */
+  transition: transform 450ms cubic-bezier(0.22, 1.1, 0.36, 1);
+}
+.marker-glass.is-dragging svg { transform: rotate(-38deg); }
 .marker-glass.is-lifted svg { animation: marker-bob 2.2s ease-in-out infinite; }
+/* The lifted bob carries the held tilt, swaying around it. */
 @keyframes marker-bob {
-  0%, 100% { transform: translateY(0) rotate(-3deg); }
-  50% { transform: translateY(-7px) rotate(3deg); }
+  0%, 100% { transform: translateY(0) rotate(-41deg); }
+  50% { transform: translateY(-7px) rotate(-34deg); }
 }
 /* Drop verdicts, telegraphed before the finger lifts. */
 .marker-glass.will-adopt { filter: drop-shadow(0 0 7px var(--ex-accent)); }
@@ -433,9 +448,31 @@ html, body {
 }
 .marker-glass .glass-handle,
 .marker-ghost .glass-handle {
-  fill: var(--ex-strap-btn, var(--ex-card));
+  fill: var(--ex-marker-handle, var(--ex-strap-btn, var(--ex-card)));
   stroke: var(--ex-accent);
   stroke-width: 1.5;
+}
+/* The cylinder: a light strip down one side, a dark one down the other —
+ * plain alpha over whatever the grip's base is, so every theme rounds. */
+.marker-glass .glass-handle-hl,
+.marker-ghost .glass-handle-hl { fill: rgba(255, 255, 255, 0.28); }
+.marker-glass .glass-handle-sh,
+.marker-ghost .glass-handle-sh { fill: rgba(20, 10, 2, 0.3); }
+/* The spiral leather wrap: thread lines, visible only where stitching is.
+ * The ACCENT thread, not the resting one — the grip is dark leather, and
+ * brown thread vanishes on it (the filled-medallion rule). */
+.marker-glass .glass-handle-wrap,
+.marker-ghost .glass-handle-wrap {
+  fill: none;
+  stroke: var(--ex-thread-accent, transparent);
+  stroke-width: 1;
+}
+/* The brass fittings joining grip to ring, and capping the end. */
+.marker-glass .glass-ferrule,
+.marker-ghost .glass-ferrule {
+  fill: var(--ex-accent);
+  stroke: var(--ex-accent-border, transparent);
+  stroke-width: 1;
 }
 .marker-glass .glass-stitch,
 .marker-ghost .glass-stitch {
@@ -456,7 +493,7 @@ html, body {
 .marker-ghost {
   position: absolute;
   width: 56px;
-  height: 74px;
+  height: 75px;
   z-index: 2;
   opacity: 0.3;
   pointer-events: none;
@@ -1276,6 +1313,22 @@ html, body {
 }
 .study-row { display: flex; flex-direction: column; gap: 5px; }
 .study-label { color: var(--ex-text-dim); }
+/* A header with a hint says so: dotted underline, help cursor. Tapping it
+ * toggles the hint inline (study-panel.js) — the title-attribute tooltip
+ * only exists for desktop hover, and the panel's real home is an iPad. */
+.study-label.has-hint {
+  cursor: help;
+  align-self: flex-start;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.study-hint {
+  font-size: 0.85em;
+  line-height: 1.4;
+  color: var(--ex-text-faint);
+  max-width: 46ch;
+}
+.study-hint[hidden] { display: none; }
 .study-options { display: flex; flex-wrap: wrap; gap: 6px; }
 .study-option {
   padding: 6px 10px;

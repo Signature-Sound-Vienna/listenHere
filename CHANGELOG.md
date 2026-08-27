@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.35.1 -- Marker glass aesthetics, and study-panel hints
+* Study panel: every parameter header carries a 1–2 sentence hint — a title tooltip for desktop hover, and tap-the-header toggles it inline (the panel's real home is an iPad, where hover does not exist); dotted underlines mark the headers, and the tabs carry one-liners. English-only, per the panel's staff-tooling exemption.
+* The glass tilts while in hand (mid-drag, or lifted awaiting placement — the bob sways around the tilt) and hangs vertical at rest and once placed; the lens seats inside the hook's ring, and the resting anchor no longer sits 19px off-centre (the hook was centred with `translateX(-50%)`, which `offsetLeft` never sees — hooks now centre by margin).
+* The handle is chunkier, modestly longer (the +50% first cut covered the next waveform when placed, so trimmed 25% — hit box shrunk with the paint), and textured as a leather-wrapped grip between a brass ferrule and end cap: cylinder shading on every theme, saddle-leather grip and pale wrap threads parchment-only (new optional token `--ex-marker-handle`; the wrap takes `--ex-thread-accent` — brown thread vanishes on dark leather, the filled-medallion rule).
+* The lifted glass hovers upright over the waveform area, inside the pulsing outline — not in the rail column, where it sat on the strap medallions under `tapMode=direct`.
+* `setPointerCapture` guarded with try/catch: a failed capture must not cost the tap.
+
 ### 0.35.0 -- Exhibit listening marker (the magnifying glass), and the Scholz display copy
 * `?marker=glass` (default off): one marker per viewport, anchored as an alignment index (align-core; the listen.js mark-button semantic). The glass rests on a stitched hook in the left rail — the strap's column; aligned mode reserves the column for the hook alone — dragged onto a waveform to place, dragged off to remove.
 * Tap path: tapping the glass lifts it into expect-placement (the strip stack pulses); the next waveform tap places it; a tap anywhere else rests the glass on its hook while still performing its own action.

@@ -35,21 +35,58 @@ const CATEGORY_LABELS = {
   band: "Middle band",
 };
 
+// Every param carries a `hint` — the 1–2-sentence explanation behind its
+// header (user, 2026-08-27). Rendered as a title tooltip for a desktop hover
+// AND as a tap-to-toggle line under the row, because the panel's real home is
+// an iPad, where hover does not exist.
 const TABS = [
   {
     id: "layout",
     label: "Layout",
+    hint: "Screen geometry: viewports, strips, and the side panel.",
     params: [
-      { key: "viewports", label: "Viewports", options: [1, 2] },
-      { key: "splitOrientation", label: "Split", options: ["horizontal", "vertical"] },
-      { key: "stageRotation", label: "Stage rotation (desktop)", options: [0, 90, 270] },
-      { key: "stripHeight", label: "Strip height (px)", options: [40, 44, 48, 54, 60] },
-      { key: "stackedRecordings", label: "Recordings", options: [4, 6, 8] },
+      {
+        key: "viewports",
+        label: "Viewports",
+        options: [1, 2],
+        hint:
+          "How many visitor stations the screen splits into. The table is two facing halves; 1 is a single-reader debug view.",
+      },
+      {
+        key: "splitOrientation",
+        label: "Split",
+        options: ["horizontal", "vertical"],
+        hint:
+          "How the screen divides into viewports: stacked halves (horizontal), or side by side (vertical).",
+      },
+      {
+        key: "stageRotation",
+        label: "Stage rotation (desktop)",
+        options: [0, 90, 270],
+        hint:
+          "Desktop debugging only: turns the whole composed screen so a physically rotated monitor shows the portrait kiosk at its intended aspect. Never set on the kiosk itself.",
+      },
+      {
+        key: "stripHeight",
+        label: "Strip height (px)",
+        options: [40, 44, 48, 54, 60],
+        hint:
+          "Height of each waveform strip. Shorter strips leave more room for the commentary below; 54 is the week-1 look.",
+      },
+      {
+        key: "stackedRecordings",
+        label: "Recordings",
+        options: [4, 6, 8],
+        hint:
+          "How many curated recordings each viewport stacks. The exhibit's claim is the same moment across eight interpretations; fewer is a debug view.",
+      },
       {
         key: "zoomControls",
         label: "Zoom buttons",
         options: [true, false],
         display: (v) => (v ? "show" : "hide"),
+        hint:
+          "Show or hide the −/+ buttons on each viewport's toolbar. The zoom machinery itself (moment-synced scroll, the API) stays wired either way.",
       },
       // The generic side slot (feedback item 5): options name TENANTS, and the
       // score view will add itself here when it lands (main.js SIDE_TENANTS).
@@ -58,31 +95,50 @@ const TABS = [
         label: "Side slot",
         options: ["", "annotations"],
         display: (v) => (v === "" ? "off" : v),
+        hint:
+          "Moves the commentary body into a panel beside the waveforms instead of below them; the chips stay below either way. The score view is the planned second tenant.",
       },
       {
         key: "sideSlotWidth",
         label: "Side slot width (%)",
         options: [30, 40, 50],
+        hint: "How much of the viewport's width the side panel takes; the strips keep the rest.",
       },
     ],
   },
   {
     id: "band",
     label: "Band",
+    hint: "The shared strip between the halves: conductor, orchestra, year, and the play button.",
     params: [
-      { key: "bandOrientation", label: "Orientation", options: ["upright", "rotated", "mirrored"] },
-      { key: "middleBandHeight", label: "Band height (px)", options: [72, 96, 120, 176] },
+      {
+        key: "bandOrientation",
+        label: "Orientation",
+        options: ["upright", "rotated", "mirrored"],
+        hint:
+          "How one surface is read from two opposite sides: upright favours the near visitor, rotated is equally sideways for both, and mirrored renders two copies with the far one turned 180°.",
+      },
+      {
+        key: "middleBandHeight",
+        label: "Band height (px)",
+        options: [72, 96, 120, 176],
+        hint:
+          "Height of the shared band. Rotated text pays for its length vertically, so that orientation defaults taller (176).",
+      },
     ],
   },
   {
     id: "theme",
     label: "Theme",
+    hint: "The palette, as a preset plus per-surface pins.",
     params: [
       {
         key: "theme",
         label: "Preset",
         options: Object.keys(PALETTES),
         display: (v) => PALETTES[v]?.label || v,
+        hint:
+          "The whole palette at once: canvas, strips, waveforms, text, controls, and band. Picking a preset clears every per-surface pin below.",
       },
       // One row per themable category: pin it to any palette (or extra
       // variant) independently of the preset. "follow" is the default and
@@ -92,12 +148,16 @@ const TABS = [
         label: CATEGORY_LABELS[cat] || cat,
         options: ["", ...categoryOptions(cat)],
         display: (v) => (v === "" ? "follow" : v),
+        hint:
+          `Pins ${(CATEGORY_LABELS[cat] || cat).toLowerCase().replace(/ \(.*\)$/, "")} to any palette independently of the preset — mixing, say, parchment controls into the dark theme. “follow” keeps the preset's own value.`,
       })),
       {
         key: "annotationColors",
         label: "Annotation colours",
         options: ["authored", "theme"],
         display: (v) => (v === "authored" ? "authored" : "theme series"),
+        hint:
+          "Whose colours the regions and chips wear: the annotators' own authored colours, or the theme's 12-colour series. Display-only; the payload is untouched.",
       },
     ],
   },
@@ -107,24 +167,42 @@ const TABS = [
     // decision this panel exists to let staff FEEL rather than argue about.
     id: "turns",
     label: "Turns",
+    hint: "Who gets the one shared clock when both sides want it.",
     params: [
       {
         key: "turnPolicy",
         label: "Policy",
         options: ["hijack", "attribution", "request"],
+        hint:
+          "What a tap does while the OTHER side is listening: hijack takes the audio silently (shipped), attribution takes it but tells the side that lost it, and request asks the listener to grant or deny.",
       },
       {
         key: "turnGrantMs",
         label: "Auto-grant (ms; 0 = explicit only)",
         options: [0, 4000, 8000, 15000],
+        hint:
+          "Under the request policy, a pending request grants itself after this long, so an absent visitor can never lock the table. 0 means only an explicit grant executes it.",
       },
-      { key: "turnNoticeMs", label: "Notice duration (ms)", options: [2000, 4000, 8000] },
-      { key: "arbiter", label: "Audio arbiter", options: ["local", "broadcast"] },
+      {
+        key: "turnNoticeMs",
+        label: "Notice duration (ms)",
+        options: [2000, 4000, 8000],
+        hint:
+          "How long the transient notices — “the other side changed the recording”, a denial — stay on screen before fading.",
+      },
+      {
+        key: "arbiter",
+        label: "Audio arbiter",
+        options: ["local", "broadcast"],
+        hint:
+          "Room-level arbitration between multiple screens: broadcast pauses this screen when another same-profile window claims the room's audio, last claimant wins. local is inert single-screen behaviour.",
+      },
     ],
   },
   {
     id: "misc",
     label: "Misc",
+    hint: "Focus and reading behaviour, tap semantics, the marker, and kiosk readiness.",
     params: [
       // Feedback item 4: the audience switch's union position.
       {
@@ -132,31 +210,128 @@ const TABS = [
         label: "Audience ‘All’ option",
         options: [false, true],
         display: (v) => (v ? "offer" : "off"),
+        hint:
+          "Adds an “All” position to the audience switch that unions every audience's annotations, each chip marked with its audience. A display union only — the three authored sets are untouched.",
       },
       // The playhead-driven focus wash (?focus=playhead, main.js), and the two
       // halves of the agreed definition (2026-08-25): the wash's lifetime and
       // the strip deemphasis.
-      { key: "focus", label: "Focus", options: ["manual", "playhead"] },
-      { key: "focusWash", label: "Focus wash", options: ["clear", "sticky"] },
-      { key: "focusDim", label: "Strip deemphasis", options: ["auto", "on", "off"] },
-      { key: "focusHoldMs", label: "Wash hold (ms)", options: [0, 2500, 5000] },
-      { key: "pinExpiry", label: "Pin expiry", options: ["off", "auto"] },
-      { key: "detailFade", label: "Text fade-out", options: ["off", "auto"] },
-      { key: "detailTitle", label: "Detail title", options: ["auto", "on", "off"] },
-      { key: "detailJump", label: "Jump button", options: ["on", "off"] },
+      {
+        key: "focus",
+        label: "Focus",
+        options: ["manual", "playhead"],
+        hint:
+          "What drives the focused annotation: taps only (manual, shipped), or the playhead — focus follows region entries on the audible recording, and a chip tap pins it.",
+      },
+      {
+        key: "focusWash",
+        label: "Focus wash",
+        options: ["clear", "sticky"],
+        hint:
+          "Lifetime of the wash — the paint on and beside the strips: clear empties when the playhead leaves a region, sticky keeps the latest annotation painted after exit.",
+      },
+      {
+        key: "focusDim",
+        label: "Strip deemphasis",
+        options: ["auto", "on", "off"],
+        hint:
+          "Fades the waveform and caption of strips the focused annotation does NOT target, so the comparison it makes stands out. auto means on under playhead focus, off in manual mode.",
+      },
+      {
+        key: "focusHoldMs",
+        label: "Wash hold (ms)",
+        options: [0, 2500, 5000],
+        hint:
+          "Minimum lifetime of the wash's paint, so a sub-frame region (the “D or E?” note) still paints perceivably instead of blinking. Seeks and recording switches still drop held paint at once.",
+      },
+      {
+        key: "pinExpiry",
+        label: "Pin expiry",
+        options: ["off", "auto"],
+        hint:
+          "How long a chip-tap pin holds before the table comes back to life: off holds until an unfocus, auto estimates a reading time from the shown text. A “Keep reading…” ring warns first, and tapping it re-arms.",
+      },
+      {
+        key: "detailFade",
+        label: "Text fade-out",
+        options: ["off", "auto"],
+        hint:
+          "Playback-summoned commentary fades after its reading window instead of lingering forever; auto estimates the window per text. Relevant text never expires, and the ring warns before the end.",
+      },
+      {
+        key: "detailTitle",
+        label: "Detail title",
+        options: ["auto", "on", "off"],
+        hint:
+          "Shows the annotation's title above its commentary — answering “which annotation am I reading?” once playback moves the text. auto means only under playhead focus.",
+      },
+      {
+        key: "detailJump",
+        label: "Jump button",
+        options: ["on", "off"],
+        hint:
+          "The detail header's “Jump to annotation” button: makes a recording the shown annotation targets audible at its earliest region start. On everywhere by ruling — the only direct route from a text to its music.",
+      },
       // The alpha-tester tap question (2026-08-26): aligned carry vs literal
       // both-axes taps with the switch strap. See config.js's tapMode.
-      { key: "tapMode", label: "Waveform tap", options: ["aligned", "direct"] },
+      {
+        key: "tapMode",
+        label: "Waveform tap",
+        options: ["aligned", "direct"],
+        hint:
+          "What a tap on a NON-active waveform means: aligned switches recording and carries the musical moment across, ignoring the tap's x-position; direct takes the tap literally on both axes and moves the aligned switch onto the strap of medallion buttons.",
+      },
       // The week-4 listening marker (ruled 2026-08-27; marker.js).
-      { key: "marker", label: "Listening marker", options: ["off", "glass"] },
-      { key: "minRegionPx", label: "Region floor (px)", options: [2, 4, 8] },
-      { key: "zoom", label: "Initial zoom (px/s; 0 = fit)", options: [0, 30] },
+      {
+        key: "marker",
+        label: "Listening marker",
+        options: ["off", "glass"],
+        hint:
+          "The visitor's own “listen here” marker: a magnifying glass resting beside the waveforms — drag it, or tap-lift then tap, to anchor a musical moment. While it stands, that side's bare recording switches land on it, and the other side sees a ghost it can adopt.",
+      },
+      {
+        key: "minRegionPx",
+        label: "Region floor (px)",
+        options: [2, 4, 8],
+        hint:
+          "The floor under a rendered region's width: sub-pixel annotation regions are widened to at least this instead of silently vanishing at fit-to-width.",
+      },
+      {
+        key: "zoom",
+        label: "Initial zoom (px/s; 0 = fit)",
+        options: [0, 30],
+        hint:
+          "The strips' starting scale in pixels per second. 0 fits the whole recording into the strip — the resting state the stacked comparison needs.",
+      },
       // Readiness (user, 2026-08-26, iPad round): warm bytes at boot, players
       // kept, and the grace before "Loading…" earns its place on the glass.
-      { key: "preload", label: "Warm audio at boot", options: ["off", "on"] },
-      { key: "playerCache", label: "Players kept (LRU)", options: [2, 4, 8] },
-      { key: "loadingGrace", label: "‘Loading…’ grace (ms)", options: [0, 250, 500, 1000] },
-      { key: "debug", label: "Debug logging", options: [false, true] },
+      {
+        key: "preload",
+        label: "Warm audio at boot",
+        options: ["off", "on"],
+        hint:
+          "Fetches every recording's bytes sequentially after boot, reference first, so the first visitor never pays a cold ~9 MB wait. A visitor's tap always outranks the warm loop.",
+      },
+      {
+        key: "playerCache",
+        label: "Players kept (LRU)",
+        options: [2, 4, 8],
+        hint:
+          "How many built audio players the transport keeps alive. 2 keeps an A/B comparison instant; 8 pins all eight and makes every switch permanently instant, pending the soak's memory verdict.",
+      },
+      {
+        key: "loadingGrace",
+        label: "‘Loading…’ grace (ms)",
+        options: [0, 250, 500, 1000],
+        hint:
+          "Shows “Loading…” only after a genuine wait this long, so warm switches never flash it for two frames.",
+      },
+      {
+        key: "debug",
+        label: "Debug logging",
+        options: [false, true],
+        hint: "Verbose console logging, plus the frame-cost probe.",
+      },
     ],
   },
 ];
@@ -219,6 +394,7 @@ export function mountStudyPanel(config) {
     b.className = "study-tab";
     b.dataset.tab = tab.id;
     b.textContent = tab.label;
+    if (tab.hint) b.title = tab.hint;
     b.addEventListener("click", () => {
       activeTab = tab.id;
       localStorage.setItem(TAB_KEY, activeTab);
@@ -290,6 +466,21 @@ export function mountStudyPanel(config) {
         opts.appendChild(chip);
       }
       row.append(label, opts);
+      // The hint rides twice: a title for a desktop hover, and a tap on the
+      // label toggles it inline under the header — the panel's real home is
+      // an iPad, where a title tooltip simply never shows.
+      if (param.hint) {
+        label.title = param.hint;
+        label.classList.add("has-hint");
+        const hint = document.createElement("span");
+        hint.className = "study-hint";
+        hint.textContent = param.hint;
+        hint.hidden = true;
+        label.addEventListener("click", () => {
+          hint.hidden = !hint.hidden;
+        });
+        label.after(hint);
+      }
       body.appendChild(row);
     }
     url.textContent = location.search || "(defaults)";

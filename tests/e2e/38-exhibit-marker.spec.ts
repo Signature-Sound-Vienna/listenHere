@@ -330,12 +330,14 @@ test.describe('38. The listening marker', () => {
     await page.mouse.down();
     await page.mouse.move(from.x + from.width / 2 + 12, from.y + 12, { steps: 2 });
     await page.mouse.move(to.x, to.y, { steps: 8 });
-    // Mid-drag, before release: the projections track the hover, salient.
+    // Mid-drag, before release: the projections track the hover, salient —
+    // and the strip stack pulses during drags too (second iteration round).
     expect(
       await page
         .locator('.vp[data-viewport="0"] .marker-tick.is-salient:not([hidden])')
         .count(),
     ).toBeGreaterThan(0);
+    await expect(page.locator('.vp[data-viewport="0"] .strips')).toHaveClass(/marker-expect/);
     await page.mouse.up();
 
     const state = await markerState(page);
@@ -395,12 +397,30 @@ test.describe('38. The listening marker', () => {
       T.transport.pause();
     }, ref);
 
-    // The ghost renders in the OTHER viewport, at their projection.
+    // The ghost renders in the OTHER viewport, at their projection — and its
+    // LENS is vertically centred on its row (third round: the 180° mirror
+    // must rotate about the lens centre; a default-origin rotation painted
+    // the lens ~38% of the box below the row). Same check for the glass.
     const ghost = page.locator('.vp[data-viewport="1"] .marker-ghost');
     await expect(ghost).not.toBeHidden();
     expect((await markerState(page, 1)).ghost).toEqual(
       expect.objectContaining({ file: ref }),
     );
+    await arrivedGlassBox(page, 0); // the placement transition must land first
+    const centring = await page.evaluate((ref) => {
+      const cy = (el: Element) => {
+        const r = el.getBoundingClientRect();
+        return r.y + r.height / 2;
+      };
+      const q = (vp: number, sel: string) =>
+        document.querySelector(`.vp[data-viewport="${vp}"] ${sel}`)!;
+      return {
+        glass: cy(q(0, '.marker-glass .glass-lens')) - cy(q(0, `.strip[data-file="${ref}"]`)),
+        ghost: cy(q(1, '.marker-ghost .glass-lens')) - cy(q(1, `.strip[data-file="${ref}"]`)),
+      };
+    }, ref);
+    expect(Math.abs(centring.glass), 'the glass lens is off its row centre').toBeLessThan(3);
+    expect(Math.abs(centring.ghost), 'the ghost lens is off its row centre').toBeLessThan(3);
 
     // Lift vp1's glass (engaging the ghost as a target), then tap the ghost.
     await page.click('.vp[data-viewport="1"] .marker-glass');
@@ -529,5 +549,155 @@ test.describe('38. The listening marker', () => {
       await page.evaluate(() => (window as any)._exhibitTest.viewports[0].fadeCapAt),
       'a plain aligned switch must stay exempt for the jumper',
     ).toBe(0);
+  });
+
+  // 38.14 Direct mode, marker standing (second iteration round, DIRECT ONLY
+  // by ruling): a waveform tap LIFTS the glass into expect-placement instead
+  // of seeking — the strap owns switching there, so the glass mediates
+  // seeking while it is up. The second tap places AND plays.
+  test('38.14 in direct mode a waveform tap with a marker standing lifts instead of seeking', async ({
+    page,
+  }) => {
+    const { order, ref } = await boot(page, 'debug=1&marker=glass&tapMode=direct');
+    await page.evaluate((ref) => {
+      const T = (window as any)._exhibitTest;
+      T.placeMarker(0, ref, 60);
+      T.transport.pause();
+      return T.transport.select(ref, 300, /* play */ false);
+    }, ref);
+
+    const fileB = order.filter((f) => f !== ref)[3];
+    const strip = page.locator(`.vp[data-viewport="0"] .strip[data-file="${fileB}"] .strip-ws`);
+    const box = (await strip.boundingBox())!;
+    await strip.click({ position: { x: Math.round(box.width * 0.8), y: 10 } });
+
+    // Lifted, pulsing — and NOTHING moved: no switch, no seek, marker intact.
+    const probe = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      return { m: T.marker(0), file: T.transport.activeFile, time: T.transport._time };
+    });
+    expect(probe.m.lifted).toBe(true);
+    expect(probe.m.ix).not.toBeNull();
+    expect(probe.file).toBe(ref);
+    expect(Math.abs(probe.time - 300)).toBeLessThan(2);
+    await expect(page.locator('.vp[data-viewport="0"] .strips')).toHaveClass(/marker-expect/);
+
+    // The second tap places there and plays (R3) — the two-tap seek.
+    await strip.click({ position: { x: Math.round(box.width * 0.8), y: 10 } });
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.activeFile))
+      .toBe(fileB);
+    const placed = await page.evaluate((fileB) => {
+      const T = (window as any)._exhibitTest;
+      return { m: T.marker(0), time: T.transport._time, expected: 0.8 * T.exhibit.durations[fileB] };
+    }, fileB);
+    expect(placed.m.lifted).toBe(false);
+    expect(placed.m.homeFile).toBe(fileB);
+    expect(Math.abs(placed.time - placed.expected)).toBeLessThan(5);
+  });
+
+  // 38.15 The HYBRID cancel (third round): while lifted, a tap still within
+  // the waveform world — here the strap's switch buttons — keeps the marker
+  // and settles the glass back onto it (the switch proceeds, and the glass
+  // rides to the new audible strip); a tap beyond that world — here the
+  // audience switch — returns the glass to its hook, marker and all, while
+  // the tapped control still acts.
+  test('38.15 lifted taps: waveform-world settles onto the marker, elsewhere returns it to the hook', async ({
+    page,
+  }) => {
+    const { order, ref } = await boot(page, 'debug=1&marker=glass&tapMode=direct');
+    await page.evaluate((ref) => {
+      const T = (window as any)._exhibitTest;
+      T.placeMarker(0, ref, 60);
+      T.transport.pause();
+    }, ref);
+    const before = await markerState(page);
+    const strip = page.locator(`.vp[data-viewport="0"] .strip[data-file="${ref}"] .strip-ws`);
+    const box = (await strip.boundingBox())!;
+
+    // Leg 1: lift, then tap a strap button — the switch happens, the marker
+    // SURVIVES, and the glass settles onto its new home on the audible strip.
+    await strip.click({ position: { x: Math.round(box.width * 0.6), y: 10 } });
+    expect((await markerState(page)).lifted).toBe(true);
+    const fileB = order.filter((f) => f !== ref)[2];
+    await page.click(`.vp[data-viewport="0"] .vp-strap .strap-btn[data-file="${fileB}"]`);
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.activeFile))
+      .toBe(fileB);
+    const settled = await markerState(page);
+    expect(settled.lifted).toBe(false);
+    expect(settled.ix, 'a waveform-world tap cost the marker').toBe(before.ix);
+    expect(settled.homeFile).toBe(fileB);
+
+    // Leg 2: lift again, then tap the audience switch — beyond the waveform
+    // world: the audience changes AND the glass goes home, marker removed.
+    await page.evaluate(() => (window as any)._exhibitTest.transport.pause());
+    const stripB = page.locator(`.vp[data-viewport="0"] .strip[data-file="${fileB}"] .strip-ws`);
+    await stripB.click({ position: { x: Math.round(box.width * 0.3), y: 10 } });
+    expect((await markerState(page)).lifted).toBe(true);
+    await page.click('.vp[data-viewport="0"] .audience-btn[data-audience="kids"]');
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.audience.get(0)))
+      .toBe('kids');
+    const gone = await markerState(page);
+    expect(gone.lifted).toBe(false);
+    expect(gone.ix).toBeNull();
+    await expect(page.locator('.vp[data-viewport="0"] .marker-glass')).toHaveClass(/is-resting/);
+  });
+
+  // 38.16 The glass RIDES THE AUDIBLE STRIP (second iteration round,
+  // superseding "the glass stays where the visitor put it"): a switch hops it
+  // to the marker's projection on the newly audible strip; the index is
+  // untouched.
+  test('38.16 the glass hops to the audible strip on a switch, keeping its moment', async ({
+    page,
+  }) => {
+    const { order, ref } = await boot(page, 'debug=1&marker=glass&tapMode=direct');
+    await page.evaluate((ref) => {
+      const T = (window as any)._exhibitTest;
+      T.placeMarker(0, ref, 60);
+      T.transport.pause();
+    }, ref);
+    const before = await markerState(page);
+    expect(before.homeFile).toBe(ref);
+
+    const fileB = order.filter((f) => f !== ref)[2];
+    await page.click(`.vp[data-viewport="0"] .vp-strap .strap-btn[data-file="${fileB}"]`);
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.marker(0).homeFile))
+      .toBe(fileB);
+    const after = await markerState(page);
+    expect(after.ix, 'the hop must not move the marker itself').toBe(before.ix);
+    // Both sides' ghosts follow the same truth: the OTHER viewport's ghost
+    // mirrors the new home.
+    expect((await markerState(page, 1)).ghost).toEqual(
+      expect.objectContaining({ file: fileB }),
+    );
+  });
+
+  // 38.17 The magnifier: a placed glass shows the waveform under its lens at
+  // 2×, drawn from the payload's own peaks — present, sized, and non-blank.
+  test('38.17 the placed glass magnifies the waveform under its lens', async ({ page }) => {
+    const { ref } = await boot(page, 'debug=1&marker=glass');
+    await page.evaluate((ref) => {
+      const T = (window as any)._exhibitTest;
+      // A loud moment, so the magnified peaks are unambiguously non-blank.
+      T.placeMarker(0, ref, 120);
+      T.transport.pause();
+    }, ref);
+    const probe = await page.evaluate(() => {
+      const mag = document.querySelector(
+        '.vp[data-viewport="0"] .marker-glass .marker-mag',
+      ) as HTMLCanvasElement;
+      if (!mag) return null;
+      const ctx = mag.getContext('2d')!;
+      const data = ctx.getImageData(0, 0, mag.width, mag.height).data;
+      let painted = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i] > 0) painted++;
+      return { w: mag.width, h: mag.height, painted };
+    });
+    expect(probe, 'no magnifier canvas in the glass').not.toBeNull();
+    expect(probe!.w).toBeGreaterThan(0);
+    expect(probe!.painted, 'the lens is blank over a loud moment').toBeGreaterThan(50);
   });
 });

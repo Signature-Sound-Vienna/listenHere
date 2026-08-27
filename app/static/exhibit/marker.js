@@ -17,13 +17,17 @@
 // physical gesture, in two forms:
 //
 //   DRAG   — pull the glass from its hook onto a waveform to place the marker,
-//            drag it to move, pull it off the waveforms to put it back.
-//   TAP    — tap the glass and it LIFTS off the hook and floats beside the
-//            strips ("expect-placement": the strip stack pulses); the next tap
-//            on a waveform places it there. A tap anywhere else rests the
-//            glass back on its hook AND still does whatever it normally does —
-//            the reset is observed, never stolen (a capture listener that
-//            blocks nothing).
+//            drag it to move, pull it off the waveforms to remove it.
+//   TAP    — tap the glass (or, under ?tapMode=direct with a marker standing,
+//            any waveform — main.js routes that; the strap owns switching
+//            there, so the glass mediates seeking while it is up) and it
+//            LIFTS into expect-placement: the glass floats over the
+//            waveforms, the strip stack pulses, and the next waveform tap
+//            places it there. A lift is CANCEL-SAFE — the marker survives,
+//            and a tap anywhere else settles the glass back onto it (or onto
+//            the hook when none stands) while that tap still does its own
+//            job: observed at capture, never stolen. Removal by tap is the
+//            HOOK, tapped while the glass is in hand ("put it away").
 //
 // The other viewport's marker appears here as a MIRRORED GHOST (rotated 180°,
 // translucent — their glass seen from across the table). Dropping or tapping
@@ -72,28 +76,31 @@ const FRESH_MS = 1400;
 // the stitching token, so it exists only where the stitching does. Layer
 // paint, not SVG gradients: gradient defs need document-unique ids and this
 // markup is instantiated four times per screen (two glasses, two ghosts).
+//
+// The lens is an OVAL (second iteration round, 2026-08-27): sized so that a
+// placed, vertical glass covers one strip top-to-bottom — the layer scales the
+// whole rendering so the lens's vertical diameter equals the strip height.
 const GLASS_SVG =
-  "<svg viewBox='0 0 64 86' aria-hidden='true'>" +
-  "<line class='glass-point' x1='32' y1='2' x2='32' y2='58'/>" +
-  "<circle class='glass-lens' cx='32' cy='30' r='22'/>" +
-  "<rect class='glass-handle' x='25.5' y='50' width='13' height='33' rx='6'/>" +
-  "<rect class='glass-handle-hl' x='27' y='56' width='3.5' height='20' rx='1.75'/>" +
-  "<rect class='glass-handle-sh' x='34.5' y='56' width='2.8' height='20' rx='1.4'/>" +
-  "<path class='glass-handle-wrap' d='M25.5 59 L38.5 63 M25.5 63.5 L38.5 67.5 " +
-  "M25.5 68 L38.5 72 M25.5 72.5 L38.5 76.5'/>" +
-  "<rect class='glass-ferrule' x='24.5' y='49' width='15' height='6.5' rx='3'/>" +
-  "<rect class='glass-ferrule' x='24.5' y='77.5' width='15' height='6.5' rx='3'/>" +
-  "<circle class='glass-ring' cx='32' cy='30' r='22'/>" +
-  "<circle class='glass-stitch' cx='32' cy='30' r='18'/>" +
+  "<svg viewBox='0 0 64 90' aria-hidden='true'>" +
+  "<ellipse class='glass-lens' cx='32' cy='28' rx='17' ry='26'/>" +
+  "<rect class='glass-handle' x='25.5' y='53' width='13' height='33' rx='6'/>" +
+  "<rect class='glass-handle-hl' x='27' y='59' width='3.5' height='20' rx='1.75'/>" +
+  "<rect class='glass-handle-sh' x='34.5' y='59' width='2.8' height='20' rx='1.4'/>" +
+  "<path class='glass-handle-wrap' d='M25.5 62 L38.5 66 M25.5 66.5 L38.5 70.5 " +
+  "M25.5 71 L38.5 75 M25.5 75.5 L38.5 79.5'/>" +
+  "<rect class='glass-ferrule' x='24.5' y='52' width='15' height='6.5' rx='3'/>" +
+  "<rect class='glass-ferrule' x='24.5' y='80.5' width='15' height='6.5' rx='3'/>" +
+  "<ellipse class='glass-ring' cx='32' cy='28' rx='17' ry='26'/>" +
+  "<ellipse class='glass-stitch' cx='32' cy='28' rx='13.5' ry='22.5'/>" +
   "</svg>";
-const GLASS_ANCHOR = { x: 32, y: 30 };
+const GLASS_ANCHOR = { x: 32, y: 28 };
+const LENS = { rx: 17, ry: 26 };
 // The box follows the paint: a placed glass overhangs its row's neighbours,
 // and an INVISIBLE overhang would keep stealing their taps after the visible
 // one stopped covering them (the handle was trimmed 25% for exactly that).
-const GLASS_VIEW = { w: 64, h: 86 };
-/** Rendered size of the glass, px; the SVG scales with it. */
-const GLASS_W = 56;
-const GLASS_H = Math.round((GLASS_W * GLASS_VIEW.h) / GLASS_VIEW.w);
+const GLASS_VIEW = { w: 64, h: 90 };
+/** How much bigger the lens shows the waveform under it (the magnifier). */
+const MAG = 4;
 
 /**
  * Mount one viewport's marker layer.
@@ -102,6 +109,10 @@ const GLASS_H = Math.round((GLASS_W * GLASS_VIEW.h) / GLASS_VIEW.w);
  * @param {HTMLElement} opts.stripsEl        the viewport's `.strips` container
  * @param {Map<string, object>} opts.strips  file -> Strip (strips.js)
  * @param {{glass: string, ghost: string}} [opts.labels]  accessible names
+ * @param {number} [opts.stripHeight]        CSS px; sizes the lens to the row
+ * @param {(file: string) => number[]|undefined} [opts.peaksFor]  the payload's
+ *   peaks, for the lens's magnified view; absent = no magnifier
+ * @param {string} [opts.lensWave]           the magnified waveform's colour
  * @param {(file: string, time: number) => number} opts.ixFor      align-core
  * @param {(file: string, ix: number) => number|undefined} opts.timeFor
  * @param {() => number} opts.rotationOf     total rotation of this viewport's
@@ -110,10 +121,12 @@ const GLASS_H = Math.round((GLASS_W * GLASS_VIEW.h) / GLASS_VIEW.w);
  *   moved the glass; main.js converts to an index, echoes via setMarker, and
  *   routes the jump (placement IS the reader's own seek, ruled)
  * @param {() => void} opts.onAdopt          dropped/tapped onto the ghost
- * @param {() => void} opts.onRemove         pulled off, or lifted a placed glass
+ * @param {() => void} opts.onRemove         pulled off the waveforms, or
+ *   rested via the hook — a LIFT no longer removes (see lift below)
  * @returns {{el: HTMLElement, setMarker(ix: number|null, file: string|null): void,
  *   setGhost(ix: number|null, file: string|null): void, lifted: boolean,
- *   reset(): void, reposition(): void, state(): object, destroy(): void}}
+ *   lift(): void, reset(): void, reposition(): void, state(): object,
+ *   destroy(): void}}
  */
 export function createMarkerLayer({
   stripsEl,
@@ -125,7 +138,15 @@ export function createMarkerLayer({
   onAdopt,
   onRemove,
   labels = {},
+  stripHeight = 48,
+  peaksFor,
+  lensWave = "#8fb8e8",
 }) {
+  // The rendering scales so the oval lens spans exactly one strip: rendered
+  // lens height = stripHeight, everything else follows the viewBox ratio.
+  const glassW = Math.round((stripHeight * GLASS_VIEW.w) / (2 * LENS.ry));
+  const glassH = Math.round((glassW * GLASS_VIEW.h) / GLASS_VIEW.w);
+  const scale = glassW / GLASS_VIEW.w;
   // Display state. `ix`/`homeFile` mirror main.js's semantic state via
   // setMarker; `hoverIx` exists only mid-drag, for the live tick projection.
   let ix = null;
@@ -167,15 +188,38 @@ export function createMarkerLayer({
   ghostEl.className = "marker-ghost";
   ghostEl.innerHTML = GLASS_SVG;
   ghostEl.hidden = true;
+  ghostEl.style.width = `${glassW}px`;
+  ghostEl.style.height = `${glassH}px`;
   ghostEl.setAttribute("aria-label", labels.ghost || "");
   stripsEl.appendChild(ghostEl);
 
   const glass = document.createElement("div");
   glass.className = "marker-glass";
   glass.innerHTML = GLASS_SVG;
+  glass.style.width = `${glassW}px`;
+  glass.style.height = `${glassH}px`;
   glass.setAttribute("role", "button");
   glass.setAttribute("tabindex", "0");
   glass.setAttribute("aria-label", labels.glass || "");
+
+  // The magnifier: a small canvas under the SVG, clipped to the lens oval,
+  // showing the waveform beneath the glass at MAG× — drawn from the payload's
+  // own peaks, so it costs no renderer access and works mid-drag. The SVG's
+  // translucent lens tint paints OVER it: aged glass, with something behind it.
+  const mag = document.createElement("canvas");
+  mag.className = "marker-mag";
+  {
+    const rx = LENS.rx * scale;
+    const ry = LENS.ry * scale;
+    mag.style.width = `${2 * rx}px`;
+    mag.style.height = `${2 * ry}px`;
+    mag.style.left = `${glassW / 2 - rx}px`;
+    mag.style.top = `${GLASS_ANCHOR.y * scale - ry}px`;
+    const dpr = window.devicePixelRatio || 1;
+    mag.width = Math.round(2 * rx * dpr);
+    mag.height = Math.round(2 * ry * dpr);
+  }
+  glass.insertBefore(mag, glass.firstChild);
   stripsEl.appendChild(glass);
   stripsEl.appendChild(layer);
 
@@ -270,8 +314,8 @@ export function createMarkerLayer({
   // ---- rendering ------------------------------------------------------------
 
   const anchorPx = {
-    x: (GLASS_ANCHOR.x / GLASS_VIEW.w) * GLASS_W,
-    y: (GLASS_ANCHOR.y / GLASS_VIEW.h) * GLASS_H,
+    x: GLASS_ANCHOR.x * scale,
+    y: GLASS_ANCHOR.y * scale,
   };
   const moveGlass = (p) => {
     glass.style.left = `${p.x - anchorPx.x}px`;
@@ -301,24 +345,65 @@ export function createMarkerLayer({
     }
   };
 
+  // ---- the magnifier ----------------------------------------------------------
+
+  const magCtx = mag.getContext("2d");
+  const clearMag = () => magCtx.clearRect(0, 0, mag.width, mag.height);
+  /** The lens shows its own width's worth of strip, at MAG×, from the peaks. */
+  const drawMag = (file, time) => {
+    clearMag();
+    const strip = strips.get(file);
+    const peaks = peaksFor?.(file);
+    if (!strip || !Array.isArray(peaks) || !peaks.length || !Number.isFinite(time)) return;
+    const wrapper = strip.ws.getWrapper?.();
+    const full = wrapper?.clientWidth || strip.host.clientWidth;
+    if (!full) return;
+    const pxPerSec = full / strip.duration;
+    const windowSec = (2 * LENS.rx * scale) / (pxPerSec * MAG);
+    const t0 = time - windowSec / 2;
+    const w = mag.width;
+    const h = mag.height;
+    const mid = h / 2;
+    magCtx.fillStyle = lensWave;
+    magCtx.globalAlpha = 0.65;
+    for (let x = 0; x < w; x++) {
+      const t = t0 + (x / w) * windowSec;
+      if (t < 0 || t > strip.duration) continue;
+      const i = Math.min(
+        peaks.length - 1,
+        Math.max(0, Math.floor((t / strip.duration) * peaks.length)),
+      );
+      const v = Math.min(1, Math.abs(peaks[i] || 0));
+      const bar = Math.max(h * 0.02, v * mid * 0.9);
+      magCtx.fillRect(x, mid - bar, 1, bar * 2);
+    }
+    magCtx.globalAlpha = 1;
+  };
+
   /** Recompute every position from state — THE one rendering entry point. */
   const reposition = () => {
     if (drag) {
       // Mid-drag the glass is under the finger; only the projections move.
       paintTicks(drag.hoverIx ?? ix);
       paintGhost();
+      if (drag.spot) drawMag(drag.spot.file, drag.spot.time);
+      else clearMag();
       return;
     }
-    if (lifted) moveGlass(floatAnchor());
-    else if (ix != null && homeFile) {
+    if (lifted) {
+      moveGlass(floatAnchor());
+      clearMag();
+    } else if (ix != null && homeFile) {
       const p = stripAnchor(homeFile, timeFor(homeFile, ix));
       // A placed glass whose moment is scrolled out of view hides honestly
       // rather than pinning to an edge it is not at; the ticks already do.
       glass.classList.toggle("is-offview", p == null);
       if (p) moveGlass(p);
+      drawMag(homeFile, timeFor(homeFile, ix));
     } else {
       glass.classList.remove("is-offview");
       moveGlass(hookAnchor());
+      clearMag();
     }
     paintTicks(ix);
     paintGhost();
@@ -329,7 +414,9 @@ export function createMarkerLayer({
     glass.classList.toggle("is-engaged", on);
     ghostEl.classList.toggle("is-engaged", on);
     for (const tick of ticks.values()) tick.classList.toggle("is-salient", on);
-    stripsEl.classList.toggle("marker-expect", on && lifted && !drag);
+    // The strip stack pulses whenever the glass is IN HAND — lifted OR
+    // dragged (second iteration round: drags pulse too).
+    stripsEl.classList.toggle("marker-expect", on);
   };
 
   const markFresh = () => {
@@ -342,27 +429,28 @@ export function createMarkerLayer({
 
   // ---- gestures ---------------------------------------------------------------
 
+  // A lift is CANCEL-SAFE (second iteration round, 2026-08-27, revising the
+  // first build): the marker survives the glass being picked up, so a stray
+  // tap can never cost a visitor their moment. Settle puts the glass back on
+  // whatever is true — the marker, or the hook. Removal is a deliberate act
+  // with its own gestures: drag the glass off the waveforms, or tap the HOOK
+  // while the glass is in hand ("put it away").
   const lift = () => {
-    const had = ix != null;
+    if (lifted) return;
     lifted = true;
     glass.classList.add("is-lifted");
     glass.classList.remove("is-resting", "is-placed");
     setEngaged(true);
     reposition();
-    // Picking the glass up takes the marker with it — the marker IS the
-    // glass's position, so a lifted glass anchors nothing (and stale ticks
-    // would lie). main.js clears its state and echoes setMarker(null).
-    if (had) onRemove();
   };
 
-  const rest = () => {
-    const had = ix != null;
+  const settle = () => {
     lifted = false;
     glass.classList.remove("is-lifted");
-    glass.classList.add("is-resting");
+    glass.classList.toggle("is-placed", ix != null);
+    glass.classList.toggle("is-resting", ix == null);
     setEngaged(false);
     reposition();
-    if (had) onRemove();
   };
 
   glass.addEventListener("pointerdown", (e) => {
@@ -419,9 +507,9 @@ export function createMarkerLayer({
     drag = null;
     glass.classList.remove("is-dragging", "will-adopt", "will-remove");
     if (!d.moved) {
-      // A tap on the glass: lift it, or put it back — the toggle that makes
-      // tap-tap an eyes-closed removal, mirroring drag-off.
-      if (lifted) rest();
+      // A tap on the glass toggles the lift; both directions preserve the
+      // marker — removal has its own gestures (drag off, or the hook).
+      if (lifted) settle();
       else lift();
       return;
     }
@@ -430,8 +518,12 @@ export function createMarkerLayer({
     glass.classList.remove("is-lifted");
     if (d.adopt) onAdopt();
     else if (d.spot) onPlace(d.spot.file, d.spot.time);
-    else rest();
-    // setMarker (main.js's echo) repaints; the rest() branch already did.
+    else {
+      // Dragged off the waveforms: the one drag that DOES remove.
+      if (ix != null) onRemove();
+      settle();
+    }
+    // setMarker (main.js's echo) repaints the placement branches.
   };
   glass.addEventListener("pointerup", endDrag);
   glass.addEventListener("pointercancel", (e) => {
@@ -445,26 +537,48 @@ export function createMarkerLayer({
   // Expect-placement's other half: while lifted, a tap on a waveform places
   // (main.js intercepts the strip's own onSelect — the tap→time mapping the
   // strips already own, transform-proof via offsetX), a tap on the ghost
-  // adopts, and a tap ANYWHERE ELSE rests the glass while the tap proceeds
-  // untouched — observed at capture, never blocked, so no control on the
-  // screen can be deadened by a floating glass.
+  // adopts, a tap on the HOOK puts the glass away (removing any marker), and
+  // a tap ANYWHERE ELSE settles the glass back onto whatever is true — the
+  // marker, or the hook — while the tap proceeds untouched: observed at
+  // capture, never blocked, so no control can be deadened by a floating glass.
   const onDocPointerDown = (e) => {
     if (!lifted || drag) return;
     const path = e.composedPath();
-    if (path.includes(glass) || path.includes(ghostEl)) return;
+    if (path.includes(glass) || path.includes(ghostEl) || path.includes(hook)) return;
     for (const strip of strips.values()) {
       if (path.includes(strip.el)) return; // the strip tap will place
     }
-    rest();
+    // The HYBRID cancel (user, 2026-08-27, third round): a tap still within
+    // the waveform world — the strips container's gaps, the rail, or the
+    // strap's switch buttons, all DOM children of stripsEl — keeps the marker
+    // and settles the glass back onto it (a strap switch even carries the
+    // glass along, via the ride-the-audible-strip hop). A tap BEYOND that
+    // world reads as walking away: the glass returns to its hook and the
+    // marker goes with it, as the first build had it. Either way the tap
+    // itself proceeds untouched.
+    if (path.includes(stripsEl)) {
+      settle();
+      return;
+    }
+    if (ix != null) onRemove();
+    settle();
   };
   document.addEventListener("pointerdown", onDocPointerDown, true);
 
+  // "Put it away": the empty hook is the removal target while the glass is in
+  // hand — tappable only then (CSS gates pointer-events on the layer state).
+  hook.addEventListener("click", () => {
+    if (!lifted) return;
+    if (ix != null) onRemove();
+    settle();
+  });
+
   ghostEl.addEventListener("click", () => {
     if (!lifted) return;
-    lifted = false;
-    glass.classList.remove("is-lifted");
-    setEngaged(false);
     onAdopt();
+    // The echo (setMarker) normally lands the glass; if the adopt no-opped
+    // (the ghost's owner pulled their glass mid-gesture), settle honestly.
+    if (lifted) settle();
   });
 
   // Keyboard fallback for the role="button": Enter/Space toggles the lift, so
@@ -473,7 +587,7 @@ export function createMarkerLayer({
   glass.addEventListener("keydown", (e) => {
     if (e.key !== "Enter" && e.key !== " ") return;
     e.preventDefault();
-    if (lifted) rest();
+    if (lifted) settle();
     else lift();
   });
 
@@ -524,6 +638,8 @@ export function createMarkerLayer({
     get lifted() {
       return lifted;
     },
+    /** Enter expect-placement (the direct-mode waveform-tap path; main.js). */
+    lift,
     /** The attract loop's sweep: everything back to rest, no callbacks. */
     reset() {
       ix = null;

@@ -385,20 +385,27 @@ html, body {
 .marker-hook {
   position: absolute;
   left: 50%;
-  margin-left: -24px;
+  margin-left: -25px;
   top: calc(100% + 10px);
-  width: 48px;
-  height: 48px;
+  width: 50px;
+  height: 60px; /* an oval ring, matching the oval lens */
   border-radius: 50%;
   border: 2px dashed var(--ex-accent);
   opacity: 0.45;
 }
 .vp[data-tap-mode="direct"] .marker-hook { top: calc(100% + 54px); }
+/* While the glass is in hand the hook becomes the "put it away" target —
+ * tapping it removes any marker and rests the glass. */
+.marker-layer.is-engaged .marker-hook {
+  pointer-events: auto;
+  cursor: pointer;
+  opacity: 0.8;
+}
 
+/* Sized by marker.js (inline width/height): the oval lens spans one strip
+ * top-to-bottom, so the rendered scale follows --strip-height. */
 .marker-glass {
   position: absolute;
-  width: 56px;
-  height: 75px;
   z-index: 3;
   cursor: grab;
   /* Required, not decorative: without it the browser claims a touch drag for
@@ -424,7 +431,7 @@ html, body {
  * pivot is the lens centre — the anchor — so the lens stays in the ring at
  * rest and under the finger in flight; the transition swings it either way. */
 .marker-glass svg {
-  transform-origin: 50% 34.9%; /* the lens centre, (32, 30) of 64×86 */
+  transform-origin: 50% 31.1%; /* the lens centre, (32, 28) of 64×90 */
   transition: transform 450ms cubic-bezier(0.22, 1.1, 0.36, 1);
 }
 .marker-glass.is-dragging svg { transform: rotate(-38deg); }
@@ -481,25 +488,33 @@ html, body {
   stroke-width: 1;
   stroke-dasharray: 3 3;
 }
-.marker-glass .glass-point,
-.marker-ghost .glass-point {
-  stroke: var(--ex-accent);
-  stroke-width: 1.5;
-}
 
 /* The other side's marker, mirrored — their glass seen from across the table.
  * Interactive only while THIS side's glass is in hand (is-engaged), so a
  * resting visitor cannot press the other side's marker by accident. */
 .marker-ghost {
-  position: absolute;
-  width: 56px;
-  height: 75px;
+  position: absolute; /* sized by marker.js, like the glass */
   z-index: 2;
   opacity: 0.3;
   pointer-events: none;
   transition: opacity 250ms ease;
 }
-.marker-ghost svg { transform: rotate(180deg); }
+/* The magnifier: the peaks under the lens at 2×, clipped to the oval, painted
+ * UNDER the SVG so the translucent lens tint ages the view. Display only. */
+.marker-mag {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.marker-ghost .marker-mag { display: none; }
+/* Mirrored about the LENS CENTRE, not the box centre: the ghost is positioned
+ * by the same anchor math as the glass (the lens centre sits at 31.1% of the
+ * box), so a default-origin rotation would paint the lens ~38% of the box
+ * BELOW the row it is anchored to — the handle simply points up instead. */
+.marker-ghost svg {
+  transform: rotate(180deg);
+  transform-origin: 50% 31.1%;
+}
 .marker-ghost.is-engaged {
   opacity: 0.65;
   pointer-events: auto;

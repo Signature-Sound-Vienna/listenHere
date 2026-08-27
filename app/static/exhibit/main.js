@@ -557,6 +557,29 @@ async function boot() {
     markerJump(vp, file, landing);
   };
 
+  // The glass RIDES THE AUDIBLE STRIP (second iteration round, 2026-08-27,
+  // superseding the first build's "the glass stays where the visitor put
+  // it"): on any recording switch — a strap pick, an arrow, an aligned snap,
+  // or the other side's action — each standing marker's glass hops to the
+  // marker's projection on the newly audible strip, so the lens is always
+  // over what is being heard. The marker itself (the index) never moves;
+  // only its visual home does, on the position transition. Ghosts follow.
+  if (config.marker === "glass") {
+    let markerHome = null;
+    transport.subscribe((state) => {
+      if (!state.file || state.file === markerHome) return;
+      markerHome = state.file;
+      let moved = false;
+      for (const vp of viewports) {
+        if (vp.markerIx == null || vp.markerFile === state.file) continue;
+        vp.markerFile = state.file;
+        vp.marker?.setMarker(vp.markerIx, state.file);
+        moved = true;
+      }
+      if (moved) syncGhosts();
+    });
+  }
+
   const stripsReady = [];
   for (const vp of viewports) {
     const mounted = mountStrips(vp.stripsEl, exhibit, config, {
@@ -572,7 +595,16 @@ async function boot() {
         // (marker.js's expect-placement mode) — reusing the strips' own
         // transform-proof tap→time mapping rather than growing a second one.
         if (vp.marker?.lifted) return placeMarker(vp, file, time);
-        if (config.tapMode === "direct") return turns.jump(vp.index, file, time);
+        if (config.tapMode === "direct") {
+          // Direct mode with a marker standing (second iteration round,
+          // 2026-08-27, DIRECT ONLY by ruling): a waveform tap LIFTS the
+          // glass into expect-placement instead of seeking — the strap owns
+          // switching here, so while the marker is up the glass mediates
+          // seeking, and the second tap places AND plays (R3). Aligned mode
+          // below keeps the ruled snap semantics untouched.
+          if (vp.markerIx != null) return vp.marker.lift();
+          return turns.jump(vp.index, file, time);
+        }
         // Aligned mode: a cross-strip tap is a bare switch, so a standing
         // marker catches it; a same-strip tap keeps its explicit time (ruled).
         if (vp.markerIx != null && file !== transport.activeFile) {
@@ -626,6 +658,12 @@ async function boot() {
       vp.marker = createMarkerLayer({
         stripsEl: vp.stripsEl,
         strips: mounted.strips,
+        // The oval lens spans one strip top-to-bottom when placed.
+        stripHeight: config.stripHeight,
+        // The magnifier draws from the payload's own peaks, in the active-
+        // waveform ink so the lens reads as focusing on the same material.
+        peaksFor: (file) => exhibit.peaks[file],
+        lensWave: themeColors?.waveActive,
         ixFor: (file, time) => getClosestAlignmentIx(exhibit.grids, time, file),
         timeFor: (file, ix) => getCorrespondingTime(exhibit.grids, file, ix),
         // For the drag's client→local mapping: the viewport's own rotation

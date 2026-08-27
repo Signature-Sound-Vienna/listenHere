@@ -1,5 +1,15 @@
 # Listen Here! CHANGELOG.md
 
+### 0.36.0 -- Marker glass round 2: oval lens, rides the audible strip, tap-mediated seeking, real magnification
+* The lens is an OVAL sized so a placed, vertical glass covers one strip top-to-bottom; the whole rendering scales with `stripHeight`.
+* The glass RIDES THE AUDIBLE STRIP: any recording switch — strap, arrows, an aligned snap, the other side's action — hops it (on the position transition) to the marker's projection on the newly audible strip. The marker index never moves; ghosts follow.
+* Direct mode only (user ruling): with a marker standing, a waveform tap LIFTS the glass into expect-placement instead of seeking — the strap owns switching there, so the glass mediates seeking while it is up; the second tap places AND plays. Aligned-mode snap semantics are untouched.
+* Lifted taps are a HYBRID (third round): a tap still within the waveform world — the strips container or the strap's switch buttons — keeps the marker and settles the glass back onto it (a strap switch carries the glass along); a tap beyond that world returns the glass to its hook, marker and all. Either way the tap itself still acts. The hook, tapped while the glass is in hand, also removes.
+* The strip stack pulses during drags too, matching expect-placement.
+* The lens MAGNIFIES at 4×: a canvas under the SVG draws the waveform beneath the glass from the payload's own peaks — live while dragging — in the active-waveform ink, under the amber tint. The vertical cursor hairline is gone (the lens itself is the point).
+* The ghost mirrors about its LENS CENTRE (a default-origin 180° rotation painted the lens ~38% of the box below its row); 38.11 now pins glass and ghost lens centring within 3px.
+* Testing: 38.14–38.17 (two-tap seek, hybrid cancel + hook removal, the hop, the magnifier) plus the drag-pulse pin; suite 560/4 combined = 280/2 per browser.
+
 ### 0.35.1 -- Marker glass aesthetics, and study-panel hints
 * Study panel: every parameter header carries a 1–2 sentence hint — a title tooltip for desktop hover, and tap-the-header toggles it inline (the panel's real home is an iPad, where hover does not exist); dotted underlines mark the headers, and the tabs carry one-liners. English-only, per the panel's staff-tooling exemption.
 * The glass tilts while in hand (mid-drag, or lifted awaiting placement — the bob sways around the tilt) and hangs vertical at rest and once placed; the lens seats inside the hook's ring, and the resting anchor no longer sits 19px off-centre (the hook was centred with `translateX(-50%)`, which `offsetLeft` never sees — hooks now centre by margin).

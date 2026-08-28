@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.38.0 -- MIDI stand-ins, session 1: the composed time map and the warp tool
+* `engine/time-map.js`: the composed quarters ↔ recording-seconds map (score onsets piecewise-linear, grids frame-interpolated) with inverses; zero imports (spec 33.3 now ratchets it), shared foundation for the stand-in warp and the planned time-axis modes.
+* `tools/make_standins.mjs` (Node, vendored Verovio natively): per recording, a warped `.mid` by tempo-track replacement (note ticks untouched, ~2,300 cumulative tempo events) plus an opt-in preview WAV; peaks-derived note velocities (`--no-dynamics` to disable); honours the `header.verovioVersion`/`verovioOptions` stamps and refuses unless the fresh render's onset quarters match `score_onset` exactly.
+* Inter-onset gaps beyond the 24-bit MIDI tempo ceiling (~16.8 s/quarter; the corpus has ~36 s alignment artifacts near the piece's end) are clamped and caught up cumulatively, with every affected knot reported; onsets elsewhere land within microseconds.
+* Testing: spec 40 (knot exactness, first-pair dedupe, grid half, monotonic round-trips, score-less alignments).
+
 ### 0.37.1 -- Synth timing fix: real tick-0 tempo events win, corrected tables for existing alignments
 * Alignment worker: tempo changes now sort by tick only, so a file's real tempo event at tick 0 beats the seeded 120 BPM default (Fledermaus opened 20% slow, +4.000 s by quarter 48, in synth times and in the synthesised audio fed to DTW).
 * listen.js derives corrected synth onset/offset tables from the MIDI Verovio actually renders (matching alignment-event score quarters against note ticks) and prefers them over the stored `synth_onset`/`synth_offset`; stored values remain the fallback. Tempo curves and Solid score-region projection use the corrected tables; on unskewed alignments the derived values are bit-identical to the stored ones.

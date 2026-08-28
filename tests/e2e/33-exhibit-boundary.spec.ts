@@ -129,13 +129,14 @@ test.describe('33. Exhibit engine boundary', () => {
     expect(indirect!.length).toBeGreaterThan(1);
   });
 
-  // 33.3 The two week-0 extractions are the boundary's first inhabitants: the
-  //      exhibit is meant to import them rather than copy them, so they must stay
-  //      import-free. If either grows an import, this fails before the exhibit
-  //      even exists.
-  test('33.3 align-core and grouping-core import nothing', () => {
+  // 33.3 The extractions in the align-core family are the boundary's first
+  //      inhabitants: consumers are meant to import them rather than copy them,
+  //      so they must stay import-free. If any grows an import, this fails
+  //      before the consumer even exists. time-map.js joined 2026-08-28
+  //      (plan §13 — the stand-in tool and the §12 axis modes both build on it).
+  test('33.3 align-core, grouping-core, and time-map import nothing', () => {
     const offenders: string[] = [];
-    for (const name of ['align-core.js', 'grouping-core.js']) {
+    for (const name of ['align-core.js', 'grouping-core.js', 'time-map.js']) {
       const file = path.join(JS_ROOT, 'engine', name);
       expect(fs.existsSync(file), `${name} is missing`).toBe(true);
       const reached = [...closure([file]).keys()].filter((p) => p !== file);

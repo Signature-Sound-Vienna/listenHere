@@ -1,5 +1,8 @@
 # Listen Here! CHANGELOG.md
 
+### 0.38.1 -- Stand-in tool: stereo audition mix
+* `make_standins.mjs --stereo --audio-dir DIR`: one sample-locked audition WAV per recording — left = the real recording mono at 22050 Hz (via ffmpeg), right = the warped synth, channels normalised separately (§13 ruling 2's construction, offline; misalignment is heard as inter-ear flams). The in-app listen.js row remains session 2.
+
 ### 0.38.0 -- MIDI stand-ins, session 1: the composed time map and the warp tool
 * `engine/time-map.js`: the composed quarters ↔ recording-seconds map (score onsets piecewise-linear, grids frame-interpolated) with inverses; zero imports (spec 33.3 now ratchets it), shared foundation for the stand-in warp and the planned time-axis modes.
 * `tools/make_standins.mjs` (Node, vendored Verovio natively): per recording, a warped `.mid` by tempo-track replacement (note ticks untouched, ~2,300 cumulative tempo events) plus an opt-in preview WAV; peaks-derived note velocities (`--no-dynamics` to disable); honours the `header.verovioVersion`/`verovioOptions` stamps and refuses unless the fresh render's onset quarters match `score_onset` exactly.

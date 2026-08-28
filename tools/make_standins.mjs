@@ -42,6 +42,13 @@
 //     [--out DIR]                (default: <alignment dir>/standins)
 //     [--recordings A,B]        (case-insensitive substring filter; default all)
 //     [--wav]                    (also render preview WAVs — ~25 MB each)
+//     [--stereo --audio-dir DIR] (also mix one audition WAV per recording:
+//                                 LEFT = the real recording from DIR/<key>,
+//                                 mono at 22050 Hz, RIGHT = the warped synth,
+//                                 channels normalised separately, sample-locked
+//                                 — plan §13 ruling 2's construction, offline.
+//                                 Misalignment is heard as inter-ear flams.
+//                                 Requires ffmpeg on PATH; ~50 MB each)
 //     [--no-dynamics]            (skip peaks-derived velocity shaping)
 //     [--no-verify]              (skip reparse-and-check of written files)
 //     [--force]                  (proceed past a failed provenance check)
@@ -49,6 +56,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   parseMidi,
@@ -73,6 +81,8 @@ function parseArgs(argv) {
     out: null,
     recordings: null,
     wav: false,
+    stereo: false,
+    audioDir: null,
     dynamics: true,
     verify: true,
     force: false,
@@ -85,6 +95,8 @@ function parseArgs(argv) {
     else if (a === "--recordings")
       args.recordings = argv[++i].split(",").map((s) => s.trim().toLowerCase());
     else if (a === "--wav") args.wav = true;
+    else if (a === "--stereo") args.stereo = true;
+    else if (a === "--audio-dir") args.audioDir = argv[++i];
     else if (a === "--no-dynamics") args.dynamics = false;
     else if (a === "--no-verify") args.verify = false;
     else if (a === "--force") args.force = true;
@@ -99,6 +111,10 @@ function parseArgs(argv) {
   }
   if (!args.alignment) {
     usage();
+    process.exit(2);
+  }
+  if (args.stereo && !args.audioDir) {
+    console.error("--stereo needs --audio-dir (where the real recordings live)");
     process.exit(2);
   }
   return args;
@@ -304,6 +320,67 @@ function writeSmf(smf) {
     o += c.length;
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Stereo audition mix (plan §13 ruling 2, offline form): LEFT = the real
+// recording mixed down to mono at the synth's 22050 Hz, RIGHT = the warped
+// synth, channels peak-normalised separately, sample-locked because both
+// timelines start at the recording's t = 0. Misalignment is heard as
+// inter-ear flams; on the reference it audits score↔ref, on any other
+// recording the composed chain. The listen.js in-app row (session 2) builds
+// the same construction live.
+// ---------------------------------------------------------------------------
+
+/** Decode any audio file to mono 16-bit PCM at 22050 Hz via ffmpeg. */
+function decodeRealMono22050(file) {
+  const res = spawnSync(
+    "ffmpeg",
+    ["-v", "error", "-i", file, "-ac", "1", "-ar", "22050", "-f", "s16le", "-"],
+    { maxBuffer: 1 << 30 },
+  );
+  if (res.error)
+    throw new Error(`ffmpeg not runnable (${res.error.message}) — --stereo needs ffmpeg on PATH`);
+  if (res.status !== 0)
+    throw new Error(`ffmpeg failed on ${file}: ${res.stderr}`);
+  const buf = res.stdout;
+  const even = buf.byteLength - (buf.byteLength % 2);
+  return new Int16Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + even));
+}
+
+/** Peak-normalise `ch` to 0.89 full scale into every `stride`-th slot of `out`. */
+function normaliseInto(out, stride, offset, ch) {
+  let peak = 1;
+  for (let i = 0; i < ch.length; i++) {
+    const a = Math.abs(ch[i]);
+    if (a > peak) peak = a;
+  }
+  const scale = (0.89 * 32767) / peak;
+  for (let i = 0; i < ch.length; i++) out[offset + i * stride] = Math.round(ch[i] * scale);
+}
+
+/** Write a 16-bit stereo WAV at 22050 Hz; shorter channel zero-padded. */
+function writeStereoWav(file, left, right) {
+  const n = Math.max(left.length, right.length);
+  const inter = new Int16Array(2 * n);
+  normaliseInto(inter, 2, 0, left);
+  normaliseInto(inter, 2, 1, right);
+  const header = Buffer.alloc(44);
+  header.write("RIFF", 0);
+  header.writeUInt32LE(36 + inter.byteLength, 4);
+  header.write("WAVE", 8);
+  header.write("fmt ", 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(2, 22);
+  header.writeUInt32LE(22050, 24);
+  header.writeUInt32LE(22050 * 4, 28);
+  header.writeUInt16LE(4, 32);
+  header.writeUInt16LE(16, 34);
+  header.write("data", 36);
+  header.writeUInt32LE(inter.byteLength, 40);
+  fs.writeFileSync(file, Buffer.concat([header, Buffer.from(inter.buffer)]));
+  return n / 22050;
 }
 
 // ---------------------------------------------------------------------------
@@ -574,15 +651,29 @@ async function main() {
         stats.catchUpMaxResidualS = +maxErrClamped.toFixed(3);
     }
 
-    // Preview WAV under the same warped tempo track (opt-in: ~25 MB each).
-    if (args.wav) {
+    // Preview WAV and/or stereo audition mix, both under the same warped
+    // tempo track (opt-in: ~25 MB / ~50 MB each).
+    if (args.wav || args.stereo) {
       const re = parseMidi(fs.readFileSync(midPath));
-      process.stdout.write(`  synthesising ${base}.standin.wav…`);
+      process.stdout.write(`  synthesising ${base}…`);
       const blob = await synthToWav(re.notes, re.tpq, re.tempoChanges, null);
-      const wavPath = path.join(outDir, `${base}.standin.wav`);
-      fs.writeFileSync(wavPath, Buffer.from(await blob.arrayBuffer()));
-      stats.wav = path.relative(ROOT, wavPath);
-      process.stdout.write(` ${(fs.statSync(wavPath).size / 1e6).toFixed(1)} MB\n`);
+      const ab = await blob.arrayBuffer();
+      if (args.wav) {
+        const wavPath = path.join(outDir, `${base}.standin.wav`);
+        fs.writeFileSync(wavPath, Buffer.from(ab));
+        stats.wav = path.relative(ROOT, wavPath);
+      }
+      if (args.stereo) {
+        const realPath = path.join(args.audioDir, name);
+        if (!fs.existsSync(realPath))
+          throw new Error(`--stereo: no real audio at ${realPath} (alignment keys name the files)`);
+        const synthPcm = new Int16Array(ab, 44, (ab.byteLength - 44) >> 1);
+        const lrPath = path.join(outDir, `${base}.LR-real-vs-synth.wav`);
+        const secs = writeStereoWav(lrPath, decodeRealMono22050(realPath), synthPcm);
+        stats.stereo = path.relative(ROOT, lrPath);
+        process.stdout.write(` L/R ${secs.toFixed(1)} s`);
+      }
+      process.stdout.write("\n");
     }
 
     manifest.recordings[name] = stats;

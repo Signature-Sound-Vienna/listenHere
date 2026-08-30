@@ -7000,3 +7000,18 @@ body.lh-v6-drawer-open .drawer-btns {
     transform: rotate(360deg);
   }
 }
+
+/* In-score connector underlay: injected as the page SVG's first-painted
+   group, so it sits beneath every score element. */
+.fix-score-svg .fix-underlay line {
+  stroke: var(--color-alignment, rgb(140, 90, 90));
+  opacity: 0.28;
+}
+.fix-score-svg .fix-underlay line.fix-underlay-sel {
+  opacity: 0.95;
+}
+
+/* The underlay must never intercept score clicks. */
+.fix-score-svg .fix-underlay {
+  pointer-events: none;
+}

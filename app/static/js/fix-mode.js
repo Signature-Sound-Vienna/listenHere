@@ -369,13 +369,16 @@ export async function enterFixMode(entryFile) {
   // The score pane can resize without a window resize — the nav collapsing,
   // the annotation drawer pushing, the pane becoming visible at all — and
   // every one of those invalidates the page-fit geometry wholesale.
-  f.lastPaneSize = `${f.els.scoreEl.clientWidth}x${f.els.scoreEl.clientHeight}`;
+  const paneSizeKey = () =>
+    `${f.els.scoreEl.clientWidth}x${f.els.scoreEl.clientHeight}|` +
+    `${f.els.stripWs.clientWidth}`;
+  f.lastPaneSize = paneSizeKey();
   f.resizeObserver = new ResizeObserver(() => {
     if (_fix !== f) return;
-    const size = `${f.els.scoreEl.clientWidth}x${f.els.scoreEl.clientHeight}`;
+    const size = paneSizeKey();
     // A hidden (zero-sized) pane must not re-lay-out to the fallback page
     // dimensions; the relayout runs when it comes back.
-    if (size === f.lastPaneSize || size === "0x0") return;
+    if (size === f.lastPaneSize || size.startsWith("0x0")) return;
     f.lastPaneSize = size;
     clearTimeout(f.resizeDebounce);
     f.resizeDebounce = setTimeout(() => {
@@ -383,6 +386,7 @@ export async function enterFixMode(entryFile) {
     }, 150);
   });
   f.resizeObserver.observe(f.els.scoreEl);
+  f.resizeObserver.observe(f.els.stripWs);
 
   // The engine bootstrap (decode + fix_begin) runs in the background; the
   // screen is usable for inspection while it loads, and increment 3's
@@ -564,36 +568,78 @@ function _measurePaneDims() {
  * Pure derivation from the event quarters + the session timemap, so the
  * prewarm can build it outside any fix session.
  */
+/** MIDI quarters that may differ between the rendered MIDI and the timemap
+ *  for the SAME notated event: grace notes land a tick or two apart, so the
+ *  match is nearest-within-tolerance, far below any real inter-onset gap. */
+const GROUP_MATCH_TOL_Q = 0.02;
+/** A sounding event with no notated entry of its own (a tremolo stroke: the
+ *  MIDI expands measured tremolos, the timemap only carries the written
+ *  note) inherits the ids of the preceding notated event, if it is close
+ *  enough to plausibly be its generator. */
+const GROUP_INHERIT_MAX_Q = 4;
+
 function _buildGroupsFrom(qOn) {
-  const idsByQ = new Map();
-  for (const e of timemap) {
-    // Do NOT filter out entries carrying measureOn (as the tempo derivation
-    // does): a measure boundary coincides with a note onset, so such entries
-    // carry the very ids this map exists for — q=0 always among them.
-    if (!("qstamp" in e)) continue;
-    if (Array.isArray(e.on) && e.on.length) idsByQ.set(qKey(e.qstamp), e.on);
-  }
+  // Do NOT filter out entries carrying measureOn (as the tempo derivation
+  // does): a measure boundary coincides with a note onset, so such entries
+  // carry the very ids this map exists for — q=0 always among them.
+  const entries = timemap
+    .filter((e) => "qstamp" in e && Array.isArray(e.on) && e.on.length)
+    .map((e) => ({ q: e.qstamp, on: e.on }))
+    .sort((a, b) => a.q - b.q);
+  const nearestEntry = (q) => {
+    let lo = 0;
+    let hi = entries.length - 1;
+    if (hi < 0) return null;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (entries[mid].q < q) lo = mid + 1;
+      else hi = mid;
+    }
+    let best = entries[lo];
+    if (lo > 0 && Math.abs(entries[lo - 1].q - q) < Math.abs(best.q - q)) {
+      best = entries[lo - 1];
+    }
+    return Math.abs(best.q - q) <= GROUP_MATCH_TOL_Q ? best : null;
+  };
   const groups = [];
   let cur = null;
-  let unmatched = 0;
+  let lastNotated = null; // { q, ids } of the last directly matched group
+  let inherited = 0;
+  let orphaned = 0;
   for (let i = 0; i < qOn.length; i++) {
     const k = qKey(qOn[i]);
     if (!cur || cur.k !== k) {
-      const ids = idsByQ.get(k) || [];
-      if (!ids.length) unmatched++;
-      cur = { k, q: qOn[i], eventIxs: [], ids, page: 0, xScore: null, yNote: null };
+      const q = qOn[i];
+      const entry = nearestEntry(q);
+      let ids;
+      if (entry) {
+        ids = entry.on;
+        lastNotated = { q, ids };
+      } else if (lastNotated && q - lastNotated.q <= GROUP_INHERIT_MAX_Q) {
+        ids = lastNotated.ids; // e.g. the 2nd/3rd strokes of a tremolo
+        inherited++;
+      } else {
+        ids = [];
+        orphaned++;
+      }
+      cur = { k, q, eventIxs: [], ids, page: 0, xScore: null };
       groups.push(cur);
     }
     cur.eventIxs.push(i);
   }
-  if (unmatched) {
-    console.warn(
-      `fix mode: ${unmatched} of ${groups.length} onsets found no timemap ` +
-        "entry (no score highlight/connector for those)",
+  _lastGroupStats = { matched: groups.length - inherited - orphaned, inherited, orphaned };
+  if (inherited || orphaned) {
+    console.log(
+      `fix mode: of ${groups.length} onsets, ${inherited} have no own ` +
+        `timemap entry and attach to their generating note (tremolo ` +
+        `strokes), ${orphaned} found nothing to attach to`,
     );
   }
   return groups;
 }
+
+/** How the last group build resolved score elements (test surface). */
+let _lastGroupStats = null;
 
 /** A group's CURRENT reference time — read live, so refills show through. */
 function _groupRefTime(group) {
@@ -760,7 +806,13 @@ function _applyFixLayoutAt(w, h) {
     pageWidth: Math.max(400, Math.floor((w || 800) * factor)),
     pageHeight: Math.max(400, Math.floor((h || 500) * factor)),
     adjustPageHeight: true,
-    breaks: "auto",
+    // ONE system per page (user ruling, feedback round 2): several systems on
+    // one page make the connectors cross along x, so a "page" in fix mode is
+    // a single system — broken where the encoder put the sb/pb when the MEI
+    // has encoded breaks, else where Verovio's auto layout breaks (an MEI
+    // with no breaks at all must not collapse into one giant system).
+    breaks: /<[sp]b[\s/>]/.test(getMeiXml() || "") ? "line" : "auto",
+    systemMaxPerPage: 1,
     footer: "none",
     header: "none",
     svgViewBox: true,
@@ -843,33 +895,126 @@ function _renderPage(page) {
   f.els.scoreSvg.querySelectorAll("g[id]").forEach((g) => {
     f.pageIndex.set(g.id, g);
   });
-  // Score-side connector endpoints for this page's groups, in #fix-mode
-  // container coordinates. The score pane neither scrolls nor zooms, so these
-  // stay valid until the next page render or relayout.
+  _buildPageGeometry(page);
+  f.els.pageLabel.textContent = `Page ${page} / ${f.pageCount}`;
+  _updateStripWindow();
+  _scheduleRedraw();
+}
+
+/**
+ * The outer page svg's letterboxed content box: where its viewBox actually
+ * paints, in screen coordinates, plus the px-per-viewBox-unit scale. Plain
+ * meet arithmetic on getBoundingClientRect + viewBox — deliberately NOT
+ * getScreenCTM, which proved unreliable for nested SVGs across browsers
+ * (Firefox mapped underlay x positions to the far left of the page; both
+ * feedback-round bugs in this geometry traced to platform CTM reads).
+ */
+function _scoreContentBox() {
+  const outer = _fix?.els.scoreSvg.querySelector("svg");
+  if (!outer) return null;
+  const oRect = outer.getBoundingClientRect();
+  const vb = outer.viewBox?.baseVal;
+  if (!(vb && vb.width > 0 && vb.height > 0 && oRect.width && oRect.height)) {
+    return null;
+  }
+  const scale = Math.min(oRect.width / vb.width, oRect.height / vb.height);
+  if (!(scale > 0)) return null;
+  return {
+    outer,
+    scale,
+    vbWidth: vb.width,
+    vbHeight: vb.height,
+    left: oRect.left + (oRect.width - vb.width * scale) / 2,
+    top: oRect.top + (oRect.height - vb.height * scale) / 2,
+  };
+}
+
+/**
+ * Per-page connector geometry. The IN-SCORE part of each connector is a
+ * vertical line spanning from the HIGHEST element sounding at the onset down
+ * to the page box's bottom, injected into the page SVG as its first-painted
+ * child — beneath every score element (staff lines included: one line cannot
+ * sit between all staves' lines and all their notes in SVG paint order, and
+ * at this width the difference is invisible). The lines live in the OUTER
+ * svg's viewBox units, converted from screen rects by _scoreContentBox's
+ * arithmetic. The overlay polyline continues from the content bottom to the
+ * strip.
+ */
+/**
+ * Where the letterboxed score content ends vertically, in SCREEN coordinates.
+ * Computed fresh at every use — a value cached while the pane was hidden or
+ * mid-transition paints connectors from the wrong height for the whole page.
+ */
+function _scoreContentBottomScreen() {
+  const box = _scoreContentBox();
+  return box ? box.top + box.vbHeight * box.scale : null;
+}
+
+function _buildPageGeometry(page) {
+  const f = _fix;
   const rootRect = f.els.root.getBoundingClientRect();
+  f.underlayByGroup = new Map();
+  const box = _scoreContentBox();
+  // px per viewBox unit, inverted: attribute values (stroke width included)
+  // are in the outer svg's user units.
+  f.underlayUnitsPerPx = box ? 1 / box.scale : 0;
+  const svgNS = "http://www.w3.org/2000/svg";
+  const underlay = document.createElementNS(svgNS, "g");
+  underlay.classList.add("fix-underlay");
   for (const g of f.groups) {
     g.xScore = null;
-    g.yNote = null;
     if (g.page !== page || !g.ids.length) continue;
     let xSum = 0;
     let n = 0;
-    let yMax = -Infinity;
+    let yTopScreen = Infinity;
     for (const id of g.ids) {
       const el = f.pageIndex.get(id);
       if (!el) continue;
       const r = el.getBoundingClientRect();
-      xSum += r.x + r.width / 2 - rootRect.x;
-      yMax = Math.max(yMax, r.bottom - rootRect.y);
+      xSum += r.x + r.width / 2;
+      yTopScreen = Math.min(yTopScreen, r.top);
       n++;
     }
-    if (n) {
-      g.xScore = xSum / n;
-      g.yNote = yMax;
+    if (!n) continue;
+    const xScreen = xSum / n;
+    g.xScore = xScreen - rootRect.x;
+    if (box) {
+      // Screen → outer viewBox units by the same meet arithmetic that placed
+      // the content. The bottom end is the page box's own bottom — a pure
+      // SVG-space value, immune to whatever the pane was doing on screen.
+      const x = (xScreen - box.left) / box.scale;
+      const y1 = (yTopScreen - box.top) / box.scale;
+      if (!(y1 < box.vbHeight)) continue; // degenerate geometry: no line
+      const line = document.createElementNS(svgNS, "line");
+      line.setAttribute("x1", x.toFixed(1));
+      line.setAttribute("y1", y1.toFixed(1));
+      line.setAttribute("x2", x.toFixed(1));
+      line.setAttribute("y2", box.vbHeight.toFixed(1));
+      f.underlayByGroup.set(g, line);
+      underlay.appendChild(line);
     }
   }
-  f.els.pageLabel.textContent = `Page ${page} / ${f.pageCount}`;
-  _updateStripWindow();
-  _scheduleRedraw();
+  // First-painted child of the page svg: beneath the definition-scale svg
+  // that holds every score element (desc/defs/style render nothing).
+  if (underlay.childNodes.length && box) {
+    box.outer.insertBefore(underlay, box.outer.firstChild);
+  }
+  _applyUnderlaySelection();
+}
+
+/** The selected onset's in-score line is emphasised; the rest stay faint. */
+function _applyUnderlaySelection() {
+  const f = _fix;
+  if (!f?.underlayByGroup) return;
+  const sel = f.groups[f.selGroupIx];
+  for (const [g, line] of f.underlayByGroup) {
+    const selected = g === sel;
+    line.classList.toggle("fix-underlay-sel", selected);
+    line.setAttribute(
+      "stroke-width",
+      ((selected ? 1.8 : 1.2) * f.underlayUnitsPerPx).toFixed(1),
+    );
+  }
 }
 
 function _turnPage(delta) {
@@ -1028,6 +1173,8 @@ function _redrawOverlays() {
   const stripTopY = stripRect.y - rootRect.y;
   const scoreRect = f.els.scoreEl.getBoundingClientRect();
   const scoreBottomY = scoreRect.bottom - rootRect.y;
+  const _cbs = _scoreContentBottomScreen();
+  const contentBottomY = _cbs === null ? null : _cbs - rootRect.y;
 
   const style = getComputedStyle(document.documentElement);
   const tickColor =
@@ -1040,6 +1187,13 @@ function _redrawOverlays() {
   conn.setAttribute("height", f.els.root.clientHeight);
   while (conn.firstChild) conn.removeChild(conn.firstChild);
 
+  // No strip scale yet (the pane was zero-sized when the window was last
+  // computed): draw nothing rather than a fan collapsed onto x = 0. The next
+  // page render or resize recomputes the window and redraws.
+  if (!f.stripPps) {
+    f.ticksOnPage = 0;
+    return;
+  }
   const pageGroups = _groupsOnPage(f.page);
   const selGroup = f.groups[f.selGroupIx] || null;
   let ticksDrawn = 0;
@@ -1072,18 +1226,21 @@ function _redrawOverlays() {
       ticksDrawn++;
     }
     ctx.globalAlpha = 1;
-    // Connector: score position → straight down → bend across the gap onto
-    // the strip tick (the ruled shape; faint, selected emphasised).
+    // Connector continuation: the in-score half lives INSIDE the page SVG
+    // (the underlay, beneath the score elements); this polyline takes over at
+    // the rendered content's bottom edge, drops to the pane bottom, and bends
+    // across the gap onto the strip tick (faint, selected emphasised).
     if (g.xScore !== null) {
       const xt = stripRect.x - rootRect.x + x;
       if (xt < -40 || xt > f.els.root.clientWidth + 40) continue;
+      const yFrom = Math.min(contentBottomY ?? scoreBottomY, scoreBottomY);
       const line = document.createElementNS(
         "http://www.w3.org/2000/svg",
         "polyline",
       );
       line.setAttribute(
         "points",
-        `${g.xScore},${g.yNote} ${g.xScore},${scoreBottomY} ${xt},${stripTopY}`,
+        `${g.xScore},${yFrom} ${g.xScore},${scoreBottomY} ${xt},${stripTopY}`,
       );
       line.setAttribute("class", selected ? "fix-conn fix-conn-sel" : "fix-conn");
       conn.appendChild(line);
@@ -1110,6 +1267,7 @@ function _select(ix) {
     const el = f.pageIndex.get(id);
     if (el) el.classList.add("fix-note-sel");
   }
+  _applyUnderlaySelection();
   _scheduleRedraw();
 }
 
@@ -1326,5 +1484,6 @@ export function fixTestState() {
     stripWindow: f.stripWindow || null,
     stripHasWave: !!f.stripWS,
     chipState: f.chipState,
+    groupStats: _lastGroupStats ? { ..._lastGroupStats } : null,
   };
 }

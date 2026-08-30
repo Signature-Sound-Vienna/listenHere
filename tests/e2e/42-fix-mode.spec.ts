@@ -421,6 +421,97 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await expect(page.locator('.fix-loading')).toBeHidden();
   });
 
+  test('42.18 one system per page, broken at the encoded breaks', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page, REF_ROW);
+    // Several systems on one page make the connectors cross along x, so a
+    // fix-mode "page" is exactly one system (the fixture MEI has 14 sb).
+    expect(await page.locator('.fix-score-svg g.system').count()).toBe(1);
+    expect((await fixState(page)).pageCount).toBeGreaterThanOrEqual(10);
+    await page.click('.fix-page-next');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.page === 2,
+    );
+    expect(await page.locator('.fix-score-svg g.system').count()).toBe(1);
+  });
+
+  test('42.19 in-score connector halves paint beneath the score, emphasis follows selection', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page, REF_ROW);
+    const read = () =>
+      page.evaluate(() => {
+        const outer = document.querySelector(
+          '.fix-score-svg svg',
+        ) as SVGSVGElement;
+        const sel = outer.querySelector(
+          '.fix-underlay line.fix-underlay-sel',
+        ) as SVGLineElement | null;
+        const vb = outer.viewBox?.baseVal;
+        // Painted-position cross-check: the browser's OWN render of the
+        // selected line must sit at the selected notes' x. This is the
+        // assertion that catches coordinate-space bugs per engine — Firefox's
+        // nested-svg getScreenCTM mapped every line to the far left of the
+        // page on the first orchestral run.
+        let paintedDx: number | null = null;
+        if (sel) {
+          const lineRect = sel.getBoundingClientRect();
+          const notes = [
+            ...document.querySelectorAll('.fix-score-svg .fix-note-sel'),
+          ];
+          if (notes.length) {
+            const meanX =
+              notes.reduce((s, n) => {
+                const r = n.getBoundingClientRect();
+                return s + r.x + r.width / 2;
+              }, 0) / notes.length;
+            paintedDx = Math.abs(lineRect.x + lineRect.width / 2 - meanX);
+          }
+        }
+        return {
+          // Beneath every score element = first-painted: the underlay must be
+          // the page SVG's first child.
+          firstIsUnderlay:
+            outer.firstElementChild?.classList.contains('fix-underlay') ??
+            false,
+          lineCount: outer.querySelectorAll('.fix-underlay line').length,
+          selCount: outer.querySelectorAll('.fix-underlay line.fix-underlay-sel')
+            .length,
+          selX: sel?.getAttribute('x1') ?? null,
+          selY1: Number(sel?.getAttribute('y1')),
+          selY2: Number(sel?.getAttribute('y2')),
+          vbHeight: vb?.height ?? 0,
+          paintedDx,
+        };
+      });
+    const before = await read();
+    expect(before.firstIsUnderlay).toBe(true);
+    expect(before.lineCount).toBeGreaterThan(5);
+    expect(before.selCount).toBe(1);
+    // The line runs DOWNWARD from the onset's highest element to the page
+    // box's bottom — the first orchestral run caught lines pointing up and
+    // out of the page (a screen-space bottom read mid-transition).
+    expect(before.selY2).toBeGreaterThan(before.selY1);
+    expect(before.selY2).toBeGreaterThan(0);
+    expect(before.selY2).toBeLessThanOrEqual(before.vbHeight + 1);
+    // …and it PAINTS where the selected notes are.
+    expect(before.paintedDx).not.toBeNull();
+    expect(before.paintedDx!).toBeLessThan(3);
+    // Every onset attaches to a score element: directly, or (tremolo strokes,
+    // whose notes exist only in the expanded MIDI) via its generating note.
+    const stats = (await fixState(page)).groupStats;
+    expect(stats.orphaned).toBe(0);
+    await page.click('.fix-onset-next');
+    const after = await read();
+    expect(after.selCount).toBe(1);
+    expect(after.selX).not.toBe(before.selX);
+  });
+
   test('42.13 the bootstrap posts fix_begin with decoded samples, the MIDI, and the stored params', async ({
     page,
   }) => {

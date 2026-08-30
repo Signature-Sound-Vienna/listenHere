@@ -65,6 +65,12 @@ import {
   setVerovioPromise,
 } from "./align.js";
 import {
+  attachFixEntryButton,
+  fixModeOnPieceReset,
+  fixModePrewarm,
+  fixTestState,
+} from "./fix-mode.js";
+import {
   initAnnotationV6,
   commitAnnotationsToAlignment,
   loadAnnotationsFromAlignment,
@@ -135,7 +141,9 @@ const session = new DataSession();
 // aliases stay valid for every call site and every importing module.
 export const markers = session.markers;
 export const loaded = session.loaded;
-const timemap = session.timemap; // verovio timemap
+// Verovio timemap. Exported for fix-mode.js, which maps onset quarters to the
+// xml:ids sounding at them (reference-stable: refilled in place, never rebound).
+export const timemap = session.timemap;
 let parser = new DOMParser(); // XML parser for MEI
 let ref;
 let colorMap;
@@ -185,6 +193,10 @@ function setScoreAlignment(v) {
 }
 function setMei(v) {
   return (mei = session.mei = v);
+}
+/** The loaded MEI XML text (fix-mode re-lays the score out from it). */
+export function getMeiXml() {
+  return mei;
 }
 function setMeiDOM(v) {
   return (meiDOM = session.meiDOM = v);
@@ -579,7 +591,7 @@ try {
   console.warn("unable to access local storage: ", err);
 }
 
-function resolveAudioUrl(filename) {
+export function resolveAudioUrl(filename) {
   // Synthesised MEI audio: return blob URL once ready, or null while still being synthesised
   if (_synthBlobUrls.has(filename)) {
     const _u = _synthBlobUrls.get(filename);
@@ -2078,6 +2090,8 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
   // if not yet created, do so (guard against the async gap below re-entering):
   if (!(filename in wavesurfers) && !_preparing.has(filename)) {
     const waveform = createWaveformRow(filename);
+    // Fix-mode entry affordance (?fixMode only; the module decides which rows).
+    attachFixEntryButton(filename, waveform);
 
     // Row done. Whether its renderer gets built now or when the user scrolls to
     // it is the lazy-creation decision (roadmap item L).
@@ -2607,6 +2621,7 @@ function resetSession(keepAudioKeys = []) {
   const keep = new Set(keepAudioKeys);
 
   // 1. Leave transient modes that reference the outgoing piece
+  fixModeOnPieceReset();
   if (closeListeningMode) exitCloseListeningMode();
   clearMeasureVisuals();
   _jumpToTargetActive = false;
@@ -3244,6 +3259,10 @@ async function setGrids(grids) {
   // One tick per completed load. Exposed on _listenTest so e2e tests can wait
   // for "this piece finished loading" instead of sleeping for a guessed duration.
   _loadGeneration++;
+  // Fix-mode prewarm (?fixMode only; no-op otherwise): invalidates the old
+  // piece's derived caches and, at load-idle, does the Verovio layout work so
+  // entering the correction screen is instant.
+  fixModePrewarm();
   // Now that the pane is populated and its spinner retired, report any group
   // overlap the load had to repair. Deliberately not awaited: the load IS
   // finished, and blocking setGrids on a dialog would hold up every caller.
@@ -5638,6 +5657,8 @@ window._listenTest = {
   get lazyWaveformsActive() { return _lazyWaveforms; },
   /** Deferred waveforms queued or mid-build; 0 means the build queue has settled. */
   get materializePending() { return _materializeQueue.length + _materializing.size; },
+  /** Fix-mode (alignment correction) state; {active:false, lastRefusal} when closed. */
+  get fix() { return fixTestState(); },
   /** Activate a recording, building it first if it was deferred. */
   swapCurrentAudio(filename) { swapCurrentAudio(filename); },
   /**

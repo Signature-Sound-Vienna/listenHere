@@ -52,6 +52,9 @@
    CSS Custom Properties — Light theme (default)
    ============================================================ */
 :root {
+  /* WaveSurfer's default waveform height. Mirrored in listen.js, which
+     falls back to 128 when reading ws.options.height — keep the two in step. */
+  --wf-height: 128px;
   --font-size-large: 14px;
   --font-size-medium: 13px;
   --font-size-small: 12.5px;
@@ -978,6 +981,15 @@ label.loading {
   color: var(--color-text, black);
 }
 
+/* Deferred: in the pane, waiting on the viewport before its waveform is built
+   (roadmap item L). Deliberately quieter than .loading — nothing is happening
+   yet, and reporting it as loading would be a lie for as long as the user
+   never scrolls there. */
+label.queued {
+  color: var(--color-text-muted, gray);
+  font-style: italic;
+}
+
 
 details {
   cursor: pointer;
@@ -1005,11 +1017,53 @@ details {
 /* Per-waveform resize overlay */
 .waveform {
   position: relative;
+  /* Reserve the rendered height up front. WaveSurfer only gives the container a
+     size once it paints its canvas, so until then the row collapsed to its
+     border — and .wf-resize-overlay, being inset:0, collapsed with it, which is
+     why loading waveforms showed no spinner at all. Reserving the space also
+     stops the pane shoving itself down as each waveform pops in: with dozens of
+     recordings they now fill in place. Must track --wf-height. */
+  min-height: var(--wf-height);
   margin-bottom: .2em;
   border: 1px solid var(--color-waveform-border, #cbd5e1);
   border-top: 0px;
   border-bottom-right-radius: 5px;
   border-bottom-left-radius: 5px;
+}
+
+/* Deferred waveform placeholder (roadmap item L).
+
+   The row already reserves --wf-height above, so the pane's scroll extent is
+   correct before anything is built; this only fills that reserved space with
+   something honest. No spinner: nothing is loading until the row comes near the
+   viewport, and a spinner that never resolves is worse than a plain statement. */
+.wf-deferred-note {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25em;
+  pointer-events: none;
+  text-align: center;
+  padding: 0 1em;
+}
+
+.wf-deferred-name {
+  font-size: var(--font-size-small, 0.85rem);
+  color: var(--color-text-muted, #64748b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.wf-deferred-hint {
+  font-size: 0.75rem;
+  font-style: italic;
+  color: var(--color-text-muted, #64748b);
+  opacity: 0.75;
 }
 
 .wf-resize-overlay {
@@ -1046,6 +1100,23 @@ details {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Pane-level loading indicator, shown while an alignment is being prepared and
+   no waveform element exists yet to carry its own overlay. Reuses
+   .resize-spinner and .wf-overlay-status so the two read as one language. */
+.wf-pane-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6em;
+  /* The pane is a column flexbox; grow into it so the spinner sits centred in
+     the empty space rather than clinging to the top edge. */
+  flex: 1 1 auto;
+  min-height: 8em;
+  padding: 2em 1em;
+  color: var(--color-text-muted, #64748b);
 }
 
 /* Alt-mode waveform number badges */
@@ -1883,8 +1954,21 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
     color: var(--color-text);
   }
 
-  /* Buttons */
-  button:not(.drawer-btns button):not(#close-settings-drawer):not(.transport-btn) {
+  /* Buttons.
+     `.gm-modal button` is excluded because the Group Recordings modal styles
+     every one of its buttons itself, from the same theme variables, and this
+     blanket rule was overriding all of them: `:not(#close-settings-drawer)`
+     lends the whole selector ID-level specificity, so no class-based rule could
+     win. In a non-light theme that flattened all twelve modal buttons to the
+     identical grey — Discard and the group-delete ✕ lost their red, New Group
+     and Add lost their blue, and the bare-glyph icon buttons (`.gm-close`,
+     `.gm-remove-file`) became solid grey boxes. Apply had survived only by
+     carrying `!important`, which this makes unnecessary.
+     The ID stays inside the `:not()` on purpose: rewriting it as an attribute
+     selector would lower this rule's specificity app-wide, which is a much
+     larger change than the modal needs. Excluding is strictly narrowing, so
+     nothing outside the modal is affected. */
+  button:not(.drawer-btns button):not(#close-settings-drawer):not(.transport-btn):not(.gm-modal button) {
     background-color: var(--color-surface-raised, var(--color-surface-alt));
     color: var(--color-text);
     border-color: var(--color-border);
@@ -2879,18 +2963,6 @@ body.marker-dragging * {
   color: var(--color-text, #2d3748);
   padding: 1.5em;
   box-sizing: border-box;
-}
-
-/* Legacy standalone page (align.html) */
-#align-page {
-  background: var(--color-bg, linear-gradient(135deg, #f8fafc 0%, #e0e7ef 100%));
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin: 0;
-  font-family: 'Segoe UI', 'Helvetica Neue', Arial, 'Liberation Sans', sans-serif;
-  color: var(--color-text, #2d3748);
 }
 
 #align-panel #align-logo {
@@ -4062,6 +4134,34 @@ body.marker-dragging * {
   box-shadow: inset 0 0 0 2px var(--color-link, #2563eb);
 }
 
+/* A group card carrying a group colour paints itself from a fixed palette of
+   pale pastels that ignores the active theme, so the theme's text variables are
+   simply wrong inside it: in dark mode `--color-text` is near-white, and the
+   filenames became illegible on the pale card. The card's own contrast colour
+   is set inline (see _groupTextColor in listen.js); the text below each set an
+   explicit colour, which beats inheritance, so they have to be told to take the
+   card's instead.
+
+   Deliberately NOT included: `.gm-remove-file` and `.gm-icon-btn`. Both are
+   readable already (a mid-grey on a pale pastel), and both use colour as a
+   hover cue — the remove ✕ turning red, the card delete already red — which a
+   `color: inherit` at this specificity would silently override. */
+.gm-group-card.gm-has-colour label,
+.gm-group-card.gm-has-colour .gm-file-item,
+.gm-group-card.gm-has-colour .gm-empty {
+  color: inherit;
+}
+
+/* The hover background has to follow the text. `.gm-file-item:hover` uses the
+   theme's surface colour, which is dark in dark mode — fine under the old
+   near-white text, but it would put the card's dark contrast colour on a dark
+   background and reintroduce the same illegibility on hover. A translucent
+   black reads correctly on any pale pastel, and still on a dark custom colour
+   picked from the colour input, where the contrast colour is white. */
+.gm-group-card.gm-has-colour .gm-file-item:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
 /* Drag-to-create "New Group" target at the bottom of the groups list */
 .gm-newgroup-dropzone {
   border: 2px dashed var(--color-border, #cbd5e1);
@@ -4340,14 +4440,21 @@ body.marker-dragging * {
   background: var(--color-surface-alt, #f1f5f9);
 }
 
-.gm-apply {
-  background: var(--color-link, #2563eb) !important;
-  color: #fff !important;
-  border-color: var(--color-link, #2563eb) !important;
+/* Apply is the modal's one accent button, in the footer and in the confirm
+   dialog. This carried `!important` on every declaration, which was hiding two
+   separate specificity losses: the blanket `[data-theme] button` rule (which
+   borrowed ID specificity from an id inside its `:not()`, and now excludes
+   `.gm-modal button`), and `.gm-footer button` above — a plain `.gm-apply`
+   loses to that one on specificity in *every* theme, light included. Scoping to
+   `.gm-modal .gm-apply` beats both on merit, so the `!important`s are gone. */
+.gm-modal .gm-apply {
+  background: var(--color-link, #2563eb);
+  color: #fff;
+  border-color: var(--color-link, #2563eb);
 }
 
-.gm-apply:hover {
-  background: var(--color-link-hover, #1d4ed8) !important;
+.gm-modal .gm-apply:hover {
+  background: var(--color-link-hover, #1d4ed8);
 }
 
 /* Group files button in nav */
@@ -4490,75 +4597,6 @@ body.marker-dragging * {
 
 .splash-form-submit:hover {
   background: var(--color-link-hover);
-}
-
-/* ── Injected settings drawer (landing / align pages via theme-setup.js) ── */
-
-/* The drawer itself — mirrors #settings-drawer exactly */
-.lh-settings-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  width: 380px;
-  height: 100vh;
-  background: var(--color-surface);
-  box-shadow: -4px 0 24px rgba(0, 0, 0, 0.15);
-  z-index: 1000;
-  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  display: flex;
-  flex-direction: column;
-  padding: 1.5em;
-  box-sizing: border-box;
-  font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-  color: var(--color-text);
-}
-
-.lh-settings-drawer.closed {
-  transform: translateX(100%);
-}
-
-/* Reuse .settings-drawer-content style from listen.html drawer */
-.lh-settings-drawer .settings-drawer-content {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5em;
-  overflow-y: auto;
-  flex: 1 1 auto;
-}
-
-/* Close button inside injected drawer */
-#lh-close-settings {
-  background: none;
-  border: none;
-  font-size: 1.5em;
-  cursor: pointer;
-  color: var(--color-text-muted);
-  padding: 0 0.2em;
-  line-height: 1;
-}
-
-#lh-close-settings:hover {
-  color: var(--color-text);
-}
-
-/* Drawer-pull button for injected drawer — same as .drawer-btns */
-.lh-drawer-btns {
-  transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* Push pull button when injected drawer is open */
-body:has(.lh-settings-drawer:not(.closed)) .lh-drawer-btns {
-  right: 380px;
-}
-
-/* Cog icon colour inside lh drawer-pull */
-#lh-settings-btn svg {
-  stroke: var(--color-text-muted);
-  transition: stroke 0.2s;
-}
-
-#lh-settings-btn:hover svg {
-  stroke: var(--color-accent);
 }
 
 /* =========================================================================
@@ -4997,6 +5035,58 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
   color: var(--color-accent);
 }
 
+/* Two-phase waiting affordance after a logged-out "Load from Solid" click:
+   - --waiting: a → at the end of the label nudges rightward, gesturing
+     toward the Solid login footer (which opens to the ribbon's right).
+     Reads as "your move" rather than "the system is busy".
+   - --connecting: once the user clicks Connect and the OAuth exchange is in
+     flight, the arrow gives way to a spinner — now the app is the one
+     working, so a busy indicator is the honest signal.
+   Both clear on login, on the first interaction elsewhere, or when the
+   5-minute window elapses. */
+.lh-v6-ribbon-load-arrow,
+.lh-v6-ribbon-load-spinner {
+  display: none;
+}
+.lh-v6-ribbon-load--waiting .lh-v6-ribbon-load-arrow {
+  display: inline-block;
+  margin-left: 5px;
+  animation: lh-v6-ribbon-load-nudge 1s ease-in-out infinite;
+}
+.lh-v6-ribbon-load--connecting .lh-v6-ribbon-load-spinner {
+  display: inline-block;
+  margin-left: 6px;
+  width: 9px;
+  height: 9px;
+  vertical-align: -1px;
+  border: 2px solid var(--color-border-light, #e2e8f0);
+  border-top-color: var(--color-accent, #7c3aed);
+  border-radius: 50%;
+  animation: lh-v6-ribbon-load-spin 0.7s linear infinite;
+}
+@keyframes lh-v6-ribbon-load-nudge {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  55% {
+    transform: translateX(5px);
+  }
+}
+@keyframes lh-v6-ribbon-load-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Respect reduced-motion: keep the indicators visible (they still signal
+   the wait) but hold them still. */
+@media (prefers-reduced-motion: reduce) {
+  .lh-v6-ribbon-load--waiting .lh-v6-ribbon-load-arrow,
+  .lh-v6-ribbon-load--connecting .lh-v6-ribbon-load-spinner {
+    animation: none;
+  }
+}
+
 /* --- Load-from-Solid modal ------------------------------------------- */
 .lh-v6-load-overlay {
   position: fixed;
@@ -5109,6 +5199,36 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
   color: var(--color-text-secondary, var(--color-text-muted));
   text-transform: uppercase;
   letter-spacing: 0.4px;
+}
+
+/* Title row for the auto-discovery section: title on the left, manual
+   reload control pushed to the right. */
+.lh-v6-load-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.lh-v6-load-reload {
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--color-text-secondary, var(--color-text-muted));
+  cursor: pointer;
+}
+
+.lh-v6-load-reload:hover:not(:disabled) {
+  background: var(--color-hover-bg, rgba(0, 0, 0, 0.04));
+  color: var(--color-text);
+}
+
+.lh-v6-load-reload:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Inherits .group-all (text-decoration:underline, muted colour, pointer). */
@@ -5333,7 +5453,10 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
   position: fixed;
   inset: 0;
   background: rgba(120, 0, 0, 0.55);
-  z-index: 1200;
+  /* Above every other overlay, including the file picker (9999) and the
+     highest panel (10000): a confirmation must never be un-clickable behind
+     the dialog that raised it. */
+  z-index: 10001;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5385,6 +5508,12 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
   line-height: 1;
 }
 
+/* Danger variant: a red header indicator for a dialog reporting a defect the
+   app has already had to repair (e.g. overlapping group membership on load). */
+.lh-v6-confirm-danger .lh-v6-confirm-warning {
+  color: var(--color-danger, #dc2626);
+}
+
 .lh-v6-confirm-title {
   margin: 0;
   font-size: 16px;
@@ -5404,6 +5533,12 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
 .lh-v6-confirm-target strong {
   color: #b91c1c;
   word-break: break-all;
+}
+/* break-all above suits the pod URIs it was written for; a prose callout
+   (e.g. the piece-replacement reason) must wrap on word boundaries. */
+.lh-v6-confirm-target strong.lh-v6-confirm-reason {
+  word-break: normal;
+  overflow-wrap: break-word;
 }
 
 .lh-v6-confirm-detail {
@@ -6488,7 +6623,8 @@ body.lh-v6-drawer-open .drawer-btns {
   outline-offset: 2px;
 }
 
-.lh-v6-repin-list {
+.lh-v6-repin-list,
+.lh-v6-confirm-list {
   margin: 6px 0 0;
   padding: 0;
   list-style: none;
@@ -6497,24 +6633,29 @@ body.lh-v6-drawer-open .drawer-btns {
   gap: 3px;
 }
 
-.lh-v6-repin-line {
+.lh-v6-repin-line,
+.lh-v6-confirm-line {
   font-size: 12.5px;
   line-height: 1.35;
 }
 
-.lh-v6-repin-line.added {
+.lh-v6-repin-line.added,
+.lh-v6-confirm-line.added {
   color: #15803d;
 }
 
-.lh-v6-repin-line.removed {
+.lh-v6-repin-line.removed,
+.lh-v6-confirm-line.removed {
   color: #b91c1c;
 }
 
-.lh-v6-repin-line.renamed {
+.lh-v6-repin-line.renamed,
+.lh-v6-confirm-line.renamed {
   color: var(--color-text);
 }
 
-.lh-v6-repin-line.neutral {
+.lh-v6-repin-line.neutral,
+.lh-v6-confirm-line.neutral {
   color: var(--color-text-secondary, var(--color-text));
 }
 

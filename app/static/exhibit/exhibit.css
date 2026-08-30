@@ -1,0 +1,1393 @@
+/* exhibit/exhibit.css
+ *
+ * Kiosk styling for the doubled-up listening interface. Deliberately NOT sharing
+ * Listen Here's stylesheets: those carry a settings drawer, a sidebar, an
+ * annotation ribbon, and a theme switcher that the exhibit has none of. This is a
+ * conventions divergence rather than a semantics one, so it is not a ledger entry.
+ *
+ * Geometry comes from exhibit/config.js via custom properties on #screen. Nothing
+ * here may hard-code the viewport count, the split, or a rotation — that is the
+ * §7.8 rule that makes laptop / iPad / table one build.
+ */
+
+* { box-sizing: border-box; }
+
+/* The palette, as tokens with the shipped dark theme as the literal defaults —
+ * so the default theme costs nothing and renders identically with JS disabled.
+ * Non-default themes (?theme=, study panel's Theme tab) override these on the
+ * root element from exhibit/themes.js, which also carries the waveform colours
+ * WaveSurfer needs as JS options. Authored annotation/group colours come from
+ * the payload and deliberately do NOT re-tint with the theme. */
+:root {
+  --ex-bg: #0b0b0c;
+  --ex-text: #f2f2f4;
+  --ex-surface: #141417;
+  --ex-surface-active: #1b1b21;
+  --ex-panel: #17171b;
+  --ex-border: #26262c;
+  --ex-border-strong: #3a3a44;
+  --ex-card: #26262c;
+  --ex-text-body: #d8d8e2;
+  --ex-text-soft: #a9a9b4;
+  --ex-text-dim: #8d8d99;
+  --ex-text-faint: #6f6f7d;
+  --ex-label: #cfcfd8;
+  --ex-label-active: #fff;
+  --ex-glow: 0 1px 2px #000, 0 0 6px #000;
+  --ex-accent: #2f4d70;
+  --ex-accent-border: #5f86b4;
+  --ex-on-accent: #fff;
+  --ex-mark: rgba(255,255,255,0.7);
+  --ex-mark-dim: rgba(255,255,255,0.55);
+  /* OPTIONAL theme tokens (themes.js): a palette may layer a canvas texture
+   * (a background-image list — parchment's procedural paper) and swap the
+   * type stack; every theme without them gets these defaults untouched. */
+  --ex-texture: none;
+  --ex-texture-repeat: no-repeat;
+  --ex-texture-size: auto;
+  --ex-font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* The middle band's own tokens CHAIN to the generic ones, so the band
+   * follows the theme until ?themeBand pins it to a palette of its own
+   * (themes.js writes concrete values over these). */
+  --ex-band-bg: var(--ex-panel);
+  --ex-band-border: var(--ex-border);
+  --ex-band-card: var(--ex-card);
+  --ex-band-text: var(--ex-text);
+  --ex-band-text-soft: var(--ex-text-soft);
+  --ex-band-faint: var(--ex-text-faint);
+}
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--ex-bg);
+  /* After the shorthand, which resets background-image: the optional texture
+   * layers over the colour, with per-layer repeat and size lists owned by the
+   * theme (parchment: vignette, one cover image of stains, a repeating grain
+   * tile). The defaults serve the plain "none". */
+  background-image: var(--ex-texture);
+  background-repeat: var(--ex-texture-repeat, no-repeat);
+  background-size: var(--ex-texture-size, auto);
+  color: var(--ex-text);
+  font: 16px/1.4 var(--ex-font);
+  /* Kiosk: no text inflation, no selection, no tap flash, no rubber-banding. */
+  -webkit-text-size-adjust: 100%;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  overscroll-behavior: none;
+  /* pan-x pan-y, NOT manipulation: manipulation still permits pinch-zoom, and a
+   * pinched kiosk stays pinched for the next visitor. Panning is kept because
+   * the zoomed strips and the commentary text scroll natively (week 2); the
+   * effective touch-action of any descendant is intersected with this, so
+   * nothing below can quietly re-enable pinch. iOS belt-and-braces lives in
+   * main.js's gesture-event guards. */
+  touch-action: pan-x pan-y;
+}
+
+#screen {
+  display: flex;
+  height: 100%;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right)
+           env(safe-area-inset-bottom) env(safe-area-inset-left);
+  gap: 0;
+}
+
+/* "horizontal" splits the portrait screen into stacked landscape halves — the
+ * table case. "vertical" puts them side by side, which is the laptop case.
+ *
+ * column-REVERSE, so viewport 0 — the upright one — renders at the BOTTOM edge,
+ * where the near visitor stands, and the rotated far half sits at the top. The
+ * reversal lives here rather than in the rotations config so that `?viewports=1`
+ * (the laptop case) keeps a single upright viewport 0 with no override. */
+#screen[data-split="horizontal"] { flex-direction: column-reverse; }
+#screen[data-split="vertical"]   { flex-direction: row; }
+
+/* Desktop-debugging stage rotation (?stageRotation=90|270, config.js): paint the
+ * whole composed screen sideways so a physically turned laptop or a swivelled
+ * monitor shows the portrait kiosk at its intended aspect. A FINAL-TOUCH
+ * transform on this root element only: the screen is laid out at swapped
+ * viewport dimensions and rotated as one unit after layout, so nothing inside —
+ * canvas sizing, clientWidth, the 180° viewport rotation — can tell. No inner
+ * rule may key on data-stage-rotation; that is the whole contract. Fixed
+ * position because the swapped layout box (100vh × 100vw) overflows a landscape
+ * window, and a scrollable body would break the mapping this exists for. */
+#screen[data-stage-rotation="90"],
+#screen[data-stage-rotation="270"] {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vh;
+  height: 100vw;
+  transform-origin: top left;
+}
+#screen[data-stage-rotation="90"]  { transform: rotate(90deg) translateY(-100%); }
+#screen[data-stage-rotation="270"] { transform: rotate(270deg) translateX(-100%); }
+
+.vp {
+  flex: 1 1 0;
+  min-height: 0;   /* so the strips column can actually shrink */
+  min-width: 0;
+  position: relative;   /* the containing block for the full-height strap band */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8px 12px;
+  /* The far half is rotated 180° about its own centre, so a visitor on the other
+   * side of the table reads it the right way up. */
+  transform-origin: 50% 50%;
+}
+
+.strips { display: flex; flex-direction: column; gap: 2px; position: relative; }
+
+.strip {
+  height: var(--strip-height, 54px);
+  background: var(--ex-surface);
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;   /* the iOS-safe shape: viewport-sized box over a wider inner */
+  /* The grouping edge. Always present, so focusing an annotation changes a colour
+   * rather than a layout — a 4px border appearing on eight strips at once would
+   * shift every waveform sideways at the moment the visitor is trying to read it.
+   * The colour comes from grouping-core's palette via the annotation's own pinned
+   * grouping (see main.js paintGroups), and is transparent when nothing is
+   * focused. */
+  border-left: 4px solid var(--group-color, transparent);
+}
+
+/* The audible recording. A brighter waveform rather than an outline: the strips
+ * are 54px tall and stacked two pixels apart, so a border reads as a gap. */
+.strip.is-active { background: var(--ex-surface-active); }
+
+/* THIS side's own last choice (turns.js): active is the screen's audible truth,
+ * selected is one side's expressed desire, and under ?turnPolicy=request they
+ * differ while a request is pending. A right-edge accent as an inset shadow —
+ * a real border would shrink the padding box and shift the waveform sideways
+ * (the .strip-ws overlay is inset against it), and the LEFT edge already
+ * belongs to the grouping colour. */
+.strip.is-selected { box-shadow: inset -4px 0 0 var(--ex-accent); }
+
+.strip-ws { position: absolute; inset: 0; }
+
+/* The agreed focus definition (2026-08-25): strips the painted annotation does
+ * not target fade — waveform and caption only. The background keeps the strip
+ * present, the left edge keeps the grouping legend anchored, and opacity never
+ * costs the 44px tap target. Transitioned both ways so a wash moving between
+ * regions dims and undims without strobing. */
+.strip-ws,
+.strip-label { transition: opacity 200ms ease; }
+.strip.is-dimmed .strip-ws { opacity: 0.3; }
+.strip.is-dimmed .strip-label { opacity: 0.45; }
+
+/* Conductor and year, over the waveform rather than above it — vertical space is
+ * the scarce dimension once a portrait screen is halved and divided by eight.
+ * pointer-events: none so the caption never eats a tap meant for the waveform. */
+.strip-label {
+  position: absolute;
+  top: 2px;
+  left: 6px;
+  z-index: 2;
+  pointer-events: none;
+  font-size: 0.68rem;
+  letter-spacing: 0.02em;
+  color: var(--ex-label);
+  text-shadow: var(--ex-glow);   /* legible over any waveform */
+}
+.strip.is-active .strip-label { color: var(--ex-label-active); }
+
+/* The switch strap (?tapMode=direct — alpha-tester feedback, 2026-08-26). In
+ * direct mode a waveform tap is taken literally on both axes, so the ALIGNED
+ * switch — the exhibit's carry-the-moment comparison — moves to this column of
+ * per-recording buttons left of the waveforms. The strips column reserves the
+ * width as padding BEFORE any strip mounts (main.js sets data-tap-mode at
+ * viewport creation, the side-slot precedent), and the strap itself is
+ * absolutely positioned inside that padding: mounting it never re-measures a
+ * waveform. Its rows copy the strip stack's own height and gap, so each button
+ * sits exactly beside the strip it switches to — the border is an inset shadow
+ * for the same reason as .strip.is-selected: a real border would shift the
+ * rows off their strips by a pixel. Themed by the OPTIONAL --ex-strap tokens
+ * (parchment's leather); everything else falls back to the panel palette. */
+/* The whole viewport shifts right of the strap (12px is .vp's own left
+ * padding, kept): the strap runs the viewport's FULL height, so the toolbar
+ * and the commentary sit beside it, not over it. */
+/* The marker's hook rail (?marker=glass) shares the strap's reserved column,
+ * so either feature — or both — reserves it exactly once. */
+.vp[data-tap-mode="direct"],
+.vp[data-marker="glass"] {
+  padding-left: calc(12px + var(--ex-strap-w, 52px) + 6px);
+}
+/* The leather itself, viewport-tall: from the page edge (the viewport's own
+ * bottom) up past its top and UNDER the middle band — the band paints above
+ * it (z-index below), so the strap reads as passing beneath and binding the
+ * two halves. Pure paint: the buttons live on the rail, which stays inside
+ * .strips so its rows keep their exact strip alignment. */
+.vp-strap-band {
+  position: absolute;
+  top: -12px;   /* under the middle band; anything deeper is hidden anyway */
+  bottom: 0;
+  left: 12px;
+  width: var(--ex-strap-w, 52px);
+  background: var(--ex-strap-bg, var(--ex-panel));
+  box-shadow: inset 0 0 0 1px var(--ex-border);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 0;
+}
+.middle-band { position: relative; z-index: 1; }   /* above the strap's overhang */
+.vp-strap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(-1 * (var(--ex-strap-w, 52px) + 6px));
+  width: var(--ex-strap-w, 52px);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 1;
+}
+/* The label sits on a circular MEDALLION centred in its row — the shape the
+ * §5.5 portrait excerpts will take — so the leather shows all around it. The
+ * disc is a ::before layer and the button's own box still fills the whole
+ * row: the reveal costs zero tap target, and the rows stay exactly beside
+ * their strips. The disc diameter follows both the strap width and the strip
+ * height, so neither a narrower strap nor shorter strips can clip it. The
+ * label's two words render as stacked lines (strap.js), which is what fits a
+ * disc. Text spans are position:relative so they paint above the positioned
+ * disc without z-index games. */
+.vp-strap {
+  --ex-strap-disc: min(
+    calc(var(--ex-strap-w, 52px) - 12px),
+    calc(var(--strip-height, 54px) - 8px)
+  );
+}
+.strap-btn {
+  flex: 0 0 var(--strip-height, 54px);
+  box-sizing: border-box;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.15;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ex-text-soft);
+  font-family: inherit;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.strap-btn > span { position: relative; }
+.strap-btn::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: var(--ex-strap-disc);
+  height: var(--ex-strap-disc);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--ex-strap-btn, var(--ex-card));
+  box-shadow: 0 1px 2px rgba(20, 10, 2, 0.35);
+}
+/* The stitching runs around each medallion — a dashed thread ring just inside
+ * the disc's edge, the way a sewn-on label is stitched. Two thread tokens,
+ * both transparent (invisible) everywhere but parchment: --ex-thread on
+ * resting (paper) surfaces, --ex-thread-accent on filled (bronze) ones, so
+ * the thread stays visible on both. */
+.strap-btn::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--ex-strap-disc) - 7px);
+  height: calc(var(--ex-strap-disc) - 7px);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 1px dashed var(--ex-thread, transparent);
+  pointer-events: none;
+}
+.strap-btn.is-active { color: var(--ex-on-accent); }
+.strap-btn.is-active::before { background: var(--ex-accent); }
+.strap-btn.is-active::after { border-color: var(--ex-thread-accent, transparent); }
+
+/* The arrow medallions: above the top medallion and below the bottom one,
+ * anchored to the rail's ends so the eight rows keep their strip alignment.
+ * They step to the adjacent recording along the alignment — the strap's own
+ * aligned switch, one row at a time, wrapping at the ends (a kiosk button
+ * that sometimes does nothing looks broken). Inline SVG (strap.js) because a
+ * dashed border cannot follow an arrow outline; the stitch path takes the
+ * same thread token as everything else. */
+.strap-nav {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--ex-strap-w, 52px);
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+.strap-nav-up { bottom: calc(100% + 2px); }
+.strap-nav-down { top: calc(100% + 2px); }
+.strap-nav svg {
+  display: block;
+  /* the 48:56 shape is taller than wide — sized by height so the stretched
+   * arrow stays inside its 44px slot beside the toolbar */
+  height: 42px;
+  width: auto;
+  filter: drop-shadow(0 1px 2px rgba(20, 10, 2, 0.35));
+}
+.strap-nav-down svg { transform: rotate(180deg); }
+.strap-nav .arrow-fill { fill: var(--ex-strap-btn, var(--ex-card)); }
+.strap-nav .arrow-stitch {
+  fill: none;
+  stroke: var(--ex-thread, transparent);
+  stroke-width: 1.5;
+  stroke-dasharray: 3 3;
+  stroke-linejoin: round;
+}
+
+/* The listening marker (?marker=glass — week 4, ruled 2026-08-27; marker.js
+ * has the design record). A physical magnifying glass: brass ring (the
+ * theme's accent — parchment's bronze was chosen for exactly this metal), a
+ * hairline cursor point through the lens, the medallion stitching inside the
+ * rim. It rests on a stitched hook in the left rail, floats while lifted
+ * (expect-placement), and rides under the finger while dragged. All chrome is
+ * out of the strips' flex flow — the layer, glass, and ghost are absolute, so
+ * mounting them can never move a strip. */
+.marker-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.marker-rail {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(-1 * (var(--ex-strap-w, 52px) + 6px));
+  width: var(--ex-strap-w, 52px);
+}
+/* The empty hook doubles as the affordance: a stitched ring saying something
+ * belongs here — and, after a placement, where to put it back. It sits at the
+ * rail's OUTER end (each viewport's local bottom faces its own visitor), and
+ * in direct mode it hangs below the strap's down arrow. Centred with a margin,
+ * NOT translateX — the glass's resting anchor is computed from offsetLeft,
+ * which never sees a transform (that mismatch shipped as a 19px offset). The
+ * ring is sized so the LENS sits inside it; the handle sticks out past it. */
+.marker-hook {
+  position: absolute;
+  left: 50%;
+  margin-left: -25px;
+  top: calc(100% + 10px);
+  width: 50px;
+  height: 60px; /* an oval ring, matching the oval lens */
+  border-radius: 50%;
+  border: 2px dashed var(--ex-accent);
+  opacity: 0.45;
+}
+.vp[data-tap-mode="direct"] .marker-hook { top: calc(100% + 54px); }
+/* While the glass is in hand the hook becomes the "put it away" target —
+ * tapping it removes any marker and rests the glass. */
+.marker-layer.is-engaged .marker-hook {
+  pointer-events: auto;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+/* Sized by marker.js (inline width/height): the oval lens spans one strip
+ * top-to-bottom, so the rendered scale follows --strip-height. */
+.marker-glass {
+  position: absolute;
+  z-index: 3;
+  cursor: grab;
+  /* Required, not decorative: without it the browser claims a touch drag for
+   * native panning (the zoomed strips scroll natively) and pointermove never
+   * fires on the iPad. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  /* The lift-off / rest-on-hook travel: position transitions do the animating,
+   * cut while a finger has the glass. */
+  transition: left 450ms cubic-bezier(0.22, 1.1, 0.36, 1),
+    top 450ms cubic-bezier(0.22, 1.1, 0.36, 1);
+  filter: drop-shadow(0 2px 3px rgba(20, 10, 2, 0.4));
+}
+.marker-glass.is-dragging { transition: none; cursor: grabbing; }
+/* A placed glass whose moment is scrolled out of view hides honestly rather
+ * than pinning to an edge it is not at (the ticks already do). */
+.marker-glass.is-offview { visibility: hidden; }
+/* The glass TILTS while it is IN HAND — mid-drag, or lifted awaiting a
+ * placement tap — the way a magnifier picked up by the handle swings off
+ * vertical; at rest on its hook and once placed it hangs straight (user,
+ * 2026-08-27, second round — reversing the first round's resting tilt). The
+ * pivot is the lens centre — the anchor — so the lens stays in the ring at
+ * rest and under the finger in flight; the transition swings it either way. */
+.marker-glass svg {
+  transform-origin: 50% 31.1%; /* the lens centre, (32, 28) of 64×90 */
+  transition: transform 450ms cubic-bezier(0.22, 1.1, 0.36, 1);
+}
+.marker-glass.is-dragging svg { transform: rotate(-38deg); }
+.marker-glass.is-lifted svg { animation: marker-bob 2.2s ease-in-out infinite; }
+/* The lifted bob carries the held tilt, swaying around it. */
+@keyframes marker-bob {
+  0%, 100% { transform: translateY(0) rotate(-41deg); }
+  50% { transform: translateY(-7px) rotate(-34deg); }
+}
+/* Drop verdicts, telegraphed before the finger lifts. */
+.marker-glass.will-adopt { filter: drop-shadow(0 0 7px var(--ex-accent)); }
+.marker-glass.will-remove { opacity: 0.55; }
+.marker-glass svg,
+.marker-ghost svg { display: block; width: 100%; height: 100%; }
+.marker-glass .glass-lens { fill: var(--ex-marker-lens, rgba(255, 255, 255, 0.08)); }
+.marker-glass .glass-ring,
+.marker-ghost .glass-ring {
+  fill: none;
+  stroke: var(--ex-accent);
+  stroke-width: 3.5;
+}
+.marker-glass .glass-handle,
+.marker-ghost .glass-handle {
+  fill: var(--ex-marker-handle, var(--ex-strap-btn, var(--ex-card)));
+  stroke: var(--ex-accent);
+  stroke-width: 1.5;
+}
+/* The cylinder: a light strip down one side, a dark one down the other —
+ * plain alpha over whatever the grip's base is, so every theme rounds. */
+.marker-glass .glass-handle-hl,
+.marker-ghost .glass-handle-hl { fill: rgba(255, 255, 255, 0.28); }
+.marker-glass .glass-handle-sh,
+.marker-ghost .glass-handle-sh { fill: rgba(20, 10, 2, 0.3); }
+/* The spiral leather wrap: thread lines, visible only where stitching is.
+ * The ACCENT thread, not the resting one — the grip is dark leather, and
+ * brown thread vanishes on it (the filled-medallion rule). */
+.marker-glass .glass-handle-wrap,
+.marker-ghost .glass-handle-wrap {
+  fill: none;
+  stroke: var(--ex-thread-accent, transparent);
+  stroke-width: 1;
+}
+/* The brass fittings joining grip to ring, and capping the end. */
+.marker-glass .glass-ferrule,
+.marker-ghost .glass-ferrule {
+  fill: var(--ex-accent);
+  stroke: var(--ex-accent-border, transparent);
+  stroke-width: 1;
+}
+.marker-glass .glass-stitch,
+.marker-ghost .glass-stitch {
+  fill: none;
+  stroke: var(--ex-thread, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+/* The other side's marker, mirrored — their glass seen from across the table.
+ * Interactive only while THIS side's glass is in hand (is-engaged), so a
+ * resting visitor cannot press the other side's marker by accident. */
+.marker-ghost {
+  position: absolute; /* sized by marker.js, like the glass */
+  z-index: 2;
+  opacity: 0.3;
+  pointer-events: none;
+  transition: opacity 250ms ease;
+}
+/* The magnifier: the peaks under the lens at 2×, clipped to the oval, painted
+ * UNDER the SVG so the translucent lens tint ages the view. Display only. */
+.marker-mag {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.marker-ghost .marker-mag { display: none; }
+/* Mirrored about the LENS CENTRE, not the box centre: the ghost is positioned
+ * by the same anchor math as the glass (the lens centre sits at 31.1% of the
+ * box), so a default-origin rotation would paint the lens ~38% of the box
+ * BELOW the row it is anchored to — the handle simply points up instead. */
+.marker-ghost svg {
+  transform: rotate(180deg);
+  transform-origin: 50% 31.1%;
+}
+.marker-ghost.is-engaged {
+  opacity: 0.65;
+  pointer-events: auto;
+  cursor: pointer;
+}
+/* The [hidden]-vs-author-display trap, pre-empted per the recorded lesson. */
+.marker-ghost[hidden],
+.marker-tick[hidden] { display: none; }
+
+/* The projected moment on every strip. Salience is a lifecycle (ruled
+ * 2026-08-27): prominent while the glass is in hand — tracking the hover live
+ * during a drag — and briefly after placement (is-fresh, timed by marker.js),
+ * then settled-subtle but still visible, so a switch's landing point can be
+ * read before the switch is taken. */
+.marker-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--ex-accent);
+  opacity: 0.4;
+  z-index: 2;
+  pointer-events: none;
+  transition: opacity 500ms ease, box-shadow 500ms ease;
+}
+.marker-tick.is-salient,
+.marker-tick.is-fresh {
+  opacity: 0.95;
+  box-shadow: 0 0 5px var(--ex-accent);
+}
+
+/* Expect-placement (a tap lifted the glass): the strip stack slowly pulses,
+ * saying the next tap in here places the marker. */
+.strips.marker-expect::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border: 2px solid var(--ex-accent);
+  border-radius: 6px;
+  pointer-events: none;
+  z-index: 2;
+  animation: marker-expect-pulse 1.8s ease-in-out infinite;
+}
+@keyframes marker-expect-pulse {
+  0%, 100% { opacity: 0.15; }
+  50% { opacity: 0.6; }
+}
+
+/* The stitched look for every control, both states, matching the medallions
+ * (user 2026-08-26): resting buttons carry the leather-brown thread, filled
+ * ones the light one. Both tokens are transparent outside parchment, so this
+ * is a no-op on every other theme — and one ?themeControls=parchment pin away
+ * for any of them. Deliberately excluded: the annotation chips (they speak
+ * the annotation-colour language, not the control language) and the
+ * pin-expiry pill (its conic countdown ring is already its own edge).
+ * Repurposing `outline` eats the UA focus ring, so :focus-visible restores
+ * one below. */
+.audience-btn, .zoom-btn, .ann-jump, .side-close, .mb-play,
+.vp-turn button, .study-cog, .study-tab, .study-option, .study-copy {
+  outline: 1px dashed var(--ex-thread, transparent);
+  outline-offset: -4px;
+}
+.audience-btn.is-on, .mb-play, .vp-turn .turn-grant, .study-option.is-on {
+  outline-color: var(--ex-thread-accent, transparent);
+}
+.audience-btn:focus-visible, .zoom-btn:focus-visible, .ann-jump:focus-visible,
+.side-close:focus-visible, .mb-play:focus-visible, .vp-turn button:focus-visible,
+.study-cog:focus-visible, .study-tab:focus-visible, .study-option:focus-visible,
+.study-copy:focus-visible {
+  outline: 2px solid var(--ex-accent-border);
+  outline-offset: 2px;
+}
+
+/* Regions the prep script flagged for hand placement (plan §5.2d), and regions
+ * widened to stay visible at all (config.minRegionPx). Both are drawn where the
+ * alignment currently says, which is not where the annotator will eventually put
+ * them, so they are marked rather than presented as settled. */
+.strip [data-provisional] { outline: 1px dashed var(--ex-mark-dim); outline-offset: -1px; }
+.strip [data-widened]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-left: 1px solid var(--ex-mark);
+}
+
+/* Provisional geometry, and deliberately so: where the switching controls go is a
+ * museum-feedback and user-study question (plan §6.3), so this is built to be
+ * moved. What is NOT provisional is the hit-target size — 44px is the smallest a
+ * finger reliably lands on, and the iPad is the delivery device. */
+.vp-toolbar {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 28px;
+  margin: 0 0 8px;
+  flex: 0 0 auto;
+}
+
+.audience-switch {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* The per-viewport zoom control: −, the current level as a numeral (nothing to
+ * translate), +. Same chip styling as its toolbar neighbours. */
+.zoom-ctl {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.zoom-btn {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font: inherit;
+  font-size: 1.15rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.zoom-btn:disabled { opacity: 0.35; cursor: default; }
+
+.zoom-level {
+  min-width: 2.4em;
+  text-align: center;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ex-text-soft);
+}
+
+.audience-btn,
+.ann-chip {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.audience-btn.is-on {
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-on-accent);
+}
+
+/* Week 2's commentary panel: chips, the focused annotation's commentary, and
+ * its group-note cards. The panel absorbs ALL of the viewport's remaining
+ * height (flex: 1) so its contents can change without anything above it ever
+ * moving — the strips' position stops depending on how much text is focused,
+ * which the week-1 stand-in got wrong. min-height: 0 so the scroll area inside
+ * can actually shrink to what is left. */
+.ann-panel {
+  flex: 1 1 0;
+  min-height: 0;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.ann-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; flex: 0 0 auto; }
+
+.ann-chip { border-width: 2px; }
+
+/* The chip's three focus states (agreed definition, 2026-08-25). `is-on` is
+ * the PAINT — the wash, or a pin — and fills with the annotation's own colour
+ * (inline, from update()). `is-pinned` marks a visitor's explicit hold as
+ * distinct from the passing wash: an accent ring. `is-shown` is the subtle
+ * anchor for commentary still on show after the wash has moved on — enough to
+ * find the chip the panel is quoting, quiet enough not to read as a second
+ * focus. Box-shadow rings, not borders or outlines: the chip's box never
+ * moves, and a shadow FADES in and out with the transition below, where an
+ * outline would pop. The transition also softens the wash lighting chips up
+ * and down (inline background/text colours transition all the same). */
+.ann-chip {
+  transition:
+    background-color 200ms ease,
+    color 200ms ease,
+    box-shadow 200ms ease;
+}
+.ann-chip.is-pinned { box-shadow: 0 0 0 2px var(--ex-accent); }
+.ann-chip.is-shown { box-shadow: 0 0 0 2px var(--ex-mark-dim); }
+
+/* The union mode's audience marker (?audienceAll=1): the audience name inside
+ * the chip, smaller and dimmed — it must be readable when asked for, invisible
+ * as texture otherwise. Inherits the chip's text colour, so the focused chip's
+ * composited contrast colour (groupTextColor) carries it too. */
+.ann-chip-audience {
+  margin-left: 8px;
+  font-size: 0.68em;
+  opacity: 0.65;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* The pin-expiry warning (config.pinExpiry): a pill with a depleting conic
+ * ring and "Keep reading…", anchored to the body's corner so the split layout
+ * carries it into the side panel with the text it is warning about. Always in
+ * the DOM, faded by class, so it eases in and out; pointer-events off while
+ * hidden so a ghost pill can never eat a tap. */
+.pin-expiry {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 300ms ease;
+}
+.pin-expiry.is-live {
+  opacity: 0.94;
+  pointer-events: auto;
+}
+.pin-ring {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: conic-gradient(var(--ex-accent) calc(var(--pin-frac, 1) * 360deg), transparent 0);
+  -webkit-mask: radial-gradient(circle at center, transparent 55%, #000 56%);
+  mask: radial-gradient(circle at center, transparent 55%, #000 56%);
+}
+
+/* Commentary beside the group cards. Centred as a unit; each half scrolls
+ * internally rather than growing. The opacity transition is ?detailFade's
+ * disappearance: main.js adds .is-fading, waits it out, then clears the
+ * state — so the text leaves gently instead of blinking off. */
+.ann-body {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  align-self: stretch;
+  display: flex;
+  justify-content: center;
+  gap: 16px;
+  transition: opacity 400ms ease;
+}
+.ann-body.is-fading {
+  opacity: 0;
+}
+
+/* The text column: the optional title (?detailTitle) pinned above the
+ * scrolling commentary — orientation must not scroll away with the text. The
+ * wrapper exists in both layouts, title or no title, so there is one
+ * structure to lay out. */
+.ann-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  max-width: 62ch;
+}
+/* The header row above the commentary: the title (?detailTitle) and the jump
+ * button (?detailJump) share it; it collapses when both are off. */
+.ann-head {
+  margin: 0 0 6px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ann-title {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--ex-text-body);
+}
+.ann-jump {
+  flex: 0 0 auto;
+  margin-left: auto;
+  min-height: 44px; /* touch target, same floor as the pin-expiry pill */
+  padding: 0 14px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font-size: 0.8rem;
+}
+/* display:flex above would silently beat the UA's [hidden] { display:none } —
+ * the hidden attribute is these controls' off switch, so honour it. */
+.ann-head[hidden],
+.ann-title[hidden],
+.ann-jump[hidden] { display: none; }
+/* Inline colour from the payload through safeColor, same as the chip border —
+ * never a theme variable (the coloured-surface lesson, spec 9.16). */
+.ann-title-swatch {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+.ann-detail {
+  margin: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  color: var(--ex-text-body);
+  /* The one deliberate scroll container in the kiosk (see annotation-list.js's
+   * header): expert commentary is measured at 1640 characters and no fixed
+   * panel on a halved portrait screen holds that. pan-y is intersected with the
+   * page's pan-x pan-y, so a vertical finger-drag scrolls the text and nothing
+   * else; contain stops the end of the text rubber-banding the screen. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ex-border-strong) transparent;
+  padding-right: 6px;
+}
+.ann-detail::-webkit-scrollbar { width: 6px; }
+.ann-detail::-webkit-scrollbar-thumb { background: var(--ex-border-strong); border-radius: 3px; }
+/* Auto margins, not align-self: the detail now lives in the .ann-text column,
+ * where margin:auto centres the hint both ways. */
+.ann-detail[data-state="hint"],
+.ann-detail[data-state="empty"] { color: var(--ex-text-dim); text-align: center; margin: auto; }
+
+/* The focused annotation's groups: the legend for the strip-edge colours, plus
+ * the authored comparison notes where the annotation carries them. Background
+ * and text colour are set inline from the payload's own palette through
+ * safeColor/groupTextColor — never from theme variables, which is the coloured-
+ * card contrast lesson (spec 9.16). */
+.ann-groups {
+  flex: 0 1 38%;
+  min-width: 0;
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  /* EXPLICIT stacking, under the "Keep reading…" pill (z-index 3). Without
+   * it, Firefox's implicit layer for scroll containers can win the HIT TEST
+   * over the absolutely positioned pill — the pill looked tappable but a
+   * group note underneath swallowed the tap (37.17, Firefox, 2026-08-25). */
+  position: relative;
+  z-index: 0;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ex-border-strong) transparent;
+}
+/* Keyed on the BODY, not the panel: the split layout (side slot below) moves
+ * the body out of the panel, and the group story must show in either home. */
+.ann-body[data-has-groups="1"] .ann-groups { display: flex; }
+
+.ann-group-card {
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  background: var(--ex-card); /* only until safeColor sets the group's own colour */
+  color: var(--ex-text-body);
+}
+.ann-group-name { font-weight: 600; }
+.ann-group-note::before { content: " — "; }
+
+/* Between-group comparisons ("VPO ↔ Other Orchestras — …"): neutral surface,
+ * because the text belongs to BOTH groups and either group's tint would claim
+ * it for one side. */
+.ann-comparison-card {
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  background: var(--ex-card);
+  border: 1px solid var(--ex-border-strong);
+  color: var(--ex-text-body);
+}
+.ann-cmp-names { font-weight: 600; }
+
+/* --------------------------------------------------------------------------
+ * The generic side slot (?sideSlot=<tenant>, feedback item 5, reshaped by the
+ * follow-up feedback). The screen has a MAIN CONTENT area (toolbar + strips)
+ * and a BELOW CONTENT area (the annotation chips, always). The side panel is
+ * an OVERLAY ON THE WIDTH of the main area only: while it is open
+ * (data-side-open, driven by main.js's chip/× machine) the viewport becomes a
+ * grid — strips left, panel right at --side-slot-w, chips row spanning both —
+ * and while it is closed the viewport is the shipped column layout with
+ * full-width strips, the slot display:none. NOTHING here knows what the
+ * tenant is — the score view (plan §2.3) is the confirmed second occupant —
+ * and every rule keys on the data attributes, so the below-strips default is
+ * untouched CSS-wise when the slot is off. "Right" is per READER for free:
+ * the slot is inside the viewport and rotates with it. The strips centre
+ * vertically in their column: with the body gone to the side, top-anchoring
+ * would leave the leftover height as a void under the waveforms.
+ * -------------------------------------------------------------------------- */
+.vp-side-slot { display: none; }
+
+/* The grid is active WHENEVER the slot layout is configured, not only while
+ * the panel is open: the rows — toolbar, the strips' band, the chips row —
+ * are identical in both states, and opening only swaps the COLUMN track from
+ * zero to --side-slot-w. That is what keeps the below-content row from
+ * bouncing when the panel toggles (user feedback): the main area changes
+ * WIDTH only, never height. */
+.vp[data-side-slot] {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 0;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "toolbar side"
+    "strips  side"
+    "below   below";
+  column-gap: 0;
+}
+.vp[data-side-slot][data-side-open="1"] {
+  grid-template-columns: minmax(0, 1fr) minmax(0, var(--side-slot-w, 40%));
+  column-gap: 14px;
+}
+.vp[data-side-slot] .vp-toolbar { grid-area: toolbar; }
+.vp[data-side-slot] .strips { grid-area: strips; align-self: center; }
+.vp[data-side-slot] > .ann-panel { grid-area: below; }
+
+.vp[data-side-open="1"] .vp-side-slot {
+  grid-area: side;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* The panel's close control — the machine's ONE unfocus. A flex header row
+ * rather than an absolute corner, so the tenant's text never runs under it;
+ * 44px because it is finger-first, like every control here. */
+.side-close {
+  align-self: flex-end;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-soft);
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* The commentary body in its panel home: same component, narrower column, so
+ * the commentary and the group story stack instead of sitting side by side —
+ * 62ch plus a 38% card column cannot share ~40% of a halved screen. The group
+ * story is ALWAYS visible when the annotation has one (no fold control, by
+ * feedback); it gets a bounded share and scrolls internally, same discipline
+ * as the text. */
+.vp-side-slot .ann-body {
+  flex: 1 1 0;
+  min-height: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  margin-top: 4px;
+}
+.vp-side-slot .ann-text { max-width: none; flex: 1 1 auto; }
+.vp-side-slot .ann-detail { max-width: none; }
+.vp-side-slot .ann-groups { flex: 0 1 45%; }
+
+/* An audience with nothing to show must still say so where the visitor looks:
+ * under split, the body (and its empty state) lives in a panel that only
+ * opens on focus, so the message renders in the chips row instead. */
+.ann-chips-empty { color: var(--ex-text-dim); font-size: 0.85rem; align-self: center; }
+
+/* Shared between the halves, read from both sides at once. Portrait, conductor
+ * name, and year only — no UI labels, by design (plan §6.3). Which way up is an
+ * A/B question behind ?bandOrientation (config.js): the rules below implement
+ * the three candidates without touching the cluster's own structure. */
+.middle-band {
+  flex: 0 0 var(--middle-band-height, 96px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 64px;   /* only visible in mirrored mode, where there are two clusters */
+  /* The optional drape pair (parchment): a gold cloth laid across the
+   * interface, its edge shadows falling onto the straps it crosses — the
+   * z-index above (strap section) is what makes "physically over" true.
+   * Every other theme keeps the plain band tokens. */
+  background: var(--ex-band-drape, var(--ex-band-bg));
+  box-shadow: var(--ex-band-shadow, none);
+  color: var(--ex-band-text);
+  border-top: 1px solid var(--ex-band-border);
+  border-bottom: 1px solid var(--ex-band-border);
+}
+
+.mb-cluster {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* "rotated": every text block turned 90° via writing-mode — equally sideways
+ * for both readers, reading from the near visitor's right. Per BLOCK, not one
+ * transform on the cluster: each column then only needs its own text length
+ * vertically, and a name longer than the band wraps into a second column
+ * instead of escaping the band. The portrait stays a circle; its initials
+ * rotate with their block for consistency. */
+.middle-band[data-orientation="rotated"] .mb-who,
+.middle-band[data-orientation="rotated"] .mb-year,
+.middle-band[data-orientation="rotated"] .mb-piece,
+.middle-band[data-orientation="rotated"] .mb-portrait {
+  writing-mode: vertical-rl;
+  text-orientation: sideways;
+  max-height: calc(var(--middle-band-height, 96px) - 20px);
+}
+.middle-band[data-orientation="rotated"] .mb-portrait {
+  /* keep the circle a circle; only its two-letter placeholder turns */
+  max-height: none;
+}
+
+/* "mirrored": the far reader's identical copy, turned to face them. Slightly
+ * tightened type so two full clusters share the width without truncating a
+ * proper name — an ellipsis on a conductor is not an option on a museum wall. */
+.middle-band[data-orientation="mirrored"] .mb-flipped { transform: rotate(180deg); }
+.middle-band[data-orientation="mirrored"] .mb-cluster { gap: 10px; }
+.middle-band[data-orientation="mirrored"] .mb-portrait {
+  width: calc(var(--middle-band-height, 96px) - 44px);
+  font-size: calc(var(--middle-band-height, 96px) / 5);
+}
+.middle-band[data-orientation="mirrored"] .mb-conductor,
+.middle-band[data-orientation="mirrored"] .mb-piece-title,
+.middle-band[data-orientation="mirrored"] .mb-year { font-size: 0.9rem; }
+.middle-band[data-orientation="mirrored"] .mb-ensemble,
+.middle-band[data-orientation="mirrored"] .mb-piece-composer { font-size: 0.72rem; }
+.middle-band[data-orientation="mirrored"] .mb-piece { margin-left: 6px; padding-left: 14px; }
+
+/* The shared play/pause in the middle of the band, with the current time
+ * mirrored below it — one readout per reader, numerals only, so the band's
+ * no-labels rule holds. Accent-coloured: it is the one control both visitors
+ * own equally, and the thing a first-time visitor should see first. */
+/* time · button · time — the times sandwich the button, one per reader. */
+.mb-play-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  margin: 0 12px;
+}
+.mb-play {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 1px solid var(--ex-accent-border);
+  background: var(--ex-accent);
+  color: var(--ex-on-accent);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.mb-time {
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ex-band-text-soft);
+}
+.mb-time-flipped { transform: rotate(180deg); }
+
+/* Holds the band's height before the metadata sidecar has landed, so the strips
+ * do not move when it does. */
+.middle-band-slot {
+  flex: 0 0 var(--middle-band-height, 96px);
+  background: var(--ex-band-bg);
+  border-top: 1px solid var(--ex-band-border);
+  border-bottom: 1px solid var(--ex-band-border);
+}
+
+.mb-portrait {
+  width: calc(var(--middle-band-height, 96px) - 24px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: var(--ex-band-card) center / cover no-repeat;
+  flex: 0 0 auto;
+  /* Initials until the generated portraits exist (an open editorial item, not a
+   * code one). Still just the conductor's name, so the no-labels rule holds. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(var(--middle-band-height, 96px) / 4);
+  font-weight: 600;
+  color: var(--ex-band-faint);
+  letter-spacing: 0.02em;
+}
+
+/* Numerals and a proper name: the two things that need no translation. */
+/* Conductor over orchestra, as one column: the conductor is the interpretation's
+ * name and stays prominent; the ensemble underneath is what lets a visitor follow
+ * the VPO-versus-other-orchestras groupings the annotations pin. Both are proper
+ * names, so the band's no-labels rule (plan §6.3) still holds. */
+.mb-who { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.mb-conductor { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.01em; }
+.mb-ensemble { font-size: 0.85rem; color: var(--ex-band-text-soft); }
+/* The honest label for a pseudonymous credit (the Scholz b-shape ruling,
+ * 2026-08-27): a sentence where the names would be, so it wraps and stays
+ * quieter than a name. Empty for every other recording. */
+.mb-note {
+  font-size: 0.72rem;
+  font-style: italic;
+  color: var(--ex-band-text-soft);
+  max-width: 30ch;
+  line-height: 1.25;
+}
+.mb-note:empty { display: none; }
+.mb-year { font-size: 1.05rem; font-variant-numeric: tabular-nums; color: var(--ex-band-text-soft); }
+
+/* The piece, once per view: separated from the recording cluster by a hairline,
+ * because the year belongs to the recording and the title must not read as its
+ * continuation. Same two-line shape as .mb-who. */
+.mb-piece {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  margin-left: 16px;
+  padding-left: 32px;
+  border-left: 1px solid var(--ex-band-border);
+}
+.mb-piece-title { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.01em; }
+.mb-piece-composer { font-size: 0.85rem; color: var(--ex-band-text-soft); }
+
+/* The transient "Loading…" during a switch's fetch, overlaid on the centre of
+ * the strips it is about. Absolutely positioned — OUT OF THE FLOW — which is
+ * the stronger form of the 34.10 fix: the week-1 version reserved the line's
+ * height so it could not shift the strips; this one cannot shift anything by
+ * construction, and gives its 30 px back to the commentary panel. */
+.vp-status {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  transform: translateY(-50%);
+  margin: 0;
+  z-index: 3;
+  pointer-events: none;
+  text-align: center;
+  color: var(--ex-text-body);
+  font-size: 0.9rem;
+  text-shadow: var(--ex-glow);   /* legible over any waveform */
+}
+
+/* The turn-taking surface (?turnPolicy=…, turns.js + main.js paintTurn): the
+ * request prompt on the holder's half, the waiting note on the requester's,
+ * and the transient notices. Overlaid on the strips like .vp-status, but near
+ * the TOP so the two never collide — and INTERACTIVE, because it carries the
+ * grant and deny buttons, which are museum-floor touch targets (44px, the same
+ * floor as the toolbar chips). It lives inside the viewport, so the far half's
+ * 180° rotation presents it right-way-up to its own reader for free. */
+.vp-turn {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 94%;
+  padding: 6px 16px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 26px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+/* An explicit display beats the UA's [hidden] rule (same note as the study
+ * panel below): without this the flex rule above resurrects the hidden pill. */
+.vp-turn[hidden] { display: none; }
+
+.vp-turn button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font: inherit;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+/* Granting is the generous act the prompt exists to invite, so it gets the
+ * accent; denying stays quiet but present. */
+.vp-turn .turn-grant {
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-bg);
+}
+
+/* --------------------------------------------------------------------------
+ * The study panel (?studyPanel=true, study-panel.js): staff tooling for
+ * in-situ design discussion. Appended to <body>, outside #screen, so neither
+ * the stage rotation nor the viewport transforms touch it, and always drawn in
+ * the active theme's tokens so the panel itself demonstrates the palette. */
+/* Under a stage rotation the window's fixed bottom-right corner lands ON a
+ * strap — the far viewport's under 90°, the near one's under 270° — so the
+ * staff cog and panel move to the window's bottom-left, which maps into
+ * strap-free commentary territory under both rotations (study-panel.js
+ * stamps the attribute from the config). The unrotated kiosk keeps them
+ * bottom-right, clear of the near reader's strap on the left. */
+.study-cog[data-stage-rotation], .study-panel[data-stage-rotation] {
+  right: auto;
+  left: 10px;
+}
+.study-cog {
+  position: fixed;
+  right: 10px;
+  bottom: 10px;
+  z-index: 50;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--ex-border-strong);
+  background: var(--ex-panel);
+  color: var(--ex-text-soft);
+  font-size: 1.3rem;
+  cursor: pointer;
+  opacity: 0.75;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.study-cog:hover { opacity: 1; }
+
+/* An explicit display beats the UA's [hidden] rule, so restate it — without
+ * this the closed panel renders as a ghost of tabs and footer. */
+.study-panel[hidden] { display: none; }
+
+.study-panel {
+  position: fixed;
+  right: 10px;
+  bottom: 62px;
+  z-index: 50;
+  width: 400px;
+  max-width: calc(100vw - 20px);
+  max-height: min(70vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--ex-panel);
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.45);
+  font-size: 0.82rem;
+  color: var(--ex-text-body);
+}
+
+.study-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 8px 0;
+  border-bottom: 1px solid var(--ex-border);
+}
+.study-tab {
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--ex-text-dim);
+  font: inherit;
+  cursor: pointer;
+}
+.study-tab.is-on {
+  color: var(--ex-text);
+  border-bottom-color: var(--ex-accent-border);
+}
+
+.study-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.study-row { display: flex; flex-direction: column; gap: 5px; }
+.study-label { color: var(--ex-text-dim); }
+/* A header with a hint says so: dotted underline, help cursor. Tapping it
+ * toggles the hint inline (study-panel.js) — the title-attribute tooltip
+ * only exists for desktop hover, and the panel's real home is an iPad. */
+.study-label.has-hint {
+  cursor: help;
+  align-self: flex-start;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.study-hint {
+  font-size: 0.85em;
+  line-height: 1.4;
+  color: var(--ex-text-faint);
+  max-width: 46ch;
+}
+.study-hint[hidden] { display: none; }
+.study-options { display: flex; flex-wrap: wrap; gap: 6px; }
+.study-option {
+  padding: 6px 10px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 14px;
+  background: none;
+  color: var(--ex-text-body);
+  font: inherit;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.study-option.is-on {
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-on-accent);
+}
+
+.study-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--ex-border);
+}
+.study-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.72rem;
+  color: var(--ex-text-dim);
+  /* Copying the configuration URL is the point — override the kiosk's global
+   * user-select: none for exactly this element. */
+  -webkit-user-select: text;
+  user-select: text;
+}
+.study-copy {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 14px;
+  background: none;
+  color: var(--ex-text-body);
+  font: inherit;
+  font-size: 0.72rem;
+  cursor: pointer;
+}

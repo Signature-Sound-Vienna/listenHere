@@ -1,4 +1,5 @@
 import { test, expect, AUDIO_A, AUDIO_B } from '../support/fixtures';
+import { zoomSettled } from '../support/helpers';
 
 // ---------------------------------------------------------------------------
 // Section 20 — Off-screen Annotated Region Navigation Arrows
@@ -10,7 +11,11 @@ const setZoom = async (page, level: string) => {
   const zoomSlider = page.locator('#zoom-slider');
   await zoomSlider.fill(level);
   await zoomSlider.dispatchEvent('input');
-  await page.waitForTimeout(500);
+  // A real signal, not a sleep: the arrow jump reads the zoomed width, and a
+  // 500 ms guess raced it under load (20.3, Firefox, 2026-08-25) — the jump
+  // computed its target against a stale width, landed short, and the arrow
+  // honestly stayed visible.
+  await zoomSettled(page);
 };
 
 const injectRegion = (page, overrides: Record<string, { start: number; end: number }>) =>

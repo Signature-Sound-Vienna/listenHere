@@ -154,6 +154,29 @@ def radetzky():
 def fledermaus():
     return redirect(f"/?align={SSV_AUDIO}align/scoreAlign/fledermaus.json", code=302)
 
+@app.route("/exhibit")
+def exhibit():
+    # The museum exhibit (plan §4.1). A redirect rather than a rendered template
+    # on purpose: the page lives entirely under /static/exhibit/ and imports the
+    # shared engine modules by RELATIVE path, exactly as every other first-party
+    # module in this codebase does. Serving it from /exhibit would break those
+    # paths and push the page towards absolute specifiers, which the boundary
+    # test (spec 33) would have to be taught to follow.
+    #
+    # The exhibit must never import listen.js. That is enforced, not trusted:
+    # tests/e2e/33-exhibit-boundary.spec.ts, ratcheted at zero.
+    #
+    # The query string MUST survive the redirect: display geometry is entirely
+    # URL-driven (exhibit/config.js), so laptop, iPad, and table are three URLs of
+    # one build. A bare redirect drops it and silently serves the defaults, which
+    # is how /exhibit?viewports=1 came back with two viewports the first time.
+    target = "/static/exhibit/index.html"
+    qs = request.query_string.decode("utf-8", "ignore").replace("\r", "").replace("\n", "")
+    if qs:
+        target += "?" + qs
+    return redirect(target, code=302)
+
+
 @app.route("/midi-test")
 def midi_test():
     return redirect(f"/?align={SSV_AUDIO}align/midi-test.json", code=302)

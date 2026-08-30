@@ -27,11 +27,11 @@ import {
   listAnnotationsForAudio,
   listAnnotationsForLoadedAudios,
 } from "./solid-load.js";
-import { _openLoadModal, consumeLoadIntent } from "./ui-ribbon.js";
+import { openLoadModal, consumeLoadIntent } from "./ui-ribbon.js";
 import { solid } from "../solid.js";
 import {
   setAnnoChangesPending,
-  _regionsPlugins,
+  waveformViews,
   getAudioLinkedDataUri,
   loadedAlignmentJSON,
 } from "../listen.js";
@@ -150,14 +150,14 @@ export function initAnnotationV6() {
   // Push V6 dirty state into the central Save-data indicator on every change.
   state.subscribe(() => setAnnoChangesPending(state.isAnyDirty()));
 
-  // Expose state + adapter + uiState + the live _regionsPlugins map for
-  // devtools inspection.
+  // Expose state + adapter + uiState + the live waveformViews map (each view
+  // carries its RegionsPlugin as `.regions`) for devtools inspection.
   window.__annotationV6 = {
     active: true,
     state,
     adapter,
     uiState,
-    _regionsPlugins,
+    waveformViews,
     commitAnnotationsToAlignment,
     loadAnnotationsFromAlignment,
     postAnnotationToSolid,
@@ -173,9 +173,10 @@ export function initAnnotationV6() {
   //       modal pre-pointed at the given MM once auth completes. Survives
   //       bookmark sharing.
   //   (b) Load-intent resume: if the user clicked Load-from-Solid while
-  //       logged out and then signed in within the last 15s (the window
-  //       in ui-ribbon.js), we re-open the modal automatically with a
-  //       small "Signed in — resuming…" banner.
+  //       logged out and then signed in within the window defined in
+  //       ui-ribbon.js (5 min) without interacting elsewhere first, we
+  //       re-open the modal automatically with a small "Signed in —
+  //       resuming…" banner.
   // Both are checked on `solid-auth-changed`. The URL-param path takes
   // priority because it carries a specific target.
   let _autoloadConsumed = false;
@@ -200,12 +201,12 @@ export function initAnnotationV6() {
       _autoloadConsumed = true;
       // The presetMm path bypasses the resumed banner — the user landed
       // here via a shared link, not an in-session intent.
-      _openLoadModal({ presetMm: _pendingMm });
+      openLoadModal({ presetMm: _pendingMm });
       return;
     }
     const intent = consumeLoadIntent();
     if (intent) {
-      _openLoadModal({ resumed: true });
+      openLoadModal({ resumed: true });
     }
   }
 

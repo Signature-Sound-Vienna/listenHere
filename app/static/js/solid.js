@@ -13,7 +13,21 @@ import { nsp, politeness } from "./linked-data.js";
 import { storage, versionString } from "./listen.js";
 import { ensureRelativeURL } from "./utils.js";
 
-export const solid = solidClientAuthentication.default;
+// The Solid auth bundle (vendor/solid-client-authn.bundle.js) is a classic
+// script that sets this global synchronously, before this module evaluates.
+// If it fails to initialise — e.g. an older browser choking inside the bundle
+// (observed on aging Chrome as an uncaught error in the bundle plus an "unload
+// is not allowed" permissions-policy warning) — the global is left undefined.
+// Guard the deref so THIS module still evaluates: otherwise a top-level throw
+// here cascades, via listen.js's static import of this module, into listen.js
+// never running at all — which silently kills the entire listen UI (including
+// the local-file "Manage recordings" modal, which has no Solid dependency).
+// When unavailable, `solid` is null and Solid features degrade to no-ops.
+export const solid =
+  (typeof solidClientAuthentication !== "undefined" &&
+    solidClientAuthentication &&
+    solidClientAuthentication.default) ||
+  null;
 
 // mei-friend resource containers (internal path within Solid storage)
 export const friendContainer = "at.ac.mdw.mei-friend/";
@@ -236,31 +250,53 @@ export async function establishResource(uri, resource) {
   return resp;
 }
 
+// Session-scoped cache for the resolved storage root, keyed by webId. The
+// pod's storage root is constant for a logged-in session, but discovery used
+// to re-derive it (profile fetch + jsonld.expand) once per audio AND per URI
+// variant. Keyed by webId so an in-page account switch invalidates naturally.
+let _storageCache = { webId: null, storage: null };
+
 export async function getSolidStorage() {
-  return getProfile().then(async (profile) => {
-    if (nsp.PIM + "storage" in profile) {
-      let storage = Array.isArray(profile[nsp.PIM + "storage"])
-        ? profile[nsp.PIM + "storage"][0] // TODO what if more than one storage?
-        : profile[nsp.PIM + "storage"];
-      if (typeof storage === "object") {
-        if ("@id" in storage) {
-          storage = storage["@id"];
-        } else {
-          console.warn(
-            "Unexpected pim:storage object in your Solid Pod profile: ",
-            profile,
-          );
-        }
-      }
-      return storage;
-    } else {
-      log(
-        "Sorry, couldn't establish storage location from your Solid Pod's profile ",
-        profile,
-      );
-      throw Error(profile);
-    }
-  });
+  const webId = solid.getDefaultSession().info.webId;
+  if (_storageCache.webId === webId && _storageCache.storage) {
+    return _storageCache.storage;
+  }
+  const profile = await getProfile();
+  if (!profile) {
+    throw new Error(
+      "Couldn't read your Solid pod profile to determine its storage location.",
+    );
+  }
+  // Collect EVERY pim:storage value across the (merged) profile, normalise to
+  // string URIs, and de-dupe. Legacy NSS / solidcommunity.net cards describe
+  // the WebID across several nodes; the storage triple may sit on a node other
+  // than the first — taking `[0]` blindly (the old behaviour) could miss it
+  // entirely and leave every pod URI 404ing.
+  const raw = profile[nsp.PIM + "storage"];
+  const storages = [
+    ...new Set(
+      (Array.isArray(raw) ? raw : raw == null ? [] : [raw])
+        .map((s) => (s && typeof s === "object" ? s["@id"] : s))
+        .filter((s) => typeof s === "string" && s.length > 0),
+    ),
+  ];
+  if (storages.length === 0) {
+    log(
+      "Sorry, couldn't establish storage location from your Solid Pod's profile ",
+      profile,
+    );
+    throw new Error(
+      "Couldn't determine your Solid pod's storage location: no pim:storage in your WebID profile.",
+    );
+  }
+  if (storages.length > 1) {
+    console.warn(
+      "WebID profile lists multiple pim:storage values; using the first:",
+      storages,
+    );
+  }
+  _storageCache = { webId, storage: storages[0] };
+  return storages[0];
 }
 
 export async function establishContainerResource(container) {
@@ -655,38 +691,60 @@ export async function populateSolidDrawer() {
   );
 }
 
+// Session-scoped profile cache, keyed by webId (see getSolidStorage).
+let _profileCache = { webId: null, profile: null };
+
 export async function getProfile() {
   const webId = solid.getDefaultSession().info.webId;
-  const profile = await solid
-    .fetch(webId, {
-      headers: {
-        Accept: "application/ld+json",
-      },
-    })
-    .then((resp) => resp.json())
-    .then((json) => jsonld.expand(json))
-    .then((profile) => {
-      let me = Array.from(profile).filter(
-        (e) => "@id" in e && e["@id"] === webId,
-      );
-      if (me.length) {
-        if (me.length > 1) {
-          console.warn(
-            "User profile contains multiple entries for webId: ",
-            me,
-          );
-        }
-        return me[0];
-      } else {
-        // TODO proper error handling
-        console.warn(
-          "User profile contains no entry matching their webId: ",
-          profile,
-          webId,
-        );
-      }
-    });
+  if (_profileCache.webId === webId && _profileCache.profile) {
+    return _profileCache.profile;
+  }
+  const resp = await solid.fetch(webId, {
+    headers: { Accept: "application/ld+json" },
+  });
+  const json = await resp.json();
+  const expanded = await jsonld.expand(json);
+  // A WebID document can describe its subject across MORE THAN ONE node
+  // (public card + extended profile, owl:sameAs, multiple @context blocks —
+  // common on legacy NSS / solidcommunity.net, which is why those accounts
+  // logged the "multiple entries for webId" warning). Picking the first match
+  // silently drops triples (e.g. pim:storage) asserted on a sibling node, so
+  // merge every node whose @id is the webId into one, accumulating each
+  // predicate's values.
+  const mine = Array.from(expanded).filter(
+    (e) => "@id" in e && e["@id"] === webId,
+  );
+  if (mine.length === 0) {
+    // TODO proper error handling
+    console.warn(
+      "User profile contains no entry matching their webId: ",
+      expanded,
+      webId,
+    );
+    return null;
+  }
+  const profile = _mergeNodes(mine);
+  _profileCache = { webId, profile };
   return profile;
+}
+
+// Merge expanded JSON-LD nodes (all sharing one @id) into a single node,
+// concatenating each predicate's values. Expanded values are already arrays,
+// so the result keeps the standard expanded shape downstream code expects.
+function _mergeNodes(nodes) {
+  const merged = { "@id": nodes[0]["@id"] };
+  for (const node of nodes) {
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "@id") continue;
+      const acc = merged[k]
+        ? Array.isArray(merged[k])
+          ? merged[k]
+          : [merged[k]]
+        : [];
+      merged[k] = acc.concat(v);
+    }
+  }
+  return merged;
 }
 
 /**
@@ -708,6 +766,37 @@ function getCleanRedirectUrl() {
 
 /** Reference to the login popup window (if open). */
 let _loginPopup = null;
+/** Interval id polling for a popup the user closed without finishing login. */
+let _loginPopupPoll = null;
+
+/**
+ * Poll for the login popup being closed before it posts a result. The
+ * success and IdP-error paths both null out `_loginPopup` as their message
+ * arrives, so a still-set reference whose window has `closed === true` can
+ * only mean the user dismissed the popup. Treat that as a cancelled login:
+ * clear the pending flag and dispatch the usual not-logged-in auth change.
+ */
+function _watchPopupClose() {
+  if (_loginPopupPoll) {
+    clearInterval(_loginPopupPoll);
+    _loginPopupPoll = null;
+  }
+  _loginPopupPoll = setInterval(() => {
+    if (!_loginPopup) {
+      clearInterval(_loginPopupPoll);
+      _loginPopupPoll = null;
+      return;
+    }
+    if (_loginPopup.closed) {
+      clearInterval(_loginPopupPoll);
+      _loginPopupPoll = null;
+      _loginPopup = null;
+      console.log("Solid login popup closed before completing login");
+      try { localStorage.removeItem("solidLoginPending"); } catch (_) {}
+      populateSolidDrawer();
+    }
+  }, 500);
+}
 
 /**
  * Listen for postMessage from the login popup.
@@ -767,6 +856,14 @@ function _setupPopupMessageListener() {
  * future login attempts.
  */
 export async function initSolidAuth() {
+  if (!solid) {
+    console.warn(
+      "Solid authentication unavailable (auth library failed to initialise); " +
+        "Solid features are disabled for this session. Local-file listening is unaffected.",
+    );
+    return;
+  }
+
   // Set up the listener for popup-based logins
   _setupPopupMessageListener();
 
@@ -803,6 +900,10 @@ export async function initSolidAuth() {
  * @param {string} [provider] – OIDC issuer URL; if omitted, reads from #providerSelect
  */
 export async function loginAndFetch(provider) {
+  if (!solid) {
+    console.warn("Solid login unavailable: auth library failed to initialise.");
+    return;
+  }
   if (!provider) {
     const providerEl = document.getElementById("providerSelect");
     if (!providerEl) {
@@ -813,6 +914,12 @@ export async function loginAndFetch(provider) {
   }
 
   localStorage.setItem("solidProvider", provider);
+
+  // Signal that a login attempt is now underway (covers both the popup and
+  // redirect-fallback paths below). Listeners use this to switch from a
+  // "your move — sign in" affordance to an "in progress" one, since the app
+  // is genuinely waiting on the OAuth exchange from here on.
+  document.dispatchEvent(new CustomEvent("solid-login-started"));
 
   // The callback URL that the IdP will redirect the popup to.
   // The popup callback page captures this URL and posts it back.
@@ -841,6 +948,12 @@ export async function loginAndFetch(provider) {
     return;
   }
 
+  // Watch for the user dismissing the popup without completing login: in
+  // that case the popup posts no message (only IdP success/error do), so
+  // we'd otherwise never learn the attempt ended. Surfaces a normal
+  // "not logged in" auth change when it happens.
+  _watchPopupClose();
+
   // Call solid.login() with handleRedirect — the library prepares the
   // OIDC auth request (stores code_verifier etc. in localStorage) and
   // then calls our callback with the full IdP authorization URL instead
@@ -860,6 +973,16 @@ export async function solidLogout() {
   return solid.logout().then(() => {
     localStorage.removeItem("solidProvider");
     storage.removeItem("restoreSolidSession"); // legacy cleanup
+    _clearSessionCaches();
     populateSolidDrawer();
   });
+}
+
+// Drop the per-session profile/storage caches. Called on logout so a
+// subsequent login (or anonymous browsing) never reads another session's
+// resolved storage root. The cached values aren't secret (a storage URI), but
+// clearing them on logout is the correct hygiene.
+function _clearSessionCaches() {
+  _profileCache = { webId: null, profile: null };
+  _storageCache = { webId: null, storage: null };
 }

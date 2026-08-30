@@ -8,7 +8,7 @@ Test fixtures assume a small collection of public-domain audio files (e.g. `audi
 
 ## 0. Scope & Conventions
 
-> **Out of scope:** `align.html` (deprecated) and any piece-specific legacy routes are excluded from these tests.
+> **Out of scope:** piece-specific legacy routes are excluded from these tests. (The standalone `align.html` page was deleted once the wizard moved into `/?mode=align`; its script now lives in `app/static/js/align.js`, imported by `listen.js`.)
 >
 > **In scope routes:** `/?mode=listen` (default listen interface), `/?mode=align` (in-browser DTW alignment workflow), `/?useFiles`, `/?data=`, `/?useLocal=`. The alignment workflow is tested via Section 1 (scenarios 1.5–1.6) and Section 17.
 

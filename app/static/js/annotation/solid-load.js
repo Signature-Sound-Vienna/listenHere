@@ -19,6 +19,8 @@ import * as adapter from "./mao-adapter.js";
 import { nsp } from "../linked-data.js";
 import { solid, friendContainer, discoveryFragment, getSolidStorage } from "../solid.js";
 import {
+  correctedSynthOffsets,
+  correctedSynthOnsets,
   getAudioLinkedDataUri,
   getClosestAlignmentIx,
   getCorrespondingTime,
@@ -51,29 +53,42 @@ export async function listAnnotationsForAudio(audioUri) {
   const discovery = await _readFirstDiscovery(_iriVariantsForLookup(audioUri));
   if (!discovery) return [];
   const dataset = _asArray(discovery[nsp.SCHEMA + "dataset"]);
-  const mmUrls = dataset
-    .filter((entry) => {
-      const t = _firstId(_asArray(entry?.[nsp.SCHEMA + "additionalType"]));
-      return t === nsp.MAO + "MusicalMaterial";
-    })
-    .map((entry) => _firstId(_asArray(entry?.[nsp.SCHEMA + "url"])))
-    .filter(Boolean);
+  const mmEntries = dataset.filter((entry) => {
+    const t = _firstId(_asArray(entry?.[nsp.SCHEMA + "additionalType"]));
+    return t === nsp.MAO + "MusicalMaterial";
+  });
 
-  const out = await Promise.all(
-    mmUrls.map(async (url) => {
-      try {
-        const mm = await _fetchJsonLd(url);
-        return {
-          mmUri: url,
-          label: _firstValueOrText(mm[nsp.RDFS + "label"]) || "(untitled)",
-          created: _firstValueOrText(mm[nsp.DCT + "created"]) || null,
-        };
-      } catch (_) {
-        return { mmUri: url, label: "(unreadable)", created: null };
-      }
-    }),
-  );
-  return out;
+  // §3 fast path: discovery entries written by current Listen Here carry
+  // denormalised schema:name + schema:dateCreated, so the picker row is built
+  // straight from the (single, already-fetched) discovery resource — no per-MM
+  // GET. Entries lacking them — annotations posted by older LH, or by
+  // mei-friend, which doesn't denormalise — fall back to fetching the MM.
+  // schema:dateCreated is the denormalisation sentinel: we always write it for
+  // new entries (a title may be empty, but a creation date never is).
+  const out = await _mapLimit(mmEntries, READ_CONCURRENCY, async (entry) => {
+    const url = _firstId(_asArray(entry?.[nsp.SCHEMA + "url"]));
+    if (!url) return null;
+    const inlineCreated = _firstValueOrText(entry?.[nsp.SCHEMA + "dateCreated"]);
+    const inlineName = _firstValueOrText(entry?.[nsp.SCHEMA + "name"]);
+    if (inlineCreated !== null || inlineName !== null) {
+      return {
+        mmUri: url,
+        label: inlineName || "(untitled)",
+        created: inlineCreated || null,
+      };
+    }
+    try {
+      const mm = await _fetchJsonLd(url);
+      return {
+        mmUri: url,
+        label: _firstValueOrText(mm[nsp.RDFS + "label"]) || "(untitled)",
+        created: _firstValueOrText(mm[nsp.DCT + "created"]) || null,
+      };
+    } catch (_) {
+      return { mmUri: url, label: "(unreadable)", created: null };
+    }
+  });
+  return out.filter(Boolean);
 }
 
 /**
@@ -84,7 +99,14 @@ export async function listAnnotationsForAudio(audioUri) {
  * current workspace. Audios with no discovery resource on the pod (404)
  * are silently skipped.
  */
-export async function listAnnotationsForLoadedAudios() {
+export async function listAnnotationsForLoadedAudios(opts = {}) {
+  const onProgress = opts.onProgress || (() => {});
+  // Called as each source (recording / score) resolves, with a fresh
+  // deduped snapshot so the UI can render rows progressively instead of
+  // waiting for the whole fan-out. `errors` lets the UI distinguish an
+  // unreachable pod from a genuinely empty result.
+  const onSnapshot = opts.onSnapshot || (() => {});
+
   const session = solid.getDefaultSession();
   if (!session || !session.info || !session.info.isLoggedIn) {
     throw new Error("Sign in to your Solid pod first.");
@@ -96,51 +118,59 @@ export async function listAnnotationsForLoadedAudios() {
   // alongside the audios so score-only annotations surface in the same
   // list, marked with a "score" pill by the result-row renderer.
   const scoreUri = (typeof meiUri === "string" && meiUri) ? _normaliseIri(meiUri) : null;
-  if (audios.length === 0 && !scoreUri) return [];
+  if (audios.length === 0 && !scoreUri) return { entries: [], errors: [] };
 
-  const perSource = await Promise.all([
-    ...audios.map(async (audioUri) => {
-      try {
-        const entries = await listAnnotationsForAudio(audioUri);
-        return { kind: "audio", file: reverseMap.get(audioUri), entries };
-      } catch (_) {
-        return { kind: "audio", file: reverseMap.get(audioUri), entries: [] };
-      }
-    }),
-    scoreUri
-      ? (async () => {
-          try {
-            const entries = await listAnnotationsForAudio(scoreUri);
-            return { kind: "score", file: null, entries };
-          } catch (_) {
-            return { kind: "score", file: null, entries: [] };
-          }
-        })()
-      : Promise.resolve(null),
-  ]);
+  const sources = [
+    ...audios.map((audioUri) => ({
+      kind: "audio",
+      file: reverseMap.get(audioUri),
+      uri: audioUri,
+    })),
+    ...(scoreUri ? [{ kind: "score", file: null, uri: scoreUri }] : []),
+  ];
 
-  // De-dupe by mmUri; record which loaded files each annotation covers
-  // and whether it surfaced from the score's discovery resource.
+  // De-dupe by mmUri; record which loaded files each annotation covers and
+  // whether it surfaced from the score's discovery resource. Built up
+  // incrementally so each resolved source can emit a progress snapshot.
   const byMm = new Map();
-  for (const result of perSource) {
-    if (!result) continue;
-    for (const entry of result.entries) {
-      if (!byMm.has(entry.mmUri)) {
-        byMm.set(entry.mmUri, {
-          ...entry,
-          coveredFiles: new Set(),
-          aboutsScore: false,
-        });
+  const errors = [];
+  const total = sources.length;
+  let done = 0;
+  onProgress("Checking " + total + " source" + (total === 1 ? "" : "s") + " on your pod…");
+
+  const snapshot = () =>
+    [...byMm.values()].map((e) => ({
+      ...e,
+      coveredFiles: [...e.coveredFiles].sort(),
+    }));
+
+  await Promise.all(
+    sources.map(async (src) => {
+      let entries = [];
+      try {
+        entries = await listAnnotationsForAudio(src.uri);
+      } catch (err) {
+        errors.push({ kind: src.kind, file: src.file, error: err });
       }
-      const agg = byMm.get(entry.mmUri);
-      if (result.kind === "audio" && result.file) agg.coveredFiles.add(result.file);
-      if (result.kind === "score") agg.aboutsScore = true;
-    }
-  }
-  return [...byMm.values()].map((e) => ({
-    ...e,
-    coveredFiles: [...e.coveredFiles].sort(),
-  }));
+      for (const entry of entries) {
+        if (!byMm.has(entry.mmUri)) {
+          byMm.set(entry.mmUri, {
+            ...entry,
+            coveredFiles: new Set(),
+            aboutsScore: false,
+          });
+        }
+        const agg = byMm.get(entry.mmUri);
+        if (src.kind === "audio" && src.file) agg.coveredFiles.add(src.file);
+        if (src.kind === "score") agg.aboutsScore = true;
+      }
+      done++;
+      onProgress("Checked " + done + " of " + total + " — found " + byMm.size + " so far…");
+      onSnapshot({ entries: snapshot(), errors: [...errors], done, total });
+    }),
+  );
+
+  return { entries: snapshot(), errors };
 }
 
 /**
@@ -464,8 +494,13 @@ function _rewriteScoreChainAsAudio(graph, scoreSelUris, audioUriToFile) {
   // graph but don't collide with anything else; they're never used as
   // identifiers on the pod (this rewrite is purely in-memory).
   const newSelUris = [];
-  const onsetTimes = scoreAlignment.synth_onset || scoreAlignment.score_onset;
-  const offsetTimes = scoreAlignment.synth_offset || scoreAlignment.score_offset;
+  // Prefer the corrected synth tables (derived from the MIDI Verovio actually
+  // rendered): Verovio's tstampOn values are matched against these, and the
+  // stored synth_onset/synth_offset may carry the pre-fix tempo skew.
+  const onsetTimes =
+    correctedSynthOnsets || scoreAlignment.synth_onset || scoreAlignment.score_onset;
+  const offsetTimes =
+    correctedSynthOffsets || scoreAlignment.synth_offset || scoreAlignment.score_offset;
   if (!Array.isArray(onsetTimes) || !Array.isArray(offsetTimes)) {
     throw new Error("Score alignment doesn't expose synth_onset/synth_offset.");
   }
@@ -617,7 +652,7 @@ async function _fetchChainAsGraph(mmUri, onProgress) {
   if (selUris.length === 0) throw new Error("Extract lists no Selections.");
 
   onProgress("Fetching Selections");
-  const sels = await Promise.all(selUris.map(_fetchJsonLd));
+  const sels = await _mapLimit(selUris, READ_CONCURRENCY, _fetchJsonLd);
 
   const selectionAudios = sels.map((s) => _firstId(_asArray(s[nsp.SCHEMA + "about"])));
   const uniqueAudios = [...new Set(selectionAudios.filter(Boolean).map(_normaliseIri))];
@@ -644,15 +679,13 @@ async function _fetchChainAsGraph(mmUri, onProgress) {
 
   onProgress("Fetching " + oaUrisToFetch.size + " annotation resource(s)");
   const oaUriArr = [...oaUrisToFetch];
-  const oas = await Promise.all(
-    oaUriArr.map(async (uri) => {
-      try { return await _fetchJsonLd(uri); }
-      catch (err) {
-        console.warn("[annotation/v6] couldn't fetch OA", uri, err);
-        return null;
-      }
-    }),
-  );
+  const oas = await _mapLimit(oaUriArr, READ_CONCURRENCY, async (uri) => {
+    try { return await _fetchJsonLd(uri); }
+    catch (err) {
+      console.warn("[annotation/v6] couldn't fetch OA", uri, err);
+      return null;
+    }
+  });
 
   const graph = {};
   graph[mmUri] = mm;
@@ -703,24 +736,172 @@ async function _purgeDeletedFromDiscovery(audioUri, deletedSet) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Resilient read: retry transient failures (network errors, 5xx, 429) with
+// backoff, and abort a hung request after a timeout rather than spinning
+// forever. Non-transient statuses (incl. 404) are returned as-is for the
+// caller to interpret. Reads previously had no retry/timeout at all, so a
+// single blip surfaced as "(unreadable)" or a silently-empty list.
+const READ_RETRIES = 2; // total attempts = READ_RETRIES + 1
+const READ_TIMEOUT_MS = 15000;
+const READ_BACKOFF_MS = 400;
+const READ_CONCURRENCY = 6; // max in-flight reads per fan-out
+
+function _sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// Run `fn` over `items` with at most `limit` calls in flight at once,
+// preserving input order in the result. Bounds discovery/chain fan-out so a
+// resource listing many entries doesn't fire an unbounded burst of (usually
+// authenticated) requests at the pod. Rejection semantics match Promise.all:
+// if `fn` throws for any item, the whole call rejects.
+async function _mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+  const workers = [];
+  for (let w = 0; w < Math.min(limit, items.length); w++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
+  return results;
+}
+
+// When `authenticated` is false the request is issued with the plain global
+// fetch, so the user's Solid access token / DPoP proof never leaves their pod
+// origin (see _isPodOrigin). Same retry/timeout behaviour either way.
+async function _solidFetchResilient(uri, init = {}, authenticated = true) {
+  let lastErr;
+  for (let attempt = 0; attempt <= READ_RETRIES; attempt++) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), READ_TIMEOUT_MS);
+    try {
+      const reqInit = { ...init, signal: ctrl.signal };
+      const resp = authenticated
+        ? await solid.fetch(uri, reqInit)
+        : await fetch(uri, reqInit);
+      clearTimeout(timer);
+      if ((resp.status >= 500 || resp.status === 429) && attempt < READ_RETRIES) {
+        lastErr = new Error("GET " + uri + " failed: " + resp.status);
+        await _sleep(READ_BACKOFF_MS * (attempt + 1));
+        continue;
+      }
+      return resp;
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      if (attempt < READ_RETRIES) {
+        await _sleep(READ_BACKOFF_MS * (attempt + 1));
+        continue;
+      }
+      throw lastErr;
+    }
+  }
+  throw lastErr;
+}
+
+// Locally-bundled JSON-LD contexts, served without any network request
+// (privacy + resilience: a slow/down context host can't break expansion).
+// A context here MUST be the authentic document for its URL — a wrong mapping
+// would silently mis-expand resources — so we only add contexts we've
+// verified. Unknown contexts are still fetched (so unforeseen resources keep
+// working) but logged once each, to reveal which real-world contexts to bundle
+// next. Seed this as those URLs are observed (see #31).
+const _STATIC_CONTEXTS = {
+  // "https://www.w3.org/ns/anno.jsonld": { "@context": { /* … */ } },
+};
+
+// Session-caching JSON-LD document loader. Listen Here and mei-friend both
+// write expanded, context-less resources, so for today's data nothing here is
+// exercised. It's defensive support for the source-agnostic goal: a
+// third-party MAO-stack source could ship compact form with a remote
+// `@context`, and the default loader would re-fetch that context on EVERY
+// expand call — a round trip per resource plus a failure surface (context host
+// slow/down → expansion throws → we fall back to raw → full-IRI keys don't
+// match → "(unreadable)"). Static contexts are served locally; anything else
+// is fetched at most once per session.
+let _cachingDocumentLoader = null;
+function _getDocumentLoader() {
+  if (_cachingDocumentLoader) return _cachingDocumentLoader;
+  const jsonld = globalThis.jsonld;
+  if (
+    !jsonld ||
+    !jsonld.documentLoaders ||
+    typeof jsonld.documentLoaders.xhr !== "function"
+  ) {
+    return null;
+  }
+  const base = jsonld.documentLoaders.xhr();
+  const cache = new Map();
+  const loggedUnknown = new Set();
+  _cachingDocumentLoader = async (url) => {
+    if (Object.prototype.hasOwnProperty.call(_STATIC_CONTEXTS, url)) {
+      return { contextUrl: null, document: _STATIC_CONTEXTS[url], documentUrl: url };
+    }
+    if (cache.has(url)) return cache.get(url);
+    if (!loggedUnknown.has(url)) {
+      loggedUnknown.add(url);
+      console.info(
+        "[annotation/v6] fetching remote JSON-LD @context over the network:",
+        url,
+        "— bundle it in _STATIC_CONTEXTS to serve locally (see #31).",
+      );
+    }
+    const doc = await base(url);
+    cache.set(url, doc);
+    return doc;
+  };
+  return _cachingDocumentLoader;
+}
+
+// Decide whether a URI may be fetched with the user's Solid credentials.
+// The chain walk follows URIs taken from resource bodies (mao:setting,
+// frbr:embodiment, discovery schema:url), which — for annotations the user
+// didn't author, or future foreign sources — can point anywhere. We send the
+// access token / DPoP proof ONLY to the user's own pod origin; everything
+// else is fetched anonymously (allowed, but credential-less). If the storage
+// root can't be resolved we default to anonymous (the safe choice).
+async function _isPodOrigin(uri) {
+  try {
+    const storage = await getSolidStorage();
+    return !!storage && new URL(uri).origin === new URL(storage).origin;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function _fetchJsonLd(uri) {
-  const resp = await solid.fetch(uri, {
-    headers: { Accept: "application/ld+json" },
-  });
+  const authenticated = await _isPodOrigin(uri);
+  const resp = await _solidFetchResilient(
+    uri,
+    { headers: { Accept: "application/ld+json" } },
+    authenticated,
+  );
   if (!resp.ok) {
     throw new Error("GET " + uri + " failed: " + resp.status);
   }
   const raw = await resp.json();
-  // JSON-LD expand so keys are always full IRIs. Our own resources are
-  // already expanded (POSTed that way), but third-party writers like
-  // mei-friend ship compact form with a `@context`, which our key-by-
-  // full-IRI deserialize wouldn't match. Expansion is idempotent on
-  // already-expanded input. If expansion fails (no context, malformed,
-  // unreachable remote context, …) we fall through to the raw body.
+  // JSON-LD expand so keys are always full IRIs. Both Listen Here and
+  // mei-friend write resources already expanded (full-IRI keys, no
+  // `@context`), so for today's data expansion is a no-op. We still expand to
+  // stay compatible with ANY MAO-stack source (the source-agnostic loading
+  // goal): a third-party author may ship compact form with a `@context`, which
+  // our key-by-full-IRI deserialize wouldn't otherwise match. Expansion is
+  // idempotent on already-expanded input. If it fails (malformed, unreachable
+  // remote context, …) we fall through to the raw body.
   let expanded;
   try {
     if (typeof globalThis.jsonld !== "undefined") {
-      expanded = await globalThis.jsonld.expand(raw);
+      const loader = _getDocumentLoader();
+      expanded = await globalThis.jsonld.expand(
+        raw,
+        loader ? { documentLoader: loader } : undefined,
+      );
     }
   } catch (err) {
     console.warn("[annotation/v6] JSON-LD expansion failed for " + uri + "; using raw body.", err);
@@ -778,15 +959,21 @@ function _iriVariantsForLookup(uri) {
  * resolve (e.g. all 404).
  */
 async function _readFirstDiscovery(uriVariants) {
+  let nonMissingErr = null;
   for (const variant of uriVariants) {
     const discoveryUri = await _discoveryUriFor(variant);
     if (!discoveryUri) continue;
     try {
       return await _fetchJsonLd(discoveryUri);
-    } catch (_) {
-      // 404 (or other) on this variant — try the next.
+    } catch (err) {
+      // A missing discovery (404) just means "no annotations for this
+      // variant" — try the next. Anything else (network error, 5xx after
+      // retries, 403) is a real failure we surface to the caller rather
+      // than silently treating an unreachable pod as an empty result.
+      if (!_isMissingResourceError(err)) nonMissingErr = err;
     }
   }
+  if (nonMissingErr) throw nonMissingErr;
   return null;
 }
 

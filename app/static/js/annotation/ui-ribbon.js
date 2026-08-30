@@ -190,13 +190,29 @@ export function mountRibbon(parent) {
     },
   });
 
-  const loadBtn = el("button", {
-    class: "lh-v6-ribbon-load",
-    type: "button",
-    text: "↓ Load from Solid",
-    title: "Browse, load, or delete annotations on your Solid pod",
-    onclick: () => _openLoadModal(),
-  });
+  // Two waiting affordances live at the end of the label, each hidden at
+  // rest (see the lh-v6-ribbon-load--waiting / --connecting CSS):
+  //   • a → that nudges rightward toward the Solid login footer (which opens
+  //     to the ribbon's right) while we're waiting on the user to sign in;
+  //   • a spinner, shown once they click Connect and the OAuth exchange is
+  //     actually in flight — at which point the app, not the user, is busy.
+  const loadBtn = el(
+    "button",
+    {
+      class: "lh-v6-ribbon-load",
+      type: "button",
+      title: "Browse, load, or delete annotations on your Solid pod",
+      onclick: () => openLoadModal(),
+    },
+    [
+      el("span", { text: "Load from Solid" }),
+      el("span", { class: "lh-v6-ribbon-load-arrow", "aria-hidden": "true", text: "→" }),
+      el("span", { class: "lh-v6-ribbon-load-spinner", "aria-hidden": "true" }),
+    ],
+  );
+  // Module-level handle so _armLoadIntent / _disarmLoadIntent can toggle
+  // the waiting nudge-arrow from outside this factory.
+  _loadBtn = loadBtn;
 
   const actions = el(
     "div",
@@ -346,6 +362,14 @@ export function mountRibbon(parent) {
 // ---------------------------------------------------------------------------
 
 let _modalEl = null;
+// Ribbon "Load from Solid" button, captured in createRibbon so the
+// login-intent helpers can drive its waiting nudge-arrow.
+let _loadBtn = null;
+// Live state for a pending "auto-open Load once signed in" intent.
+let _loadIntentTimer = null; // expiry timer (LOAD_INTENT_WINDOW_MS)
+let _loadIntentCancel = null; // document interaction handler that cancels it
+let _loadIntentConnect = null; // solid-login-started handler: arrow → spinner
+let _loadIntentAbort = null; // failed/cancelled-login handler: spinner → arrow
 
 /**
  * Open a modal that presents annotations available on the pod. Default
@@ -357,7 +381,7 @@ let _modalEl = null;
  * Exposed for the URL-param autoload too: callers can pass a presetMm to
  * skip the browse step and load a specific MM straight away.
  */
-export function _openLoadModal(opts = {}) {
+export function openLoadModal(opts = {}) {
   const sess = solid.getDefaultSession && solid.getDefaultSession();
   if (!sess || !sess.info || !sess.info.isLoggedIn) {
     // Open the drawer (if it isn't already) and pulse the Solid section
@@ -399,11 +423,27 @@ export function _openLoadModal(opts = {}) {
     onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); _selectAllInto(defaultResults); } },
   });
   defaultAllLink.style.display = "none";
+  // Manual reload: re-run discovery so annotations that appeared on the pod
+  // during this session show up without reopening the modal. Discovery is
+  // entirely user-initiated here (no background polling — see the load-modal
+  // live-update follow-up in the roadmap), so this is the only freshening path.
+  const reloadBtn = el("button", {
+    class: "lh-v6-load-reload",
+    type: "button",
+    text: "↻ Reload",
+    title: "Re-check your pod for annotations",
+    "aria-label": "Reload the list of annotations",
+    onclick: () => _reload(),
+  });
+  const defaultSectionHead = el("div", { class: "lh-v6-load-section-head" }, [
+    el("h3", { class: "lh-v6-load-section-title", text: "Annotations involving your loaded recordings" }),
+    reloadBtn,
+  ]);
   const defaultSection = el(
     "section",
     { class: "lh-v6-load-section" },
     [
-      el("h3", { class: "lh-v6-load-section-title", text: "Annotations involving your loaded recordings" }),
+      defaultSectionHead,
       defaultStatus,
       defaultAllLink,
       defaultResults,
@@ -603,37 +643,74 @@ export function _openLoadModal(opts = {}) {
     return;
   }
 
+  function _reload() {
+    _autoListForLoaded(defaultStatus, defaultResults, defaultAllLink, entryByUri, _onToggle, _onDelete, selection, reloadBtn);
+  }
+
   // Default flow: auto-list annotations for loaded recordings.
-  _autoListForLoaded(defaultStatus, defaultResults, defaultAllLink, entryByUri, _onToggle, _onDelete);
+  _reload();
 }
 
-async function _autoListForLoaded(status, results, allLink, entryByUri, onToggle, onDelete) {
+async function _autoListForLoaded(status, results, allLink, entryByUri, onToggle, onDelete, selection, reloadBtn) {
+  if (reloadBtn) reloadBtn.disabled = true;
   _setStatus(status, "Checking your pod for annotations involving the loaded recordings…");
-  try {
-    const entries = await listAnnotationsForLoadedAudios();
-    if (entries.length === 0) {
-      _setStatus(
-        status,
-        "No annotations on your pod reference the currently loaded recordings. Use the section below to browse a different audio.",
-      );
-      return;
-    }
-    _setStatus(status, "Found " + entries.length + " annotation(s):");
-    // Sort by created date desc (newest first), then label.
-    entries.sort((a, b) => {
+
+  // Sort by created date desc (newest first), then label.
+  const sortEntries = (entries) =>
+    entries.slice().sort((a, b) => {
       const ta = a.created ? Date.parse(a.created) || 0 : 0;
       const tb = b.created ? Date.parse(b.created) || 0 : 0;
       if (ta !== tb) return tb - ta;
       return (a.label || "").localeCompare(b.label || "");
     });
-    entries.forEach((entry) => {
+
+  // Full re-render from a snapshot: coverage pills and the score flag
+  // aggregate across sources, so a later-resolving source can enrich an
+  // already-shown row — appending would leave those stale. Checkbox state is
+  // restored from the persistent `selection` Set, so re-rendering mid-load
+  // doesn't drop the user's picks.
+  const render = (entries) => {
+    clearChildren(results);
+    entryByUri.clear();
+    for (const entry of sortEntries(entries)) {
       entryByUri.set(entry.mmUri, entry);
-      results.appendChild(_resultRow(entry, onToggle, onDelete));
+      results.appendChild(
+        _resultRow(entry, onToggle, onDelete, selection.has(entry.mmUri)),
+      );
+    }
+    allLink.style.display = entries.length > 0 ? "" : "none";
+  };
+
+  try {
+    const { entries, errors } = await listAnnotationsForLoadedAudios({
+      onProgress: (label) => _setStatus(status, label),
+      onSnapshot: (snap) => render(snap.entries),
     });
-    allLink.style.display = "";
+    render(entries);
+    _setStatus(status, _discoverySummary(entries.length, errors.length));
   } catch (err) {
     _setStatus(status, "Couldn't list: " + (err.message || err));
+  } finally {
+    if (reloadBtn) reloadBtn.disabled = false;
   }
+}
+
+// Terminal status line for discovery, distinguishing an empty pod from one we
+// couldn't fully reach.
+function _discoverySummary(found, errorCount) {
+  if (found === 0) {
+    return errorCount > 0
+      ? "Couldn't reach your pod for " +
+          errorCount +
+          " source(s); no annotations found from the rest. Use the section below to browse a different audio."
+      : "No annotations on your pod reference the currently loaded recordings. Use the section below to browse a different audio.";
+  }
+  let msg = "Found " + found + " annotation(s):";
+  if (errorCount > 0) {
+    msg +=
+      " (couldn't reach " + errorCount + " source(s) — list may be incomplete)";
+  }
+  return msg;
 }
 
 function _selectAllInto(resultsEl) {
@@ -645,7 +722,7 @@ function _selectAllInto(resultsEl) {
   });
 }
 
-function _resultRow(entry, onToggle, onDelete) {
+function _resultRow(entry, onToggle, onDelete, checked) {
   const title = entry.label || "(untitled)";
   const sub = el("span", { class: "lh-v6-load-sub" });
   const subParts = [];
@@ -679,6 +756,7 @@ function _resultRow(entry, onToggle, onDelete) {
     "aria-label": "Select " + title,
     onchange: (e) => onToggle(entry.mmUri, e.target.checked),
   });
+  checkbox.checked = !!checked;
   const row = el("div", { class: "lh-v6-load-row-result" }, [
     checkbox,
     el("div", { class: "lh-v6-load-meta" }, metaChildren),
@@ -712,15 +790,11 @@ function _setStatus(status, text) {
  */
 function _highlightSolidLogin() {
   uiState.setDrawerOpen(true);
-  // Record intent: if the user logs in within LOAD_INTENT_WINDOW_MS, the
+  // Record intent and start waiting for sign-in: if the user logs in
+  // within LOAD_INTENT_WINDOW_MS (and doesn't do anything else first) the
   // load modal auto-pops on the auth-changed event with a banner that
-  // explains why. sessionStorage so we survive the OAuth redirect.
-  try {
-    sessionStorage.setItem(
-      "v6-load-intent",
-      JSON.stringify({ ts: Date.now() }),
-    );
-  } catch (_) {}
+  // explains why. See _armLoadIntent.
+  _armLoadIntent();
   // Wait for the drawer's transform-transition (≈200ms) before flashing
   // the footer — pulsing on an off-screen element would land unseen.
   setTimeout(() => {
@@ -739,17 +813,140 @@ function _highlightSolidLogin() {
   }, 220);
 }
 
-const LOAD_INTENT_WINDOW_MS = 15000;
+// How long after a logged-out "Load from Solid" click we keep waiting for
+// the user to finish signing in before giving up on the auto-open.
+// Generous (5 min) because the OAuth dance — choosing a provider, entering
+// credentials, consenting — can be slow, especially in the login popup.
+// The wait is cut short the moment the user does anything else (see
+// _armLoadIntent).
+const LOAD_INTENT_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * Record the user's intent to load from Solid and begin waiting for them
+ * to finish signing in. The timestamp is stored in sessionStorage so the
+ * intent also survives the full-page redirect fallback used when the login
+ * popup is blocked.
+ *
+ * While waiting, a → nudges rightward at the end of the "Load from Solid"
+ * label, gesturing toward the login footer ("your move"). Once the user
+ * clicks Connect and the OAuth exchange is in flight (signalled by the
+ * `solid-login-started` event), the nudge gives way to a spinner — the app
+ * is now the one working. If that attempt then fails or the user closes the
+ * login popup (a not-logged-in `solid-auth-changed`), the spinner reverts to
+ * the nudge so they can retry. The wait ends when:
+ *   - sign-in completes within the window  → consumeLoadIntent auto-opens;
+ *   - the window elapses                    → intent dropped silently;
+ *   - the user does anything deliberate elsewhere in the app first
+ *     (a pointer press or key press outside the Solid login footer / the
+ *     Load button) → intent cancelled. Passive motion (scroll, hover,
+ *     mousemove) is intentionally ignored so we don't drop the intent by
+ *     accident. This stays active through the connecting phase too —
+ *     interacting elsewhere cancels the auto-open even mid-login.
+ */
+function _armLoadIntent() {
+  // Reset any prior arming so re-clicking Load restarts the window cleanly.
+  _disarmLoadIntent();
+  try {
+    sessionStorage.setItem(
+      "v6-load-intent",
+      JSON.stringify({ ts: Date.now() }),
+    );
+  } catch (_) {}
+  if (_loadBtn) _loadBtn.classList.add("lh-v6-ribbon-load--waiting");
+
+  // Connect clicked → OAuth in flight: swap the "your move" nudge for a
+  // spinner so we don't keep gesturing at the user once the popup is open.
+  _loadIntentConnect = () => {
+    if (_loadBtn) {
+      _loadBtn.classList.remove("lh-v6-ribbon-load--waiting");
+      _loadBtn.classList.add("lh-v6-ribbon-load--connecting");
+    }
+  };
+  document.addEventListener("solid-login-started", _loadIntentConnect);
+
+  // Login attempt ended without signing in (IdP error, or the user closed
+  // the popup): drop the spinner and return to the "your move" nudge. The
+  // intent is still live within the window, so the user can retry Connect.
+  // Success (isLoggedIn:true) is handled by consumeLoadIntent, which
+  // disarms before this fires.
+  _loadIntentAbort = (e) => {
+    if (e && e.detail && e.detail.isLoggedIn) return;
+    if (_loadBtn) {
+      _loadBtn.classList.remove("lh-v6-ribbon-load--connecting");
+      _loadBtn.classList.add("lh-v6-ribbon-load--waiting");
+    }
+  };
+  document.addEventListener("solid-auth-changed", _loadIntentAbort);
+
+  _loadIntentCancel = (e) => {
+    const t = e.target;
+    // Interactions with the login footer (where Connect lives) or the Load
+    // button itself are part of (re)initiating login — never cancel on those.
+    if (t && t.closest && t.closest(".lh-v6-drawer-solid, .lh-v6-ribbon-load")) {
+      return;
+    }
+    _disarmLoadIntent({ clearStorage: true });
+  };
+  // Capture phase so we still see the interaction even if a downstream
+  // handler stops propagation.
+  document.addEventListener("pointerdown", _loadIntentCancel, true);
+  document.addEventListener("keydown", _loadIntentCancel, true);
+
+  _loadIntentTimer = setTimeout(
+    () => _disarmLoadIntent({ clearStorage: true }),
+    LOAD_INTENT_WINDOW_MS,
+  );
+}
+
+/**
+ * Tear down the live waiting state set up by _armLoadIntent: drop the
+ * nudge-arrow / spinner, remove the interaction and login-started
+ * listeners, clear the expiry timer. Pass { clearStorage: true } to also
+ * forget the stored intent (cancel / timeout paths); the consume path
+ * leaves storage removal to consumeLoadIntent, which clears it as it reads.
+ */
+function _disarmLoadIntent({ clearStorage = false } = {}) {
+  if (_loadIntentCancel) {
+    document.removeEventListener("pointerdown", _loadIntentCancel, true);
+    document.removeEventListener("keydown", _loadIntentCancel, true);
+    _loadIntentCancel = null;
+  }
+  if (_loadIntentConnect) {
+    document.removeEventListener("solid-login-started", _loadIntentConnect);
+    _loadIntentConnect = null;
+  }
+  if (_loadIntentAbort) {
+    document.removeEventListener("solid-auth-changed", _loadIntentAbort);
+    _loadIntentAbort = null;
+  }
+  if (_loadIntentTimer) {
+    clearTimeout(_loadIntentTimer);
+    _loadIntentTimer = null;
+  }
+  if (_loadBtn) {
+    _loadBtn.classList.remove(
+      "lh-v6-ribbon-load--waiting",
+      "lh-v6-ribbon-load--connecting",
+    );
+  }
+  if (clearStorage) {
+    try { sessionStorage.removeItem("v6-load-intent"); } catch (_) {}
+  }
+}
 
 /**
  * If the user clicked Load-from-Solid while logged out within the last
- * LOAD_INTENT_WINDOW_MS, consume the flag and return its timestamp so
- * the caller knows to auto-pop the modal. Returns null otherwise. Called
- * from the `solid-auth-changed{isLoggedIn:true}` handler in index.js.
+ * LOAD_INTENT_WINDOW_MS and didn't cancel by interacting elsewhere,
+ * consume the flag and return its timestamp so the caller knows to
+ * auto-pop the modal. Returns null otherwise. Always tears down the live
+ * waiting state (nudge-arrow/spinner/listeners/timer). Called from the
+ * `solid-auth-changed{isLoggedIn:true}` handler in index.js.
  */
 export function consumeLoadIntent() {
   let raw;
-  try { raw = sessionStorage.getItem("v6-load-intent"); } catch (_) { return null; }
+  try { raw = sessionStorage.getItem("v6-load-intent"); } catch (_) { raw = null; }
+  // Sign-in has resolved — stop waiting regardless of the outcome below.
+  _disarmLoadIntent();
   if (!raw) return null;
   try { sessionStorage.removeItem("v6-load-intent"); } catch (_) {}
   try {

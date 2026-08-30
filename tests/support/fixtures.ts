@@ -16,6 +16,17 @@ export const ALIGNMENT_MALFORMED = 'alignment-malformed.json';
 // Alignment with 6 recordings and NO precalculated peaks — exercises the
 // "auto-load only the first 5 waveforms" default path.
 export const ALIGNMENT_NO_PEAKS = 'alignment-no-peaks.json';
+/** 20 recordings with precalculated peaks — exercises lazy waveform creation. */
+export const ALIGNMENT_MANY = 'alignment-many.json';
+/**
+ * alignment.json plus two grouping tabs, the active one deliberately DEFECTIVE:
+ * "First" and "Second" both list audio-b.mp3 explicitly, and "Pattern" claims it
+ * (and the score) by regex. Exercises the load-time overlap repair — a recording
+ * belongs to exactly one group per grouping context. The second tab is clean and
+ * gives audio-b.mp3 to a different group, so a tab switch legitimately changes
+ * its affiliation. See roadmap item U.
+ */
+export const ALIGNMENT_OVERLAP = 'alignment-overlap.json';
 
 // ---------------------------------------------------------------------------
 // Custom fixture types

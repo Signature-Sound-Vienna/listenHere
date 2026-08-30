@@ -1,5 +1,5 @@
-import { test, expect, AUDIO_A } from '../support/fixtures';
-import { play, pause } from '../support/helpers';
+import { test, expect, AUDIO_A, AUDIO_B } from '../support/fixtures';
+import { play, pause, waitForWaveformWidthSettled } from '../support/helpers';
 import { type Page } from '@playwright/test';
 
 // ---------------------------------------------------------------------------
@@ -23,39 +23,78 @@ const regionBorder = (page: Page) =>
   page.evaluate((file) => {
     const v = (window as any).__annotationV6;
     const ann = v.state.getById(v.state.getActiveId());
-    const plugin = v._regionsPlugins[file];
+    const plugin = v.waveformViews[file]?.regions;
     const r = plugin?.getRegions().find((x: any) => x._v6Meta && x._v6Meta.annId === ann.id);
     return r ? r.element.style.borderLeft : null;
   }, AUDIO_A);
+
+/** Skip to the start, then wait for the playhead to actually arrive there.
+ *  (The other sleeps in this file are deliberate: "play, then let the playhead
+ *  travel for N ms" is the thing under test, not a wait for a settled state.) */
+async function skipBackToStart(page: Page) {
+  await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
+  await expect.poll(() => playhead(page), { timeout: 10_000 }).toBeLessThan(0.1);
+}
 
 /**
  * Create a fresh annotation and draw one region on AUDIO_A, then close the
  * editor drawer (the annotation stays active). Returns the region's start time
  * on AUDIO_A as recorded in V6 state.
  */
-async function newAnnotationWithRegion(page: Page): Promise<number> {
+async function newAnnotationWithRegion(
+  page: Page,
+  span: { from: number; to: number } = { from: 0.3, to: 0.5 },
+): Promise<number> {
   const wfA = page.locator(`#waveforms .waveform[data-ix="${AUDIO_A}"]`);
   await wfA.click({ position: { x: 10, y: 10 }, force: true });
   await page.waitForTimeout(150);
   await page.locator('.lh-v6-ribbon-new').click();
   await page.waitForSelector('body.lh-v6-edit-active');
-  // Drag across the middle third of the waveform to draw a region.
+  // The class lands on frame 0 of the drawer's 200ms padding-right animation,
+  // which narrows this pane from 1047px to 667px. Measuring the box before that
+  // settles makes the drag land on load-dependent pixels — which is what turned
+  // the region overlap below into an intermittent failure rather than an
+  // obvious one.
+  await waitForWaveformWidthSettled(page, AUDIO_A);
+  // Drag across `span` of the waveform to draw a region. Callers that draw a
+  // SECOND region on this waveform must pass a span clear of the first one:
+  // regions are drag/resize-enabled while their annotation is being edited, so
+  // a pointerdown inside an existing region is claimed by that region and
+  // never starts a new drag-selection — the gesture is swallowed and no region
+  // is created. That overlap was the mechanism behind the 7.16 flake.
   const box = (await wfA.boundingBox())!;
   const y = box.y + box.height / 2;
-  await page.mouse.move(box.x + box.width * 0.3, y);
+  await page.mouse.move(box.x + box.width * span.from, y);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width * 0.5, y, { steps: 12 });
+  await page.mouse.move(box.x + box.width * span.to, y, { steps: 12 });
   await page.mouse.up();
-  await page.waitForTimeout(300);
+  // Arrival, not a duration: wait for the drawn region to reach V6 state rather
+  // than sleeping and hoping. Also turns a lost gesture into a legible timeout
+  // instead of a "target is undefined" TypeError one line further down.
+  await expect
+    .poll(
+      () =>
+        page.evaluate((file) => {
+          const v = (window as any).__annotationV6;
+          const ann = v.state.getById(v.state.getActiveId());
+          const rid = ann?.regions?.[0]?.id;
+          const target = (ann?.targets ?? []).find((t: any) => t.file === file);
+          return !!(rid && target?.regionTimes?.[rid]);
+        }, AUDIO_A),
+      { message: 'drag-drawn region never reached V6 state' },
+    )
+    .toBe(true);
   const start = await page.evaluate((file) => {
     const v = (window as any).__annotationV6;
     const ann = v.state.getById(v.state.getActiveId());
     const target = ann.targets.find((t: any) => t.file === file);
     return target.regionTimes[ann.regions[0].id].start;
   }, AUDIO_A);
-  // Close the editor drawer; the annotation remains active.
+  // Close the editor drawer; the annotation remains active. Closing runs the
+  // same 200ms animation in reverse, so settle again before the caller (or the
+  // next call) measures anything.
   await page.locator('#v6-annotation-drawer-btn').click();
-  await page.waitForTimeout(250);
+  await waitForWaveformWidthSettled(page, AUDIO_A);
   return start;
 }
 
@@ -90,6 +129,10 @@ const seekTo = (page: Page, time: number) =>
     const t = (window as any)._listenTest;
     t.wavesurfers[t.currentAudioIx].setTime(s);
   }, time);
+
+/** The currently-active waveform index (filename). */
+const currentIx = (page: Page) =>
+  page.evaluate(() => (window as any)._listenTest.currentAudioIx);
 
 test.describe('7. Close Listening Mode', () => {
 
@@ -157,8 +200,7 @@ test.describe('7. Close Listening Mode', () => {
     await placeMarker(page);
 
     // Seek back to start so close listening activates on the first marker
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement).click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
 
     // Enter close listening — activates closest marker (the first one near start)
     const cb = page.locator('#close-listening-cb');
@@ -259,8 +301,7 @@ test.describe('7. Close Listening Mode', () => {
     const regionStart = await newAnnotationWithRegion(page);
     // Park the playhead at the very start so the region start is the only
     // target and lies ahead of the cursor.
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
 
     // No indicator before entering.
     expect(await regionBorder(page)).toBe('');
@@ -278,8 +319,7 @@ test.describe('7. Close Listening Mode', () => {
   test('7.11 ArrowRight steps from a marker to a region start', async ({ loadedPage: page }) => {
     const regionStart = await newAnnotationWithRegion(page);
     // Marker near the start, well before the region.
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
     await placeMarker(page);
 
     // Enter at the start → the marker (closest target at/before the playhead)
@@ -299,8 +339,7 @@ test.describe('7. Close Listening Mode', () => {
   // 7.12 Disabling close listening keeps the playhead where it is
   test('7.12 disabling close listening does not move the playhead', async ({ loadedPage: page }) => {
     await newAnnotationWithRegion(page);
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
 
     // Enter → parks the playhead at the region start (a non-zero position).
     await page.locator('#close-listening-cb').check({ force: true });
@@ -368,8 +407,10 @@ test.describe('7. Close Listening Mode', () => {
   // close-listening at the start activates the FIRST (non-active) annotation's
   // region start (the earliest stop), and ArrowRight steps to the second.
   test('7.16 a non-active annotation region start is a navigable stop', async ({ loadedPage: page }) => {
-    await newAnnotationWithRegion(page); // ann1
-    await newAnnotationWithRegion(page); // ann2 (active)
+    // Disjoint spans: ann2's drag must not start inside ann1's region, or the
+    // region element claims the pointerdown and no second region is drawn.
+    await newAnnotationWithRegion(page, { from: 0.30, to: 0.45 }); // ann1
+    await newAnnotationWithRegion(page, { from: 0.55, to: 0.70 }); // ann2 (active)
     const { ann1Start, ann2Start } = await page.evaluate((file) => {
       const v = (window as any).__annotationV6;
       const anns = v.state.getAll();
@@ -382,8 +423,7 @@ test.describe('7. Close Listening Mode', () => {
 
     // Park at the start; entering activates the earliest stop — ann1's region
     // start — even though ann1 is not the active annotation.
-    await page.evaluate(() => (document.getElementById('skip-back') as HTMLElement)?.click());
-    await page.waitForTimeout(200);
+    await skipBackToStart(page);
     await page.locator('#close-listening-cb').check({ force: true });
     await page.waitForTimeout(300);
     expect(Math.abs((await playhead(page)) - ann1Start)).toBeLessThan(1.0);
@@ -413,6 +453,76 @@ test.describe('7. Close Listening Mode', () => {
     await pause(page);
     await page.waitForTimeout(250);
     expect(await chip.evaluate((el) => el.classList.contains('playing'))).toBe(false);
+  });
+
+  // 7.18 Switching waveforms with a region start as the active jump target
+  // restarts at the equivalent region start on the new waveform — mirroring how
+  // a marker jump target re-seeks on switch, rather than carrying the playhead
+  // across "seamlessly". Regression test for the region-start swap bug.
+  test('7.18 switching waveforms restarts at the equivalent region start', async ({ loadedPage: page }) => {
+    await newAnnotationWithRegion(page); // active annotation, region on AUDIO_A
+    // Known extents on both waveforms. AUDIO_B's start (1.0) is far from where
+    // carrying the AUDIO_A playhead (~6s) across via the alignment grid (~6.5s)
+    // would land, so the two behaviours are clearly distinguishable.
+    await page.evaluate(
+      ({ a, b }) => {
+        const v = (window as any).__annotationV6;
+        const id = v.state.getActiveId();
+        const rid = v.state.getById(id).regions[0].id;
+        v.state.updateRegionTime(id, a, rid, { start: 3.0, end: 8.0 });
+        v.state.addTarget(id, b, { regionTimes: { [rid]: { start: 1.0, end: 5.0 } } });
+      },
+      { a: AUDIO_A, b: AUDIO_B },
+    );
+
+    // Park at the start, enter close-listening → the AUDIO_A region start is the
+    // active jump target (playhead jumps to ~3.0; indicator shown).
+    await skipBackToStart(page);
+    await page.locator('#close-listening-cb').check({ force: true });
+    await page.waitForTimeout(300);
+    expect(await regionBorder(page)).toMatch(/2px solid/);
+
+    // Move the playhead to the RIGHT of the region start (still on AUDIO_A).
+    await seekTo(page, 6.0);
+    await page.waitForTimeout(100);
+
+    // Switch to the next waveform (AUDIO_B).
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(300);
+    expect(await currentIx(page)).toBe(AUDIO_B);
+
+    // Restarted at AUDIO_B's equivalent region start (~1.0), NOT the carried
+    // playhead position (~6.5 via the alignment grid).
+    expect(Math.abs((await playhead(page)) - 1.0)).toBeLessThan(0.5);
+  });
+
+  // 7.19 When the region has no extent on the new waveform, switching falls back
+  // to carrying the playhead position across (no spurious region seek).
+  test('7.19 switching carries the playhead when the region is absent on the new waveform', async ({ loadedPage: page }) => {
+    await newAnnotationWithRegion(page);
+    await page.evaluate(
+      ({ a }) => {
+        const v = (window as any).__annotationV6;
+        const id = v.state.getActiveId();
+        const rid = v.state.getById(id).regions[0].id;
+        v.state.updateRegionTime(id, a, rid, { start: 3.0, end: 8.0 });
+        // No AUDIO_B target: the region does not exist on the next waveform.
+      },
+      { a: AUDIO_A },
+    );
+
+    await skipBackToStart(page);
+    await page.locator('#close-listening-cb').check({ force: true });
+    await page.waitForTimeout(300);
+    await seekTo(page, 6.0);
+    await page.waitForTimeout(100);
+
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(300);
+    expect(await currentIx(page)).toBe(AUDIO_B);
+    // No equivalent region on AUDIO_B → playhead carries across (~6.5s via the
+    // alignment grid) rather than snapping back to a region start.
+    expect(await playhead(page)).toBeGreaterThan(3.0);
   });
 
 });

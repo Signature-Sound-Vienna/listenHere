@@ -355,6 +355,7 @@ export async function postAnnotationToSolid(annId, opts = {}) {
   onProgress(step, total, null);
   const localToHash = {};
 
+  let mmCreated = null;
   for (const level of levels) {
     const results = await Promise.all(
       level.map(async (t) => {
@@ -362,11 +363,14 @@ export async function postAnnotationToSolid(annId, opts = {}) {
         const audioSet = _audioSetFor(t.localKey, byKey, fileToAudioUri, audioSetMemo);
         _decorateResource(body, t, fileToAudioUri, discoveryByAudio, audioSet);
         await _safePutResource(localToUri[t.localKey], body, t.localKey);
-        return { template: t, hash: _hashBody(body) };
+        // createResourceAtUri stamps dct:created onto the body in place; grab
+        // the MM's so we can denormalise it into discovery (§3).
+        return { template: t, hash: _hashBody(body), created: body[nsp.DCT + "created"] || null };
       }),
     );
     for (const r of results) {
       localToHash[r.template.localKey] = r.hash;
+      if (r.template.localKey === "mm") mmCreated = r.created;
       onProgress(++step, total, _labelForKind(r.template.kind));
     }
   }
@@ -378,6 +382,7 @@ export async function postAnnotationToSolid(annId, opts = {}) {
     discoveryByAudio,
     audioSetMemo,
     byKey,
+    { name: ann.label, dateCreated: mmCreated },
     () => onProgress(++step, total, "Discovery"),
   );
 
@@ -508,6 +513,7 @@ async function _patchDiscoveryResources(
   discoveryByAudio,
   audioSetMemo,
   byKey,
+  mmMeta,
   onAudioPatched,
 ) {
   const mmUri = localToUri["mm"];
@@ -554,7 +560,7 @@ async function _patchDiscoveryResources(
       const selUris = audioToSelUris[audioUri] || [];
       const oaUris = audioToOaUris[audioUri] || [];
       const ops = [
-        _datasetOp(datasetPath, mmUri, nsp.MAO + "MusicalMaterial"),
+        _datasetOp(datasetPath, mmUri, nsp.MAO + "MusicalMaterial", mmMeta),
         _datasetOp(datasetPath, extractUri, nsp.MAO + "Extract"),
         ...selUris.map((s) => _datasetOp(datasetPath, s, nsp.MAO + "Selection")),
         ...oaUris.map((o) => _datasetOp(datasetPath, o, nsp.OA + "Annotation")),
@@ -577,16 +583,40 @@ async function _patchDiscoveryResources(
   );
 }
 
-function _datasetOp(path, url, additionalTypeIri) {
-  return {
-    op: "add",
-    path,
-    value: {
-      "@type": nsp.SCHEMA + "Dataset",
-      [nsp.SCHEMA + "additionalType"]: { "@id": additionalTypeIri },
-      [nsp.SCHEMA + "url"]: { "@id": url },
-    },
+/**
+ * Build a discovery dataset-entry value. `meta` (optional) carries §3
+ * denormalised display fields — only the MusicalMaterial entry passes it.
+ * schema:name is omitted when the title is empty; schema:dateCreated is the
+ * sentinel the loader uses to tell a denormalised entry from a legacy one, so
+ * it's written whenever we have a creation date. Literals are bare strings:
+ * JSON-LD expansion turns them into value objects, matching how dct:created is
+ * written elsewhere and what the loader's `_firstValueOrText` accepts.
+ */
+function _discoveryEntryValue(url, additionalTypeIri, meta) {
+  const value = {
+    "@type": nsp.SCHEMA + "Dataset",
+    [nsp.SCHEMA + "additionalType"]: { "@id": additionalTypeIri },
+    [nsp.SCHEMA + "url"]: { "@id": url },
   };
+  if (meta) {
+    if (meta.dateCreated) value[nsp.SCHEMA + "dateCreated"] = meta.dateCreated;
+    if (meta.name) value[nsp.SCHEMA + "name"] = meta.name;
+  }
+  return value;
+}
+
+function _datasetOp(path, url, additionalTypeIri, meta) {
+  return { op: "add", path, value: _discoveryEntryValue(url, additionalTypeIri, meta) };
+}
+
+/** Read a JSON-LD literal that may be a bare string, a value object, or an
+ *  array of either. Returns undefined when absent. */
+function _litValue(v) {
+  if (v === undefined || v === null) return undefined;
+  const a = Array.isArray(v) ? v[0] : v;
+  if (typeof a === "string") return a;
+  if (a && a["@value"] !== undefined) return a["@value"];
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -681,6 +711,13 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
     templates.length + toDeleteKeys.length + Object.keys(discoveryByAudio).length;
   let step = 0;
   let skipped = 0;
+  // §3: track the MusicalMaterial's denormalised discovery fields. createdAt
+  // is set only when the MM was (re)created at a URI this run; an in-place
+  // replace (same URI, e.g. a title edit) leaves it null but flags a name
+  // refresh so the denormalised schema:name on existing discovery entries
+  // doesn't go stale.
+  let mmCreatedAt = null;
+  let mmReplacedInPlace = false;
   onProgress(step, total, null);
 
   for (const level of levels) {
@@ -697,7 +734,7 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
           }
           try {
             await _safelyReplaceResource(localToUri[t.localKey], body);
-            return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: false };
+            return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: false, createdAt: null };
           } catch (err) {
             // If the resource disappeared from the pod, fall back to a
             // fresh PUT-to-URI under a newly-minted URI (so creator /
@@ -708,14 +745,14 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
               );
               const replacementUri = (await _mintUrisFor([t]))[t.localKey];
               await _safePutResource(replacementUri, body, t.localKey);
-              return { template: t, uri: replacementUri, hash: newHash, skipped: false, created: true };
+              return { template: t, uri: replacementUri, hash: newHash, skipped: false, created: true, createdAt: body[nsp.DCT + "created"] || null };
             }
             throw err;
           }
         }
         // New resource — PUT at its pre-minted URI.
         await _safePutResource(localToUri[t.localKey], body, t.localKey);
-        return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: false, created: true };
+        return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: false, created: true, createdAt: body[nsp.DCT + "created"] || null };
       }),
     );
     for (const r of results) {
@@ -723,6 +760,10 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
       localToHash[r.template.localKey] = r.hash;
       if (r.created) createdUris.push(r.uri);
       if (r.skipped) skipped++;
+      if (r.template.localKey === "mm") {
+        mmCreatedAt = r.createdAt || null;
+        mmReplacedInPlace = !r.created && !r.skipped;
+      }
       onProgress(++step, total, _labelForKind(r.template.kind));
     }
   }
@@ -758,6 +799,12 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
     localToUri,
     createdUris,
     deletedUris,
+    {
+      uri: localToUri["mm"],
+      name: ann.label,
+      createdAt: mmCreatedAt,
+      refreshName: mmReplacedInPlace,
+    },
     () => onProgress(++step, total, "Discovery"),
   );
 
@@ -866,11 +913,16 @@ async function _reconcileDiscoveryResources(
   newUris,
   createdUris,
   deletedUris,
+  mmInfo,
   onAudioReconciled,
 ) {
   const audioCount = Object.keys(discoveryByAudio).length;
   if (audioCount === 0) return;
-  if (createdUris.length === 0 && deletedUris.length === 0) {
+  // §3: a bare title edit (re)writes the MM in place, changing nothing in the
+  // created/deleted sets — but the denormalised schema:name on its discovery
+  // entries must still be refreshed, so don't short-circuit in that case.
+  const needNameRefresh = !!(mmInfo && mmInfo.refreshName && mmInfo.uri);
+  if (createdUris.length === 0 && deletedUris.length === 0 && !needNameRefresh) {
     // Still report progress for the audios we'd have reconciled, to keep
     // the caller's step counter consistent.
     if (typeof onAudioReconciled === "function") {
@@ -907,7 +959,11 @@ async function _reconcileDiscoveryResources(
     Object.entries(discoveryByAudio).map(async ([audioUri, discoveryUri]) => {
       const adds = [];
       if (createdSet.has(newUris["mm"])) {
-        adds.push({ uri: newUris["mm"], type: nsp.MAO + "MusicalMaterial" });
+        adds.push({
+          uri: newUris["mm"],
+          type: nsp.MAO + "MusicalMaterial",
+          meta: { name: mmInfo && mmInfo.name, dateCreated: mmInfo && mmInfo.createdAt },
+        });
       }
       if (createdSet.has(newUris["extract"])) {
         adds.push({ uri: newUris["extract"], type: nsp.MAO + "Extract" });
@@ -919,12 +975,18 @@ async function _reconcileDiscoveryResources(
           adds.push({ uri, type: nsp.OA + "Annotation" });
         }
       }
-      if (adds.length === 0 && deletedSet.size === 0) {
+      // Refresh the denormalised name on an existing (in-place-updated) MM
+      // entry, but only when it isn't already being re-added above.
+      const mmNameRefresh =
+        needNameRefresh && !createdSet.has(newUris["mm"])
+          ? { uri: mmInfo.uri, name: mmInfo.name }
+          : null;
+      if (adds.length === 0 && deletedSet.size === 0 && !mmNameRefresh) {
         if (typeof onAudioReconciled === "function") onAudioReconciled();
         return;
       }
       try {
-        await _patchDiscoveryReconcile(discoveryUri, adds, deletedSet);
+        await _patchDiscoveryReconcile(discoveryUri, adds, deletedSet, mmNameRefresh);
       } catch (err) {
         console.warn(
           "[annotation/v6] discovery reconcile failed for " + discoveryUri,
@@ -937,7 +999,7 @@ async function _reconcileDiscoveryResources(
   );
 }
 
-async function _patchDiscoveryReconcile(discoveryUri, adds, removeUriSet) {
+async function _patchDiscoveryReconcile(discoveryUri, adds, removeUriSet, mmNameRefresh) {
   const getResp = await solid.fetch(discoveryUri, {
     headers: { Accept: "application/ld+json" },
   });
@@ -947,28 +1009,45 @@ async function _patchDiscoveryReconcile(discoveryUri, adds, removeUriSet) {
   const datasetKey = nsp.SCHEMA + "dataset";
   let dataset = body[datasetKey] || [];
   if (!Array.isArray(dataset)) dataset = [dataset];
+  const entryUrl = (e) => {
+    const url = e && e[nsp.SCHEMA + "url"];
+    return url && (Array.isArray(url) ? url[0] : url)["@id"];
+  };
+  let changed = false;
 
   if (removeUriSet.size > 0) {
-    dataset = dataset.filter((entry) => {
-      const url = entry && entry[nsp.SCHEMA + "url"];
-      const id = url && (Array.isArray(url) ? url[0] : url)["@id"];
-      return !removeUriSet.has(id);
-    });
+    const before = dataset.length;
+    dataset = dataset.filter((entry) => !removeUriSet.has(entryUrl(entry)));
+    if (dataset.length !== before) changed = true;
   }
-  for (const { uri, type } of adds) {
-    const exists = dataset.some((e) => {
-      const url = e && e[nsp.SCHEMA + "url"];
-      const id = url && (Array.isArray(url) ? url[0] : url)["@id"];
-      return id === uri;
-    });
+  for (const { uri, type, meta } of adds) {
+    const exists = dataset.some((e) => entryUrl(e) === uri);
     if (!exists) {
-      dataset.push({
-        "@type": nsp.SCHEMA + "Dataset",
-        [nsp.SCHEMA + "additionalType"]: { "@id": type },
-        [nsp.SCHEMA + "url"]: { "@id": uri },
-      });
+      dataset.push(_discoveryEntryValue(uri, type, meta));
+      changed = true;
     }
   }
+  // §3: keep the denormalised schema:name on an in-place-updated MM entry in
+  // sync. Only touch entries we denormalised (sentinel = schema:dateCreated);
+  // legacy/mei-friend entries lack it and the loader re-fetches the (already
+  // updated) MM, so they reflect the new title without our help.
+  if (mmNameRefresh && mmNameRefresh.uri) {
+    for (const e of dataset) {
+      if (entryUrl(e) !== mmNameRefresh.uri) continue;
+      if (e[nsp.SCHEMA + "dateCreated"] === undefined) continue;
+      const desired = mmNameRefresh.name || undefined;
+      if (desired === undefined) {
+        if (e[nsp.SCHEMA + "name"] !== undefined) {
+          delete e[nsp.SCHEMA + "name"];
+          changed = true;
+        }
+      } else if (_litValue(e[nsp.SCHEMA + "name"]) !== desired) {
+        e[nsp.SCHEMA + "name"] = desired;
+        changed = true;
+      }
+    }
+  }
+  if (!changed) return;
   body[datasetKey] = dataset;
 
   await solid.fetch(discoveryUri, {

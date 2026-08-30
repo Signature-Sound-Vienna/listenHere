@@ -152,13 +152,15 @@ def compute_chroma_score(audio):
     return compute_chroma(audio, n_fft=SCORE_N_FFT, hop=SCORE_HOP)
 
 
-def compute_onset_strength(audio):
+def compute_onset_strength(audio, hop=None):
     """Spectral-flux onset strength — fully streaming.
-    Uses ONSET_N_FFT short window for temporal resolution; same hop as chroma_score.
+    Uses ONSET_N_FFT short window for temporal resolution; hop defaults to
+    SCORE_HOP (chroma_score's), overridable for fix-mode segment features.
     Peak extra memory: 2 * ONSET_N_FFT/2 floats (current + prev frame).
     """
     n_fft = ONSET_N_FFT
-    hop   = SCORE_HOP
+    if hop is None:
+        hop = SCORE_HOP
     audio_pad, window, n_frames, s = _stft_setup(audio, n_fft, hop)
     CHUNK = 256
     flux = np.zeros(n_frames, dtype=np.float32)
@@ -419,12 +421,15 @@ def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
         # Then g[k] = min(base[k] - prefix[k], g[k-1])
         #           = min_{k'<=k}(base[k'] - prefix[k'])
         # → fully vectorisable with np.minimum.accumulate
-        prefix = np.cumsum(costs)
-        g_vals  = base - prefix                               # (bw,)
+        # float64 for the row temporaries: prefix grows to O(bw) along the
+        # row, so the float32 add-back (prefix + cum_g) cancels catastrophically
+        # (~1e-5 noise), which used to mis-mark parents (see below).
+        prefix = np.cumsum(costs, dtype=np.float64)
+        g_vals  = base.astype(np.float64) - prefix            # (bw,)
         if i == 0 and lo == 0:
-            g_vals[0] = costs[0] - prefix[0]   # origin cell: D[0,0]=costs[0]
+            g_vals[0] = np.float64(costs[0]) - prefix[0]   # origin cell: D[0,0]=costs[0]
         cum_g   = np.minimum.accumulate(g_vals)               # (bw,)
-        d_cur   = prefix + cum_g                              # (bw,) final accumulated costs
+        d_cur   = (prefix + cum_g).astype(np.float32)         # (bw,) final accumulated costs
 
         # Fix up the origin cell (i=0, j=0 must equal costs[0])
         if i == 0 and lo == 0:
@@ -433,12 +438,20 @@ def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
         # ── parent pointers (one numpy pass per row) ───────────────────────
         # For each k: was the horizontal option better than diag/vert?
         # "best k0 for horiz ending at k" is argmin of g_vals[0..k]
-        # If cum_g[k] < base[k] - prefix[k], horiz from some k0 < k was used.
+        # If cum_g[k] < g_vals[k], horiz from some k0 < k was used. Decide
+        # from the cum-min's PROVENANCE, in g-space — comparing the float32
+        # reconstruction (d_cur < base) decides on cancellation roundoff and
+        # decoded paths costing far more than the DP optimum (found 2026-08-30
+        # by spec 41's synthetic corpus; 156 mis-marked parents on one run).
         # We need the actual k0 to store correct parents but for the path we
         # only need one choice: 0=diag/vert, 2=horiz (see backtrack below).
-        use_horiz = (d_cur < base)                            # (bw,) bool
-        # Among diag/vert: which predecessor was better?
-        use_vert  = (~use_horiz) & (vert_pred <= diag_pred)
+        use_horiz = (cum_g < g_vals)                          # (bw,) bool
+        # Among diag/vert: which predecessor was better? STRICT less-than so
+        # exact ties prefer the diagonal — the same tie semantics as
+        # dtw_band's backtrack. A non-strict compare here walks staircases
+        # through zero-cost plateaus (sustained identical frames), biasing
+        # the path early; real audio never ties exactly, synthetic audio does.
+        use_vert  = (~use_horiz) & (vert_pred < diag_pred)
         par_row = par[i, :bw]
         par_row[:] = np.where(use_horiz, np.int8(2),
                      np.where(use_vert,  np.int8(1),
@@ -908,6 +921,163 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
         "synth_onset":  s_on_sec,   # listen.js uses these to build the synth waveform’s alignment grid
         "synth_offset": s_off_sec,
     }
+
+
+# --- Fix-mode (hand-correction) session — plan section 14, increment 1 ---
+#
+# The alignment-correction UI pins ANCHORS (score event <-> reference time)
+# and re-fills only the events BETWEEN neighbouring anchors. The reference
+# audio and the score's parsed + synthesised form stay resident so each
+# refill re-runs DTW only on its segment, at a hop that ADAPTS to the
+# segment length: short segments get finer frames than the original
+# full-piece alignment (FIX_MIN_HOP ~23 ms vs SCORE_HOP 100 ms), while a
+# full-piece segment lands back near the original resolution via the
+# FIX_MAX_FRAMES cap. The band follows the STORED mapping (tapered onto the
+# anchor endpoints), so far from a fix the refill snaps back to the old
+# path — anchors bend the alignment locally, they never reshuffle it.
+
+FIX_MIN_HOP = 512        # samples (~23 ms) — floor for short segments
+FIX_MAX_FRAMES = 6000    # frame cap; full piece lands near SCORE_HOP
+FIX_SLACK_SEC = 4.0      # default band half-width around the prior map
+
+_fix = None
+
+def fix_begin(ref_audio, midi_bytes_py):
+    """Bootstrap a correction session: parse + synthesise the score once and
+    keep both PCM arrays resident. Returns the deduplicated event table —
+    the SAME construction as score_align — so the client can run the item-T
+    quarters guard against the stored score_onset before any editing."""
+    global _fix
+    tpq, tcs, notes = parse_midi(midi_bytes_py)
+    if not notes:
+        raise RuntimeError('fix_begin: MIDI contains no notes')
+    max_tick = max(n[1] for n in notes)
+    midi_dur = _tick_to_sec(max_tick, tpq, tcs) + 0.5
+    reportProgress('Correction session: synthesising score audio...', None)
+    synth_audio = synth_midi_audio(notes, tpq, tcs, midi_dur)
+    ref = np.asarray(ref_audio, dtype=np.float32)
+    seen = {}
+    for st, et, pitch, vel in sorted(notes, key=lambda x: (x[0], x[1])):
+        if (st, et) not in seen:
+            seen[(st, et)] = vel
+    q_on = []; q_off = []; s_on_sec = []; s_off_sec = []
+    for (st, et), vel in sorted(seen.items()):
+        q_on.append(st / tpq)
+        q_off.append(et / tpq)
+        s_on_sec.append(_tick_to_sec(st, tpq, tcs))
+        s_off_sec.append(_tick_to_sec(et, tpq, tcs))
+    _fix = {
+        'ref': ref,
+        'synth': synth_audio,
+        'ref_dur': len(ref) / SR,
+        'midi_dur': midi_dur,
+        's_on': np.array(s_on_sec, dtype=np.float64),
+        's_off': np.array(s_off_sec, dtype=np.float64),
+    }
+    return {
+        'score_onset': q_on,
+        'score_offset': q_off,
+        'synth_onset': s_on_sec,
+        'synth_offset': s_off_sec,
+        'n_events': len(q_on),
+        'ref_duration': _fix['ref_dur'],
+        'midi_duration': midi_dur,
+    }
+
+def _fix_features(audio, lo_sec, hi_sec, hop):
+    """Onset-weighted chroma for one audio slice at the segment's hop."""
+    lo = max(0, int(lo_sec * SR))
+    hi = min(len(audio), int(hi_sec * SR))
+    seg = audio[lo:hi]
+    ch = compute_chroma(seg, n_fft=SCORE_N_FFT, hop=hop)
+    on = compute_onset_strength(seg, hop=hop)
+    n = ch.shape[1]
+    on = on[:n] if len(on) >= n else np.pad(on, (0, n - len(on)))
+    return build_score_features(ch, on)
+
+def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frames=None):
+    """Re-fill ref onsets/offsets for the events strictly between two anchors.
+
+    i_a / i_b: bounding event indices (-1 = piece-start corner, n_events =
+    piece-end corner); t_a / t_b: their (corrected) reference times.
+    prior_ref: the CURRENT ref_onset values of the interior events, used as
+    the DTW guide band's centre (tapered onto the anchors, +- slack_sec).
+    Returns interior ref_onset / ref_offset, the anchor event i_a's remapped
+    offset when it falls inside the segment, and the hop actually used.
+    """
+    if _fix is None:
+        raise RuntimeError('fix_realign_segment before fix_begin')
+    slack = FIX_SLACK_SEC if slack_sec is None else float(slack_sec)
+    cap = FIX_MAX_FRAMES if max_frames is None else int(max_frames)
+    s_on = _fix['s_on']; s_off = _fix['s_off']
+    n_ev = len(s_on)
+    i_a = int(i_a); i_b = int(i_b)
+    if not (-1 <= i_a < i_b <= n_ev):
+        raise ValueError('fix_realign_segment: bad segment indices')
+    s_a = 0.0 if i_a < 0 else float(s_on[i_a])
+    s_b = _fix['midi_dur'] if i_b >= n_ev else float(s_on[i_b])
+    t_a = float(t_a); t_b = float(t_b)
+    if not (t_b > t_a and s_b > s_a):
+        raise ValueError('fix_realign_segment: empty or reversed segment span')
+    interior = list(range(i_a + 1, i_b))
+    if len(prior_ref) != len(interior):
+        raise ValueError('fix_realign_segment: prior_ref length mismatch')
+    if not interior:
+        return {'ref_onset': [], 'ref_offset': [], 'anchor_a_offset': None, 'hop': 0}
+
+    # Hop adapts to the segment: fine frames when short, capped for length.
+    seg_s = s_b - s_a; seg_r = t_b - t_a
+    hop = max(FIX_MIN_HOP, int(np.ceil(max(seg_s, seg_r) * SR / cap)))
+    feat_s = _fix_features(_fix['synth'], s_a, s_b, hop)
+    feat_r = _fix_features(_fix['ref'], t_a, t_b, hop)
+    n_s = feat_s.shape[1]; n_r = feat_r.shape[1]
+    if n_s < 2 or n_r < 2:
+        raise ValueError('fix_realign_segment: segment too short to align')
+
+    # Guide band centre: the stored interior mapping, endpoints forced onto
+    # the anchors, made monotonic and clipped so garbage stored values can
+    # only cost band width, never break the DTW's preconditions.
+    ks = np.array([s_a] + [float(s_on[i]) for i in interior] + [s_b], dtype=np.float64)
+    kr = np.array([t_a] + [float(v) for v in prior_ref] + [t_b], dtype=np.float64)
+    kr = np.maximum.accumulate(np.clip(kr, t_a, t_b))
+    ks, first_ix = np.unique(ks, return_index=True)
+    kr = kr[first_ix]
+
+    s_times = s_a + np.arange(n_s, dtype=np.float64) * seg_s / max(n_s - 1, 1)
+    centre_r = np.interp(s_times, ks, kr)
+    centre_f = (centre_r - t_a) * (n_r - 1) / seg_r
+    slack_f = max(8, int(np.ceil(slack * (n_r - 1) / seg_r)))
+    j_lo = np.clip((centre_f - slack_f).astype(np.int32), 0, n_r - 1)
+    j_hi = np.minimum(n_r - 1, (centre_f + slack_f).astype(np.int32))
+    j_lo[0] = 0
+    j_lo = np.maximum.accumulate(j_lo)
+    j_hi = np.maximum.accumulate(j_hi)
+    j_hi[-1] = n_r - 1
+    j_hi = np.maximum(j_hi, j_lo)  # never an empty row band
+
+    wp = make_monotonic(_guided_band_dtw(feat_s, feat_r, j_lo, j_hi))
+    s_path = s_a + wp[0].astype(np.float64) * seg_s / max(n_s - 1, 1)
+    r_path = t_a + wp[1].astype(np.float64) * seg_r / max(n_r - 1, 1)
+    wf = interp1d(s_path, r_path, kind='linear', fill_value='extrapolate')
+
+    new_on  = [float(np.clip(wf(float(s_on[i])),  t_a, t_b)) for i in interior]
+    new_off = [float(np.clip(wf(float(s_off[i])), t_a, t_b)) for i in interior]
+    anchor_a_offset = None
+    if i_a >= 0 and s_a <= float(s_off[i_a]) <= s_b:
+        anchor_a_offset = float(np.clip(wf(float(s_off[i_a])), t_a, t_b))
+    return {
+        'ref_onset': new_on,
+        'ref_offset': new_off,
+        'anchor_a_offset': anchor_a_offset,
+        'hop': hop,
+    }
+
+def fix_dispose():
+    """Release the correction session's resident audio."""
+    global _fix
+    _fix = None
+    import gc
+    gc.collect()
 `;
 
 /* --- Pyodide lifecycle --- */
@@ -940,6 +1110,19 @@ async function initPyodide() {
  *
  *   main → worker: "align_all" { meiMidi, meiUri }
  *   worker → main: "result" { alignment }
+ *
+ * Fix-mode (alignment-correction) protocol — plan §14, increment 1:
+ *
+ *   main → worker: "fix_begin" { refSamples, meiMidi, options }  (samples transferred)
+ *   worker → main: "fix_ready" { events }   (the item-T quarters-guard table)
+ *
+ *   (per correction)
+ *   main → worker: "fix_realign" { iA, tA, iB, tB, priorRef, slackSec?, maxFrames? }
+ *   worker → main: "fix_segment" { iA, iB, result: { ref_onset, ref_offset,
+ *                                  anchor_a_offset, hop } }
+ *
+ *   main → worker: "fix_dispose"
+ *   worker → main: "fix_disposed"
  *
  *   (errors at any point) worker → main: "error" { message }
  *
@@ -1031,6 +1214,60 @@ json.dumps(result)
         type: "result",
         alignment: JSON.parse(resultJson),
       });
+      return;
+    }
+
+    if (e.data.type === "fix_begin") {
+      if (!pyodideReady) pyodideReady = initPyodide();
+      const pyodide = await pyodideReady;
+      const { refSamples, meiMidi, options } = e.data;
+      const opts = options || {};
+      pyodide.globals.set("_opt_coarse", opts.coarse ?? 0);
+      pyodide.globals.set("_opt_slack", opts.slack ?? 0);
+      pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
+      pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
+      pyodide.globals.set("_opt_onset_weight", opts.onsetWeight ?? -1);
+      pyodide.globals.set("_fix_ref_data", refSamples);
+      pyodide.globals.set("_fix_midi_arg", meiMidi);
+      const eventsJson = await pyodide.runPythonAsync(`
+import json
+_apply_options()
+_fix_ref_arr = np.frombuffer(_fix_ref_data.to_py(), dtype=np.float32).copy()
+_fix_midi_bytes = bytes(_fix_midi_arg.to_py())
+_fix_events = fix_begin(_fix_ref_arr, _fix_midi_bytes)
+del _fix_ref_arr, _fix_midi_bytes
+del globals()['_fix_ref_data']
+import gc
+gc.collect()
+json.dumps(_fix_events)
+`);
+      self.postMessage({ type: "fix_ready", events: JSON.parse(eventsJson) });
+      return;
+    }
+
+    if (e.data.type === "fix_realign") {
+      const pyodide = await pyodideReady;
+      const { iA, tA, iB, tB, priorRef, slackSec, maxFrames } = e.data;
+      pyodide.globals.set(
+        "_fix_seg_arg",
+        JSON.stringify({ iA, tA, iB, tB, priorRef, slackSec, maxFrames }),
+      );
+      const segJson = await pyodide.runPythonAsync(`
+import json
+_seg = json.loads(str(_fix_seg_arg))
+json.dumps(fix_realign_segment(
+    _seg['iA'], _seg['tA'], _seg['iB'], _seg['tB'],
+    _seg['priorRef'], _seg.get('slackSec'), _seg.get('maxFrames'),
+))
+`);
+      self.postMessage({ type: "fix_segment", iA, iB, result: JSON.parse(segJson) });
+      return;
+    }
+
+    if (e.data.type === "fix_dispose") {
+      const pyodide = await pyodideReady;
+      await pyodide.runPythonAsync("fix_dispose()");
+      self.postMessage({ type: "fix_disposed" });
       return;
     }
   } catch (err) {

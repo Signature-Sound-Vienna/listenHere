@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.39.0 -- Alignment correction, increment 1: anchors engine + worker segment realign
+* `engine/correction-model.js`: the pure fix-mode model — anchors (drag/approve/gap), gap objects labelling unscored audio, refill segments with corner semantics, undo before-value snapshots, `header.corrections` serialization, and the item-T quarters guard; zero imports (spec 33.3 ratchets it). Design rulings in plan §14.
+* Alignment worker: `fix_begin` / `fix_realign_segment` / `fix_dispose` — a correction session keeps the reference and score-synth PCM resident and re-runs banded DTW only between neighbouring anchors, on segment features whose hop adapts to segment length (~23 ms frames for short segments vs the full-piece 100 ms), guided by the stored mapping tapered onto the anchor endpoints.
+* Fixed a latent decode bug in `_guided_band_dtw` (the wizard's audio-to-audio fine pass): float32 cancellation in the prefix-min trick mis-marked parent pointers as horizontal, yielding paths far costlier than the DP optimum; row temporaries are now float64 and horizontal steps are decided from the cum-min's provenance. Tie-breaks now match `dtw_band` (diagonal wins).
+* Licenses verified for the stand-in render step: MuseScore_General is MIT, VSCO 2 CE is CC0 1.0.
+* Testing: spec 41 (model: segments, validation, gaps, undo round-trip, serialization, quarters guard; worker: analytic tempo-map recovery, wrong-anchor flank behaviour, adaptive hop, error paths).
+
 ### 0.38.1 -- Stand-in tool: stereo audition mix
 * `make_standins.mjs --stereo --audio-dir DIR`: one sample-locked audition WAV per recording — left = the real recording mono at 22050 Hz (via ffmpeg), right = the warped synth, channels normalised separately (§13 ruling 2's construction, offline; misalignment is heard as inter-ear flams). The in-app listen.js row remains session 2.
 

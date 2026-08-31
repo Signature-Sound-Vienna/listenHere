@@ -112,6 +112,27 @@ const REPLAY_PREROLL_SEC = 0.5;
 const MAX_RUNUP_SEC = 2;
 /** A mousedown that travels less than this is a tick CLICK, not a drag. */
 const DRAG_THRESHOLD_PX = 3;
+/**
+ * The playhead BRACKET: two filled arrowheads marking the position from
+ * either side of the waveform, with no line drawn across it. A vertical line
+ * is the alignment tick's own shape, and the two read as one another on a
+ * screen whose whole job is judging instants. Two opposed marks also read
+ * more precisely than one — the eye interpolates the line between them.
+ *
+ * The TOP arrowhead sits just inside the strip's top edge rather than above
+ * it: every onset group's score connector terminates exactly at the strip
+ * top and the session marks draw as diamond flags along that same line, so
+ * above the strip is the busiest region on the screen. The bottom edge is
+ * clear, and the waveform stops short of it (`--fix-strip-gutter`) so the
+ * lower arrowhead sits outside the waveform entirely.
+ *
+ * Shape vocabulary, which does more disambiguating work than colour:
+ * hairline = alignment tick, diamond = session mark, filled triangle =
+ * playhead. That is also why the selected tick's own cap is a bar, not the
+ * triangle it used to be.
+ */
+const PH_ARROW_HALF_W = 5.5;
+const PH_ARROW_H = 8;
 /** Keyboard nudge steps (the app's marker-nudge convention: Shift = coarse,
  *  Shift+Alt = fine). Nudges accumulate while any nudge key is held and
  *  commit as ONE anchor on full release — the keyup that leaves no nudge key
@@ -564,6 +585,7 @@ function _teardownFixDom(f) {
     f.stripWS?.destroy();
   } catch (_) {}
   f.els.root?.remove();
+  document.body.classList.remove("fix-mode-open");
   const waveformsEl = document.getElementById("waveforms");
   if (waveformsEl) waveformsEl.style.display = "";
 }
@@ -862,6 +884,12 @@ function _refDuration() {
 function _buildDom(contentEl, waveformsEl) {
   const f = _fix;
   waveformsEl.style.display = "none";
+  // Annotation chrome stands down while correcting: the ribbon is irrelevant
+  // here AND is fixed to the viewport bottom, where it covered the strip's
+  // lower 40 px — the anchor glyphs among them. The pencil tab goes with it,
+  // because the drawer it opens pads the body by 380 px, which would resize
+  // the score pane (and its prewarmed fit) mid-session.
+  document.body.classList.add("fix-mode-open");
 
   const root = document.createElement("div");
   root.id = "fix-mode";
@@ -1509,6 +1537,20 @@ function _scheduleRedraw() {
   });
 }
 
+/**
+ * The waveform's bottom edge inside the strip. The strip is taller than its
+ * waveform by the CSS gutter the playhead's lower arrowhead lives in; ticks,
+ * anchor glyphs and drag ghosts all stop here so that gutter stays the
+ * playhead's alone. Derived from the two elements rather than a duplicated
+ * constant: the CSS is the single source of the gutter's size.
+ */
+function _waveBottomY() {
+  const f = _fix;
+  const h = f.els.strip.clientHeight;
+  const waveH = f.els.stripWs.clientHeight;
+  return waveH > 0 && waveH <= h ? waveH : h;
+}
+
 function _redrawOverlays() {
   const f = _fix;
   if (!f) return;
@@ -1516,6 +1558,7 @@ function _redrawOverlays() {
   const canvas = f.els.ticks;
   const w = strip.clientWidth;
   const h = strip.clientHeight;
+  const wb = _waveBottomY();
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
@@ -1570,24 +1613,22 @@ function _redrawOverlays() {
       ctx.strokeStyle = tickColor;
       ctx.globalAlpha = selected || dragging ? 0.95 : anchor ? 0.7 : 0.35;
       ctx.moveTo(x, 0);
-      ctx.lineTo(x, h);
+      ctx.lineTo(x, wb);
       ctx.stroke();
       if (selected) {
-        ctx.beginPath();
+        // A CAP, not the arrowhead this used to be: the filled triangle now
+        // belongs to the playhead alone, and the two sat at the same height
+        // in the same few pixels.
         ctx.globalAlpha = 0.95;
         ctx.fillStyle = tickColor;
-        ctx.moveTo(x - 5, 0);
-        ctx.lineTo(x + 5, 0);
-        ctx.lineTo(x, 7);
-        ctx.closePath();
-        ctx.fill();
+        ctx.fillRect(x - 5, 0, 10, 3);
       }
       if (anchor) {
         // Anchored onsets carry a base glyph: solid square for a drag anchor,
         // open square for an approve (zero-drag) anchor.
         ctx.globalAlpha = 0.95;
         ctx.beginPath();
-        ctx.rect(x - 3.5, h - 9, 7, 7);
+        ctx.rect(x - 3.5, wb - 9, 7, 7);
         if (anchor.kind === "approve") {
           ctx.lineWidth = 1.6;
           ctx.stroke();
@@ -1608,7 +1649,7 @@ function _redrawOverlays() {
         ctx.globalAlpha = 0.5;
         ctx.strokeStyle = tickColor;
         ctx.moveTo(gx, 0);
-        ctx.lineTo(gx, h);
+        ctx.lineTo(gx, wb);
         ctx.stroke();
         ctx.setLineDash([]);
       }
@@ -2540,14 +2581,24 @@ function _paintPlayhead() {
   const a = f.aud;
   if (!a?.ready) return;
   const x = _timeToStripX(_audPos());
-  if (x === null || x < -1 || x > w + 1) return;
-  ctx.strokeStyle = f.playheadColor;
-  ctx.lineWidth = 1.5;
-  ctx.globalAlpha = 0.9;
+  if (x === null || x < -PH_ARROW_HALF_W || x > w + PH_ARROW_HALF_W) return;
+  // The bracket: one arrowhead just inside the top edge pointing down, one in
+  // the gutter beneath the waveform pointing up, and nothing between them.
+  ctx.fillStyle = f.playheadColor;
+  ctx.globalAlpha = 0.95;
+  _fillArrowhead(ctx, x, 1, 1);
+  _fillArrowhead(ctx, x, h - 1, -1);
+}
+
+/** One filled arrowhead: base of width 2·PH_ARROW_HALF_W on `yBase`, apex
+ *  PH_ARROW_H away in direction `dir` (+1 down, −1 up), apex exactly on x. */
+function _fillArrowhead(ctx, x, yBase, dir) {
   ctx.beginPath();
-  ctx.moveTo(x, 0);
-  ctx.lineTo(x, h);
-  ctx.stroke();
+  ctx.moveTo(x - PH_ARROW_HALF_W, yBase);
+  ctx.lineTo(x + PH_ARROW_HALF_W, yBase);
+  ctx.lineTo(x, yBase + dir * PH_ARROW_H);
+  ctx.closePath();
+  ctx.fill();
 }
 
 /**

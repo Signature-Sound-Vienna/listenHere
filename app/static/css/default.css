@@ -4743,6 +4743,16 @@ body.lh-v6-drawer-open .lh-v6-ribbon {
   right: 380px;
 }
 
+/* Annotation chrome stands down while the correction screen is open: the
+   ribbon is irrelevant there, and being fixed to the viewport bottom it
+   covered the strip's lower 40 px, anchor glyphs included. The pencil tab
+   goes with it — the drawer it opens pads the body by 380 px, which would
+   resize the score pane (and invalidate its prewarmed fit) mid-session. */
+body.fix-mode-open .lh-v6-ribbon,
+body.fix-mode-open .lh-v6-pull-tab {
+  display: none;
+}
+
 .lh-v6-ribbon-labelgroup {
   display: flex;
   align-items: center;
@@ -6913,14 +6923,21 @@ body.lh-v6-drawer-open .drawer-btns {
 }
 
 .fix-strip {
+  --fix-strip-gutter: 12px;
   flex: 15 0 auto;
   min-height: 84px;
   position: relative;
   border-top: 1px solid var(--color-waveform-border, #cbd5e1);
 }
+/* The waveform stops short of the strip's bottom edge. That gutter is where
+   the playhead's lower arrowhead sits — outside the waveform, on the strip's
+   one uncluttered edge — and it comes out of the STRIP's own height: the
+   score pane's height feeds the prewarm fit and must not move (the header
+   trap on the other axis). JS reads the gutter back off the two elements
+   rather than repeating the number, so this rule is its only definition. */
 .fix-strip-ws {
   position: absolute;
-  inset: 0;
+  inset: 0 0 var(--fix-strip-gutter, 12px) 0;
 }
 .fix-strip-ws[data-placeholder]::after {
   content: attr(data-placeholder);

@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.44.0 -- The fix-mode playhead becomes a bracket
+* The correction strip's playhead is now two filled arrowheads bracketing the position — one just inside the strip's top edge, one in a gutter beneath the waveform — with no line drawn across the waveform, which was the alignment ticks' own shape.
+* The selected tick's cap is a bar rather than a filled triangle; ticks, anchor glyphs, and drag ghosts stop at the waveform's bottom edge so the gutter is the playhead's alone.
+* The annotation ribbon and its pencil tab are hidden while the correction screen is open; the ribbon had been covering the strip's lower 40 px, anchor glyphs included.
+* Testing: spec 42 grows to 20 and spec 43 to 30 (the annotation chrome standing down, the bracket's painted geometry). Both verified red first.
+
 ### 0.43.0 -- Fix-mode round 3, second half: a bounded replay, a suppressible one, and a strip that says when it is live
 * The auto-replay after a fix now starts at most 2 s before the fix itself, instead of half a second before the previous anchor — the top of the recording when there is none.
 * A "Replay off" header toggle suppresses the automatic replay; the commit still happens, and `R` replays the last fix on demand. Sticky across fix sessions, like Page only.

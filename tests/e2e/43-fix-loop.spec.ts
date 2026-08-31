@@ -1236,4 +1236,87 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
       /fix-strip-pending/,
     );
   });
+
+  test('43.30 the playhead is a bracket: arrowheads above and below, nothing across the waveform', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    // Park it exactly on the selected onset's tick — the hardest case for
+    // telling playhead from tick, and the one the bracket exists for.
+    const st = await fixState(page);
+    await page.evaluate((t) => (window as any)._listenTest.fixCtl.seek(t), st.selT);
+    await page.waitForFunction(
+      (t) => Math.abs((window as any)._listenTest.fix.aud.time - t) < 1e-6,
+      st.selT,
+    );
+    // One rAF for the paint the seek scheduled.
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+    );
+
+    /** Painted rows of a strip canvas: extent and centre of ink per row. */
+    const rows = (sel: string) =>
+      page.evaluate((s) => {
+        const c = document.querySelector(s) as HTMLCanvasElement;
+        const { width: w, height: h } = c;
+        const d = c.getContext('2d')!.getImageData(0, 0, w, h).data;
+        const out: { y: number; n: number; minX: number; maxX: number }[] = [];
+        for (let y = 0; y < h; y++) {
+          let n = 0;
+          let minX = -1;
+          let maxX = -1;
+          for (let x = 0; x < w; x++) {
+            if (d[(y * w + x) * 4 + 3] > 10) {
+              n++;
+              if (minX < 0) minX = x;
+              maxX = x;
+            }
+          }
+          if (n) out.push({ y, n, minX, maxX });
+        }
+        return { h, w, out };
+      }, sel);
+
+    const geom = await page.evaluate(() => ({
+      stripH: (document.querySelector('.fix-strip') as HTMLElement).clientHeight,
+      waveH: (document.querySelector('.fix-strip-ws') as HTMLElement).clientHeight,
+    }));
+    // The gutter the lower arrowhead lives in comes out of the STRIP's own
+    // height (the score pane's must not move — it feeds the prewarm fit).
+    const gutter = geom.stripH - geom.waveH;
+    expect(gutter).toBeGreaterThanOrEqual(8);
+
+    const ph = await rows('.fix-playhead');
+    expect(ph.out.length).toBeGreaterThan(0);
+    const top = ph.out.filter((r) => r.y < ph.h / 2);
+    const bot = ph.out.filter((r) => r.y >= ph.h / 2);
+    // Two marks, one per side, and NOTHING between them: no line crossing the
+    // waveform is the whole point — a vertical line is the tick's shape.
+    expect(top.length).toBeGreaterThan(4);
+    expect(bot.length).toBeGreaterThan(4);
+    expect(Math.max(...top.map((r) => r.y))).toBeLessThan(14);
+    expect(Math.min(...bot.map((r) => r.y))).toBeGreaterThan(ph.h - 14);
+    const middle = ph.out.filter((r) => r.y >= 14 && r.y <= ph.h - 14);
+    expect(middle).toEqual([]);
+    // The top arrowhead is INSIDE the strip (the strip's top edge is where
+    // every connector lands and the mark diamonds fly), and it tapers
+    // downward: base at the edge, apex pointing at the position.
+    expect(Math.min(...top.map((r) => r.y))).toBeGreaterThanOrEqual(0);
+    expect(top[0].n).toBeGreaterThan(top[top.length - 1].n);
+    // The bottom one is OUTSIDE the waveform, in the gutter, tapering up.
+    expect(Math.min(...bot.map((r) => r.y))).toBeGreaterThanOrEqual(geom.waveH);
+    expect(bot[bot.length - 1].n).toBeGreaterThan(bot[0].n);
+    // Both apexes sit on the position, and the position is the tick's x.
+    const centre = (r: { minX: number; maxX: number }) => (r.minX + r.maxX) / 2;
+    expect(Math.abs(centre(top[0]) - centre(bot[bot.length - 1]))).toBeLessThan(1.5);
+    expect(Math.abs(centre(top[0]) - st.selTickX)).toBeLessThan(2);
+
+    // The ticks keep out of the gutter: it belongs to the playhead alone.
+    const tk = await rows('.fix-ticks');
+    expect(tk.out.length).toBeGreaterThan(0);
+    expect(Math.max(...tk.out.map((r) => r.y))).toBeLessThan(geom.waveH);
+  });
 });

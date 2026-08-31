@@ -512,6 +512,34 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     expect(after.selX).not.toBe(before.selX);
   });
 
+  test('42.20 the annotation chrome stands down while fix mode is open', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await expect(page.locator('.lh-v6-ribbon')).toBeVisible();
+    await expect(page.locator('.lh-v6-pull-tab')).toBeVisible();
+    await enterFix(page, REF_ROW);
+    await expect(page.locator('.lh-v6-ribbon')).toBeHidden();
+    await expect(page.locator('.lh-v6-pull-tab')).toBeHidden();
+    // The point of it: the ribbon is FIXED to the viewport bottom, so it used
+    // to cover the strip's lower 40 px — the anchor glyphs among them, and
+    // now the playhead's lower arrowhead. The strip's own bottom edge must
+    // be the thing under the cursor there.
+    const atBottom = await page.evaluate(() => {
+      const r = document.querySelector('.fix-strip')!.getBoundingClientRect();
+      const el = document.elementFromPoint(r.x + r.width / 2, r.bottom - 3);
+      return { cls: el?.className ?? null, inFix: !!el?.closest('#fix-mode') };
+    });
+    expect(atBottom.inFix).toBe(true);
+    expect(atBottom.cls).toContain('fix-');
+    // Exit gives the annotation UI back.
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await expect(page.locator('.lh-v6-ribbon')).toBeVisible();
+    await expect(page.locator('.lh-v6-pull-tab')).toBeVisible();
+  });
+
   test('42.13 the bootstrap posts fix_begin with decoded samples, the MIDI, and the stored params', async ({
     page,
   }) => {

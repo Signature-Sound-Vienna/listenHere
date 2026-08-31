@@ -6880,12 +6880,14 @@ body.lh-v6-drawer-open .drawer-btns {
   display: block;
 }
 
-/* The selected onset's notes (spike B's highlight pattern; fixed red because
-   the paper background is fixed). */
+/* The selected onset's notes (spike B's highlight pattern; fixed colour
+   because the paper background is fixed). Bright orange — mei-friend's
+   active-note colour — so the highlight never merges with the dark-red
+   alignment connector under it (user feedback, 2026-08-31). */
 .fix-score-svg g.fix-note-sel,
 .fix-score-svg g.fix-note-sel * {
-  fill: #d1281e !important;
-  stroke: #d1281e !important;
+  fill: #ffa500 !important;
+  stroke: #ffa500 !important;
 }
 
 /* The bend band the connectors cross between score and strip. */
@@ -7014,4 +7016,79 @@ body.lh-v6-drawer-open .drawer-btns {
 /* The underlay must never intercept score clicks. */
 .fix-score-svg .fix-underlay {
   pointer-events: none;
+}
+
+/* --- Increment 3: the interaction loop --- */
+
+/* L/R audition play/pause (left ear: recording, right ear: aligned synth). */
+#fix-play {
+  min-width: 2em;
+  padding: 0.15em 0.45em;
+  font-size: 1em;
+  line-height: 1;
+}
+#fix-play:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Real-time audition balance (left ear: recording, right ear: synth). */
+.fix-balance {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  font-size: 0.8em;
+  color: var(--color-text-secondary, #64748b);
+  white-space: nowrap;
+}
+.fix-balance input[type="range"] {
+  width: 84px;
+  margin: 0;
+}
+
+/* The audition playhead paints on its own canvas above the ticks (repaints
+   every frame during playback; the tick canvas stays selection-rate). */
+.fix-playhead {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+/* Engine chip while a fix's segment realign is running. */
+.fix-chip[data-state="realign"] {
+  color: var(--color-text, #1e3a8a);
+  border-color: rgba(37, 99, 235, 0.45);
+}
+
+/* The selected onset's notes while they actually SOUND (playhead between
+   onset and offset via the corrected map): hotter than the selection orange. */
+.fix-score-svg g.fix-note-sel.fix-note-sounding,
+.fix-score-svg g.fix-note-sel.fix-note-sounding * {
+  fill: #ff6d00 !important;
+  stroke: #ff6d00 !important;
+}
+
+/* Announcement toast for history hops the user cannot currently see
+   ("Undid alignment correction near bar N" with fix mode closed). */
+#fix-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%) translateY(8px);
+  z-index: 1000;
+  max-width: 60ch;
+  padding: 0.5em 1em;
+  border-radius: 8px;
+  background: var(--color-text, #1f2937);
+  color: var(--color-bg, #fff);
+  font-size: var(--font-size-small, 0.9em);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+#fix-toast.fix-toast-show {
+  opacity: 0.95;
+  transform: translateX(-50%) translateY(0);
 }

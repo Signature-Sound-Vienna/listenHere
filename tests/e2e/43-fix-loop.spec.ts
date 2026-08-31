@@ -1,0 +1,783 @@
+// 43. Alignment-correction increment 3 (plan §14 D2) — the interaction loop
+// on the fix-mode screen: the L/R audition (left ear = the reference
+// recording, right ear = the score synth rendered through the live corrected
+// map, one sample-locked stereo buffer), playback-following sounding-onset
+// selection with page turns, seek-to-selected-note, tick DRAGS that lay hard
+// anchors (auto-realign of the flanking segments on release + auto-replay
+// from just before the previous anchor), the Enter APPROVE (zero-drag
+// anchor), session MARKS (M / N), fix-anchor entries on listen.js's unified
+// undo stack (snapshot semantics, off-screen hops announce themselves), the
+// header.corrections durable record, and Revert-all integration.
+//
+// The worker is STUBBED via _listenTest.fixWorkerFactory (the spec-42 seam):
+// fix_ready echoes the app's own event count and fix_realign refills the
+// interior LINEARLY between the posted anchor times — deterministic values
+// the assertions can predict. The real realign path is spec 41's Python
+// ground truth; here the contract under test is the JS loop around it.
+import { test, expect } from '../support/fixtures';
+import { stubExternalMei } from '../support/helpers';
+import type { Page } from '@playwright/test';
+
+const REF_ROW = 'audio-b.mp3';
+
+/** Navigate with ?fixMode (the spec-42 helper, unchanged). */
+async function gotoFixMode(page: Page) {
+  await stubExternalMei(page);
+  const params =
+    '?align=http://localhost:5001/static/test/alignment.json' +
+    '&useLocal=http://localhost:5001/static/test&fixMode';
+  await page.goto(`/${params}`);
+  await page.waitForFunction(
+    () => ((window as any)._listenTest?.loadGeneration ?? 0) > 0,
+  );
+}
+
+/**
+ * Worker stub: fix_ready echoes the live event count; fix_realign refills the
+ * segment interior linearly between (tA, tB) with offsets +0.05 and remaps
+ * the left anchor's own offset to tA + 0.02 — all recorded on __fixStub.
+ */
+async function installWorkerStub(
+  page: Page,
+  opts: { realignError?: string; realignShort?: boolean } = {},
+) {
+  await page.evaluate((o) => {
+    const lt = (window as any)._listenTest;
+    lt.fixWorkerFactory = (url: string) => {
+      const w: any = {
+        url,
+        onmessage: null,
+        onerror: null,
+        posted: [] as any[],
+        terminated: false,
+      };
+      w.postMessage = (msg: any) => {
+        const rec: any = { type: msg.type };
+        if (msg.type === 'fix_realign') {
+          rec.iA = msg.iA;
+          rec.tA = msg.tA;
+          rec.iB = msg.iB;
+          rec.tB = msg.tB;
+          rec.priorLen = msg.priorRef?.length ?? null;
+        }
+        w.posted.push(rec);
+        if (msg.type === 'fix_begin') {
+          setTimeout(() => {
+            w.onmessage?.({
+              data: {
+                type: 'fix_ready',
+                events: { n_events: lt.fix?.nEvents },
+              },
+            });
+          }, 5);
+        } else if (msg.type === 'fix_realign') {
+          setTimeout(() => {
+            if (o.realignShort) {
+              // The real worker's refusal for a span with < 2 analysis
+              // frames (message shape as Pyodide surfaces it).
+              w.onmessage?.({
+                data: {
+                  type: 'error',
+                  message:
+                    'PythonError: Traceback (most recent call last):\n' +
+                    'ValueError: fix_realign_segment: segment too short to align',
+                },
+              });
+              return;
+            }
+            if (o.realignError) {
+              w.onmessage?.({
+                data: { type: 'error', message: o.realignError },
+              });
+              return;
+            }
+            const n = msg.priorRef.length;
+            const on: number[] = [];
+            const off: number[] = [];
+            for (let k = 0; k < n; k++) {
+              const t = msg.tA + ((k + 1) * (msg.tB - msg.tA)) / (n + 1);
+              on.push(t);
+              off.push(t + 0.05);
+            }
+            w.onmessage?.({
+              data: {
+                type: 'fix_segment',
+                iA: msg.iA,
+                iB: msg.iB,
+                result: {
+                  ref_onset: on,
+                  ref_offset: off,
+                  anchor_a_offset: msg.iA >= 0 ? msg.tA + 0.02 : null,
+                  hop: 512,
+                },
+              },
+            });
+          }, 5);
+        }
+      };
+      w.terminate = () => {
+        w.terminated = true;
+      };
+      (window as any).__fixStub = w;
+      return w;
+    };
+  }, opts);
+}
+
+/** Enter fix mode on the reference row and wait for the drawn screen. */
+async function enterFix(page: Page) {
+  await page.click(`.waveform[data-ix="${REF_ROW}"] .wf-fix-btn`);
+  await page.waitForFunction(() => (window as any)._listenTest.fix.active);
+  await page.waitForFunction(
+    () => (window as any)._listenTest.fix.ticksOnPage > 0,
+  );
+}
+
+/** Wait for the correction engine (stubbed) AND the audition (real decode +
+ *  synth render — allow real time). */
+async function waitLoopReady(page: Page) {
+  await page.waitForFunction(
+    () => {
+      const f = (window as any)._listenTest.fix;
+      return f.chipState === 'ready' && f.aud?.ready;
+    },
+    undefined,
+    { timeout: 45_000 },
+  );
+}
+
+const fixState = (page: Page) =>
+  page.evaluate(() => (window as any)._listenTest.fix);
+
+/** Order-weighted checksum of the live ref tables (exact-restore witness). */
+const refChecksum = (page: Page) =>
+  page.evaluate(() => {
+    const sc = (window as any)._listenTest.session.scoreAlignment;
+    const sum = (a: number[]) => a.reduce((s, v, i) => s + v * (i + 1), 0);
+    return { on: sum(sc.ref_onset), off: sum(sc.ref_offset) };
+  });
+
+/** Drag the SELECTED onset's tick by dxPx and wait for the commit to land. */
+async function dragSelectedTick(page: Page, dxPx: number) {
+  const st = await fixState(page);
+  const box = (await page.locator('.fix-ticks').boundingBox())!;
+  const x0 = box.x + st.selTickX;
+  const y = box.y + box.height / 2;
+  await page.mouse.move(x0, y);
+  await page.mouse.down();
+  await page.mouse.move(x0 + dxPx, y, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForFunction(
+    () => {
+      const f = (window as any)._listenTest.fix;
+      return !f.realignBusy && f.chipState !== 'realign';
+    },
+    undefined,
+    { timeout: 20_000 },
+  );
+}
+
+test.describe('43: alignment-correction fix mode (increment 3 — the loop)', () => {
+  test('43.1 the audition arms: stereo buffer with the recording left and real synth right', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    const st = await fixState(page);
+    expect(st.aud.duration).toBeGreaterThan(60);
+    expect(st.aud.playing).toBe(false);
+    await expect(page.locator('#fix-play')).toBeEnabled();
+    // Both ears hold real signal over the piece's opening (first onset ~3 s).
+    const rms = await page.evaluate(() => {
+      const ctl = (window as any)._listenTest.fixCtl;
+      return { left: ctl.channelRms(0, 0, 12), right: ctl.channelRms(1, 0, 12) };
+    });
+    expect(rms.left).toBeGreaterThan(0.005);
+    expect(rms.right).toBeGreaterThan(0.005);
+    // The right ear is the SYNTH, not a copy of the recording.
+    const same = await page.evaluate(() => {
+      const a = (window as any)._listenTest.fixCtl;
+      return Math.abs(a.channelRms(0, 3, 10) - a.channelRms(1, 3, 10)) < 1e-6;
+    });
+    expect(same).toBe(false);
+  });
+
+  test('43.2 play, playhead advance, pause holds the position', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-play');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.aud.playing,
+    );
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.aud.time > 0.4,
+      undefined,
+      { timeout: 10_000 },
+    );
+    await page.click('#fix-play');
+    const st = await fixState(page);
+    expect(st.aud.playing).toBe(false);
+    const held = st.aud.time;
+    expect(held).toBeGreaterThan(0.4);
+    // The clock really stops.
+    await page.waitForTimeout(300);
+    expect((await fixState(page)).aud.time).toBeCloseTo(held, 3);
+  });
+
+  test('43.3 selecting an onset seeks the audition just before it', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('.fix-onset-next');
+    await page.click('.fix-onset-next');
+    const st = await fixState(page);
+    expect(st.selGroup).toBe(2);
+    expect(st.aud.time).toBeCloseTo(Math.max(0, st.selT - 0.5), 3);
+  });
+
+  test('43.4 playback follows the sounding onset: selection advances, sounding state pulses', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    // Park just before group 5 and play; sample at frame rate so the short
+    // sounding windows (inter-onset ~0.4 s here) cannot slip between polls.
+    for (let k = 0; k < 5; k++) await page.click('.fix-onset-next');
+    const t5 = (await fixState(page)).selT;
+    await page.evaluate((t) => (window as any)._listenTest.fixCtl.seek(t), t5 - 0.2);
+    await page.click('#fix-play');
+    const trace = await page.evaluate(
+      () =>
+        new Promise<any[]>((done) => {
+          const out: any[] = [];
+          const t0 = performance.now();
+          const tick = () => {
+            const f = (window as any)._listenTest.fix;
+            out.push({
+              sel: f.selGroup,
+              sounding: f.soundingGroup,
+              dom: !!document.querySelector('.fix-note-sounding'),
+            });
+            if (performance.now() - t0 < 2000) requestAnimationFrame(tick);
+            else done(out);
+          };
+          requestAnimationFrame(tick);
+        }),
+    );
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    // Selection followed playback forward, monotonically.
+    for (let k = 1; k < trace.length; k++) {
+      expect(trace[k].sel).toBeGreaterThanOrEqual(trace[k - 1].sel);
+    }
+    expect(trace[trace.length - 1].sel).toBeGreaterThan(5);
+    // The sounding state lit up, always on the selected onset, and the score
+    // highlight class tracked it.
+    const lit = trace.filter((s) => s.sounding !== null);
+    expect(lit.length).toBeGreaterThan(0);
+    for (const s of lit) expect(s.sounding).toBe(s.sel);
+    expect(lit.some((s) => s.dom)).toBe(true);
+  });
+
+  test('43.5 playback turns the page with the sounding onset', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    // Find page 2's first onset time, then play across the boundary from
+    // 1 s before it: the follower first re-selects page 1's tail, then
+    // crosses onto page 2.
+    await page.click('.fix-page-next');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.page === 2,
+    );
+    const t2 = (await fixState(page)).selT;
+    await page.evaluate((t) => (window as any)._listenTest.fixCtl.seek(t), t2 - 1.0);
+    await page.click('#fix-play');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.page === 1,
+      undefined,
+      { timeout: 10_000 },
+    );
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.page === 2,
+      undefined,
+      { timeout: 10_000 },
+    );
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const st = await fixState(page);
+    expect(st.selPage).toBe(2);
+  });
+
+  test('43.6 dragging a tick lays a hard anchor: realign, applied refill, undo entry, replay', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    for (let k = 0; k < 5; k++) await page.click('.fix-onset-next');
+    const before = await fixState(page);
+    const i = before.selEventIx;
+    const neighboursBefore = await page.evaluate((ev) => {
+      const sc = (window as any)._listenTest.session.scoreAlignment;
+      return { prev: sc.ref_onset[ev - 1], next: sc.ref_onset[ev + 1] };
+    }, i);
+    await dragSelectedTick(page, 40);
+    const st = await fixState(page);
+    // One drag anchor at the selected event, at a genuinely moved time.
+    expect(st.corrections.anchors).toHaveLength(1);
+    const a = st.corrections.anchors[0];
+    expect(a.i).toBe(i);
+    expect(a.kind).toBe('drag');
+    expect(a.t).toBeGreaterThan(before.selT + 0.2);
+    expect(st.lastCommit).toMatchObject({ kind: 'drag', i, realigned: 2 });
+    // The event itself moved to the anchor time and the flanking interiors
+    // were refilled (the stub fills linearly — values must have changed).
+    const after = await page.evaluate((ev) => {
+      const sc = (window as any)._listenTest.session.scoreAlignment;
+      return {
+        self: sc.ref_onset[ev],
+        selfOff: sc.ref_offset[ev],
+        prev: sc.ref_onset[ev - 1],
+        next: sc.ref_onset[ev + 1],
+      };
+    }, i);
+    expect(after.self).toBeCloseTo(a.t, 6);
+    expect(after.selfOff).toBeCloseTo(a.t + 0.02, 6); // stub's anchor_a_offset
+    expect(after.prev).not.toBeCloseTo(neighboursBefore.prev, 6);
+    expect(after.next).not.toBeCloseTo(neighboursBefore.next, 6);
+    // The durable record and the unified undo stack both carry it.
+    expect(st.corrections.headerPresent).toBe(true);
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: alignment anchor');
+    // The audition re-rendered the changed span and auto-replay started from
+    // just before the previous anchor (the piece-start corner here).
+    expect(st.aud.renderWindow).not.toBeNull();
+    expect(st.aud.renderWindow.t0).toBeLessThanOrEqual(0.1);
+    expect(st.aud.playing).toBe(true);
+    expect(st.aud.time).toBeLessThan(2);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+  });
+
+  test('43.7 Enter approves the selected onset: zero-drag anchor, no realign, no data change', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    for (let k = 0; k < 3; k++) await page.click('.fix-onset-next');
+    const before = await fixState(page);
+    const sumBefore = await refChecksum(page);
+    await page.keyboard.press('Enter');
+    const st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    expect(st.corrections.anchors[0]).toMatchObject({
+      i: before.selEventIx,
+      kind: 'approve',
+    });
+    expect(st.corrections.anchors[0].t).toBeCloseTo(before.selT, 6);
+    expect(st.corrections.headerPresent).toBe(true);
+    expect(st.lastCommit).toMatchObject({ kind: 'approve', realigned: 0 });
+    // No worker realign ran and no value moved.
+    const posted = await page.evaluate(() =>
+      (window as any).__fixStub.posted.map((p: any) => p.type),
+    );
+    expect(posted).not.toContain('fix_realign');
+    expect(await refChecksum(page)).toEqual(sumBefore);
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: alignment anchor');
+  });
+
+  test('43.8 a drag clamps inside the neighbouring anchor (never crosses it)', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    // Approve group 2, then try to drag group 3 far left past it.
+    await page.click('.fix-onset-next');
+    await page.click('.fix-onset-next');
+    await page.keyboard.press('Enter');
+    const anchorT = (await fixState(page)).corrections.anchors[0].t;
+    await page.click('.fix-onset-next');
+    await dragSelectedTick(page, -300);
+    const st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(2);
+    const dragged = st.corrections.anchors.find((x: any) => x.kind === 'drag');
+    expect(dragged.t).toBeGreaterThan(anchorT);
+    // The two anchors stay strictly ordered in time.
+    expect(st.corrections.anchors[0].t).toBeLessThan(st.corrections.anchors[1].t);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+  });
+
+  test('43.9 undo and redo of a drag are exact snapshot hops (no worker)', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    const pristine = await refChecksum(page);
+    await dragSelectedTick(page, 35);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const edited = await refChecksum(page);
+    expect(edited).not.toEqual(pristine);
+    const postedBefore = await page.evaluate(
+      () => (window as any).__fixStub.posted.length,
+    );
+    await page.click('#undo-btn');
+    expect(await refChecksum(page)).toEqual(pristine);
+    expect((await fixState(page)).corrections.anchors).toHaveLength(0);
+    await page.click('#redo-btn');
+    expect(await refChecksum(page)).toEqual(edited);
+    const st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    expect(st.corrections.headerPresent).toBe(true);
+    // Snapshot semantics: the hops posted nothing to the worker.
+    expect(
+      await page.evaluate(() => (window as any).__fixStub.posted.length),
+    ).toBe(postedBefore);
+  });
+
+  test('43.10 an undo with fix mode closed announces itself and still lands', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('.fix-onset-next');
+    await page.keyboard.press('Enter');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(1);
+    await page.click('#fix-exit');
+    await page.waitForFunction(
+      () => !(window as any)._listenTest.fix.active,
+    );
+    await page.click('#undo-btn');
+    const st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(0);
+    expect(st.lastAnnounce).toMatch(/Undid alignment correction (near bar \d+|at event \d+)/);
+    await expect(page.locator('#fix-toast')).toHaveClass(/fix-toast-show/);
+  });
+
+  test('43.11 marks: M lays and lifts them, N skips the loop through them', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.seek(10));
+    await page.keyboard.press('m');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.seek(20));
+    await page.keyboard.press('m');
+    let st = await fixState(page);
+    expect(st.marks).toEqual([10, 20]);
+    // N from the top of the piece: first mark, selection lands at/before it,
+    // playhead parks in its preroll.
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.seek(0));
+    await page.keyboard.press('n');
+    st = await fixState(page);
+    expect(st.aud.time).toBeCloseTo(9.5, 3);
+    expect(st.selT).toBeLessThanOrEqual(10.001);
+    // N again steps to the SECOND mark (the preroll does not re-target the
+    // first), and wraps from the end.
+    await page.keyboard.press('n');
+    st = await fixState(page);
+    expect(st.aud.time).toBeCloseTo(19.5, 3);
+    await page.keyboard.press('n');
+    expect((await fixState(page)).aud.time).toBeCloseTo(9.5, 3);
+    // M near an existing mark removes it.
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.seek(10.2));
+    await page.keyboard.press('m');
+    expect((await fixState(page)).marks).toEqual([20]);
+  });
+
+  test('43.12 a failed realign rolls the fix back wholesale', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page, { realignError: 'synthetic realign failure' });
+    await enterFix(page);
+    await waitLoopReady(page);
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    const pristine = await refChecksum(page);
+    await dragSelectedTick(page, 35);
+    const st = await fixState(page);
+    expect(st.chipState).toBe('error');
+    await expect(page.locator('.fix-chip')).toContainText('rolled back');
+    expect(st.corrections.anchors).toHaveLength(0);
+    expect(st.corrections.headerPresent).toBe(false);
+    expect(await refChecksum(page)).toEqual(pristine);
+    // Nothing reached the undo stack.
+    await expect(page.locator('#undo-btn')).toBeDisabled();
+  });
+
+  test('43.13 the fix_realign payload contract: both flanking segments, prior values along', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    for (let k = 0; k < 5; k++) await page.click('.fix-onset-next');
+    const before = await fixState(page);
+    const i = before.selEventIx;
+    const dur = before.aud.duration;
+    await dragSelectedTick(page, 40);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const realigns = await page.evaluate(() =>
+      (window as any).__fixStub.posted.filter(
+        (p: any) => p.type === 'fix_realign',
+      ),
+    );
+    expect(realigns).toHaveLength(2);
+    const t = (await fixState(page)).corrections.anchors[0].t;
+    // Left: piece-start corner → the anchor; interior = the events before it.
+    expect(realigns[0]).toMatchObject({ iA: -1, tA: 0, iB: i });
+    expect(realigns[0].tB).toBeCloseTo(t, 6);
+    expect(realigns[0].priorLen).toBe(i);
+    // Right: the anchor → the piece-end corner.
+    expect(realigns[1]).toMatchObject({ iA: i, iB: before.nEvents });
+    expect(realigns[1].tA).toBeCloseTo(t, 6);
+    expect(realigns[1].tB).toBeCloseTo(dur, 1);
+    expect(realigns[1].priorLen).toBe(before.nEvents - i - 1);
+  });
+
+  test('43.14 listen.js\'s global shortcuts stand down while fix mode is open', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    // The main handler acts only when a recording is current; make one so the
+    // after-exit half of this test asserts a real behaviour change.
+    await page.evaluate(() =>
+      (window as any)._listenTest.swapCurrentAudio('audio-a.mp3'),
+    );
+    await enterFix(page);
+    const before = await page.evaluate(
+      () => (window as any)._listenTest.currentAudioIx,
+    );
+    expect(before).toBe('audio-a.mp3');
+    // In fix mode ArrowDown turns the page; the hidden pane's current
+    // recording must not budge.
+    await page.keyboard.press('ArrowDown');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.page === 2,
+    );
+    expect(
+      await page.evaluate(() => (window as any)._listenTest.currentAudioIx),
+    ).toBe(before);
+    // After exit the main handler is back in charge.
+    await page.click('#fix-exit');
+    await page.waitForFunction(
+      () => !(window as any)._listenTest.fix.active,
+    );
+    await page.keyboard.press('ArrowDown');
+    await page.waitForFunction(
+      (prev) => (window as any)._listenTest.currentAudioIx !== prev,
+      before,
+    );
+  });
+
+  test('43.17 a span too short for DTW falls back to a linear fill; the commit still lands', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page, { realignShort: true });
+    await enterFix(page);
+    await waitLoopReady(page);
+    for (let k = 0; k < 5; k++) await page.click('.fix-onset-next');
+    const before = await fixState(page);
+    const i = before.selEventIx;
+    await dragSelectedTick(page, 40);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const st = await fixState(page);
+    // The gesture succeeded despite the worker's refusal on both segments.
+    expect(st.chipState).toBe('ready');
+    expect(st.corrections.anchors).toHaveLength(1);
+    expect(st.lastCommit).toMatchObject({ kind: 'drag', i, realigned: 0, linear: 2 });
+    const t = st.corrections.anchors[0].t;
+    const vals = await page.evaluate((ev) => {
+      const sc = (window as any)._listenTest.session.scoreAlignment;
+      return {
+        self: sc.ref_onset[ev],
+        prev: sc.ref_onset[ev - 1],
+        next: sc.ref_onset[ev + 1],
+        dur: (window as any)._listenTest.fix.aud.duration,
+      };
+    }, i);
+    // The linear fill keeps the interior inside — and ordered around — the
+    // anchor, and the undo entry is a real one.
+    expect(vals.self).toBeCloseTo(t, 6);
+    expect(vals.prev).toBeGreaterThan(0);
+    expect(vals.prev).toBeLessThan(t);
+    expect(vals.next).toBeGreaterThan(t);
+    expect(vals.next).toBeLessThan(vals.dur);
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: alignment anchor');
+  });
+
+  test('43.18 a failed realign does not latch editing off — the next drag still tries', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page, { realignError: 'synthetic realign failure' });
+    await enterFix(page);
+    await waitLoopReady(page);
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    const pristine = await refChecksum(page);
+    await dragSelectedTick(page, 35);
+    expect((await fixState(page)).chipState).toBe('error');
+    const postedAfterFirst = await page.evaluate(
+      () =>
+        (window as any).__fixStub.posted.filter(
+          (p: any) => p.type === 'fix_realign',
+        ).length,
+    );
+    expect(postedAfterFirst).toBeGreaterThan(0);
+    // The error chip stands, but the engine session is intact: a second drag
+    // must reach the worker again instead of degrading to click-select.
+    await dragSelectedTick(page, 35);
+    const postedAfterSecond = await page.evaluate(
+      () =>
+        (window as any).__fixStub.posted.filter(
+          (p: any) => p.type === 'fix_realign',
+        ).length,
+    );
+    expect(postedAfterSecond).toBeGreaterThan(postedAfterFirst);
+    // Both failures rolled back wholesale.
+    expect((await fixState(page)).corrections.anchors).toHaveLength(0);
+    expect(await refChecksum(page)).toEqual(pristine);
+  });
+
+  test('43.19 keyboard nudges accumulate and commit as ONE anchor (Shift coarse, Shift+Alt fine)', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    // Wide commit window so the three presses always land inside it.
+    await page.evaluate(() =>
+      (window as any)._listenTest.fixCtl.setNudgeCommitMs(1500),
+    );
+    for (let k = 0; k < 5; k++) await page.click('.fix-onset-next');
+    const before = await fixState(page);
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.keyboard.press('Shift+Alt+ArrowRight');
+    // The provisional state floats (no anchor yet), 2×100 ms + 20 ms along.
+    let st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(0);
+    expect(st.pendingNudge).not.toBeNull();
+    expect(st.pendingNudge.curT).toBeCloseTo(before.selT + 0.22, 6);
+    // The quiet period elapses: one commit, one realign pair, one undo entry.
+    await page.waitForFunction(
+      () => {
+        const f = (window as any)._listenTest.fix;
+        return f.corrections.anchors.length === 1 && !f.realignBusy;
+      },
+      undefined,
+      { timeout: 20_000 },
+    );
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    st = await fixState(page);
+    expect(st.corrections.anchors[0].t).toBeCloseTo(before.selT + 0.22, 6);
+    expect(st.corrections.anchors[0].kind).toBe('drag');
+    expect(st.lastCommit).toMatchObject({ kind: 'drag', realigned: 2 });
+    expect(st.pendingNudge).toBeNull();
+    // Three presses were ONE history entry: a single undo clears the anchor.
+    await page.click('#undo-btn');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(0);
+  });
+
+  test('43.20 Escape cancels a pending nudge; only a bare Escape exits fix mode', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.evaluate(() =>
+      (window as any)._listenTest.fixCtl.setNudgeCommitMs(30_000),
+    );
+    for (let k = 0; k < 3; k++) await page.click('.fix-onset-next');
+    const before = await fixState(page);
+    await page.keyboard.press('Shift+ArrowLeft');
+    expect((await fixState(page)).pendingNudge).not.toBeNull();
+    await page.keyboard.press('Escape');
+    const st = await fixState(page);
+    // The nudge is dropped, nothing committed, and fix mode is still open.
+    expect(st.active).toBe(true);
+    expect(st.pendingNudge).toBeNull();
+    expect(st.corrections.anchors).toHaveLength(0);
+    expect(st.selT).toBeCloseTo(before.selT, 9);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(
+      () => !(window as any)._listenTest.fix.active,
+    );
+  });
+
+  test('43.16 the balance slider trims each ear\'s gain in real time', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    let st = await fixState(page);
+    expect(st.aud.gainL).toBe(1);
+    expect(st.aud.gainR).toBe(1);
+    // Toward the synth ear: the recording attenuates, the synth stays at 1 —
+    // live on the gain nodes, playing or not.
+    await page.click('#fix-play');
+    await page.locator('.fix-balance input').fill('60');
+    st = await fixState(page);
+    expect(st.aud.balance).toBeCloseTo(0.6, 6);
+    expect(st.aud.gainL).toBeCloseTo(0.4, 6);
+    expect(st.aud.gainR).toBe(1);
+    await page.locator('.fix-balance input').fill('-50');
+    st = await fixState(page);
+    expect(st.aud.gainL).toBe(1);
+    expect(st.aud.gainR).toBeCloseTo(0.5, 6);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+  });
+
+  test('43.15 Revert-all restores the as-loaded ref tables and clears the record', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    const pristine = await refChecksum(page);
+    await dragSelectedTick(page, 35);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    expect(await refChecksum(page)).not.toEqual(pristine);
+    await expect(page.locator('#revert-all-btn')).toBeEnabled();
+    page.once('dialog', (d) => d.accept());
+    await page.click('#revert-all-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 0,
+    );
+    expect(await refChecksum(page)).toEqual(pristine);
+    const st = await fixState(page);
+    expect(st.corrections.headerPresent).toBe(false);
+    await expect(page.locator('#undo-btn')).toBeDisabled();
+  });
+});

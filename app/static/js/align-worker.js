@@ -484,8 +484,12 @@ def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
                 elif p == 1: i -= 1                     # vert
                 else:        j -= 1                     # horiz
             else:
-                # Out-of-band fallback — shouldn't happen with correct slack
+                # Out-of-band fallback. With connective bands this should not
+                # fire; if it ever does, clamp back under the row's ceiling so
+                # one stray step cannot become a thousand-row diagonal drift.
                 i -= 1; j -= 1
+                if j > int(j_hi[i]):
+                    j = int(j_hi[i])
         pi.append(i); pj.append(j)
     pi.reverse(); pj.reverse()
     return np.array([pi, pj])
@@ -1054,6 +1058,16 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
     j_hi = np.maximum.accumulate(j_hi)
     j_hi[-1] = n_r - 1
     j_hi = np.maximum(j_hi, j_lo)  # never an empty row band
+    # CONNECTIVITY: where the prior map jumps by more than the slack (a stored
+    # discontinuity — e.g. an unscored-audio artifact zone), the band would
+    # otherwise be DISJOINT between adjacent rows, severing the DP: every cell
+    # downstream of the jump accumulates inf, parents there are meaningless,
+    # and the backtrack walks out of band (found 2026-08-31 on the Fledermaus
+    # HQ corpus: a first-onset fix mapped the whole opening ~55 s late).
+    # Bridging the floor to the previous ceiling + 1 keeps every row reachable,
+    # so the DTW genuinely traverses the jump instead of silently breaking.
+    # min of two non-decreasing sequences, so j_lo stays non-decreasing.
+    j_lo[1:] = np.minimum(j_lo[1:], j_hi[:-1] + 1)
 
     wp = make_monotonic(_guided_band_dtw(feat_s, feat_r, j_lo, j_hi))
     s_path = s_a + wp[0].astype(np.float64) * seg_s / max(n_s - 1, 1)

@@ -12,10 +12,21 @@
 // Opt-in via the ?fixMode query parameter while experimental: without it, no
 // entry affordance exists and the app is byte-identical (the A/B policy).
 //
-// This increment is the SCREEN — inspection, selection, paging, and the
+// Increment 2 built the SCREEN — inspection, selection, paging, and the
 // correction-engine bootstrap (ref-audio decode + the worker's fix_begin).
-// The interaction loop (drag/approve/marks, auto-realign, L/R audition, undo)
-// is increment 3 and builds on the session state assembled here.
+// Increment 3 adds THE LOOP on top of it:
+//   - the ORIENTATION slice: L/R audition playback (left = the real reference
+//     recording, right = the score synth rendered through the CURRENT
+//     corrected map, sample-locked — §13 ruling 2's construction, live), a
+//     playback-following sounding-onset highlight, and seek-to-selected-note;
+//   - the EDIT gestures: dragging a strip tick lays a hard anchor
+//     (auto-realign of the flanking segments on release via the worker's
+//     fix_realign, then auto-replay from just before the previous anchor),
+//     Enter APPROVEs the selected onset as a zero-drag anchor, and M lays
+//     session-local MARKS on the audio timeline (N skips to the next one);
+//   - GLOBAL undo: fix-anchor entries ride listen.js's unified stack with
+//     snapshot semantics (before/after values stored — undo and redo never
+//     need the alignment worker).
 //
 // Entry is gated by the item-T guard (plan §14 D1): the header's Verovio
 // stamps must be compatible with the live toolkit, and a freshly rendered
@@ -35,8 +46,19 @@ import {
   getReferenceAudioIx,
   getMeiXml,
   resolveAudioUrl,
+  pushFixUndoEntry,
 } from "./listen.js";
-import { verifyQuarters } from "./engine/correction-model.js";
+import {
+  verifyQuarters,
+  createCorrections,
+  findAnchor,
+  neighbourAnchors,
+  setAnchor,
+  applySegment,
+  applyAnchorValue,
+  serialize as serializeCorrections,
+  deserialize as deserializeCorrections,
+} from "./engine/correction-model.js";
 import { parseMidi } from "./engine/mei-synth.js";
 import { confirmDialog } from "./annotation/ui-common.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
@@ -58,6 +80,23 @@ const TICK_HIT_PX = 8;
 const STRIP_PEAK_COUNT = 8000;
 /** The aligner's sample rate — fix_begin expects ref samples at this rate. */
 const FIX_SR = 22050;
+/** Seek-to-selected-note lands the playhead this far before the onset. */
+const SEEK_PREROLL_SEC = 0.5;
+/** Auto-replay after a fix starts this far before the previous anchor. */
+const REPLAY_PREROLL_SEC = 0.5;
+/** A mousedown that travels less than this is a tick CLICK, not a drag. */
+const DRAG_THRESHOLD_PX = 3;
+/** Keyboard nudge steps (the app's marker-nudge convention: Shift = coarse,
+ *  Shift+Alt = fine) and the quiet period after which pending nudges commit
+ *  as ONE anchor (per-keystroke realigns would spam worker and undo stack). */
+const NUDGE_COARSE_SEC = 0.1;
+const NUDGE_FINE_SEC = 0.02;
+let _nudgeCommitMs = 600;
+let _nudgeTimer = null;
+/** Anchor times clamp this far inside the neighbouring anchors' times. */
+const ANCHOR_EPS_SEC = 0.01;
+/** M within this distance of an existing mark removes it instead of adding. */
+const MARK_HIT_SEC = 0.35;
 
 /** Quantised quarter key — the 1e-6 rounding every quarters consumer uses. */
 const qKey = (q) => Math.round(q * 1e6);
@@ -86,6 +125,29 @@ let _derived = null;
 let _prewarmTimer = null;
 /** How the last entry went (test + telemetry surface). */
 let _lastEntry = { usedPrewarm: false, spinnerShown: false, ms: 0 };
+/**
+ * Piece-scoped correction state (plan §14 cluster B): the anchor/gap model,
+ * the as-loaded ref tables for Revert (captured lazily at the first commit),
+ * and the session MARKS (flagged misalignments on the audio timeline — QA
+ * aids, deliberately neither persisted nor undoable). All of it outlives a
+ * fix-mode exit and dies with the piece (fixModePrewarm resets it per load).
+ */
+let _corrections = createCorrections();
+let _pristine = null; // { on: number[], off: number[] } — as-loaded ref tables
+let _marks = []; // sorted reference times
+/** Base-alignment provenance for header.corrections (item-T's data). */
+let _correctionsBase = null;
+/** The as-loaded correction record, for Revert and dirtiness (JSON of
+ *  {a: anchors, g: gaps}; "no record" is the empty pair, not null). */
+let _loadedCorrectionsJson = JSON.stringify({ a: [], g: [] });
+/** The one in-flight fix_realign request, or null (the worker is serial). */
+let _pendingRealign = null;
+/** The last off-screen undo/redo announcement (test surface). */
+let _lastAnnounce = null;
+let _announceTimer = null;
+/** Audition L/R balance, −1 (recording only) … +1 (synth only); 0 = even.
+ *  A listening-ergonomics preference, so it survives sessions and pieces. */
+let _audBalance = 0;
 
 // ---------------------------------------------------------------------------
 // Entry affordance
@@ -249,6 +311,12 @@ export function isFixModeActive() {
   return !!_fix;
 }
 
+/** Whether a fix's segment realign is in flight (undo/redo must wait: the
+ *  commit's continuation still holds the data it will splice). */
+export function fixRealignBusy() {
+  return !!_fix?.realignBusy;
+}
+
 /** Let the just-shown loading overlay actually paint before synchronous
  *  Verovio work blocks the thread. rAF suspends in hidden panes, so a plain
  *  timeout races it as the backstop. */
@@ -302,6 +370,14 @@ export async function enterFixMode(entryFile) {
     resizeDebounce: null,
     lastPaneSize: null,
     raf: 0,
+    aud: null, // the L/R audition (built by the bootstrap's decode)
+    drag: null, // an in-progress tick drag, or null
+    engineReady: false, // fix_ready arrived with a matching event count
+    realignBusy: false,
+    soundingGroupIx: null,
+    followFloor: null, // { ix, untilT } — holds the follower after a seek
+    keydownHandler: null,
+    lastCommit: null, // test surface: what the last anchor commit did
   };
   const f = _fix;
 
@@ -388,9 +464,16 @@ export async function enterFixMode(entryFile) {
   f.resizeObserver.observe(f.els.scoreEl);
   f.resizeObserver.observe(f.els.stripWs);
 
+  // Fix mode owns the keyboard while it is open: listen.js's global handler
+  // stands down via isFixModeActive() (the conscious resolution of the
+  // increment-2 deferral), and this document-level handler takes over.
+  // Ctrl+Z / Ctrl+Shift+Z stay with listen.js — undo is GLOBAL by ruling.
+  f.keydownHandler = (e) => _onFixKeydown(e);
+  document.addEventListener("keydown", f.keydownHandler);
+
   // The engine bootstrap (decode + fix_begin) runs in the background; the
-  // screen is usable for inspection while it loads, and increment 3's
-  // realign waits on it.
+  // screen is usable for inspection while it loads, and the loop's realign
+  // and audition wait on it.
   _bootstrap().catch((e) => {
     console.error("fix-mode bootstrap failed:", e);
     _setChip("error", `Correction engine unavailable: ${e.message}`);
@@ -403,6 +486,16 @@ function _teardownFixDom(f) {
   f.resizeObserver?.disconnect();
   clearTimeout(f.resizeDebounce);
   if (f.raf) cancelAnimationFrame(f.raf);
+  if (f.keydownHandler) {
+    document.removeEventListener("keydown", f.keydownHandler);
+    f.keydownHandler = null;
+  }
+  _endDrag(f);
+  _auditionDispose(f);
+  if (_pendingRealign) {
+    _pendingRealign.reject(new Error("fix mode exited"));
+    _pendingRealign = null;
+  }
   try {
     f.stripWS?.destroy();
   } catch (_) {}
@@ -464,7 +557,41 @@ export function fixModeOnPieceReset() {
  */
 export function fixModePrewarm() {
   _derived = null;
+  // A (re)loaded piece invalidates the piece-scoped correction state too.
+  _corrections = createCorrections();
+  _pristine = null;
+  _marks = [];
+  _lastMarkJumpT = null;
+  _lastAnnounce = null;
+  _correctionsBase = null;
+  _loadedCorrectionsJson = JSON.stringify({ a: [], g: [] });
+  if (_pendingRealign) {
+    _pendingRealign.reject(new Error("piece replaced"));
+    _pendingRealign = null;
+  }
   if (!_fixModeParamPresent()) return;
+  // A previously saved correction record resumes: its anchors join the live
+  // model so this session's edits EXTEND the durable record instead of
+  // clobbering it on the next save. (Without ?fixMode the record just rides
+  // through loadedAlignmentJSON untouched.)
+  const record = loadedAlignmentJSON?.header?.corrections;
+  if (record) {
+    try {
+      const { state, base } = deserializeCorrections(record);
+      _corrections = state;
+      _correctionsBase = base;
+      _loadedCorrectionsJson = JSON.stringify({
+        a: _corrections.anchors,
+        g: _corrections.gaps,
+      });
+      console.log(
+        `fix mode: resumed ${state.anchors.length} anchors and ` +
+          `${state.gaps.length} gaps from header.corrections`,
+      );
+    } catch (e) {
+      console.warn("fix mode: could not resume header.corrections —", e.message);
+    }
+  }
   clearTimeout(_prewarmTimer);
   _schedulePrewarm(2000, 20);
 }
@@ -646,6 +773,19 @@ function _groupRefTime(group) {
   return scoreAlignment.ref_onset[group.eventIxs[0]];
 }
 
+/** The reference recording's duration — the correction model's upper corner.
+ *  The decoded audition is exact; the worker's fix_ready and the stored strip
+ *  peaks agree to within a frame, which is all the corner bound needs. */
+function _refDuration() {
+  const f = _fix;
+  return (
+    f?.aud?.duration ??
+    f?.workerEvents?.ref_duration ??
+    f?.stripSource?.duration ??
+    0
+  );
+}
+
 // ---------------------------------------------------------------------------
 // DOM skeleton
 // ---------------------------------------------------------------------------
@@ -665,6 +805,41 @@ function _buildDom(contentEl, waveformsEl) {
   exitBtn.id = "fix-exit";
   exitBtn.textContent = "✕ Exit correction mode";
   exitBtn.addEventListener("click", () => exitFixMode());
+
+  const playBtn = document.createElement("button");
+  playBtn.type = "button";
+  playBtn.id = "fix-play";
+  playBtn.textContent = "⏵";
+  playBtn.disabled = true;
+  playBtn.title =
+    "Play audition (left ear: the recording, right ear: the aligned synth) — Space";
+  playBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  playBtn.addEventListener("click", () => _audToggle());
+
+  // Real-time L/R balance: left ear = the recording, right ear = the synth.
+  const balance = document.createElement("span");
+  balance.className = "fix-balance";
+  balance.title =
+    "Audition balance — left ear: the recording, right ear: the aligned synth";
+  const balanceL = document.createElement("span");
+  balanceL.textContent = "rec";
+  const balanceInput = document.createElement("input");
+  balanceInput.type = "range";
+  balanceInput.min = "-100";
+  balanceInput.max = "100";
+  balanceInput.step = "5";
+  balanceInput.value = String(Math.round(_audBalance * 100));
+  balanceInput.setAttribute("aria-label", "Audition balance (recording ↔ synth)");
+  const balanceR = document.createElement("span");
+  balanceR.textContent = "synth";
+  balanceInput.addEventListener("input", () => {
+    _audBalance = Number(balanceInput.value) / 100;
+    if (_fix?.aud) _applyAudBalance(_fix.aud);
+  });
+  // Give the keyboard back to the fix screen once the thumb is released
+  // (a focused range input would otherwise swallow the arrow keys).
+  balanceInput.addEventListener("pointerup", () => balanceInput.blur());
+  balance.append(balanceL, balanceInput, balanceR);
 
   const title = document.createElement("span");
   title.className = "fix-title";
@@ -692,7 +867,7 @@ function _buildDom(contentEl, waveformsEl) {
   chip.className = "fix-chip";
   chip.dataset.state = "idle";
 
-  header.append(exitBtn, title, pageCtl, chip);
+  header.append(exitBtn, playBtn, balance, title, pageCtl, chip);
 
   const score = document.createElement("div");
   score.className = "fix-score";
@@ -710,7 +885,11 @@ function _buildDom(contentEl, waveformsEl) {
   stripWs.className = "fix-strip-ws";
   const ticks = document.createElement("canvas");
   ticks.className = "fix-ticks";
-  ticks.addEventListener("click", (e) => _onTickClick(e));
+  ticks.addEventListener("mousedown", (e) => _onTickMouseDown(e));
+  // The playhead (and drag ghosting) repaints every frame during playback; it
+  // gets its own canvas so the tick/connector rebuild stays selection-rate.
+  const playhead = document.createElement("canvas");
+  playhead.className = "fix-playhead";
   const skipPrev = document.createElement("button");
   skipPrev.type = "button";
   skipPrev.className = "fix-onset-skip fix-onset-prev";
@@ -725,7 +904,7 @@ function _buildDom(contentEl, waveformsEl) {
   skipNext.addEventListener("mousedown", (e) => e.preventDefault());
   skipPrev.addEventListener("click", () => _skipOnset(-1));
   skipNext.addEventListener("click", () => _skipOnset(1));
-  strip.append(stripWs, ticks, skipPrev, skipNext);
+  strip.append(stripWs, ticks, playhead, skipPrev, skipNext);
 
   // Connector overlay spans the whole fix container so a polyline can run
   // from a note in the score pane down across the gap into the strip.
@@ -753,13 +932,19 @@ function _buildDom(contentEl, waveformsEl) {
     strip,
     stripWs,
     ticks,
+    playhead,
     conn,
     pageLabel,
     chip,
     title,
+    playBtn,
     loading,
     loadingText,
   };
+  f.playheadColor =
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--color-playhead")
+      .trim() || "#2563eb";
 }
 
 function _showFixLoading(text) {
@@ -899,6 +1084,7 @@ function _renderPage(page) {
   f.els.pageLabel.textContent = `Page ${page} / ${f.pageCount}`;
   _updateStripWindow();
   _scheduleRedraw();
+  _schedulePlayheadFrame();
 }
 
 /**
@@ -1019,11 +1205,12 @@ function _applyUnderlaySelection() {
 
 function _turnPage(delta) {
   const f = _fix;
+  _commitPendingNudge();
   const page = Math.min(Math.max(1, f.page + delta), f.pageCount);
   if (page === f.page) return;
   // Keep the selection meaningful: land it on the new page's first onset.
   const first = f.groups.findIndex((g) => g.page === page);
-  if (first !== -1) _select(first);
+  if (first !== -1) _select(first, { seek: true });
   else _renderPage(page);
 }
 
@@ -1196,20 +1383,26 @@ function _redrawOverlays() {
   }
   const pageGroups = _groupsOnPage(f.page);
   const selGroup = f.groups[f.selGroupIx] || null;
+  const dragGroup =
+    f.drag && f.drag.moved && f.drag.editable
+      ? f.groups[f.drag.groupIx]
+      : null;
   let ticksDrawn = 0;
 
   for (const g of pageGroups) {
-    const t = _groupRefTime(g);
+    const dragging = g === dragGroup;
+    const t = dragging ? f.drag.curT : _groupRefTime(g);
     if (!Number.isFinite(t)) continue;
     const x = _timeToStripX(t);
     if (x === null) continue;
     const selected = g === selGroup;
-    // Tick: the vertical line on the strip — increment 3's drag handle.
+    const anchor = findAnchor(_corrections, g.eventIxs[0]);
+    // Tick: the vertical line on the strip — the loop's drag handle.
     if (x >= -1 && x <= w + 1) {
       ctx.beginPath();
-      ctx.lineWidth = selected ? 2 : 1;
+      ctx.lineWidth = selected || anchor ? 2 : 1;
       ctx.strokeStyle = tickColor;
-      ctx.globalAlpha = selected ? 0.95 : 0.35;
+      ctx.globalAlpha = selected || dragging ? 0.95 : anchor ? 0.7 : 0.35;
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
       ctx.stroke();
@@ -1223,7 +1416,47 @@ function _redrawOverlays() {
         ctx.closePath();
         ctx.fill();
       }
+      if (anchor) {
+        // Anchored onsets carry a base glyph: solid square for a drag anchor,
+        // open square for an approve (zero-drag) anchor.
+        ctx.globalAlpha = 0.95;
+        ctx.beginPath();
+        ctx.rect(x - 3.5, h - 9, 7, 7);
+        if (anchor.kind === "approve") {
+          ctx.lineWidth = 1.6;
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = tickColor;
+          ctx.fill();
+        }
+      }
       ticksDrawn++;
+    }
+    if (dragging) {
+      // Ghost of the pre-drag position plus a live delta readout.
+      const gx = _timeToStripX(f.drag.startT);
+      if (gx !== null && gx >= -1 && gx <= w + 1) {
+        ctx.beginPath();
+        ctx.setLineDash([3, 3]);
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = tickColor;
+        ctx.moveTo(gx, 0);
+        ctx.lineTo(gx, h);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      const delta = f.drag.curT - f.drag.startT;
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = tickColor;
+      ctx.font = "11px sans-serif";
+      ctx.textAlign = x > w - 60 ? "right" : "left";
+      ctx.fillText(
+        `${delta >= 0 ? "+" : ""}${delta.toFixed(3)} s`,
+        x + (x > w - 60 ? -6 : 6),
+        14,
+      );
+      ctx.textAlign = "left";
     }
     ctx.globalAlpha = 1;
     // Connector continuation: the in-score half lives INSIDE the page SVG
@@ -1246,11 +1479,33 @@ function _redrawOverlays() {
       conn.appendChild(line);
     }
   }
+  // MARKS: flagged misalignments on the audio timeline (diamond flags along
+  // the strip top). They survive refills by living in time, not in events.
+  ctx.fillStyle = "#d97706";
+  ctx.globalAlpha = 0.9;
+  for (const mt of _marks) {
+    const x = _timeToStripX(mt);
+    if (x === null || x < -6 || x > w + 6) continue;
+    ctx.beginPath();
+    ctx.moveTo(x, 2);
+    ctx.lineTo(x + 5, 8);
+    ctx.lineTo(x, 14);
+    ctx.lineTo(x - 5, 8);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
   f.ticksOnPage = ticksDrawn;
 }
 
-/** Select onset group `ix`, turning the page to it when needed. */
-function _select(ix) {
+/**
+ * Select onset group `ix`, turning the page to it when needed. A user gesture
+ * passes `seek: true` — seek-to-selected-note, the orientation ruling: the
+ * audition playhead lands just before the onset so pressing (or continuing)
+ * play audits exactly the selected moment. The playback follower selects with
+ * `seek: false` (it IS the playhead) and the entry/resize paths do too.
+ */
+function _select(ix, { seek = false } = {}) {
   const f = _fix;
   if (!f.groups.length) return;
   ix = Math.min(Math.max(0, ix), f.groups.length - 1);
@@ -1262,6 +1517,7 @@ function _select(ix) {
   // Score highlight: clear the previous onset's notes, mark this one's.
   f.els.scoreSvg.querySelectorAll(".fix-note-sel").forEach((el) => {
     el.classList.remove("fix-note-sel");
+    el.classList.remove("fix-note-sounding");
   });
   for (const id of g.ids) {
     const el = f.pageIndex.get(id);
@@ -1269,15 +1525,27 @@ function _select(ix) {
   }
   _applyUnderlaySelection();
   _scheduleRedraw();
+  if (seek) {
+    const t = _groupRefTime(g);
+    if (Number.isFinite(t) && f.aud?.ready) {
+      // Hold the follower until the playhead reaches the selected onset, or
+      // the very next preroll frame would re-select the PREVIOUS group and
+      // yank the user's choice away.
+      f.followFloor = { ix, untilT: t };
+      _audSeek(Math.max(0, t - SEEK_PREROLL_SEC));
+    }
+  }
 }
 
 function _skipOnset(delta) {
   const f = _fix;
-  _select(f.selGroupIx + delta);
+  _commitPendingNudge();
+  _select(f.selGroupIx + delta, { seek: true });
 }
 
 function _onScoreClick(e) {
   const f = _fix;
+  _commitPendingNudge();
   // Walk up from the clicked SVG node to an element the page index knows,
   // then to the onset group that sounds it.
   let el = e.target;
@@ -1285,7 +1553,7 @@ function _onScoreClick(e) {
     if (el.id && f.pageIndex.has(el.id)) {
       const ix = f.groups.findIndex((g) => g.ids.includes(el.id));
       if (ix !== -1) {
-        _select(ix);
+        _select(ix, { seek: true });
         return;
       }
     }
@@ -1293,10 +1561,9 @@ function _onScoreClick(e) {
   }
 }
 
-function _onTickClick(e) {
+/** The onset group whose tick is nearest to canvas-x, within the hit radius. */
+function _tickHit(x) {
   const f = _fix;
-  const rect = f.els.ticks.getBoundingClientRect();
-  const x = e.clientX - rect.x;
   let best = -1;
   let bestDist = TICK_HIT_PX + 1;
   const pageGroups = _groupsOnPage(f.page);
@@ -1310,7 +1577,173 @@ function _onTickClick(e) {
       best = f.groups.indexOf(g);
     }
   }
-  if (best !== -1) _select(best);
+  return best;
+}
+
+// ---------------------------------------------------------------------------
+// Tick dragging — the correction gesture (a drag lays a hard anchor)
+// ---------------------------------------------------------------------------
+
+/**
+ * The dragged tick's allowed time range: strictly between the neighbouring
+ * anchors (open interval, ANCHOR_EPS inside), non-strictly within the piece
+ * corners — the same bounds correction-model's validateAnchorTime enforces,
+ * applied as a clamp so the gesture can never build an invalid anchor.
+ */
+function _dragBounds(groupIx) {
+  const f = _fix;
+  const i = f.groups[groupIx].eventIxs[0];
+  const { prev, next } = neighbourAnchors(_corrections, i);
+  const own = findAnchor(_corrections, i);
+  const dur = _refDuration();
+  // The corners stay ANCHOR_EPS inside [0, duration] too: an anchor at
+  // exactly 0 or exactly the duration makes its corner segment a zero-width
+  // span, which the worker rejects as reversed.
+  const lo = prev && prev !== own ? prev.t + ANCHOR_EPS_SEC : ANCHOR_EPS_SEC;
+  const hi =
+    next && next !== own ? next.t - ANCHOR_EPS_SEC : dur - ANCHOR_EPS_SEC;
+  return { lo, hi: Math.max(lo, hi) };
+}
+
+function _onTickMouseDown(e) {
+  const f = _fix;
+  _commitPendingNudge();
+  if (e.button !== 0 || f.drag) return;
+  const rect = f.els.ticks.getBoundingClientRect();
+  const x = e.clientX - rect.x;
+  const hit = _tickHit(x);
+  if (hit === -1) return;
+  e.preventDefault();
+  // Editing needs the engine (auto-realign on release); before it is ready a
+  // mousedown is only ever a click-select. Deliberately NOT the chip state:
+  // a failed realign leaves an error chip standing, but the engine session
+  // is intact and the next drag must stay possible (latching editing off on
+  // the first error is how the first real-corpus run got stuck).
+  const editable = f.engineReady && !f.realignBusy;
+  const t0 = _groupRefTime(f.groups[hit]);
+  f.drag = {
+    groupIx: hit,
+    startX: e.clientX,
+    startT: t0,
+    curT: t0,
+    moved: false,
+    editable,
+    bounds: editable ? _dragBounds(hit) : null,
+    onMove: (ev) => _onTickMouseMove(ev),
+    onUp: (ev) => _onTickMouseUp(ev),
+  };
+  window.addEventListener("mousemove", f.drag.onMove);
+  window.addEventListener("mouseup", f.drag.onUp);
+}
+
+function _onTickMouseMove(e) {
+  const f = _fix;
+  const d = f?.drag;
+  if (!d) return;
+  if (!d.moved && Math.abs(e.clientX - d.startX) < DRAG_THRESHOLD_PX) return;
+  d.moved = true;
+  if (!d.editable) return;
+  const rect = f.els.ticks.getBoundingClientRect();
+  const t = _stripXToTime(e.clientX - rect.x);
+  if (t === null) return;
+  d.curT = Math.min(Math.max(t, d.bounds.lo), d.bounds.hi);
+  _scheduleRedraw();
+}
+
+function _onTickMouseUp(e) {
+  const f = _fix;
+  const d = f?.drag;
+  if (!d) return;
+  _endDrag(f);
+  if (!d.moved) {
+    // A plain click: select (and seek to) the grabbed onset.
+    _select(d.groupIx, { seek: true });
+    return;
+  }
+  if (!d.editable || !Number.isFinite(d.curT) || d.curT === d.startT) {
+    _scheduleRedraw();
+    return;
+  }
+  _select(d.groupIx, { seek: false });
+  _commitAnchor(d.groupIx, d.curT, "drag").catch((err) => {
+    console.error("fix mode: drag commit failed:", err);
+  });
+}
+
+/** Detach a drag's window listeners (teardown-safe). */
+function _endDrag(f) {
+  const d = f.drag;
+  clearTimeout(_nudgeTimer);
+  if (!d) return;
+  if (d.onMove) window.removeEventListener("mousemove", d.onMove);
+  if (d.onUp) window.removeEventListener("mouseup", d.onUp);
+  f.drag = null;
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard nudging — a drag by arrows (Shift = coarse, Shift+Alt = fine)
+// ---------------------------------------------------------------------------
+
+/**
+ * Move the selected onset's alignment point by one step. Nudges accumulate
+ * into the SAME provisional drag state the mouse gesture uses (ghost + delta
+ * readout on the strip) and commit as one anchor after a quiet period —
+ * keyboard-release has no event, so the pause is the "release".
+ */
+function _nudge(dir, fine) {
+  const f = _fix;
+  if (!f || !f.engineReady || f.realignBusy) return;
+  if (f.drag && !f.drag.keyboard) return; // a mouse drag owns the gesture
+  const g = f.groups[f.selGroupIx];
+  if (!g) return;
+  if (!f.drag) {
+    const t0 = _groupRefTime(g);
+    if (!Number.isFinite(t0)) return;
+    f.drag = {
+      groupIx: f.selGroupIx,
+      startT: t0,
+      curT: t0,
+      moved: true,
+      editable: true,
+      keyboard: true,
+      bounds: _dragBounds(f.selGroupIx),
+      onMove: null,
+      onUp: null,
+    };
+  }
+  const d = f.drag;
+  const step = (fine ? NUDGE_FINE_SEC : NUDGE_COARSE_SEC) * dir;
+  d.curT = Math.min(Math.max(d.curT + step, d.bounds.lo), d.bounds.hi);
+  _scheduleRedraw();
+  clearTimeout(_nudgeTimer);
+  _nudgeTimer = setTimeout(() => _commitPendingNudge(), _nudgeCommitMs);
+}
+
+/** Commit an accumulated keyboard nudge now (also called before any other
+ *  gesture, so a pending nudge can never be silently abandoned). */
+function _commitPendingNudge() {
+  const f = _fix;
+  clearTimeout(_nudgeTimer);
+  const d = f?.drag;
+  if (!d?.keyboard) return;
+  f.drag = null;
+  if (!Number.isFinite(d.curT) || d.curT === d.startT) {
+    _scheduleRedraw();
+    return;
+  }
+  _commitAnchor(d.groupIx, d.curT, "drag").catch((err) => {
+    console.error("fix mode: nudge commit failed:", err);
+  });
+}
+
+/** Escape during a pending nudge drops it (the tick springs back). */
+function _cancelPendingNudge() {
+  const f = _fix;
+  clearTimeout(_nudgeTimer);
+  if (f?.drag?.keyboard) {
+    f.drag = null;
+    _scheduleRedraw();
+  }
 }
 
 async function _onResize() {
@@ -1338,6 +1771,957 @@ async function _onResize() {
   _renderPage(g ? g.page : 1);
   _select(f.selGroupIx);
   _hideFixLoading();
+}
+
+// ---------------------------------------------------------------------------
+// The L/R audition (left ear = the recording, right = the corrected-map synth)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the audition: one stereo AudioBuffer at the aligner's rate whose left
+ * channel is the decoded reference recording and whose right channel is the
+ * score synth rendered THROUGH THE CURRENT CORRECTED MAP — every MIDI note
+ * (chord voices included) plays from its event's live ref_onset to its
+ * ref_offset, so the two ears are sample-locked by construction (§13 ruling
+ * 2, the stand-in tool's mix, live in-app). Misalignment is heard as
+ * inter-ear flams; after each fix only the changed span re-renders.
+ *
+ * The synchronous prefix copies the samples into the buffer BEFORE the caller
+ * transfers them to the worker; the synth render then proceeds in yielded
+ * chunks so a large score never freezes the screen.
+ */
+function _buildAudition(f, refSamples) {
+  const refOff = scoreAlignment.ref_offset;
+  if (!Array.isArray(refOff)) {
+    console.warn("fix mode: no ref_offset table — audition disabled");
+    return Promise.resolve();
+  }
+  // Every MIDI note maps to its event index by the SAME (start, end)-tick
+  // dedup + sort that built the event table, so chord voices ride their
+  // event's corrected times.
+  const { notes } = parseMidi(f.midiBytes);
+  const keys = new Set();
+  const uniq = [];
+  for (const n of notes) {
+    const k = n.s + ":" + n.e;
+    if (!keys.has(k)) {
+      keys.add(k);
+      uniq.push([n.s, n.e, k]);
+    }
+  }
+  uniq.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const ixByKey = new Map(uniq.map((u, ix) => [u[2], ix]));
+  if (uniq.length !== f.nEvents) {
+    console.warn(
+      `fix mode: audition event table disagrees (${uniq.length} vs ` +
+        `${f.nEvents}) — audition disabled`,
+    );
+    return Promise.resolve();
+  }
+  const audNotes = notes.map((n) => ({
+    p: n.p,
+    v: n.v,
+    ix: ixByKey.get(n.s + ":" + n.e),
+  }));
+
+  // A default-rate context resamples on output; the buffer itself lives at
+  // FIX_SR so positions stay sample-locked to the aligner's timeline.
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const n = refSamples.length;
+  const buffer = ctx.createBuffer(2, n, FIX_SR);
+  buffer.copyToChannel(refSamples, 0);
+  // Persistent per-ear gain graph: source → splitter → gainL/gainR → merger
+  // → out. The gains move in real time from the header's balance slider.
+  const splitter = ctx.createChannelSplitter(2);
+  const gainL = ctx.createGain();
+  const gainR = ctx.createGain();
+  const merger = ctx.createChannelMerger(2);
+  splitter.connect(gainL, 0);
+  splitter.connect(gainR, 1);
+  gainL.connect(merger, 0, 0);
+  gainR.connect(merger, 0, 1);
+  merger.connect(ctx.destination);
+  f.aud = {
+    ctx,
+    buffer,
+    splitter,
+    gainL,
+    gainR,
+    synthCh: new Float32Array(n), // raw synth; master gain applied on copy
+    duration: n / FIX_SR,
+    notes: audNotes,
+    gain: 1,
+    ready: false,
+    rendering: true,
+    playing: false,
+    pos: 0,
+    startedAt: 0,
+    srcToken: 0,
+    src: null,
+    raf: 0,
+    lastRenderWindow: null,
+  };
+  _applyAudBalance(f.aud);
+  return _finishAuditionRender(f);
+}
+
+/** Constant-sum pan: the boosted ear stays at 1, the other attenuates. */
+function _applyAudBalance(a) {
+  a.gainL.gain.value = _audBalance > 0 ? 1 - _audBalance : 1;
+  a.gainR.gain.value = _audBalance < 0 ? 1 + _audBalance : 1;
+}
+
+async function _finishAuditionRender(f) {
+  const a = f.aud;
+  const STEP_SEC = 5;
+  for (let s = 0; s < a.duration; s += STEP_SEC) {
+    if (_fix !== f || f.aud !== a) return;
+    _renderSynthWindow(f, s, Math.min(a.duration, s + STEP_SEC));
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  if (_fix !== f || f.aud !== a) return;
+  // Master gain from the full render, kept for every later window re-render
+  // so amplitude never steps at a re-render boundary.
+  let peak = 0;
+  for (let i = 0; i < a.synthCh.length; i++) {
+    const v = Math.abs(a.synthCh[i]);
+    if (v > peak) peak = v;
+  }
+  a.gain = peak > 1e-6 ? 0.9 / peak : 1;
+  _copySynthToBuffer(f, 0, a.duration);
+  a.rendering = false;
+  a.ready = true;
+  _updatePlayBtn();
+  _schedulePlayheadFrame();
+}
+
+/** (Re)render the raw synth channel for [t0, t1): zero the window, then add
+ *  every note's contribution clipped to it — envelope and phase are
+ *  deterministic in the distance from the note's own start, so a clipped
+ *  re-render reproduces the identical samples. */
+function _renderSynthWindow(f, t0, t1) {
+  const a = f.aud;
+  const out = a.synthCh;
+  const iLo = Math.max(0, Math.floor(t0 * FIX_SR));
+  const iHi = Math.min(out.length, Math.ceil(t1 * FIX_SR));
+  if (iHi <= iLo) return;
+  out.fill(0, iLo, iHi);
+  const refOn = scoreAlignment.ref_onset;
+  const refOff = scoreAlignment.ref_offset;
+  const ATK_S = Math.round(0.01 * FIX_SR);
+  const REL_S = Math.round(0.03 * FIX_SR);
+  for (const note of a.notes) {
+    const ts = refOn[note.ix];
+    if (!Number.isFinite(ts)) continue;
+    let te = refOff[note.ix];
+    if (!Number.isFinite(te) || te <= ts) te = ts + 0.02;
+    const noteDur = Math.max(0.02, te - ts);
+    const iStart = Math.round(ts * FIX_SR);
+    const iEnd = Math.min(out.length, Math.round((ts + noteDur) * FIX_SR));
+    const lo = Math.max(iStart, iLo);
+    const hi = Math.min(iEnd, iHi);
+    if (hi <= lo) continue;
+    const amp = (note.v / 127) * 0.12;
+    const phaseInc = (440 * Math.pow(2, (note.p - 69) / 12)) / FIX_SR;
+    const atkSamples = Math.min(ATK_S, Math.round(noteDur * 0.3 * FIX_SR));
+    const sustainEnd = Math.max(iStart + atkSamples, iEnd - REL_S);
+    let phase = ((lo - iStart) * phaseInc) % 1;
+    for (let i = lo; i < hi; i++) {
+      phase += phaseInc;
+      if (phase >= 1) phase -= 1;
+      const saw = 2 * phase - 1;
+      const si = i - iStart;
+      let env;
+      if (si < atkSamples) env = si / atkSamples;
+      else if (i >= sustainEnd) env = Math.max(0, (iEnd - i) / REL_S);
+      else env = 1;
+      out[i] += saw * amp * env;
+    }
+  }
+}
+
+/** Master-gained copy of a synth window into the stereo buffer's right ear.
+ *  copyToChannel (not getChannelData writes) so acquired-content semantics
+ *  can never leave a playing buffer stale. */
+function _copySynthToBuffer(f, t0, t1) {
+  const a = f.aud;
+  const iLo = Math.max(0, Math.floor(t0 * FIX_SR));
+  const iHi = Math.min(a.synthCh.length, Math.ceil(t1 * FIX_SR));
+  if (iHi <= iLo) return;
+  const scaled = new Float32Array(iHi - iLo);
+  for (let i = 0; i < scaled.length; i++) {
+    const v = a.synthCh[iLo + i] * a.gain;
+    scaled[i] = v > 1 ? 1 : v < -1 ? -1 : v;
+  }
+  a.buffer.copyToChannel(scaled, 1, iLo);
+}
+
+/** Re-render the right ear for the span a fix (or an undo hop) changed. */
+function _auditionRerender(t0, t1) {
+  const f = _fix;
+  const a = f?.aud;
+  if (!a?.ready) return;
+  const pad = 0.05;
+  t0 = Math.max(0, t0 - pad);
+  t1 = Math.min(a.duration, t1 + pad);
+  _renderSynthWindow(f, t0, t1);
+  _copySynthToBuffer(f, t0, t1);
+  a.lastRenderWindow = { t0, t1 };
+}
+
+function _auditionDispose(f) {
+  const a = f.aud;
+  if (!a) return;
+  f.aud = null;
+  if (a.raf) cancelAnimationFrame(a.raf);
+  a.srcToken++;
+  try {
+    a.src?.stop();
+  } catch (_) {}
+  a.src = null;
+  try {
+    a.ctx?.close();
+  } catch (_) {}
+}
+
+/** The audition playhead position in seconds. */
+function _audPos() {
+  const a = _fix?.aud;
+  if (!a) return 0;
+  return a.playing
+    ? Math.min(a.duration, a.pos + (a.ctx.currentTime - a.startedAt))
+    : a.pos;
+}
+
+function _audPlay() {
+  const f = _fix;
+  const a = f?.aud;
+  if (!a?.ready || a.playing) return;
+  if (a.ctx.state === "suspended") a.ctx.resume().catch(() => {});
+  if (a.pos >= a.duration - 0.01) a.pos = 0;
+  const src = a.ctx.createBufferSource();
+  src.buffer = a.buffer;
+  src.connect(a.splitter);
+  const token = ++a.srcToken;
+  src.onended = () => {
+    // Natural end of the recording (seek/pause disarm via the token).
+    if (_fix !== f || f.aud !== a || a.srcToken !== token) return;
+    a.playing = false;
+    a.pos = a.duration;
+    a.src = null;
+    _updatePlayBtn();
+    _schedulePlayheadFrame();
+  };
+  src.start(0, a.pos);
+  a.src = src;
+  a.startedAt = a.ctx.currentTime;
+  a.playing = true;
+  _updatePlayBtn();
+  _schedulePlayheadFrame();
+}
+
+function _audPause() {
+  const a = _fix?.aud;
+  if (!a?.playing) return;
+  a.pos = _audPos();
+  a.srcToken++;
+  try {
+    a.src?.stop();
+  } catch (_) {}
+  a.src = null;
+  a.playing = false;
+  _updatePlayBtn();
+}
+
+function _audSeek(t) {
+  const a = _fix?.aud;
+  if (!a?.ready) return;
+  t = Math.min(Math.max(0, t), a.duration);
+  if (a.playing) {
+    a.srcToken++;
+    try {
+      a.src?.stop();
+    } catch (_) {}
+    a.src = null;
+    a.playing = false;
+    a.pos = t;
+    _audPlay();
+  } else {
+    a.pos = t;
+    _schedulePlayheadFrame();
+  }
+}
+
+function _audToggle() {
+  const a = _fix?.aud;
+  if (!a?.ready) return;
+  if (a.playing) _audPause();
+  else _audPlay();
+}
+
+function _updatePlayBtn() {
+  const f = _fix;
+  if (!f) return;
+  f.els.playBtn.disabled = !f.aud?.ready;
+  f.els.playBtn.textContent = f.aud?.playing ? "⏸" : "⏵";
+}
+
+// ---------------------------------------------------------------------------
+// Playback following (the orientation loop)
+// ---------------------------------------------------------------------------
+
+/** One playhead frame; keeps itself scheduled while playing. */
+function _schedulePlayheadFrame() {
+  const f = _fix;
+  const a = f?.aud;
+  if (!a || a.raf) return;
+  a.raf = requestAnimationFrame(() => {
+    if (_fix !== f || f.aud !== a) return;
+    a.raf = 0;
+    _paintPlayhead();
+    if (a.playing) {
+      _followPlayback();
+      _schedulePlayheadFrame();
+    }
+  });
+}
+
+function _paintPlayhead() {
+  const f = _fix;
+  const canvas = f.els.playhead;
+  const w = f.els.strip.clientWidth;
+  const h = f.els.strip.clientHeight;
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  const a = f.aud;
+  if (!a?.ready) return;
+  const x = _timeToStripX(_audPos());
+  if (x === null || x < -1 || x > w + 1) return;
+  ctx.strokeStyle = f.playheadColor;
+  ctx.lineWidth = 1.5;
+  ctx.globalAlpha = 0.9;
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, h);
+  ctx.stroke();
+}
+
+/**
+ * The last onset group at or before reference time t (the groups' live ref
+ * onsets are monotone — an alignment invariant), or -1 before the first.
+ */
+function _groupIxAtTime(t) {
+  const gs = _fix.groups;
+  if (!gs.length || _groupRefTime(gs[0]) > t) return -1;
+  let lo = 0;
+  let hi = gs.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (_groupRefTime(gs[mid]) <= t) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/**
+ * Selection follows the sounding onset during playback (pages turn with it),
+ * and the sounding state — on at onset, off at offset, both read through the
+ * corrected map — drives the score highlight's emphasis. After an explicit
+ * seek-to-selected, the follower holds until the playhead reaches the
+ * selected onset so the preroll cannot yank the selection backwards.
+ */
+function _followPlayback() {
+  const f = _fix;
+  const t = _audPos();
+  const ix = _groupIxAtTime(t);
+  if (ix === -1) {
+    _setSounding(false);
+    return;
+  }
+  const floor = f.followFloor;
+  if (floor && t < floor.untilT - 1e-3) {
+    if (ix < floor.ix) {
+      _setSounding(false);
+      return;
+    }
+  } else if (floor) {
+    f.followFloor = null;
+  }
+  if (ix !== f.selGroupIx) _select(ix, { seek: false });
+  const g = f.groups[ix];
+  const refOff = scoreAlignment.ref_offset;
+  let offEnd = Infinity;
+  if (Array.isArray(refOff)) {
+    offEnd = -Infinity;
+    for (const e of g.eventIxs) {
+      const v = refOff[e];
+      if (Number.isFinite(v) && v > offEnd) offEnd = v;
+    }
+  }
+  _setSounding(t >= _groupRefTime(g) - 1e-3 && t <= offEnd);
+}
+
+function _setSounding(on) {
+  const f = _fix;
+  const target = on ? f.selGroupIx : null;
+  if (f.soundingGroupIx === target) return;
+  f.soundingGroupIx = target;
+  f.els.scoreSvg.querySelectorAll(".fix-note-sel").forEach((el) => {
+    el.classList.toggle("fix-note-sounding", on);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Anchor commits: model + worker realign + undo entry (the edit loop's core)
+// ---------------------------------------------------------------------------
+
+/** Ask the worker to refill one segment; single in-flight by construction. */
+function _realignSegmentViaWorker(segment, priorRef) {
+  const worker = _ensureWorker();
+  return new Promise((resolve, reject) => {
+    _pendingRealign = { resolve, reject };
+    worker.postMessage({
+      type: "fix_realign",
+      iA: segment.iA,
+      tA: segment.tA,
+      iB: segment.iB,
+      tB: segment.tB,
+      priorRef,
+    });
+  });
+}
+
+/**
+ * Commit an anchor on a group: 'drag' pins event i at a new time t and
+ * auto-realigns the flanking segments (worker fix_realign on cached features,
+ * stored params — no fast parameters); 'approve' pins the CURRENT value with
+ * zero data change. Both push one fix-anchor snapshot entry onto listen.js's
+ * unified undo stack and re-serialize header.corrections, the durable record.
+ * A drag ends with auto-replay from just before the previous anchor (RULED).
+ */
+async function _commitAnchor(groupIx, t, kind) {
+  const f = _fix;
+  if (!f || f.realignBusy || !Number.isFinite(t)) return;
+  const g = f.groups[groupIx];
+  if (!g) return;
+  const i = g.eventIxs[0];
+  const refOn = scoreAlignment.ref_onset;
+  const refOff = scoreAlignment.ref_offset;
+  if (!Array.isArray(refOff)) {
+    _announce("This alignment has no ref_offset table; corrections need one.");
+    return;
+  }
+  const dur = _refDuration();
+  if (!(dur > 0)) return;
+  const ctx = { nEvents: f.nEvents, refDuration: dur };
+  if (!_pristine) _pristine = { on: refOn.slice(), off: refOff.slice() };
+
+  const prevRecord = findAnchor(_corrections, i);
+  const entry = {
+    type: "fix-anchor",
+    i,
+    q: f.qOn[i],
+    t,
+    kind,
+    barHint: _barOfQuarter(f.qOn[i]),
+    prevAnchor: prevRecord ? { ...prevRecord } : null,
+    dissolvedGaps:
+      prevRecord?.kind === "gap" && kind !== "gap"
+        ? _corrections.gaps
+            .filter((gp) => gp.i === i || gp.i + 1 === i)
+            .map((gp) => ({ ...gp }))
+        : [],
+    selfBefore: { on: refOn[i], off: refOff[i] },
+    selfAfter: null,
+    segments: [],
+    anchorOffsets: [],
+    window: null,
+  };
+  let segs;
+  try {
+    segs = setAnchor(_corrections, { i, q: entry.q, t, kind, ts: Date.now() }, ctx)
+      .segments;
+  } catch (err) {
+    _announce(`Cannot anchor here: ${err.message}`);
+    return;
+  }
+
+  if (kind === "approve") {
+    entry.selfAfter = { ...entry.selfBefore };
+    f.lastCommit = { kind, i, t, realigned: 0, linear: 0 };
+    pushFixUndoEntry(entry);
+    _syncCorrectionsHeader();
+    _scheduleRedraw();
+    return;
+  }
+
+  f.realignBusy = true;
+  _setChip("realign", "Realigning around the fix…");
+  applyAnchorValue(refOn, i, t);
+  let linearFilled = 0;
+  let realigned = 0;
+  try {
+    for (const seg of segs) {
+      if (seg.interiorCount <= 0) continue;
+      const priorRef = refOn.slice(seg.iA + 1, seg.iB);
+      let res;
+      try {
+        const reply = await _realignSegmentViaWorker(seg, priorRef);
+        if (_fix !== f) throw new Error("fix mode exited during the realign");
+        res = reply.result;
+        realigned++;
+      } catch (err) {
+        // A span squeezed between close anchors can have too few analysis
+        // frames for DTW (the worker refuses honestly). At that scale a
+        // linear fill IS the right refill — interior events sit within a
+        // breath of both anchors — so the commit proceeds instead of
+        // failing the whole gesture (first real-corpus session got stuck
+        // exactly here, with every flanking segment eventually tiny).
+        if (_fix === f && /too short to align/.test(err?.message || "")) {
+          res = _linearFill(seg);
+          linearFilled++;
+        } else {
+          throw err;
+        }
+      }
+      const before = applySegment(refOn, refOff, seg, res.ref_onset, res.ref_offset);
+      entry.segments.push({
+        iA: seg.iA,
+        iB: seg.iB,
+        interiorCount: seg.interiorCount,
+        beforeOn: before.beforeOn,
+        beforeOff: before.beforeOff,
+        afterOn: res.ref_onset.slice(),
+        afterOff: res.ref_offset.slice(),
+      });
+      // The left-boundary anchor's own OFFSET falls inside the segment and
+      // comes back remapped; the dragged event's offset arrives this way too
+      // (as the right segment's iA) and is covered by selfBefore/selfAfter.
+      if (res.anchor_a_offset != null && seg.iA >= 0) {
+        if (seg.iA !== i) {
+          entry.anchorOffsets.push({
+            i: seg.iA,
+            before: refOff[seg.iA],
+            after: res.anchor_a_offset,
+          });
+        }
+        refOff[seg.iA] = res.anchor_a_offset;
+      }
+    }
+  } catch (err) {
+    _rollbackCommit(entry);
+    // The chip truncates; the console gets the whole story (a PythonError
+    // message carries the worker's full traceback).
+    console.error(
+      "fix mode: realign failed, fix rolled back — anchor",
+      { i, t, kind },
+      "segments",
+      segs,
+      "\n",
+      err,
+    );
+    if (_fix === f) {
+      f.realignBusy = false;
+      _setChip(
+        "error",
+        `Realign failed (${err.message}) — the fix was rolled back`,
+      );
+      _scheduleRedraw();
+    }
+    return;
+  }
+  entry.selfAfter = { on: refOn[i], off: refOff[i] };
+  entry.window = { t0: segs[0].tA, t1: segs[segs.length - 1].tB };
+  f.realignBusy = false;
+  f.lastCommit = { kind, i, t, realigned, linear: linearFilled };
+  pushFixUndoEntry(entry);
+  _syncCorrectionsHeader();
+  _setChip("ready", "Correction engine ready");
+  _auditionRerender(entry.window.t0, entry.window.t1);
+  _scheduleRedraw();
+  // Auto-replay from just before the previous anchor: the invalidated span
+  // starts there, so the ear re-checks exactly what the fix changed.
+  if (f.aud?.ready) {
+    f.followFloor = null;
+    _audSeek(Math.max(0, entry.window.t0 - REPLAY_PREROLL_SEC));
+    _audPlay();
+  }
+}
+
+/**
+ * Interior refill by proportion of score quarters — the honest answer for a
+ * span too small for DTW (interior events sit within a breath of both
+ * anchors, so the tempo curve between them is as good as linear). Same
+ * clip-into-span discipline as the worker's refill.
+ */
+function _linearFill(seg) {
+  const f = _fix;
+  const qA = seg.iA >= 0 ? f.qOn[seg.iA] : 0;
+  const qB = seg.iB < f.nEvents ? f.qOn[seg.iB] : f.qOff[f.nEvents - 1];
+  const scale = (seg.tB - seg.tA) / Math.max(qB - qA, 1e-9);
+  const clip = (v) => Math.min(Math.max(v, seg.tA), seg.tB);
+  const on = [];
+  const off = [];
+  for (let e = seg.iA + 1; e < seg.iB; e++) {
+    on.push(clip(seg.tA + (f.qOn[e] - qA) * scale));
+    off.push(clip(seg.tA + (f.qOff[e] - qA) * scale));
+  }
+  return { ref_onset: on, ref_offset: off, anchor_a_offset: null, hop: 0 };
+}
+
+/** Reverse a partially applied commit (worker error, exit mid-flight). */
+function _rollbackCommit(entry) {
+  const refOn = scoreAlignment?.ref_onset;
+  const refOff = scoreAlignment?.ref_offset;
+  if (!refOn || !refOff) return;
+  for (const s of entry.segments) {
+    for (let k = 0; k < s.interiorCount; k++) {
+      refOn[s.iA + 1 + k] = s.beforeOn[k];
+      refOff[s.iA + 1 + k] = s.beforeOff[k];
+    }
+  }
+  for (const ao of entry.anchorOffsets) refOff[ao.i] = ao.before;
+  refOn[entry.i] = entry.selfBefore.on;
+  refOff[entry.i] = entry.selfBefore.off;
+  _restoreAnchorState(entry);
+}
+
+/** Put the model back to its pre-entry state (shared by rollback and undo). */
+function _restoreAnchorState(entry) {
+  const at = _corrections.anchors.findIndex((a) => a.i === entry.i);
+  if (at !== -1) _corrections.anchors.splice(at, 1);
+  if (entry.prevAnchor) {
+    const a = { ...entry.prevAnchor };
+    const ins = _corrections.anchors.findIndex((x) => x.i > a.i);
+    if (ins === -1) _corrections.anchors.push(a);
+    else _corrections.anchors.splice(ins, 0, a);
+  }
+  for (const gp of entry.dissolvedGaps || []) {
+    if (!_corrections.gaps.some((x) => x.i === gp.i)) {
+      _corrections.gaps.push({ ...gp });
+      _corrections.gaps.sort((a, b) => a.i - b.i);
+    }
+  }
+  _syncCorrectionsHeader();
+}
+
+/** Keep header.corrections — the durable hand-correction record — in step. */
+function _syncCorrectionsHeader() {
+  const header = loadedAlignmentJSON?.header;
+  if (!header) return;
+  if (!_corrections.anchors.length && !_corrections.gaps.length) {
+    delete header.corrections;
+    return;
+  }
+  if (!_correctionsBase) {
+    _correctionsBase = {
+      verovioVersion: header.verovioVersion ?? null,
+      verovioOptions: header.verovioOptions ?? null,
+      alignmentParams: header.alignmentParams ?? null,
+    };
+  }
+  header.corrections = serializeCorrections(_corrections, _correctionsBase);
+}
+
+/** Rough bar number for a quarter position (announcement copy only). */
+function _barOfQuarter(q) {
+  let bar = 0;
+  for (const e of timemap) {
+    if (!("measureOn" in e)) continue;
+    if (e.qstamp > q + 1e-6) break;
+    bar++;
+  }
+  return bar || null;
+}
+
+// ---------------------------------------------------------------------------
+// Global undo integration (listen.js's unified stack calls these)
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply the UNDO of a fix-anchor entry: restore the before-values (snapshot
+ * semantics — never the worker) and the model's previous anchor state. With
+ * fix mode open the affected onset is selected so the change is visible; with
+ * it closed the hop announces itself instead of changing data silently
+ * off-screen (the cluster-B nicety).
+ */
+export function applyFixCorrectionUndo(entry) {
+  const refOn = scoreAlignment?.ref_onset;
+  const refOff = scoreAlignment?.ref_offset;
+  if (!refOn) return;
+  if (entry.kind !== "approve" && Array.isArray(refOff)) {
+    for (const s of entry.segments) {
+      for (let k = 0; k < s.interiorCount; k++) {
+        refOn[s.iA + 1 + k] = s.beforeOn[k];
+        refOff[s.iA + 1 + k] = s.beforeOff[k];
+      }
+    }
+    for (const ao of entry.anchorOffsets) refOff[ao.i] = ao.before;
+    refOn[entry.i] = entry.selfBefore.on;
+    refOff[entry.i] = entry.selfBefore.off;
+  }
+  _restoreAnchorState(entry);
+  _afterHistoryHop(entry, "Undid");
+}
+
+/** Apply the REDO of a fix-anchor entry: the after-values and the anchor. */
+export function applyFixCorrectionRedo(entry) {
+  const refOn = scoreAlignment?.ref_onset;
+  const refOff = scoreAlignment?.ref_offset;
+  if (!refOn) return;
+  if (entry.kind !== "approve" && Array.isArray(refOff)) {
+    for (const s of entry.segments) {
+      for (let k = 0; k < s.interiorCount; k++) {
+        refOn[s.iA + 1 + k] = s.afterOn[k];
+        refOff[s.iA + 1 + k] = s.afterOff[k];
+      }
+    }
+    for (const ao of entry.anchorOffsets) refOff[ao.i] = ao.after;
+    refOn[entry.i] = entry.selfAfter.on;
+    refOff[entry.i] = entry.selfAfter.off;
+  }
+  // Re-lay the anchor (and re-dissolve any gap it had replaced).
+  const at = _corrections.anchors.findIndex((a) => a.i === entry.i);
+  if (at !== -1) _corrections.anchors.splice(at, 1);
+  for (const gp of entry.dissolvedGaps || []) {
+    _corrections.gaps = _corrections.gaps.filter((x) => x.i !== gp.i);
+  }
+  const a = { i: entry.i, q: entry.q, t: entry.t, kind: entry.kind, ts: null };
+  const ins = _corrections.anchors.findIndex((x) => x.i > a.i);
+  if (ins === -1) _corrections.anchors.push(a);
+  else _corrections.anchors.splice(ins, 0, a);
+  _syncCorrectionsHeader();
+  _afterHistoryHop(entry, "Redid");
+}
+
+function _afterHistoryHop(entry, verb) {
+  const f = _fix;
+  if (f) {
+    const ix = f.groups.findIndex((g) => g.eventIxs.includes(entry.i));
+    if (ix !== -1) _select(ix, { seek: false });
+    if (entry.window) _auditionRerender(entry.window.t0, entry.window.t1);
+    _scheduleRedraw();
+  } else {
+    const where = entry.barHint ? `near bar ${entry.barHint}` : `at event ${entry.i}`;
+    _announce(`${verb} alignment correction ${where}.`);
+  }
+}
+
+/** Transient toast for changes the user cannot currently see. */
+function _announce(text) {
+  _lastAnnounce = text;
+  let el = document.getElementById("fix-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "fix-toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.classList.add("fix-toast-show");
+  clearTimeout(_announceTimer);
+  _announceTimer = setTimeout(() => el.classList.remove("fix-toast-show"), 4000);
+}
+
+// ---------------------------------------------------------------------------
+// Revert integration (listen.js's "Revert all" includes fix corrections)
+// ---------------------------------------------------------------------------
+
+/** Whether fix-mode corrections have changed anything since the piece loaded. */
+export function fixCorrectionsDirty() {
+  if (_pristine) {
+    const on = scoreAlignment?.ref_onset || [];
+    const off = scoreAlignment?.ref_offset || [];
+    for (let k = 0; k < _pristine.on.length; k++) {
+      if (on[k] !== _pristine.on[k] || off[k] !== _pristine.off[k]) return true;
+    }
+  }
+  return (
+    JSON.stringify({ a: _corrections.anchors, g: _corrections.gaps }) !==
+    _loadedCorrectionsJson
+  );
+}
+
+/** Restore the as-loaded ref tables and correction record ("Revert all"). */
+export function fixRevertCorrections() {
+  if (_fix?.realignBusy) {
+    _announce("A realign is still running — try Revert again in a moment.");
+    return;
+  }
+  if (_pristine) {
+    const on = scoreAlignment?.ref_onset;
+    const off = scoreAlignment?.ref_offset;
+    if (on) {
+      for (let k = 0; k < _pristine.on.length; k++) {
+        on[k] = _pristine.on[k];
+        if (Array.isArray(off)) off[k] = _pristine.off[k];
+      }
+    }
+    _pristine = null;
+  }
+  const loaded = _loadedCorrectionsJson
+    ? JSON.parse(_loadedCorrectionsJson)
+    : { a: [], g: [] };
+  _corrections = { anchors: loaded.a, gaps: loaded.g };
+  _syncCorrectionsHeader();
+  const f = _fix;
+  if (f) {
+    if (f.aud?.ready) _auditionRerender(0, f.aud.duration);
+    _scheduleRedraw();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Marks (session QA flags on the audio timeline) + the fix-mode keyboard
+// ---------------------------------------------------------------------------
+
+/** M: lay a mark at the playhead (or the selected onset before the audition
+ *  is up); M near an existing mark clears it instead. */
+function _toggleMark() {
+  const f = _fix;
+  const g = f.groups[f.selGroupIx];
+  const t = f.aud?.ready ? _audPos() : g ? _groupRefTime(g) : null;
+  if (!Number.isFinite(t)) return;
+  const near = _marks.findIndex((m) => Math.abs(m - t) <= MARK_HIT_SEC);
+  if (near !== -1) _marks.splice(near, 1);
+  else {
+    _marks.push(t);
+    _marks.sort((a, b) => a - b);
+  }
+  _scheduleRedraw();
+}
+
+/** The mark the last N-jump landed on (its preroll parks the playhead BEFORE
+ *  the mark, so the next N must step from the mark itself, not the preroll). */
+let _lastMarkJumpT = null;
+
+/** N / Shift+N: skip to the next / previous mark (wrapping), selecting the
+ *  onset there and seeking just before it — the fix → replay → next-mark
+ *  loop's navigation half. */
+function _jumpMark(dir) {
+  const f = _fix;
+  if (!_marks.length) return;
+  const g = f.groups[f.selGroupIx];
+  const pos = f.aud?.ready ? _audPos() : g ? _groupRefTime(g) : 0;
+  let t = pos;
+  if (
+    _lastMarkJumpT !== null &&
+    pos >= _lastMarkJumpT - SEEK_PREROLL_SEC - 0.05 &&
+    pos <= _lastMarkJumpT + 0.05
+  ) {
+    t = _lastMarkJumpT;
+  }
+  let target;
+  if (dir > 0) {
+    target = _marks.find((m) => m > t + 0.05) ?? _marks[0];
+  } else {
+    const before = _marks.filter((m) => m < t - 0.05);
+    target = before.length ? before[before.length - 1] : _marks[_marks.length - 1];
+  }
+  _lastMarkJumpT = target;
+  const ix = _groupIxAtTime(target);
+  if (ix !== -1) _select(ix, { seek: false });
+  if (f.aud?.ready) {
+    f.followFloor = null;
+    _audSeek(Math.max(0, target - SEEK_PREROLL_SEC));
+  }
+  _scheduleRedraw();
+}
+
+/**
+ * Fix mode's keyboard (listen.js's global handler stands down while a fix
+ * session is open — see enterFixMode). Ctrl/Cmd combinations pass through:
+ * undo and redo stay global on listen.js's stack by ruling, and Ctrl+Arrow
+ * is macOS Mission Control's anyway (the page never sees it). Bare Alt+Arrow
+ * is deliberately left to the browser too (history navigation on
+ * Windows/Linux) — the nudge modifiers are Shift and Shift+Alt, the app's
+ * existing marker-nudge convention.
+ */
+function _onFixKeydown(e) {
+  const f = _fix;
+  if (!f) return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (
+    e.target.closest?.(
+      ".gm-modal, #settings-drawer, .lh-v6-drawer, .lh-v6-confirm-overlay",
+    )
+  ) {
+    return;
+  }
+  if (e.ctrlKey || e.metaKey) return;
+  const hadPendingNudge = !!f.drag?.keyboard;
+  let handled = true;
+  switch (e.code) {
+    case "Space":
+      if (e.altKey) {
+        handled = false;
+        break;
+      }
+      _commitPendingNudge();
+      _audToggle();
+      break;
+    case "ArrowLeft":
+    case "ArrowRight": {
+      const dir = e.code === "ArrowLeft" ? -1 : 1;
+      if (e.shiftKey) _nudge(dir, e.altKey);
+      else if (e.altKey) handled = false;
+      else _skipOnset(dir);
+      break;
+    }
+    case "ArrowUp":
+    case "ArrowDown":
+      if (e.shiftKey || e.altKey) {
+        handled = false;
+        break;
+      }
+      _turnPage(e.code === "ArrowUp" ? -1 : 1);
+      break;
+    case "Enter": {
+      if (e.altKey) {
+        handled = false;
+        break;
+      }
+      if (hadPendingNudge) {
+        // Enter on a floating nudge means "commit it now", not "approve".
+        _commitPendingNudge();
+        break;
+      }
+      const g = f.groups[f.selGroupIx];
+      if (g) {
+        _commitAnchor(f.selGroupIx, _groupRefTime(g), "approve").catch((err) =>
+          console.error("fix mode: approve failed:", err),
+        );
+      }
+      break;
+    }
+    case "KeyM":
+      if (e.altKey) {
+        handled = false;
+        break;
+      }
+      _commitPendingNudge();
+      _toggleMark();
+      break;
+    case "KeyN":
+      if (e.altKey) {
+        handled = false;
+        break;
+      }
+      _commitPendingNudge();
+      _jumpMark(e.shiftKey ? -1 : 1);
+      break;
+    case "Escape":
+      if (hadPendingNudge) _cancelPendingNudge();
+      else exitFixMode();
+      break;
+    default:
+      handled = false;
+  }
+  if (handled) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1411,11 +2795,28 @@ async function _bootstrap() {
   _buildStrip({ peaks: _peaksFromSamples(samples), duration });
   _scheduleRedraw();
 
+  // The audition copies the samples into its stereo buffer's left ear NOW —
+  // the transfer below detaches them. Its synth render then chunks along in
+  // the background; the play button arms when both ears are in.
+  const auditionDone = _buildAudition(f, samples);
+  auditionDone.catch((e) => {
+    console.error("fix-mode audition build failed:", e);
+  });
+
   _setChip("loading", "Preparing correction engine: loading alignment runtime…");
   const worker = _ensureWorker();
   worker.onmessage = (e) => {
-    if (!_fix || _fix !== f) return;
     const d = e.data;
+    // A pending realign owns the next fix_segment (or error) regardless of
+    // which session is showing — the resolver's caller re-checks the session.
+    if (_pendingRealign && (d.type === "fix_segment" || d.type === "error")) {
+      const p = _pendingRealign;
+      _pendingRealign = null;
+      if (d.type === "fix_segment") p.resolve(d);
+      else p.reject(new Error(d.message));
+      return;
+    }
+    if (!_fix || _fix !== f) return;
     if (d.type === "progress") {
       _setChip("loading", `Preparing correction engine: ${d.message}`);
     } else if (d.type === "fix_ready") {
@@ -1429,6 +2830,7 @@ async function _bootstrap() {
         return;
       }
       f.workerEvents = d.events;
+      f.engineReady = true;
       _setChip("ready", "Correction engine ready");
     } else if (d.type === "error") {
       _setChip("error", `Correction engine failed: ${d.message}`);
@@ -1454,15 +2856,25 @@ async function _bootstrap() {
 // ---------------------------------------------------------------------------
 
 export function fixTestState() {
+  const corrections = {
+    anchors: _corrections.anchors.map((a) => ({ ...a })),
+    gapCount: _corrections.gaps.length,
+    headerPresent: !!loadedAlignmentJSON?.header?.corrections,
+  };
   if (!_fix) {
     return {
       active: false,
       lastRefusal: _lastRefusal,
       prewarmReady: !!(_derived && _derived.pageCount),
       lastEntry: { ..._lastEntry },
+      corrections,
+      marks: [..._marks],
+      lastAnnounce: _lastAnnounce,
     };
   }
   const f = _fix;
+  const sel = f.groups[f.selGroupIx] || null;
+  const selT = sel ? _groupRefTime(sel) : null;
   return {
     active: true,
     lastRefusal: _lastRefusal,
@@ -1477,13 +2889,70 @@ export function fixTestState() {
     pageCount: f.pageCount,
     pageGroupCount: _groupsOnPage(f.page).length,
     selGroup: f.selGroupIx,
-    selQ: f.groups[f.selGroupIx]?.q ?? null,
-    selPage: f.groups[f.selGroupIx]?.page ?? null,
+    selQ: sel?.q ?? null,
+    selPage: sel?.page ?? null,
+    selEventIx: sel?.eventIxs[0] ?? null,
+    selT,
+    selTickX: Number.isFinite(selT) ? _timeToStripX(selT) : null,
     ticksOnPage: f.ticksOnPage ?? 0,
     connectorCount: f.els.conn?.childElementCount ?? 0,
     stripWindow: f.stripWindow || null,
     stripHasWave: !!f.stripWS,
     chipState: f.chipState,
     groupStats: _lastGroupStats ? { ..._lastGroupStats } : null,
+    corrections,
+    marks: [..._marks],
+    lastAnnounce: _lastAnnounce,
+    engineReady: f.engineReady,
+    realignBusy: f.realignBusy,
+    pendingNudge: f.drag?.keyboard
+      ? { startT: f.drag.startT, curT: f.drag.curT }
+      : null,
+    lastCommit: f.lastCommit ? { ...f.lastCommit } : null,
+    soundingGroup: f.soundingGroupIx,
+    aud: f.aud
+      ? {
+          ready: f.aud.ready,
+          rendering: f.aud.rendering,
+          playing: f.aud.playing,
+          time: _audPos(),
+          duration: f.aud.duration,
+          balance: _audBalance,
+          gainL: f.aud.gainL.gain.value,
+          gainR: f.aud.gainR.gain.value,
+          renderWindow: f.aud.lastRenderWindow ? { ...f.aud.lastRenderWindow } : null,
+        }
+      : null,
   };
 }
+
+/**
+ * Test-only controls (attached as _listenTest.fixCtl by listen.js): drive the
+ * audition deterministically and probe the stereo buffer's actual content.
+ */
+export const fixTestControl = {
+  seek(t) {
+    if (_fix) _fix.followFloor = null;
+    _audSeek(t);
+  },
+  play: () => _audPlay(),
+  pause: () => _audPause(),
+  pos: () => _audPos(),
+  /** Widen (or shrink) the nudge commit window so keyboard tests never race
+   *  a real-time transient (the ≥1.2 s rule). */
+  setNudgeCommitMs(ms) {
+    _nudgeCommitMs = ms;
+  },
+  /** RMS of one channel over [t0, t1] — proves an ear holds real signal. */
+  channelRms(ch, t0, t1) {
+    const a = _fix?.aud;
+    if (!a) return null;
+    const data = a.buffer.getChannelData(ch);
+    const lo = Math.max(0, Math.floor(t0 * FIX_SR));
+    const hi = Math.min(data.length, Math.ceil(t1 * FIX_SR));
+    if (hi <= lo) return 0;
+    let s = 0;
+    for (let i = lo; i < hi; i++) s += data[i] * data[i];
+    return Math.sqrt(s / (hi - lo));
+  },
+};

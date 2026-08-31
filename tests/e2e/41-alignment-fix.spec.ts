@@ -92,6 +92,22 @@ out['s3'] = fix_realign_segment(7, true_on[7], 8, true_on[8], [], None, None)
 # S5: the frame cap drives the hop up for long segments.
 out['s5'] = fix_realign_segment(-1, 0.0, n, ref_dur, naive, 4.0, 200)
 
+# S6: a DISCONTINUOUS true map — one 16.7 s quarter (the MIDI tempo field's
+# ceiling) between events 8 and 9 makes the reference jump far more per
+# score frame than the band slack at a coarse hop. Before the band floors
+# were bridged to the previous ceiling, the rows went DISJOINT there: the
+# DP was severed, every downstream cell was inf, and the backtrack walked
+# out of band — the 2026-08-31 corpus break (a first-onset fix mapped the
+# whole opening ~55 s late). Prior = truth; the refill must stay glued.
+tcs_c = [(0, 500000), (960, 16777215), (1080, 375000)]
+dur_c = _tick_to_sec(max(n2[1] for n2 in notes), tpq, tcs_c) + 0.5
+ref_c = synth_midi_audio(notes, tpq, tcs_c, dur_c)
+fix_begin(ref_c, midi_a)  # replaces the session for S6 and the error paths
+true_c = [_tick_to_sec(int(round(q * tpq)), tpq, tcs_c) for q in ev['score_onset']]
+ref_dur_c = len(ref_c) / SR
+out['s6'] = fix_realign_segment(-1, 0.0, n, ref_dur_c, true_c, 0.5, 200)
+out['trueC'] = true_c
+
 def _raises(fn):
     try:
         fn()
@@ -419,5 +435,30 @@ test.describe('41. alignment correction — worker segment realign', () => {
     );
     expect(out.s5.hop).toBe(expectedHop);
     expectMonotonic(out.s5.ref_onset);
+  });
+
+  test('41.9 a discontinuous map cannot sever the banded refill (bridged band floors)', async () => {
+    const out = runWorkerScenario();
+    const trueC: number[] = out.trueC;
+    // The reference genuinely jumps ~16.7 s between events 8 and 9 — steeper
+    // per score frame than the band slack at this hop. Pre-bridge, the band
+    // rows went disjoint there and the decoded path corrupted WHOLESALE
+    // (events far from the jump displaced by tens of seconds — the corpus
+    // break). With connective floors the refill stays glued to the truth on
+    // BOTH sides of the jump.
+    expect(out.s6.ref_onset.length).toBe(N_NOTES);
+    expectMonotonic(out.s6.ref_onset);
+    for (let k = 0; k < N_NOTES; k++) {
+      // Events 7–9 straddle the jump itself, where placement within the
+      // giant sustain is genuinely ambiguous at this coarse hop (~120 ms
+      // frames); everywhere else the refill must be tight. Pre-bridge, the
+      // OPENING sat ~15.6 s off — either bound catches that wholesale.
+      const tol = k >= 7 && k <= 9 ? 2.5 : 0.35;
+      expect(
+        Math.abs(out.s6.ref_onset[k] - trueC[k]),
+        `event ${k}: got ${out.s6.ref_onset[k]}, true ${trueC[k]}`,
+      ).toBeLessThan(tol);
+    }
+    expectMonotonic(out.s6.ref_offset);
   });
 });

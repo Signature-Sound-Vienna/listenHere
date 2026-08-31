@@ -69,6 +69,13 @@ import {
   fixModeOnPieceReset,
   fixModePrewarm,
   fixTestState,
+  fixTestControl,
+  isFixModeActive,
+  fixRealignBusy,
+  applyFixCorrectionUndo,
+  applyFixCorrectionRedo,
+  fixCorrectionsDirty,
+  fixRevertCorrections,
 } from "./fix-mode.js";
 import {
   initAnnotationV6,
@@ -1173,6 +1180,13 @@ let _savedAtCounter = 0;
  *  it in would double up. */
 export function bumpChangeCounter() {
   _changeCounter++;
+}
+/** Fix-mode pushes its fix-anchor/fix-gap snapshot entries through this seam
+ *  (the push half lives in the DOMContentLoaded closure with the buttons it
+ *  updates; the closure assigns the implementation below). */
+let _pushFixUndoImpl = null;
+export function pushFixUndoEntry(entry) {
+  _pushFixUndoImpl?.(entry, true);
 }
 // V6 annotation-changes pending. Pushed by annotation/index.js via
 // setAnnoChangesPending(). ORed into updateDirtyState() so the central
@@ -3676,6 +3690,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     _updateUndoRedoState();
   }
+  // Fix-mode correction commits ride the same unified stack (plan §14 B3).
+  _pushFixUndoImpl = _pushUndo;
 
   /** Delete the currently active marker (close-listening mode). */
   function _deleteActiveMarker() {
@@ -3713,6 +3729,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function _undoOne() {
     if (_undoStack.length === 0) return;
+    const top = _undoStack[_undoStack.length - 1];
+    // A fix entry cannot hop while its sibling's realign is still splicing.
+    if (top.type?.startsWith("fix-") && fixRealignBusy()) return;
     _changeCounter--;
     const entry = _undoStack.pop();
     switch (entry.type) {
@@ -3781,12 +3800,23 @@ document.addEventListener("DOMContentLoaded", () => {
         if (closeListeningMode) seekToActiveMarker();
         break;
       }
+      case "fix-anchor":
+      case "fix-gap": {
+        // Snapshot semantics: the entry carries its before/after values, so
+        // fix-mode applies the hop without the alignment worker; the same
+        // entry object shuttles between the stacks.
+        applyFixCorrectionUndo(entry);
+        _redoStack.push(entry);
+        break;
+      }
     }
     _updateUndoRedoState();
   }
 
   function _redoOne() {
     if (_redoStack.length === 0) return;
+    const top = _redoStack[_redoStack.length - 1];
+    if (top.type?.startsWith("fix-") && fixRealignBusy()) return;
     _changeCounter++;
     const entry = _redoStack.pop();
     switch (entry.type) {
@@ -3851,6 +3881,12 @@ document.addEventListener("DOMContentLoaded", () => {
         if (closeListeningMode) seekToActiveMarker();
         break;
       }
+      case "fix-anchor":
+      case "fix-gap": {
+        applyFixCorrectionRedo(entry);
+        _undoStack.push(entry);
+        break;
+      }
     }
     _updateUndoRedoState();
   }
@@ -3868,6 +3904,8 @@ document.addEventListener("DOMContentLoaded", () => {
       markers.length = 0;
     }
     redrawAllMarkers();
+    // Fix-mode corrections revert to the as-loaded ref tables and record too.
+    fixRevertCorrections();
     _undoStack.length = 0;
     _redoStack.length = 0;
     _changeCounter = _savedAtCounter;
@@ -3886,6 +3924,10 @@ document.addEventListener("DOMContentLoaded", () => {
         return "delete marker";
       case "marker-move":
         return "move marker";
+      case "fix-anchor":
+        return "alignment anchor";
+      case "fix-gap":
+        return "unscored-audio gap";
       default:
         return "";
     }
@@ -3907,20 +3949,22 @@ document.addEventListener("DOMContentLoaded", () => {
         : "Redo (Ctrl+Shift+Z)";
     }
     if (revertBtn) {
-      let hasChanges = false;
-      for (const [filename, original] of Object.entries(_alignOriginalGrids)) {
-        const current = alignmentGrids[filename];
-        if (!current || current.length !== original.length) {
-          hasChanges = true;
-          break;
-        }
-        for (let i = 0; i < original.length; i++) {
-          if (current[i] !== original[i]) {
+      let hasChanges = fixCorrectionsDirty();
+      if (!hasChanges) {
+        for (const [filename, original] of Object.entries(_alignOriginalGrids)) {
+          const current = alignmentGrids[filename];
+          if (!current || current.length !== original.length) {
             hasChanges = true;
             break;
           }
+          for (let i = 0; i < original.length; i++) {
+            if (current[i] !== original[i]) {
+              hasChanges = true;
+              break;
+            }
+          }
+          if (hasChanges) break;
         }
-        if (hasChanges) break;
       }
       revertBtn.disabled = !hasChanges;
     }
@@ -4842,6 +4886,11 @@ document.addEventListener("DOMContentLoaded", () => {
       e.target.closest(".gm-modal, #settings-drawer, #file-picker-overlay, .lh-v6-drawer, .lh-v6-load-overlay, .lh-v6-confirm-overlay")
     )
       return;
+    // Fix mode owns the keyboard while open (its own document-level handler
+    // drives audition/selection/approve/marks); every shortcut here would
+    // act on the HIDDEN waveform pane. Ctrl+Z / Ctrl+Shift+Z live in their
+    // own listener above and stay global — undo is unified by ruling.
+    if (isFixModeActive()) return;
     console.log("KEYDOWN: ", e);
     if (!currentAudioIx) return;
 
@@ -5659,6 +5708,8 @@ window._listenTest = {
   get materializePending() { return _materializeQueue.length + _materializing.size; },
   /** Fix-mode (alignment correction) state; {active:false, lastRefusal} when closed. */
   get fix() { return fixTestState(); },
+  /** Fix-mode audition controls + stereo-buffer probe (tests only). */
+  fixCtl: fixTestControl,
   /** Activate a recording, building it first if it was deferred. */
   swapCurrentAudio(filename) { swapCurrentAudio(filename); },
   /**

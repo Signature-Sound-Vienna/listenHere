@@ -43,16 +43,28 @@ type AppFixtures = {
 // Extended test object with common setup
 // ---------------------------------------------------------------------------
 
+/**
+ * Wait until the app reports a completed load. networkidle is NOT a substitute:
+ * it can fire inside setGrids' CPU-bound Verovio window (after the MEI fetch
+ * lands, before the sidebar renders), so tests would run against a page whose
+ * sidebar — including the Score fieldset — does not exist yet.
+ */
+async function waitForAppLoad(page: Page) {
+  await page.waitForFunction(() => ((window as any)._listenTest?.loadGeneration ?? 0) > 0, null, {
+    timeout: 40_000,
+  });
+}
+
 export const test = base.extend<AppFixtures>({
   listenPage: async ({ page }, use) => {
     await loadLocalAlignment(page, ALIGNMENT_JSON);
-    await page.waitForLoadState('networkidle');
+    await waitForAppLoad(page);
     await use(page);
   },
 
   loadedPage: async ({ page }, use) => {
     await loadLocalAlignment(page, ALIGNMENT_JSON);
-    await page.waitForLoadState('networkidle');
+    await waitForAppLoad(page);
     await showWaveform(page, AUDIO_A);
     await showWaveform(page, AUDIO_B);
     await waitForWaveformsReady(page);

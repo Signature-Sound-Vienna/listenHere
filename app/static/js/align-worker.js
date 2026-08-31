@@ -1074,11 +1074,30 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
     r_path = t_a + wp[1].astype(np.float64) * seg_r / max(n_r - 1, 1)
     wf = interp1d(s_path, r_path, kind='linear', fill_value='extrapolate')
 
+    # An OFFSET may legitimately lie past the segment's right edge: ties,
+    # sustained notes under a moving line, any polyphonic overlap. On the
+    # Fledermaus HQ corpus 33.5% of events sustain past the next DISTINCT
+    # onset; of the events an anchor is actually laid on (a group's first),
+    # 8.3% of onset groups do so at adjacent-anchor spacing and 0.7% two
+    # groups on, which is where THIS function computes the offset rather than
+    # the client's linear fill. Such an offset has no image under this
+    # segment's warp, and both earlier answers were wrong: clipping it to t_b
+    # truncated the note, and returning None for the anchor's own offset left
+    # it STALE — a rightward drag could then leave offset <= onset, which the
+    # synth renders as an almost inaudible 20 ms blip (the "dropped first
+    # note"). Continue at the segment's average rate instead: monotone with
+    # the anchors, never degenerate, capped by the recording.
+    seg_rate = seg_r / seg_s
+
+    def _map_off(s):
+        s = float(s)
+        if s <= s_b:
+            return float(np.clip(wf(s), t_a, t_b))
+        return float(min(t_b + (s - s_b) * seg_rate, _fix['ref_dur']))
+
     new_on  = [float(np.clip(wf(float(s_on[i])),  t_a, t_b)) for i in interior]
-    new_off = [float(np.clip(wf(float(s_off[i])), t_a, t_b)) for i in interior]
-    anchor_a_offset = None
-    if i_a >= 0 and s_a <= float(s_off[i_a]) <= s_b:
-        anchor_a_offset = float(np.clip(wf(float(s_off[i_a])), t_a, t_b))
+    new_off = [_map_off(s_off[i]) for i in interior]
+    anchor_a_offset = _map_off(s_off[i_a]) if i_a >= 0 else None
     return {
         'ref_onset': new_on,
         'ref_offset': new_off,

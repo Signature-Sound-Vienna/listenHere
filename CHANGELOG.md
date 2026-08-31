@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.42.1 -- Sustained notes keep their length across a fix; audition diagnostics
+* Fixed: an offset running past its segment's right edge was either clipped onto the next anchor or left stale, so a sustained note dragged beside an anchor collapsed into the gap it was dropped into — a ~20 ms blip at close spacing. Such offsets now continue at the segment's own average rate, capped by the recording; onsets still clip into the segment.
+* Corrections saved before this fix, where the dragged note OR its left neighbour sustains past the next anchor, carry a truncated or stale offset — discard and redo them.
+* Each commit now logs its own account to the console: the anchored note's onset, offset, and duration before → after, the peak rendered into the synth ear, the realign/linear/degenerate counts, the re-render window, and the previous anchor's note. A second line reports the stretch worklet's own copy — what playback reads — and warns when it disagrees with the buffer.
+* A commit-time canary counts any event left with ref_offset ≤ ref_onset and warns; exposed as `lastCommit.degenerate`. The audition's re-render window now extends to the furthest offset a commit wrote.
+* The audition renders a minimum SOUNDING length of 70 ms per note, bounded by the gap to the next onset, with an envelope that fits whatever length a note has. Renderer only: ref_offset is never touched by it.
+* Testing: spec 41 grows to 10 and spec 43 to 26 (the worker's offset rule against a held-note ladder, a sustained note dragged beside an anchor, a collapsed note still sounding). All three verified red first.
+
 ### 0.42.0 -- Fix-mode feedback round 2: the loop refined from real hand-correction use
 * Keyboard nudges commit on FULL RELEASE — the keyup that leaves no nudge key down, the keyboard twin of the mouse drag's mouseup — instead of after a 600 ms quiet period (which cut in mid-adjustment). Hold Shift to keep accumulating; Enter/Escape and other gestures behave as before; a window blur commits a floating nudge rather than abandoning it.
 * Page-only playback: a "Page only" header toggle pauses the audition at the current page's boundary instead of turning the page; pressing play from outside the page snaps to its first onset − 0.5 s, so play repeats the page. A commit's auto-replay and mark jumps still cross pages deliberately (their pass expires at the target). Off by default, sticky across fix sessions.

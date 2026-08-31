@@ -16,8 +16,14 @@
  * audition exists to expose — is never skewed between the ears.
  *
  * Messages in:  load {ch0, ch1, srcRate}, patch {ch, offset, data},
- *               play, pause, seek {pos seconds}, rate {value}.
- * Messages out: pos {pos seconds} (~12/s while playing), ended.
+ *               play, pause, seek {pos seconds}, rate {value},
+ *               probe {t0, t1, tag}.
+ * Messages out: pos {pos seconds} (~12/s while playing), ended,
+ *               probe {tag, t0, t1, len, ch0: {peak, rms}, ch1: {peak, rms}}.
+ *
+ * `probe` exists because this copy — not the AudioBuffer the client patches
+ * beside it — is what the ear actually hears: a diagnostic that cannot be
+ * answered from the main thread any other way.
  */
 
 const GRAIN = 1024; // output samples per grain (~21 ms at 48 k)
@@ -62,7 +68,36 @@ class FixStretchProcessor extends AudioWorkletProcessor {
       this._seek(m.pos * this.srcRate);
     } else if (m.type === "rate") {
       this.rate = m.value;
+    } else if (m.type === "probe") {
+      this.port.postMessage({
+        type: "probe",
+        tag: m.tag,
+        t0: m.t0,
+        t1: m.t1,
+        len: this.ch ? this.ch[0].length : 0,
+        srcRate: this.srcRate,
+        ch0: this._stats(0, m.t0, m.t1),
+        ch1: this._stats(1, m.t0, m.t1),
+      });
     }
+  }
+
+  /** Peak and RMS of one held channel over [t0, t1) seconds — see `probe`. */
+  _stats(ch, t0, t1) {
+    const data = this.ch ? this.ch[ch] : null;
+    if (!data) return null;
+    const lo = Math.max(0, Math.floor(t0 * this.srcRate));
+    const hi = Math.min(data.length, Math.ceil(t1 * this.srcRate));
+    if (hi <= lo) return { peak: 0, rms: 0, n: 0 };
+    let peak = 0;
+    let acc = 0;
+    for (let i = lo; i < hi; i++) {
+      const v = data[i];
+      const a = v < 0 ? -v : v;
+      if (a > peak) peak = a;
+      acc += v * v;
+    }
+    return { peak, rms: Math.sqrt(acc / (hi - lo)), n: hi - lo };
   }
 
   _seek(srcSamples) {

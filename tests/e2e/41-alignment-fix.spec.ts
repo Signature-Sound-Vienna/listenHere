@@ -45,6 +45,48 @@ function buildMidiA(): Buffer {
   return Buffer.from([...header, ...track]);
 }
 
+// MIDI B: the same chromatic ladder one quarter apart, but every note is HELD
+// 2.5 quarters, so off[k] > on[k+2] — the sustained-overlap shape that ties,
+// pedal notes, and any polyphony produce. Measured against the next DISTINCT
+// onset (comparing against on[i+1] only counts chord siblings): 41.9% of this
+// repo's own 725-event fixture sustains past it and 33.5% of the Fledermaus HQ
+// corpus; over the events an anchor is laid on, 24.2% of the fixture's onset
+// groups and 8.3% of the corpus's, and at distance 2 — where the worker rather
+// than the linear fill answers — 6.5% and 0.7%.
+const HOLD_TICKS = 300;
+function vlq(n: number): number[] {
+  const out = [n & 0x7f];
+  n >>= 7;
+  while (n > 0) {
+    out.unshift((n & 0x7f) | 0x80);
+    n >>= 7;
+  }
+  return out;
+}
+function buildMidiOverlap(): Buffer {
+  const evs: Array<{ tick: number; order: number; data: number[] }> = [];
+  for (let k = 0; k < N_NOTES; k++) {
+    const p = 60 + k;
+    evs.push({ tick: TPQ * k, order: 1, data: [0x90, p, 64] });
+    evs.push({ tick: TPQ * k + HOLD_TICKS, order: 0, data: [0x80, p, 0] });
+  }
+  evs.sort((a, b) => a.tick - b.tick || a.order - b.order);
+  const track: number[] = [0x00, 0xff, 0x51, 0x03, 0x07, 0xa1, 0x20];
+  let prev = 0;
+  for (const e of evs) {
+    track.push(...vlq(e.tick - prev), ...e.data);
+    prev = e.tick;
+  }
+  track.push(0x00, 0xff, 0x2f, 0x00);
+  const header = [
+    0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, 0, 0, 1, (TPQ >> 8) & 0xff, TPQ & 0xff,
+    0x4d, 0x54, 0x72, 0x6b,
+    (track.length >> 24) & 0xff, (track.length >> 16) & 0xff,
+    (track.length >> 8) & 0xff, track.length & 0xff,
+  ];
+  return Buffer.from([...header, ...track]);
+}
+
 // The "reference performance" tempo map: 120 BPM for the first 8 quarters,
 // 160 BPM (375000 µs/beat) from tick 960. True onset of event k:
 //   k ≤ 8: 0.5·k   —   k > 8: 4.0 + 0.375·(k − 8)
@@ -126,10 +168,48 @@ out['s4']['afterDispose'] = _raises(lambda: fix_realign_segment(-1, 0.0, n, ref_
 print(json.dumps(out))
 `;
 
-let workerOut: any = null;
+// The overlap scenario: two segments off the same held-note ladder — one
+// whose left anchor sustains PAST the right anchor's onset (no image under
+// this segment's warp) and one control whose offset lies inside the span.
+const HARNESS_OVERLAP = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
 
-function runWorkerScenario(): any {
-  if (workerOut) return workerOut;
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+
+tcs_b = [(0, 500000), (480, 375000)]
+dur_b = _tick_to_sec(max(n[1] for n in notes), tpq, tcs_b) + 0.5
+ref_audio = synth_midi_audio(notes, tpq, tcs_b, dur_b)
+
+ev = fix_begin(ref_audio, midi)
+s_on = list(ev['synth_onset']); s_off = list(ev['synth_offset'])
+ref_dur = ev['ref_duration']; midi_dur = ev['midi_duration']
+
+def true_on(k):
+    return _tick_to_sec(int(round(ev['score_onset'][k] * tpq)), tpq, tcs_b)
+
+def run(i_a, i_b):
+    t_a = true_on(i_a); t_b = true_on(i_b)
+    prior = [s_on[k] * ref_dur / midi_dur for k in range(i_a + 1, i_b)]
+    res = fix_realign_segment(i_a, t_a, i_b, t_b, prior)
+    res['t_a'] = t_a; res['t_b'] = t_b
+    res['s_a'] = s_on[i_a]; res['s_b'] = s_on[i_b]
+    res['s_off_a'] = s_off[i_a]
+    res['s_off_interior'] = [s_off[k] for k in range(i_a + 1, i_b)]
+    return res
+
+print(json.dumps({'events': ev, 'over': run(2, 4), 'ctrl': run(2, 7)}))
+`;
+
+/** Run one python harness over align-worker.js's own PYTHON_CODE blob. */
+function execPython(harness: string, midiB64: string): any {
   const workerSrc = fs.readFileSync(
     path.resolve(__dirname, '../../app/static/js/align-worker.js'),
     'utf8',
@@ -144,16 +224,28 @@ function runWorkerScenario(): any {
   try {
     const blobPath = path.join(dir, 'align-worker-python.py');
     fs.writeFileSync(blobPath, python);
-    const stdout = execFileSync(
-      'python3',
-      ['-c', HARNESS, buildMidiA().toString('base64'), blobPath],
-      { encoding: 'utf8', timeout: 110_000 },
-    );
-    workerOut = JSON.parse(stdout.trim());
-    return workerOut;
+    const stdout = execFileSync('python3', ['-c', harness, midiB64, blobPath], {
+      encoding: 'utf8',
+      timeout: 110_000,
+    });
+    return JSON.parse(stdout.trim());
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+let workerOut: any = null;
+function runWorkerScenario(): any {
+  if (!workerOut) workerOut = execPython(HARNESS, buildMidiA().toString('base64'));
+  return workerOut;
+}
+
+let overlapOut: any = null;
+function runOverlapScenario(): any {
+  if (!overlapOut) {
+    overlapOut = execPython(HARNESS_OVERLAP, buildMidiOverlap().toString('base64'));
+  }
+  return overlapOut;
 }
 
 function expectMonotonic(values: number[]) {
@@ -460,5 +552,44 @@ test.describe('41. alignment correction — worker segment realign', () => {
       ).toBeLessThan(tol);
     }
     expectMonotonic(out.s6.ref_offset);
+  });
+
+  test('41.10 an offset sustaining past the segment continues at its rate — never clipped, never null', async () => {
+    const out = runOverlapScenario();
+    const o = out.over;
+    const rate = (o.t_b - o.t_a) / (o.s_b - o.s_a);
+    // Precondition: the left anchor's note genuinely outlasts the segment.
+    expect(o.s_off_a).toBeGreaterThan(o.s_b);
+    expect(o.ref_onset.length).toBeGreaterThan(0);
+    // It used to come back null, and the caller then left ref_offset[i_a]
+    // STALE — a rightward drag could put it at or before the new onset, which
+    // the synth floors at 20 ms and the ear hears as a dropped note. Now it
+    // continues at the segment's own average rate.
+    expect(o.anchor_a_offset).not.toBeNull();
+    expect(o.anchor_a_offset).toBeGreaterThan(o.t_b);
+    expect(o.anchor_a_offset).toBeCloseTo(o.t_b + (o.s_off_a - o.s_b) * rate, 6);
+    // Interior offsets that overrun are no longer pinned to the segment edge
+    // (they used to come back as an exact run of t_b, truncating the notes).
+    o.s_off_interior.forEach((s: number, k: number) => {
+      if (s > o.s_b) {
+        expect(o.ref_offset[k]).toBeGreaterThan(o.t_b);
+        expect(o.ref_offset[k]).toBeCloseTo(o.t_b + (s - o.s_b) * rate, 6);
+      }
+      // Whatever the case, a note never ends at or before it starts.
+      expect(o.ref_offset[k]).toBeGreaterThan(o.ref_onset[k]);
+    });
+    // Onsets still clip INTO the segment: only offsets may reach past it.
+    o.ref_onset.forEach((v: number) => {
+      expect(v).toBeGreaterThanOrEqual(o.t_a);
+      expect(v).toBeLessThanOrEqual(o.t_b);
+    });
+    // The extension is capped by the recording.
+    expect(o.anchor_a_offset).toBeLessThanOrEqual(out.events.ref_duration);
+    // Control: an offset inside the span is mapped by the warp exactly as
+    // before — the new rule touches nothing that already worked.
+    const c = out.ctrl;
+    expect(c.s_off_a).toBeLessThan(c.s_b);
+    expect(c.anchor_a_offset).toBeGreaterThan(c.t_a);
+    expect(c.anchor_a_offset).toBeLessThan(c.t_b);
   });
 });

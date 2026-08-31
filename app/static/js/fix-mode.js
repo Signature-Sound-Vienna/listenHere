@@ -82,6 +82,25 @@ const STRIP_PEAK_COUNT = 8000;
 const FIX_SR = 22050;
 /** The granular time-stretch worklet behind the header's speed slider. */
 const FIX_STRETCH_WORKLET_URL = "/static/js/fix-stretch-worklet.js";
+/**
+ * The audition's minimum SOUNDING length, the renderer's alone — it never
+ * touches ref_offset. Alignment data legitimately holds very short notes
+ * (11.6% of the Fledermaus HQ corpus is under 70 ms, 2.3% under 20 ms, the
+ * shortest 0.6 ms: tremolo strokes, grace notes, collapsed offsets), and a
+ * correction can shrink a note to the gap it was dropped into. Rendered at
+ * their true length those notes are inaudible, and silence is the worst
+ * possible symptom for a data problem: it reads as the tool ignoring the fix.
+ * A floored note is heard as a short click — the problem stays audible AS a
+ * problem, while the commit log and the degenerate canary name it.
+ *
+ * The floor is bounded by the gap to the next onset, because it is only the
+ * ISOLATED short note that goes missing. 96% of that corpus's sub-70 ms notes
+ * have their next onset within 70 ms (median 15 ms) — tremolo strokes and fast
+ * runs — and lengthening each of those would smear the passage into a cluster
+ * chord while fixing nothing: their neighbours already sound around them.
+ */
+const MIN_SOUND_SEC = 0.07;
+
 /** Seek-to-selected-note lands the playhead this far before the onset. */
 const SEEK_PREROLL_SEC = 0.5;
 /** Auto-replay after a fix starts this far before the previous anchor. */
@@ -2037,6 +2056,13 @@ async function _attachStretch(f, a) {
       const m = e.data;
       if (m.type === "pos") {
         a.workletPos = m.pos;
+      } else if (m.type === "probe") {
+        // What the worklet holds IS what the ear hears; the AudioBuffer beside
+        // it can be right while this copy is stale.
+        a.lastProbe = m;
+        const pending = a.probePending;
+        a.probePending = null;
+        pending?.(m);
       } else if (m.type === "ended") {
         a.playing = false;
         a.pos = a.duration;
@@ -2091,6 +2117,28 @@ function _updateSpeedUi() {
   }
 }
 
+/**
+ * How long event k actually SOUNDS in the audition: its own length, floored
+ * for audibility but never reaching past the next onset (see MIN_SOUND_SEC).
+ * The single answer for the renderer, the commit audit, and the re-render
+ * window — they must agree or the audit measures the wrong span.
+ */
+function _soundingDur(refOn, refOff, k) {
+  const ts = refOn[k];
+  const te = Array.isArray(refOff) ? refOff[k] : undefined;
+  const natural = Number.isFinite(te) ? te - ts : 0;
+  // ref onsets are monotone in event index (an alignment invariant), so the
+  // next distinct onset is a short scan away — a chord's width at most.
+  let gap = Infinity;
+  for (let j = k + 1; j < refOn.length; j++) {
+    if (refOn[j] > ts) {
+      gap = refOn[j] - ts;
+      break;
+    }
+  }
+  return Math.max(natural, Math.min(MIN_SOUND_SEC, gap));
+}
+
 /** (Re)render the raw synth channel for [t0, t1): zero the window, then add
  *  every note's contribution clipped to it — envelope and phase are
  *  deterministic in the distance from the note's own start, so a clipped
@@ -2109,18 +2157,23 @@ function _renderSynthWindow(f, t0, t1) {
   for (const note of a.notes) {
     const ts = refOn[note.ix];
     if (!Number.isFinite(ts)) continue;
-    let te = refOff[note.ix];
-    if (!Number.isFinite(te) || te <= ts) te = ts + 0.02;
-    const noteDur = Math.max(0.02, te - ts);
+    const noteDur = _soundingDur(refOn, refOff, note.ix);
     const iStart = Math.round(ts * FIX_SR);
-    const iEnd = Math.min(out.length, Math.round((ts + noteDur) * FIX_SR));
+    // The envelope is shaped on the note's INTENDED length, so a window that
+    // clips the tail still reproduces the identical samples.
+    const nFull = Math.max(1, Math.round(noteDur * FIX_SR));
+    const iEnd = Math.min(out.length, iStart + nFull);
     const lo = Math.max(iStart, iLo);
     const hi = Math.min(iEnd, iHi);
     if (hi <= lo) continue;
     const amp = (note.v / 127) * 0.12;
     const phaseInc = (440 * Math.pow(2, (note.p - 69) / 12)) / FIX_SR;
-    const atkSamples = Math.min(ATK_S, Math.round(noteDur * 0.3 * FIX_SR));
-    const sustainEnd = Math.max(iStart + atkSamples, iEnd - REL_S);
+    // Attack and release always FIT: a short note reaches full amplitude
+    // instead of being caught mid-release (a 20 ms note used to peak at 0.47
+    // of its amplitude, which is most of why a collapsed note vanished).
+    const atk = Math.max(1, Math.min(ATK_S, Math.floor(nFull * 0.25)));
+    const rel = Math.max(1, Math.min(REL_S, nFull - atk));
+    const relStart = nFull - rel;
     let phase = ((lo - iStart) * phaseInc) % 1;
     for (let i = lo; i < hi; i++) {
       phase += phaseInc;
@@ -2128,8 +2181,8 @@ function _renderSynthWindow(f, t0, t1) {
       const saw = 2 * phase - 1;
       const si = i - iStart;
       let env;
-      if (si < atkSamples) env = si / atkSamples;
-      else if (i >= sustainEnd) env = Math.max(0, (iEnd - i) / REL_S);
+      if (si < atk) env = si / atk;
+      else if (si >= relStart) env = Math.max(0, (nFull - si) / rel);
       else env = 1;
       out[i] += saw * amp * env;
     }
@@ -2160,6 +2213,51 @@ function _copySynthToBuffer(f, t0, t1) {
   a.stretch?.port.postMessage({ type: "patch", ch: 1, offset: iLo, data: scaled }, [
     scaled.buffer,
   ]);
+}
+
+/** Ask the stretch worklet for peak/RMS over [t0, t1) of ITS OWN copy — the
+ *  content playback actually reads. Null when the worklet is not attached. */
+function _workletProbe(t0, t1) {
+  const a = _fix?.aud;
+  if (!a?.stretch) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    a.probePending = resolve;
+    a.stretch.port.postMessage({ type: "probe", t0, t1, tag: "audit" });
+  });
+}
+
+/** One note's live span and the signal actually present in the synth ear over
+ *  it — the audition's own answer to "why can I not hear the note I fixed". */
+function _noteAudit(k) {
+  const a = _fix?.aud;
+  const on = scoreAlignment.ref_onset[k];
+  const off = Array.isArray(scoreAlignment.ref_offset)
+    ? scoreAlignment.ref_offset[k]
+    : undefined;
+  const out = {
+    i: k,
+    on,
+    off,
+    dur: Number.isFinite(on) && Number.isFinite(off) ? off - on : null,
+    bufferPeak: null,
+    samples: 0,
+    soundingEnd: null,
+  };
+  if (!a?.ready || !Number.isFinite(on)) return out;
+  // Measure exactly the span the renderer wrote, floor included.
+  const hi = on + _soundingDur(scoreAlignment.ref_onset, scoreAlignment.ref_offset, k);
+  out.soundingEnd = hi;
+  const data = a.buffer.getChannelData(1);
+  const lo = Math.max(0, Math.floor(on * FIX_SR));
+  const end = Math.min(data.length, Math.ceil(hi * FIX_SR));
+  let peak = 0;
+  for (let s = lo; s < end; s++) {
+    const v = data[s] < 0 ? -data[s] : data[s];
+    if (v > peak) peak = v;
+  }
+  out.bufferPeak = peak;
+  out.samples = Math.max(0, end - lo);
+  return out;
 }
 
 /** Re-render the right ear for the span a fix (or an undo hop) changed. */
@@ -2536,7 +2634,7 @@ async function _commitAnchor(groupIx, t, kind) {
 
   if (kind === "approve") {
     entry.selfAfter = { ...entry.selfBefore };
-    f.lastCommit = { kind, i, t, realigned: 0, linear: 0 };
+    f.lastCommit = { kind, i, t, realigned: 0, linear: 0, degenerate: 0 };
     pushFixUndoEntry(entry);
     _syncCorrectionsHeader();
     _scheduleRedraw();
@@ -2629,12 +2727,88 @@ async function _commitAnchor(groupIx, t, kind) {
   }
   entry.selfAfter = { on: refOn[i], off: refOff[i] };
   entry.window = { t0: segs[0].tA, t1: segs[segs.length - 1].tB };
+  // Offsets may now legitimately reach past the window's right edge, so the
+  // right ear is re-rendered out to the furthest offset the commit wrote —
+  // otherwise a lengthened note keeps its old, shorter tail. And a canary on
+  // the invariant every degenerate-offset bug has broken so far: an offset at
+  // or before its own onset, which the synth floors at 20 ms and the ear hears
+  // as a dropped note. Two real data bugs hid behind that floor; if this ever
+  // fires there is a third.
+  const iLo = Math.max(0, segs[0].iA);
+  const iHi = Math.min(f.nEvents - 1, segs[segs.length - 1].iB);
+  let degenerate = 0;
+  let renderT1 = entry.window.t1;
+  for (let k = iLo; k <= iHi; k++) {
+    const onK = refOn[k];
+    const offK = refOff[k];
+    if (!Number.isFinite(onK)) continue;
+    if (Number.isFinite(offK) && offK <= onK) degenerate++;
+    // The renderer floors a note's sounding length, so the re-render has to
+    // reach past a short note's data offset as well.
+    const end = onK + _soundingDur(refOn, refOff, k);
+    if (end > renderT1) renderT1 = end;
+  }
+  entry.renderT1 = renderT1;
+  if (degenerate) {
+    console.warn(
+      `fix mode: commit left ${degenerate} event(s) in [${iLo}, ${iHi}] with ` +
+        "ref_offset <= ref_onset — the synth will floor them at 20 ms",
+      { i, t, kind },
+    );
+  }
   f.realignBusy = false;
-  f.lastCommit = { kind, i, t, realigned, linear: linearFilled };
+  f.lastCommit = { kind, i, t, realigned, linear: linearFilled, degenerate };
+  // The commit's console trail. Every "the note I fixed does not sound" report
+  // so far has come down to one of three numbers: the note's duration (a
+  // collapsed offset is floored at 20 ms), the peak actually rendered into the
+  // synth ear, and — separately — what the stretch worklet holds, since
+  // playback reads the worklet's own copy and not the AudioBuffer beside it.
+  const fmt = (v) => (Number.isFinite(v) ? v.toFixed(4) : String(v));
+  const audit = _noteAudit(i);
+  const leftAudit = segs[0].iA >= 0 ? _noteAudit(segs[0].iA) : null;
+  console.log(
+    `fix mode: ${kind} on event ${i} (bar ${entry.barHint ?? "?"}) — onset ` +
+      `${fmt(entry.selfBefore.on)} → ${fmt(audit.on)}, offset ` +
+      `${fmt(entry.selfBefore.off)} → ${fmt(audit.off)}, duration ` +
+      `${fmt(entry.selfBefore.off - entry.selfBefore.on)} → ${fmt(audit.dur)} s` +
+      (audit.soundingEnd !== null && audit.soundingEnd - audit.on > audit.dur + 1e-3
+        ? ` (sounding ${fmt(audit.soundingEnd - audit.on)} s — the audibility floor)`
+        : "") +
+      "; " +
+      `synth ear over the note: peak ${fmt(audit.bufferPeak)} over ` +
+      `${audit.samples} samples; realigned ${realigned}, linear ` +
+      `${linearFilled}, degenerate ${degenerate}; re-render [` +
+      `${fmt(entry.window.t0)}, ${fmt(entry.renderT1)}]` +
+      (leftAudit
+        ? `; previous anchor event ${leftAudit.i}: ${fmt(leftAudit.on)}–` +
+          `${fmt(leftAudit.off)} (dur ${fmt(leftAudit.dur)} s, peak ` +
+          `${fmt(leftAudit.bufferPeak)})`
+        : ""),
+  );
+  if (f.aud?.stretch && Number.isFinite(audit.on)) {
+    const pt1 = audit.soundingEnd ?? audit.on + MIN_SOUND_SEC;
+    _workletProbe(audit.on, pt1)
+      .then((p) => {
+        if (!p?.ch1) return;
+        const stale = audit.bufferPeak > 1e-4 && p.ch1.peak < 1e-4;
+        const line =
+          `fix mode: playback's own copy over event ${i} — synth peak ` +
+          `${fmt(p.ch1.peak)}, recording peak ${fmt(p.ch0?.peak)}`;
+        if (stale) {
+          console.warn(
+            `${line} — MISMATCH: the buffer holds the note but the worklet ` +
+              "playback reads does not, so it will not sound",
+          );
+        } else {
+          console.log(line);
+        }
+      })
+      .catch(() => {});
+  }
   pushFixUndoEntry(entry);
   _syncCorrectionsHeader();
   _setChip("ready", "Correction engine ready");
-  _auditionRerender(entry.window.t0, entry.window.t1);
+  _auditionRerender(entry.window.t0, entry.renderT1);
   _scheduleRedraw();
   // Auto-replay from just before the previous anchor: the invalidated span
   // starts there, so the ear re-checks exactly what the fix changed.
@@ -2660,18 +2834,28 @@ function _linearFill(seg) {
   const qA = seg.iA >= 0 ? f.qOn[seg.iA] : 0;
   const qB = seg.iB < f.nEvents ? f.qOn[seg.iB] : f.qOff[f.nEvents - 1];
   const scale = (seg.tB - seg.tA) / Math.max(qB - qA, 1e-9);
+  const lin = (q) => seg.tA + (q - qA) * scale;
   const clip = (v) => Math.min(Math.max(v, seg.tA), seg.tB);
+  // Onsets belong to this segment and clip into it. An OFFSET past qB —
+  // a tie, a sustained note under a moving line; 8.3% of the Fledermaus HQ
+  // corpus's onset groups at the adjacent-anchor spacing this path serves —
+  // belongs to the music after the next anchor
+  // and continues at the same rate (the worker's _map_off rule). Clipping it
+  // to tB truncated the note, and for the dragged event's own offset it could
+  // collapse the note onto its onset: the synth's 20 ms floor, heard as a
+  // dropped note.
+  const dur = _refDuration();
+  const mapOff = (q) => (q <= qB ? clip(lin(q)) : Math.min(lin(q), dur));
   const on = [];
   const off = [];
   for (let e = seg.iA + 1; e < seg.iB; e++) {
-    on.push(clip(seg.tA + (f.qOn[e] - qA) * scale));
-    off.push(clip(seg.tA + (f.qOff[e] - qA) * scale));
+    on.push(clip(lin(f.qOn[e])));
+    off.push(mapOff(f.qOff[e]));
   }
   return {
     ref_onset: on,
     ref_offset: off,
-    anchor_a_offset:
-      seg.iA >= 0 ? clip(seg.tA + (f.qOff[seg.iA] - qA) * scale) : null,
+    anchor_a_offset: seg.iA >= 0 ? mapOff(f.qOff[seg.iA]) : null,
     hop: 0,
   };
 }
@@ -2806,7 +2990,9 @@ function _afterHistoryHop(entry, verb) {
   if (f) {
     const ix = f.groups.findIndex((g) => g.eventIxs.includes(entry.i));
     if (ix !== -1) _select(ix, { seek: false });
-    if (entry.window) _auditionRerender(entry.window.t0, entry.window.t1);
+    if (entry.window) {
+      _auditionRerender(entry.window.t0, entry.renderT1 ?? entry.window.t1);
+    }
     _scheduleRedraw();
   } else {
     const where = entry.barHint ? `near bar ${entry.barHint}` : `at event ${entry.i}`;
@@ -3282,6 +3468,9 @@ export const fixTestControl = {
   play: () => _audPlay(),
   pause: () => _audPause(),
   pos: () => _audPos(),
+  /** Peak/RMS of the STRETCH WORKLET's own copy over [t0, t1) — what playback
+   *  reads, which channelRms (the AudioBuffer) cannot see. */
+  workletProbe: (t0, t1) => _workletProbe(t0, t1),
   /** RMS of one channel over [t0, t1] — proves an ear holds real signal. */
   channelRms(ch, t0, t1) {
     const a = _fix?.aud;

@@ -20,9 +20,23 @@ import type { Page } from '@playwright/test';
 
 const REF_ROW = 'audio-b.mp3';
 
-/** Navigate with ?fixMode (the spec-42 helper, unchanged). */
-async function gotoFixMode(page: Page) {
+/** Navigate with ?fixMode (the spec-42 helper, plus its alignment patch). */
+async function gotoFixMode(page: Page, patch?: (json: any) => void) {
   await stubExternalMei(page);
+  if (patch) {
+    // Predicate matcher, deliberately not a glob: the navigation URL carries
+    // /static/test/ inside its ?align= query and a glob would intercept the
+    // navigation itself (the spec-39 trap).
+    await page.route(
+      (url) => url.pathname === '/static/test/alignment.json',
+      async (route) => {
+        const resp = await route.fetch();
+        const json = await resp.json();
+        patch(json);
+        await route.fulfill({ response: resp, json });
+      },
+    );
+  }
   const params =
     '?align=http://localhost:5001/static/test/alignment.json' +
     '&useLocal=http://localhost:5001/static/test&fixMode';
@@ -854,6 +868,120 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     }, i);
     expect(undone.on).toBeCloseTo(before.on, 9);
     expect(undone.off).toBeCloseTo(before.off, 9);
+  });
+
+  test('43.25 a sustained note dragged beside an anchor keeps its length: the offset extends past the anchor, never clips onto it', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    // realignShort routes BOTH flanking segments through _linearFill, the
+    // path a fix on closely spaced onsets takes for real.
+    await installWorkerStub(page, { realignShort: true });
+    await enterFix(page);
+    await waitLoopReady(page);
+    // Find the first group pair where the LEFT group's first event sustains
+    // past the RIGHT group's onset — 134 of the fixture's 554 group pairs do
+    // (24.2%), as 8.3% of the Fledermaus HQ corpus's do.
+    let leftIx: number | null = null;
+    let prev = await fixState(page);
+    for (let k = 0; k < 20 && leftIx === null; k++) {
+      await page.click('.fix-onset-next');
+      const cur = await fixState(page);
+      const overruns = await page.evaluate(
+        ([a, b]) => {
+          const sc = (window as any)._listenTest.session.scoreAlignment;
+          return sc.score_offset[a] > sc.score_onset[b] + 1e-9;
+        },
+        [prev.selEventIx, cur.selEventIx],
+      );
+      if (overruns) leftIx = prev.selEventIx;
+      else prev = cur;
+    }
+    expect(leftIx, 'no sustained-overlap pair in the first 20 groups').not.toBeNull();
+    // Anchor the RIGHT group (approve: zero data change) …
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 1,
+    );
+    const anchorT = (await fixState(page)).corrections.anchors[0].t;
+    // … then drag the sustained note beside it rightward.
+    await page.click('.fix-onset-prev');
+    const before = await page.evaluate((ev) => {
+      const sc = (window as any)._listenTest.session.scoreAlignment;
+      return { on: sc.ref_onset[ev], off: sc.ref_offset[ev] };
+    }, leftIx);
+    await dragSelectedTick(page, 25);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const st = await fixState(page);
+    const a = st.corrections.anchors.find((x: any) => x.i === leftIx);
+    expect(a).toBeTruthy();
+    const after = await page.evaluate((ev) => {
+      const sc = (window as any)._listenTest.session.scoreAlignment;
+      return { on: sc.ref_onset[ev], off: sc.ref_offset[ev] };
+    }, leftIx);
+    expect(after.on).toBeCloseTo(a.t, 6);
+    expect(after.on).toBeGreaterThan(before.on);
+    // The offset follows the drag PAST the next anchor, because that is where
+    // the note ends. Clipping it into the span (the round-2 rule) collapsed a
+    // sustained note onto the gap it was dropped into — at close spacing a
+    // 20 ms blip, heard as the note vanishing.
+    expect(after.off).toBeGreaterThan(anchorT + 1e-6);
+    expect(after.off).toBeGreaterThan(after.on);
+    // The commit's own canary: no event it touched ends at or before it starts.
+    expect(st.lastCommit.degenerate).toBe(0);
+    // Undo restores the as-was pair exactly (snapshot semantics).
+    await page.click('#undo-btn');
+    const undone = await page.evaluate((ev) => {
+      const sc = (window as any)._listenTest.session.scoreAlignment;
+      return { on: sc.ref_onset[ev], off: sc.ref_offset[ev] };
+    }, leftIx);
+    expect(undone.on).toBeCloseTo(before.on, 9);
+    expect(undone.off).toBeCloseTo(before.off, 9);
+  });
+
+  test('43.26 a collapsed note still sounds: the renderer floors its length and the envelope reaches full amplitude', async ({
+    page,
+  }) => {
+    let targetOn = -1;
+    await gotoFixMode(page, (json) => {
+      const sc = json.body?.score ?? json.score ?? json;
+      const on: number[] = sc.ref_onset;
+      const off: number[] = sc.ref_offset;
+      // A note with quiet either side, so the measurement hears it alone —
+      // then collapsed to zero length, the shape a fix can leave behind and
+      // the shape 2.3% of the Fledermaus HQ events already hold.
+      for (let k = 5; k < on.length; k++) {
+        const t = on[k];
+        if (!Number.isFinite(t)) continue;
+        const busy = on.some(
+          (o, j) => j !== k && o < t + 0.07 && off[j] > t - 0.02,
+        );
+        if (busy) continue;
+        targetOn = t;
+        off[k] = on[k];
+        break;
+      }
+    });
+    expect(targetOn, 'no quiet-neighbourhood note in the fixture').toBeGreaterThan(0);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    const rms = await page.evaluate((t) => {
+      const c = (window as any)._listenTest.fixCtl;
+      return {
+        before: c.channelRms(1, t - 0.02, t - 0.005),
+        early: c.channelRms(1, t, t + 0.02),
+        late: c.channelRms(1, t + 0.045, t + 0.065),
+      };
+    }, targetOn);
+    // Rendered at all, and still sounding past 45 ms — which the old 20 ms
+    // floor could not do; it also never reached full amplitude, peaking at
+    // 0.47 of the note's own, so the ratio below used to be ~0.
+    expect(rms.early).toBeGreaterThan(0.002);
+    expect(rms.late).toBeGreaterThan(0.002);
+    expect(rms.late / rms.early).toBeGreaterThan(0.15);
+    // The neighbourhood really is quiet, so the two windows measure this note.
+    expect(rms.before).toBeLessThan(rms.early / 4);
   });
 
   test('43.23 N activates the jumped-to mark, Delete removes it, Escape deactivates first', async ({

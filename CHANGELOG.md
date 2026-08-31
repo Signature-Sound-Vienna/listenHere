@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.43.0 -- Fix-mode round 3, second half: a bounded replay, a suppressible one, and a strip that says when it is live
+* The auto-replay after a fix now starts at most 2 s before the fix itself, instead of half a second before the previous anchor — the top of the recording when there is none.
+* A "Replay off" header toggle suppresses the automatic replay; the commit still happens, and `R` replays the last fix on demand. Sticky across fix sessions, like Page only.
+* Until the correction engine arms, the strip's ticks dim, its cursor becomes a waiting cursor, and a drag or nudge that cannot land says why at the pointer instead of failing silently.
+* The arming chip counts its phases ("Step 1/4: reference audio…" through "Ready to correct"), with the untruncated message in its tooltip.
+* Testing: spec 43 grows to 29 (the replay ceiling, suppression plus R, the not-yet-live strip).
+
 ### 0.42.1 -- Sustained notes keep their length across a fix; audition diagnostics
 * Fixed: an offset running past its segment's right edge was either clipped onto the next anchor or left stale, so a sustained note dragged beside an anchor collapsed into the gap it was dropped into — a ~20 ms blip at close spacing. Such offsets now continue at the segment's own average rate, capped by the recording; onsets still clip into the segment.
 * Corrections saved before this fix, where the dragged note OR its left neighbour sustains past the next anchor, carry a truncated or stale offset — discard and redo them.

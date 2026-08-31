@@ -105,6 +105,11 @@ const MIN_SOUND_SEC = 0.07;
 const SEEK_PREROLL_SEC = 0.5;
 /** Auto-replay after a fix starts this far before the previous anchor. */
 const REPLAY_PREROLL_SEC = 0.5;
+/** ...but never more than this before the fix itself. The previous anchor can
+ *  be a page away when anchoring into virgin territory, and the replay's
+ *  principled start (the whole invalidated span) is then unusable — this is
+ *  the ceiling that makes it predictable. */
+const MAX_RUNUP_SEC = 2;
 /** A mousedown that travels less than this is a tick CLICK, not a drag. */
 const DRAG_THRESHOLD_PX = 3;
 /** Keyboard nudge steps (the app's marker-nudge convention: Shift = coarse,
@@ -177,6 +182,14 @@ let _audBalance = 0;
 /** Page-only playback: the audition stops at the current page's boundary
  *  instead of turning it (sticky across fix sessions, like the balance). */
 let _pageOnly = false;
+/** Suppress the AUTO-replay after a commit (sticky, like _pageOnly). The
+ *  commit itself always happens: it is being dragged back through the span
+ *  that gets in the way in a tight cluster, not the anchoring. A sticky mode
+ *  rather than a held modifier, because the nudge already owns Shift and
+ *  Shift+Alt and commits on the keyup that leaves no nudge key down. */
+let _replaySuppressed = false;
+/** The last committed fix's replay span, so R can replay it on demand. */
+let _lastReplay = null;
 
 // ---------------------------------------------------------------------------
 // Entry affordance
@@ -565,6 +578,10 @@ function _teardownFixDom(f) {
 export function exitFixMode() {
   if (!_fix) return;
   const f = _fix;
+  // The replay span belongs to THIS session's recording: a re-entry (or a
+  // different reference row) must not let R seek to times that no longer
+  // mean anything. The suppression MODE is deliberately sticky, unlike this.
+  _lastReplay = null;
   _teardownFixDom(f);
   // The worker keeps its Pyodide runtime for a cheap re-entry, but drops the
   // session's resident audio.
@@ -883,6 +900,22 @@ function _buildDom(contentEl, waveformsEl) {
     if (_fix) _fix.pageOnlyPassUntilT = null;
   });
 
+  // Auto-replay suppression (sticky). Pressed = no replay after a commit;
+  // R replays the last fix on demand.
+  const replayBtn = document.createElement("button");
+  replayBtn.type = "button";
+  replayBtn.id = "fix-replay-off";
+  replayBtn.textContent = "Replay off";
+  replayBtn.title =
+    "Suppress the automatic replay after each fix (the fix is still " +
+    "committed) — R replays the last fix on demand";
+  replayBtn.setAttribute("aria-pressed", String(_replaySuppressed));
+  replayBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  replayBtn.addEventListener("click", () => {
+    _replaySuppressed = !_replaySuppressed;
+    replayBtn.setAttribute("aria-pressed", String(_replaySuppressed));
+  });
+
   // Playback speed (pitch preserved via the stretch worklet). The % button
   // is the "back to 100%" affordance and lights up whenever speed ≠ 100%.
   const speed = document.createElement("span");
@@ -969,6 +1002,7 @@ function _buildDom(contentEl, waveformsEl) {
     exitBtn,
     playBtn,
     pageOnlyBtn,
+    replayBtn,
     speed,
     balance,
     title,
@@ -1073,12 +1107,29 @@ function _hideFixLoading() {
   _fix.els.loading.hidden = true;
 }
 
-function _setChip(state, text) {
+function _setChip(state, text, full) {
   if (!_fix) return;
   _fix.chipState = state;
   _fix.els.chip.dataset.state = state;
   _fix.els.chip.textContent = text;
-  _fix.els.chip.title = text;
+  // The chip is ellipsised on purpose (the header must hold ONE line, whose
+  // height feeds the prewarm fit), so the untruncated message lives in the
+  // tooltip — `full` when the short form dropped something.
+  _fix.els.chip.title = full || text;
+}
+
+/**
+ * While the engine is arming, the strip reads as not-yet-live: the ticks dim
+ * and the cursor says wait. The marker a user reaches for first is bottom
+ * left and the chip is top right, so "why will this not move" has to be
+ * answerable without looking away from the marker.
+ */
+function _syncReadyAffordance() {
+  const f = _fix;
+  if (!f) return;
+  const pending = !f.engineReady;
+  f.els.strip.classList.toggle("fix-strip-pending", pending);
+  f.els.ticks.classList.toggle("fix-ticks-pending", pending);
 }
 
 // ---------------------------------------------------------------------------
@@ -1764,7 +1815,13 @@ function _onTickMouseMove(e) {
   if (!d) return;
   if (!d.moved && Math.abs(e.clientX - d.startX) < DRAG_THRESHOLD_PX) return;
   d.moved = true;
-  if (!d.editable) return;
+  if (!d.editable) {
+    if (!d.refused) {
+      d.refused = true; // once per gesture, not once per mousemove
+      _announce(_notEditableWhy());
+    }
+    return;
+  }
   const rect = f.els.ticks.getBoundingClientRect();
   const t = _stripXToTime(e.clientX - rect.x);
   if (t === null) return;
@@ -1792,6 +1849,17 @@ function _onTickMouseUp(e) {
   });
 }
 
+/** Why the marker would not move — the answer a refused gesture gives. */
+function _notEditableWhy() {
+  const f = _fix;
+  if (f && !f.engineReady) {
+    return f.chipState === "error"
+      ? "Corrections are unavailable: the correction engine failed."
+      : "Not ready yet — the correction engine is still preparing.";
+  }
+  return "Still realigning the last fix — one moment.";
+}
+
 /** Detach a drag's window listeners (teardown-safe). */
 function _endDrag(f) {
   const d = f.drag;
@@ -1814,7 +1882,11 @@ function _endDrag(f) {
  */
 function _nudge(dir, fine) {
   const f = _fix;
-  if (!f || !f.engineReady || f.realignBusy) return;
+  if (!f) return;
+  if (!f.engineReady || f.realignBusy) {
+    _announce(_notEditableWhy());
+    return;
+  }
   if (f.drag && !f.drag.keyboard) return; // a mouse drag owns the gesture
   const g = f.groups[f.selGroupIx];
   if (!g) return;
@@ -2811,15 +2883,37 @@ async function _commitAnchor(groupIx, t, kind) {
   _auditionRerender(entry.window.t0, entry.renderT1);
   _scheduleRedraw();
   // Auto-replay from just before the previous anchor: the invalidated span
-  // starts there, so the ear re-checks exactly what the fix changed.
-  if (f.aud?.ready) {
-    f.followFloor = null;
-    // A replay may start on an earlier page; in page-only mode this pass
-    // lets it cross back into the fixed span before the clamp re-arms.
-    f.pageOnlyPassUntilT = entry.window.t1;
-    _audSeek(Math.max(0, entry.window.t0 - REPLAY_PREROLL_SEC));
-    _audPlay();
-  }
+  // starts there, so the ear re-checks exactly what the fix changed. Kept
+  // even when suppressed, because R replays it on demand.
+  _lastReplay = {
+    t0: entry.window.t0,
+    fixedT: entry.t,
+    passUntilT: entry.window.t1,
+  };
+  if (!_replaySuppressed) _replayFix(_lastReplay);
+}
+
+/**
+ * Where a fix's replay opens: half a second before the previous anchor, but
+ * never more than MAX_RUNUP_SEC before the fix itself. `window.t0` is the
+ * previous anchor's time — or 0 when there is none — so without the ceiling a
+ * fix into virgin territory replays from the top of the recording.
+ */
+function _replayStartT(t0, fixedT) {
+  return Math.max(0, Math.max(t0 - REPLAY_PREROLL_SEC, fixedT - MAX_RUNUP_SEC));
+}
+
+/** Replay the span a commit invalidated. Shared by the auto-replay and R. */
+function _replayFix(r) {
+  const f = _fix;
+  if (!f || !r || !f.aud?.ready) return false;
+  f.followFloor = null;
+  // A replay may start on an earlier page; in page-only mode this pass lets
+  // it cross back into the fixed span before the clamp re-arms.
+  f.pageOnlyPassUntilT = r.passUntilT;
+  _audSeek(_replayStartT(r.t0, r.fixedT));
+  _audPlay();
+  return true;
 }
 
 /**
@@ -3202,6 +3296,19 @@ function _onFixKeydown(e) {
       }
       break;
     }
+    case "KeyR":
+      if (e.altKey || e.shiftKey) {
+        handled = false;
+        break;
+      }
+      // Deliberately does NOT commit a floating nudge: R means "let me hear
+      // the last fix again", which is the whole point of suppressing the
+      // automatic one, and a pending nudge is still being thought about.
+      if (!_lastReplay) _announce("No fix to replay yet.");
+      else if (!_replayFix(_lastReplay)) {
+        _announce("The audition is still preparing.");
+      }
+      break;
     case "KeyM":
       if (e.altKey) {
         handled = false;
@@ -3304,7 +3411,12 @@ function _ensureWorker() {
 
 async function _bootstrap() {
   const f = _fix;
-  _setChip("decoding", "Preparing correction engine: decoding reference audio…");
+  _setChip(
+    "decoding",
+    "Step 1/4: reference audio…",
+    "Preparing correction engine: decoding reference audio…",
+  );
+  _syncReadyAffordance();
   const samples = await _decodeRefAudio(f.refFile);
   if (!_fix || _fix !== f) return; // exited while decoding
 
@@ -3322,7 +3434,11 @@ async function _bootstrap() {
     console.error("fix-mode audition build failed:", e);
   });
 
-  _setChip("loading", "Preparing correction engine: loading alignment runtime…");
+  _setChip(
+    "loading",
+    "Step 2/4: align runtime…",
+    "Preparing correction engine: loading alignment runtime…",
+  );
   const worker = _ensureWorker();
   worker.onmessage = (e) => {
     const d = e.data;
@@ -3337,7 +3453,14 @@ async function _bootstrap() {
     }
     if (!_fix || _fix !== f) return;
     if (d.type === "progress") {
-      _setChip("loading", `Preparing correction engine: ${d.message}`);
+      // fix_begin's one progress message is the score synth. Shortened to
+      // fit the chip's 28ch; the full text stays in the tooltip.
+      const short = /synthesis/i.test(d.message) ? "score synth…" : "working…";
+      _setChip(
+        "loading",
+        `Step 3/4: ${short}`,
+        `Preparing correction engine: ${d.message}`,
+      );
     } else if (d.type === "fix_ready") {
       _workerHasSession = true;
       if (d.events?.n_events !== f.nEvents) {
@@ -3350,7 +3473,8 @@ async function _bootstrap() {
       }
       f.workerEvents = d.events;
       f.engineReady = true;
-      _setChip("ready", "Correction engine ready");
+      _setChip("ready", "Ready to correct");
+      _syncReadyAffordance();
     } else if (d.type === "error") {
       _setChip("error", `Correction engine failed: ${d.message}`);
     }
@@ -3396,6 +3520,10 @@ export function fixTestState() {
   const selT = sel ? _groupRefTime(sel) : null;
   return {
     active: true,
+    replaySuppressed: _replaySuppressed,
+    lastReplay: _lastReplay
+      ? { ..._lastReplay, startT: _replayStartT(_lastReplay.t0, _lastReplay.fixedT) }
+      : null,
     lastRefusal: _lastRefusal,
     prewarmReady: !!(_derived && _derived.pageCount),
     lastEntry: { ..._lastEntry },

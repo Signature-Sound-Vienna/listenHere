@@ -53,7 +53,13 @@ async function gotoFixMode(page: Page, patch?: (json: any) => void) {
  */
 async function installWorkerStub(
   page: Page,
-  opts: { realignError?: string; realignShort?: boolean } = {},
+  opts: {
+    realignError?: string;
+    realignShort?: boolean;
+    /** Hold fix_ready back until __fixStub.releaseReady() — the arming state
+     *  is otherwise 5 ms wide and cannot be asserted. */
+    deferReady?: boolean;
+  } = {},
 ) {
   await page.evaluate((o) => {
     const lt = (window as any)._listenTest;
@@ -76,14 +82,15 @@ async function installWorkerStub(
         }
         w.posted.push(rec);
         if (msg.type === 'fix_begin') {
-          setTimeout(() => {
+          const sendReady = () =>
             w.onmessage?.({
               data: {
                 type: 'fix_ready',
                 events: { n_events: lt.fix?.nEvents },
               },
             });
-          }, 5);
+          if (o.deferReady) w.releaseReady = sendReady;
+          else setTimeout(sendReady, 5);
         } else if (msg.type === 'fix_realign') {
           setTimeout(() => {
             if (o.realignShort) {
@@ -376,12 +383,15 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     // The durable record and the unified undo stack both carry it.
     expect(st.corrections.headerPresent).toBe(true);
     await expect(page.locator('#undo-btn')).toHaveText('Undo: alignment anchor');
-    // The audition re-rendered the changed span and auto-replay started from
-    // just before the previous anchor (the piece-start corner here).
+    // The audition re-rendered the changed span and auto-replay started at
+    // the run-up ceiling: there is no anchor to the left here, so the
+    // segment's left edge is the piece start and MAX_RUNUP_SEC is what
+    // decides the start (see 43.27 for the clamp itself).
     expect(st.aud.renderWindow).not.toBeNull();
     expect(st.aud.renderWindow.t0).toBeLessThanOrEqual(0.1);
     expect(st.aud.playing).toBe(true);
-    expect(st.aud.time).toBeLessThan(2);
+    expect(st.aud.time).toBeGreaterThanOrEqual(a.t - 2 - 0.05);
+    expect(st.aud.time).toBeLessThan(a.t - 2 + 1.5);
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
   });
 
@@ -1116,5 +1126,114 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     const st = await fixState(page);
     expect(st.corrections.headerPresent).toBe(false);
     await expect(page.locator('#undo-btn')).toBeDisabled();
+  });
+
+  test('43.27 the replay start is clamped to the run-up ceiling, not the previous anchor', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    // The first fix of a session has NO anchor to its left, so the segment's
+    // own left edge is 0 and the unclamped start would be the top of the
+    // recording — a page and a half of run-up for a fix at ~3 s.
+    await dragSelectedTick(page, 12);
+    const st = await fixState(page);
+    expect(st.lastReplay).not.toBeNull();
+    expect(st.lastReplay.t0).toBeCloseTo(0, 6);
+    // MAX_RUNUP_SEC = 2: the start sits exactly that far before the fix, and
+    // strictly after the top of the recording (which is what proves the
+    // ceiling bit rather than the preroll).
+    expect(st.lastReplay.startT).toBeCloseTo(st.lastReplay.fixedT - 2, 6);
+    expect(st.lastReplay.startT).toBeGreaterThan(0.5);
+  });
+
+  test('43.28 Replay off suppresses the auto-replay but still commits; R replays on demand', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+
+    await page.click('#fix-replay-off');
+    await expect(page.locator('#fix-replay-off')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect((await fixState(page)).replaySuppressed).toBe(true);
+
+    const before = await refChecksum(page);
+    await dragSelectedTick(page, 12);
+    const st = await fixState(page);
+    // The COMMIT still happened — only the replay is suppressed.
+    expect(await refChecksum(page)).not.toEqual(before);
+    expect(st.corrections.anchors.length).toBe(1);
+    expect(st.aud.playing).toBe(false);
+    // ...and the span was recorded, so R can still reach it.
+    expect(st.lastReplay).not.toBeNull();
+
+    await page.keyboard.press('r');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.aud?.playing === true,
+      undefined,
+      { timeout: 10_000 },
+    );
+    const playing = await fixState(page);
+    expect(playing.aud.time).toBeGreaterThanOrEqual(st.lastReplay.startT - 0.05);
+    expect(playing.aud.time).toBeLessThan(st.lastReplay.startT + 1.5);
+  });
+
+  test('43.29 before the engine arms, the strip reads not-yet-live and a refused drag says why', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page, { deferReady: true });
+    await enterFix(page);
+
+    // Dimmed ticks + a waiting cursor: the answer is where the hand is, not
+    // only in the chip at the far corner of the screen.
+    await expect(page.locator('.fix-ticks')).toHaveClass(/fix-ticks-pending/);
+    await expect(page.locator('.fix-strip')).toHaveClass(/fix-strip-pending/);
+    expect(
+      await page
+        .locator('.fix-ticks')
+        .evaluate((el) => getComputedStyle(el).cursor),
+    ).toBe('progress');
+
+    // A drag that cannot land answers at the pointer instead of failing mute.
+    const box = (await page.locator('.fix-ticks').boundingBox())!;
+    const st = await fixState(page);
+    const x0 = box.x + st.selTickX;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x0, y);
+    await page.mouse.down();
+    await page.mouse.move(x0 + 20, y, { steps: 5 });
+    await page.mouse.up();
+    expect((await fixState(page)).lastAnnounce).toMatch(/still preparing/i);
+    // The keyboard route refuses the same way.
+    await page.keyboard.press('Shift+ArrowRight');
+    expect((await fixState(page)).lastAnnounce).toMatch(/still preparing/i);
+    // Nothing moved.
+    expect((await fixState(page)).corrections.anchors.length).toBe(0);
+
+    // The stub only exists once the bootstrap's decode has handed the worker
+    // its samples, which is well after the ticks are drawn.
+    await page.waitForFunction(
+      () => typeof (window as any).__fixStub?.releaseReady === 'function',
+      undefined,
+      { timeout: 45_000 },
+    );
+    await page.evaluate(() => (window as any).__fixStub.releaseReady());
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.engineReady === true,
+    );
+    await expect(page.locator('.fix-ticks')).not.toHaveClass(
+      /fix-ticks-pending/,
+    );
+    await expect(page.locator('.fix-strip')).not.toHaveClass(
+      /fix-strip-pending/,
+    );
   });
 });

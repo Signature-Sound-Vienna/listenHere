@@ -6934,6 +6934,20 @@ body.lh-v6-drawer-open .drawer-btns {
 }
 
 /* Onset ticks draw on this canvas; it also takes the tick-select clicks. */
+/* Corrections are impossible until the engine arms. The ticks read as
+   not-yet-live and the strip's cursor says so, because the marker a user
+   reaches for first is bottom left while the chip is top right — the answer
+   to "why will this not move" has to be where the hand already is. Only the
+   tick canvas dims: the playhead has its own, so the audition (which arms
+   earlier) still looks live. */
+.fix-ticks-pending {
+  opacity: 0.4;
+}
+.fix-strip-pending .fix-ticks,
+.fix-strip-pending {
+  cursor: progress;
+}
+
 .fix-ticks {
   position: absolute;
   inset: 0;
@@ -7053,13 +7067,15 @@ body.lh-v6-drawer-open .drawer-btns {
    only: the blanket themed button rule owns background/color/border with
    ID-level specificity (see the .gm-modal note above it), and box-shadow is
    a property it never sets, so this survives every theme. */
-#fix-page-only {
+#fix-page-only,
+#fix-replay-off {
   padding: 0.15em 0.45em;
   font-size: 0.85em;
   line-height: 1.4;
   white-space: nowrap;
 }
-#fix-page-only[aria-pressed="true"] {
+#fix-page-only[aria-pressed="true"],
+#fix-replay-off[aria-pressed="true"] {
   box-shadow: inset 0 0 0 2px var(--color-accent, #2563eb);
   font-weight: 700;
 }

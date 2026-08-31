@@ -80,6 +80,8 @@ const TICK_HIT_PX = 8;
 const STRIP_PEAK_COUNT = 8000;
 /** The aligner's sample rate — fix_begin expects ref samples at this rate. */
 const FIX_SR = 22050;
+/** The granular time-stretch worklet behind the header's speed slider. */
+const FIX_STRETCH_WORKLET_URL = "/static/js/fix-stretch-worklet.js";
 /** Seek-to-selected-note lands the playhead this far before the onset. */
 const SEEK_PREROLL_SEC = 0.5;
 /** Auto-replay after a fix starts this far before the previous anchor. */
@@ -87,12 +89,14 @@ const REPLAY_PREROLL_SEC = 0.5;
 /** A mousedown that travels less than this is a tick CLICK, not a drag. */
 const DRAG_THRESHOLD_PX = 3;
 /** Keyboard nudge steps (the app's marker-nudge convention: Shift = coarse,
- *  Shift+Alt = fine) and the quiet period after which pending nudges commit
- *  as ONE anchor (per-keystroke realigns would spam worker and undo stack). */
+ *  Shift+Alt = fine). Nudges accumulate while any nudge key is held and
+ *  commit as ONE anchor on full release — the keyup that leaves no nudge key
+ *  down (per-keystroke realigns would spam worker and undo stack, and a
+ *  quiet-period timer cut in while the user was still adjusting). */
 const NUDGE_COARSE_SEC = 0.1;
 const NUDGE_FINE_SEC = 0.02;
-let _nudgeCommitMs = 600;
-let _nudgeTimer = null;
+/** Arrow keys physically down right now (modifier state rides each keyup). */
+const _heldArrows = new Set();
 /** Anchor times clamp this far inside the neighbouring anchors' times. */
 const ANCHOR_EPS_SEC = 0.01;
 /** M within this distance of an existing mark removes it instead of adding. */
@@ -135,6 +139,9 @@ let _lastEntry = { usedPrewarm: false, spinnerShown: false, ms: 0 };
 let _corrections = createCorrections();
 let _pristine = null; // { on: number[], off: number[] } — as-loaded ref tables
 let _marks = []; // sorted reference times
+/** The mark the last N-jump landed on, recoloured as ACTIVE; Delete removes
+ *  it (M's hit test misses after a jump — the preroll parks 0.5 s away). */
+let _activeMarkT = null;
 /** Base-alignment provenance for header.corrections (item-T's data). */
 let _correctionsBase = null;
 /** The as-loaded correction record, for Revert and dirtiness (JSON of
@@ -148,6 +155,9 @@ let _announceTimer = null;
 /** Audition L/R balance, −1 (recording only) … +1 (synth only); 0 = even.
  *  A listening-ergonomics preference, so it survives sessions and pieces. */
 let _audBalance = 0;
+/** Page-only playback: the audition stops at the current page's boundary
+ *  instead of turning it (sticky across fix sessions, like the balance). */
+let _pageOnly = false;
 
 // ---------------------------------------------------------------------------
 // Entry affordance
@@ -376,7 +386,10 @@ export async function enterFixMode(entryFile) {
     realignBusy: false,
     soundingGroupIx: null,
     followFloor: null, // { ix, untilT } — holds the follower after a seek
+    pageOnlyPassUntilT: null, // a replay/mark jump may cross pages until here
     keydownHandler: null,
+    keyupHandler: null,
+    blurHandler: null,
     lastCommit: null, // test surface: what the last anchor commit did
   };
   const f = _fix;
@@ -470,6 +483,16 @@ export async function enterFixMode(entryFile) {
   // Ctrl+Z / Ctrl+Shift+Z stay with listen.js — undo is GLOBAL by ruling.
   f.keydownHandler = (e) => _onFixKeydown(e);
   document.addEventListener("keydown", f.keydownHandler);
+  // A floating keyboard nudge commits on full release (see _onFixKeyup); a
+  // window blur can eat that keyup, so it commits the nudge instead — a
+  // pending nudge is never silently abandoned.
+  f.keyupHandler = (e) => _onFixKeyup(e);
+  document.addEventListener("keyup", f.keyupHandler);
+  f.blurHandler = () => {
+    _heldArrows.clear();
+    _commitPendingNudge();
+  };
+  window.addEventListener("blur", f.blurHandler);
 
   // The engine bootstrap (decode + fix_begin) runs in the background; the
   // screen is usable for inspection while it loads, and the loop's realign
@@ -490,6 +513,15 @@ function _teardownFixDom(f) {
     document.removeEventListener("keydown", f.keydownHandler);
     f.keydownHandler = null;
   }
+  if (f.keyupHandler) {
+    document.removeEventListener("keyup", f.keyupHandler);
+    f.keyupHandler = null;
+  }
+  if (f.blurHandler) {
+    window.removeEventListener("blur", f.blurHandler);
+    f.blurHandler = null;
+  }
+  _heldArrows.clear();
   _endDrag(f);
   _auditionDispose(f);
   if (_pendingRealign) {
@@ -561,6 +593,7 @@ export function fixModePrewarm() {
   _corrections = createCorrections();
   _pristine = null;
   _marks = [];
+  _activeMarkT = null;
   _lastMarkJumpT = null;
   _lastAnnounce = null;
   _correctionsBase = null;
@@ -816,6 +849,52 @@ function _buildDom(contentEl, waveformsEl) {
   playBtn.addEventListener("mousedown", (e) => e.preventDefault());
   playBtn.addEventListener("click", () => _audToggle());
 
+  // Page-only playback toggle: play stops at the current page's boundary.
+  const pageOnlyBtn = document.createElement("button");
+  pageOnlyBtn.type = "button";
+  pageOnlyBtn.id = "fix-page-only";
+  pageOnlyBtn.textContent = "Page only";
+  pageOnlyBtn.title =
+    "Play only the current page — playback stops at the page boundary";
+  pageOnlyBtn.setAttribute("aria-pressed", String(_pageOnly));
+  pageOnlyBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  pageOnlyBtn.addEventListener("click", () => {
+    _pageOnly = !_pageOnly;
+    pageOnlyBtn.setAttribute("aria-pressed", String(_pageOnly));
+    if (_fix) _fix.pageOnlyPassUntilT = null;
+  });
+
+  // Playback speed (pitch preserved via the stretch worklet). The % button
+  // is the "back to 100%" affordance and lights up whenever speed ≠ 100%.
+  const speed = document.createElement("span");
+  speed.className = "fix-speed";
+  speed.title =
+    "Playback speed (pitch preserved) — click the % to return to 100%";
+  const speedInput = document.createElement("input");
+  speedInput.type = "range";
+  speedInput.min = "50";
+  speedInput.max = "100";
+  speedInput.step = "5";
+  speedInput.value = "100";
+  speedInput.disabled = true; // enabled once the stretch worklet attaches
+  speedInput.setAttribute("aria-label", "Playback speed (%)");
+  const speedReset = document.createElement("button");
+  speedReset.type = "button";
+  speedReset.className = "fix-speed-reset";
+  speedReset.textContent = "100%";
+  speedReset.title = "Back to full speed";
+  speedReset.disabled = true;
+  speedInput.addEventListener("input", () => {
+    _audSetRate(Number(speedInput.value) / 100);
+  });
+  // Give the keyboard back once the thumb is released (as the balance does).
+  speedInput.addEventListener("pointerup", () => speedInput.blur());
+  speedReset.addEventListener("mousedown", (e) => e.preventDefault());
+  speedReset.addEventListener("click", () => {
+    _audSetRate(1);
+  });
+  speed.append(speedInput, speedReset);
+
   // Real-time L/R balance: left ear = the recording, right ear = the synth.
   const balance = document.createElement("span");
   balance.className = "fix-balance";
@@ -867,7 +946,16 @@ function _buildDom(contentEl, waveformsEl) {
   chip.className = "fix-chip";
   chip.dataset.state = "idle";
 
-  header.append(exitBtn, playBtn, balance, title, pageCtl, chip);
+  header.append(
+    exitBtn,
+    playBtn,
+    pageOnlyBtn,
+    speed,
+    balance,
+    title,
+    pageCtl,
+    chip,
+  );
 
   const score = document.createElement("div");
   score.className = "fix-score";
@@ -938,6 +1026,9 @@ function _buildDom(contentEl, waveformsEl) {
     chip,
     title,
     playBtn,
+    speedWrap: speed,
+    speedInput,
+    speedReset,
     loading,
     loadingText,
   };
@@ -945,6 +1036,11 @@ function _buildDom(contentEl, waveformsEl) {
     getComputedStyle(document.documentElement)
       .getPropertyValue("--color-playhead")
       .trim() || "#2563eb";
+  // The active mark borrows close-listening's active-marker colour.
+  f.markActiveColor =
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--color-marker-active")
+      .trim() || "#8b0000";
 }
 
 function _showFixLoading(text) {
@@ -1481,16 +1577,21 @@ function _redrawOverlays() {
   }
   // MARKS: flagged misalignments on the audio timeline (diamond flags along
   // the strip top). They survive refills by living in time, not in events.
-  ctx.fillStyle = "#d97706";
+  // The ACTIVE mark (the last N-jump's target, Delete's victim) draws larger
+  // in the close-listening active-marker colour.
   ctx.globalAlpha = 0.9;
   for (const mt of _marks) {
     const x = _timeToStripX(mt);
-    if (x === null || x < -6 || x > w + 6) continue;
+    if (x === null || x < -8 || x > w + 8) continue;
+    const active = mt === _activeMarkT;
+    ctx.fillStyle = active ? f.markActiveColor : "#d97706";
+    const rx = active ? 7 : 5;
+    const ry = active ? 8 : 6;
     ctx.beginPath();
-    ctx.moveTo(x, 2);
-    ctx.lineTo(x + 5, 8);
-    ctx.lineTo(x, 14);
-    ctx.lineTo(x - 5, 8);
+    ctx.moveTo(x, 8 - ry);
+    ctx.lineTo(x + rx, 8);
+    ctx.lineTo(x, 8 + ry);
+    ctx.lineTo(x - rx, 8);
     ctx.closePath();
     ctx.fill();
   }
@@ -1532,6 +1633,8 @@ function _select(ix, { seek = false } = {}) {
       // the very next preroll frame would re-select the PREVIOUS group and
       // yank the user's choice away.
       f.followFloor = { ix, untilT: t };
+      f.pageOnlyPassUntilT = null; // an explicit selection ends any pass
+      _activeMarkT = null; // …and moves attention off the active mark
       _audSeek(Math.max(0, t - SEEK_PREROLL_SEC));
     }
   }
@@ -1673,7 +1776,6 @@ function _onTickMouseUp(e) {
 /** Detach a drag's window listeners (teardown-safe). */
 function _endDrag(f) {
   const d = f.drag;
-  clearTimeout(_nudgeTimer);
   if (!d) return;
   if (d.onMove) window.removeEventListener("mousemove", d.onMove);
   if (d.onUp) window.removeEventListener("mouseup", d.onUp);
@@ -1687,8 +1789,9 @@ function _endDrag(f) {
 /**
  * Move the selected onset's alignment point by one step. Nudges accumulate
  * into the SAME provisional drag state the mouse gesture uses (ghost + delta
- * readout on the strip) and commit as one anchor after a quiet period —
- * keyboard-release has no event, so the pause is the "release".
+ * readout on the strip) and commit as one anchor when the keyboard is fully
+ * released (_onFixKeyup) — the keyboard twin of the mouse drag's mouseup, so
+ * holding Shift keeps the nudge floating for as long as the user is thinking.
  */
 function _nudge(dir, fine) {
   const f = _fix;
@@ -1715,15 +1818,30 @@ function _nudge(dir, fine) {
   const step = (fine ? NUDGE_FINE_SEC : NUDGE_COARSE_SEC) * dir;
   d.curT = Math.min(Math.max(d.curT + step, d.bounds.lo), d.bounds.hi);
   _scheduleRedraw();
-  clearTimeout(_nudgeTimer);
-  _nudgeTimer = setTimeout(() => _commitPendingNudge(), _nudgeCommitMs);
+}
+
+/**
+ * The nudge's "mouseup": on every keyup, once no nudge key is left down —
+ * no modifier (the keyup's own state) and no arrow (_heldArrows) — a
+ * floating nudge commits. Runs unfiltered so a keyup can never be missed;
+ * it only acts when a keyboard nudge is actually floating.
+ */
+function _onFixKeyup(e) {
+  const f = _fix;
+  if (!f) return;
+  if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+    _heldArrows.delete(e.code);
+  }
+  if (!f.drag?.keyboard) return;
+  if (!e.shiftKey && !e.altKey && _heldArrows.size === 0) {
+    _commitPendingNudge();
+  }
 }
 
 /** Commit an accumulated keyboard nudge now (also called before any other
  *  gesture, so a pending nudge can never be silently abandoned). */
 function _commitPendingNudge() {
   const f = _fix;
-  clearTimeout(_nudgeTimer);
   const d = f?.drag;
   if (!d?.keyboard) return;
   f.drag = null;
@@ -1739,7 +1857,6 @@ function _commitPendingNudge() {
 /** Escape during a pending nudge drops it (the tick springs back). */
 function _cancelPendingNudge() {
   const f = _fix;
-  clearTimeout(_nudgeTimer);
   if (f?.drag?.keyboard) {
     f.drag = null;
     _scheduleRedraw();
@@ -1860,6 +1977,9 @@ function _buildAudition(f, refSamples) {
     src: null,
     raf: 0,
     lastRenderWindow: null,
+    stretch: null, // the time-stretch worklet node (null = source fallback)
+    rate: 1, // playback speed, 1 = full; pitch preserved by the worklet
+    workletPos: null, // the worklet's own head (test surface, ~12 Hz)
   };
   _applyAudBalance(f.aud);
   return _finishAuditionRender(f);
@@ -1889,10 +2009,86 @@ async function _finishAuditionRender(f) {
   }
   a.gain = peak > 1e-6 ? 0.9 / peak : 1;
   _copySynthToBuffer(f, 0, a.duration);
+  await _attachStretch(f, a);
+  if (_fix !== f || f.aud !== a) return;
   a.rendering = false;
   a.ready = true;
   _updatePlayBtn();
   _schedulePlayheadFrame();
+}
+
+/**
+ * Pitch-preserving speed: a granular time-stretch worklet feeds the balance
+ * graph instead of a per-play BufferSource (which could only speed-change by
+ * shifting pitch). On any failure the audition keeps the source path and the
+ * speed control hides. Costs one more stereo copy of the piece (~2 × n
+ * floats) held inside the worklet.
+ */
+async function _attachStretch(f, a) {
+  try {
+    await a.ctx.audioWorklet.addModule(FIX_STRETCH_WORKLET_URL);
+    if (_fix !== f || f.aud !== a) return;
+    const node = new AudioWorkletNode(a.ctx, "fix-stretch", {
+      numberOfInputs: 0,
+      outputChannelCount: [2],
+    });
+    node.port.onmessage = (e) => {
+      if (_fix !== f || f.aud !== a) return;
+      const m = e.data;
+      if (m.type === "pos") {
+        a.workletPos = m.pos;
+      } else if (m.type === "ended") {
+        a.playing = false;
+        a.pos = a.duration;
+        _updatePlayBtn();
+        _schedulePlayheadFrame();
+      }
+    };
+    const ch0 = new Float32Array(a.buffer.getChannelData(0));
+    const ch1 = _scaledSynth(a, 0, a.synthCh.length);
+    node.port.postMessage({ type: "load", ch0, ch1, srcRate: FIX_SR }, [
+      ch0.buffer,
+      ch1.buffer,
+    ]);
+    node.connect(a.splitter);
+    a.stretch = node;
+    f.els.speedInput.disabled = false;
+    f.els.speedReset.disabled = false;
+  } catch (err) {
+    console.warn(
+      "fix mode: time-stretch worklet unavailable — speed control disabled:",
+      err,
+    );
+    if (f.els.speedWrap) f.els.speedWrap.hidden = true;
+  }
+}
+
+/** Set the audition speed (pitch preserved). Re-anchors the position clock. */
+function _audSetRate(v) {
+  const f = _fix;
+  const a = f?.aud;
+  if (!a?.stretch) {
+    _updateSpeedUi();
+    return;
+  }
+  if (a.playing) {
+    a.pos = _audPos();
+    a.startedAt = a.ctx.currentTime;
+  }
+  a.rate = v;
+  a.stretch.port.postMessage({ type: "rate", value: v });
+  _updateSpeedUi();
+}
+
+function _updateSpeedUi() {
+  const f = _fix;
+  if (!f?.els.speedReset) return;
+  const pct = Math.round((f.aud?.rate ?? 1) * 100);
+  f.els.speedReset.textContent = `${pct}%`;
+  f.els.speedReset.classList.toggle("fix-speed-off-unity", pct !== 100);
+  if (Number(f.els.speedInput.value) !== pct) {
+    f.els.speedInput.value = String(pct);
+  }
 }
 
 /** (Re)render the raw synth channel for [t0, t1): zero the window, then add
@@ -1940,20 +2136,30 @@ function _renderSynthWindow(f, t0, t1) {
   }
 }
 
-/** Master-gained copy of a synth window into the stereo buffer's right ear.
- *  copyToChannel (not getChannelData writes) so acquired-content semantics
- *  can never leave a playing buffer stale. */
-function _copySynthToBuffer(f, t0, t1) {
-  const a = f.aud;
-  const iLo = Math.max(0, Math.floor(t0 * FIX_SR));
-  const iHi = Math.min(a.synthCh.length, Math.ceil(t1 * FIX_SR));
-  if (iHi <= iLo) return;
+/** Master-gained clip of the raw synth over [iLo, iHi) sample indices. */
+function _scaledSynth(a, iLo, iHi) {
   const scaled = new Float32Array(iHi - iLo);
   for (let i = 0; i < scaled.length; i++) {
     const v = a.synthCh[iLo + i] * a.gain;
     scaled[i] = v > 1 ? 1 : v < -1 ? -1 : v;
   }
+  return scaled;
+}
+
+/** Master-gained copy of a synth window into the stereo buffer's right ear
+ *  (copyToChannel, not getChannelData writes — acquired-content semantics
+ *  can never leave a playing buffer stale) AND, when the stretch worklet is
+ *  attached, the same window patched into its own copy. */
+function _copySynthToBuffer(f, t0, t1) {
+  const a = f.aud;
+  const iLo = Math.max(0, Math.floor(t0 * FIX_SR));
+  const iHi = Math.min(a.synthCh.length, Math.ceil(t1 * FIX_SR));
+  if (iHi <= iLo) return;
+  const scaled = _scaledSynth(a, iLo, iHi);
   a.buffer.copyToChannel(scaled, 1, iLo);
+  a.stretch?.port.postMessage({ type: "patch", ch: 1, offset: iLo, data: scaled }, [
+    scaled.buffer,
+  ]);
 }
 
 /** Re-render the right ear for the span a fix (or an undo hop) changed. */
@@ -1989,7 +2195,10 @@ function _audPos() {
   const a = _fix?.aud;
   if (!a) return 0;
   return a.playing
-    ? Math.min(a.duration, a.pos + (a.ctx.currentTime - a.startedAt))
+    ? Math.min(
+        a.duration,
+        a.pos + (a.ctx.currentTime - a.startedAt) * (a.stretch ? a.rate : 1),
+      )
     : a.pos;
 }
 
@@ -1999,6 +2208,15 @@ function _audPlay() {
   if (!a?.ready || a.playing) return;
   if (a.ctx.state === "suspended") a.ctx.resume().catch(() => {});
   if (a.pos >= a.duration - 0.01) a.pos = 0;
+  if (a.stretch) {
+    a.stretch.port.postMessage({ type: "seek", pos: a.pos });
+    a.stretch.port.postMessage({ type: "play" });
+    a.startedAt = a.ctx.currentTime;
+    a.playing = true;
+    _updatePlayBtn();
+    _schedulePlayheadFrame();
+    return;
+  }
   const src = a.ctx.createBufferSource();
   src.buffer = a.buffer;
   src.connect(a.splitter);
@@ -2024,6 +2242,12 @@ function _audPause() {
   const a = _fix?.aud;
   if (!a?.playing) return;
   a.pos = _audPos();
+  if (a.stretch) {
+    a.stretch.port.postMessage({ type: "pause" });
+    a.playing = false;
+    _updatePlayBtn();
+    return;
+  }
   a.srcToken++;
   try {
     a.src?.stop();
@@ -2037,6 +2261,13 @@ function _audSeek(t) {
   const a = _fix?.aud;
   if (!a?.ready) return;
   t = Math.min(Math.max(0, t), a.duration);
+  if (a.stretch) {
+    a.pos = t;
+    a.stretch.port.postMessage({ type: "seek", pos: t });
+    if (a.playing) a.startedAt = a.ctx.currentTime;
+    else _schedulePlayheadFrame();
+    return;
+  }
   if (a.playing) {
     a.srcToken++;
     try {
@@ -2052,11 +2283,52 @@ function _audSeek(t) {
   }
 }
 
+/**
+ * The current page's playback slice: from its first group's live onset to
+ * the next non-empty page's first onset (a page owns the music up to where
+ * the next system begins; the last page runs to the end of the recording).
+ * Null when the page carries no finite onset. Distinct from _pageWindow,
+ * the strip's PADDED display window.
+ */
+function _pageTimeSlice() {
+  const f = _fix;
+  const own = _groupsOnPage(f.page);
+  if (!own.length) return null;
+  const startT = _groupRefTime(own[0]);
+  if (!Number.isFinite(startT)) return null;
+  let endT = f.aud?.duration ?? Infinity;
+  for (let p = f.page + 1; p <= f.pageCount; p++) {
+    const next = _groupsOnPage(p);
+    if (next.length) {
+      endT = _groupRefTime(next[0]);
+      break;
+    }
+  }
+  return { startT, endT };
+}
+
+/** In page-only mode an explicit play starts inside the page: a position
+ *  outside the current page's slice snaps to its first onset − preroll. */
+function _snapIntoPage() {
+  const f = _fix;
+  const w = _pageTimeSlice();
+  if (!w) return;
+  const pos = _audPos();
+  if (pos >= w.startT - SEEK_PREROLL_SEC - 0.05 && pos < w.endT - 0.05) return;
+  const ix = _groupIxAtTime(w.startT);
+  if (ix !== -1) f.followFloor = { ix, untilT: w.startT };
+  f.pageOnlyPassUntilT = null;
+  _audSeek(Math.max(0, w.startT - SEEK_PREROLL_SEC));
+}
+
 function _audToggle() {
   const a = _fix?.aud;
   if (!a?.ready) return;
   if (a.playing) _audPause();
-  else _audPlay();
+  else {
+    if (_pageOnly) _snapIntoPage();
+    _audPlay();
+  }
 }
 
 function _updatePlayBtn() {
@@ -2148,6 +2420,20 @@ function _followPlayback() {
     }
   } else if (floor) {
     f.followFloor = null;
+  }
+  if (f.pageOnlyPassUntilT !== null && t >= f.pageOnlyPassUntilT - 1e-3) {
+    f.pageOnlyPassUntilT = null;
+  }
+  // Page-only playback: pause at the page boundary instead of turning the
+  // page — unless a commit replay or mark jump is deliberately crossing.
+  if (
+    _pageOnly &&
+    f.pageOnlyPassUntilT === null &&
+    f.groups[ix].page > f.page
+  ) {
+    _audPause();
+    _audSeek(Math.max(0, _groupRefTime(f.groups[ix]) - 0.01));
+    return;
   }
   if (ix !== f.selGroupIx) _select(ix, { seek: false });
   const g = f.groups[ix];
@@ -2264,26 +2550,35 @@ async function _commitAnchor(groupIx, t, kind) {
   let realigned = 0;
   try {
     for (const seg of segs) {
-      if (seg.interiorCount <= 0) continue;
-      const priorRef = refOn.slice(seg.iA + 1, seg.iB);
       let res;
-      try {
-        const reply = await _realignSegmentViaWorker(seg, priorRef);
-        if (_fix !== f) throw new Error("fix mode exited during the realign");
-        res = reply.result;
-        realigned++;
-      } catch (err) {
-        // A span squeezed between close anchors can have too few analysis
-        // frames for DTW (the worker refuses honestly). At that scale a
-        // linear fill IS the right refill — interior events sit within a
-        // breath of both anchors — so the commit proceeds instead of
-        // failing the whole gesture (first real-corpus session got stuck
-        // exactly here, with every flanking segment eventually tiny).
-        if (_fix === f && /too short to align/.test(err?.message || "")) {
-          res = _linearFill(seg);
-          linearFilled++;
-        } else {
-          throw err;
+      if (seg.interiorCount <= 0) {
+        // Nothing to refill, but the left-boundary anchor's own OFFSET
+        // still lives inside this span and must follow it: skipping here
+        // left the offset stale, so a rightward drag beside an existing
+        // anchor could leave offset ≤ onset and the synth rendered the
+        // note as a 20 ms blip (the first-note stutter).
+        if (seg.iA < 0) continue;
+        res = _linearFill(seg);
+      } else {
+        const priorRef = refOn.slice(seg.iA + 1, seg.iB);
+        try {
+          const reply = await _realignSegmentViaWorker(seg, priorRef);
+          if (_fix !== f) throw new Error("fix mode exited during the realign");
+          res = reply.result;
+          realigned++;
+        } catch (err) {
+          // A span squeezed between close anchors can have too few analysis
+          // frames for DTW (the worker refuses honestly). At that scale a
+          // linear fill IS the right refill — interior events sit within a
+          // breath of both anchors — so the commit proceeds instead of
+          // failing the whole gesture (first real-corpus session got stuck
+          // exactly here, with every flanking segment eventually tiny).
+          if (_fix === f && /too short to align/.test(err?.message || "")) {
+            res = _linearFill(seg);
+            linearFilled++;
+          } else {
+            throw err;
+          }
         }
       }
       const before = applySegment(refOn, refOff, seg, res.ref_onset, res.ref_offset);
@@ -2345,6 +2640,9 @@ async function _commitAnchor(groupIx, t, kind) {
   // starts there, so the ear re-checks exactly what the fix changed.
   if (f.aud?.ready) {
     f.followFloor = null;
+    // A replay may start on an earlier page; in page-only mode this pass
+    // lets it cross back into the fixed span before the clamp re-arms.
+    f.pageOnlyPassUntilT = entry.window.t1;
     _audSeek(Math.max(0, entry.window.t0 - REPLAY_PREROLL_SEC));
     _audPlay();
   }
@@ -2354,7 +2652,8 @@ async function _commitAnchor(groupIx, t, kind) {
  * Interior refill by proportion of score quarters — the honest answer for a
  * span too small for DTW (interior events sit within a breath of both
  * anchors, so the tempo curve between them is as good as linear). Same
- * clip-into-span discipline as the worker's refill.
+ * clip-into-span discipline as the worker's refill, including the left
+ * anchor's own offset remap (a stale offset can land before its onset).
  */
 function _linearFill(seg) {
   const f = _fix;
@@ -2368,7 +2667,13 @@ function _linearFill(seg) {
     on.push(clip(seg.tA + (f.qOn[e] - qA) * scale));
     off.push(clip(seg.tA + (f.qOff[e] - qA) * scale));
   }
-  return { ref_onset: on, ref_offset: off, anchor_a_offset: null, hop: 0 };
+  return {
+    ref_onset: on,
+    ref_offset: off,
+    anchor_a_offset:
+      seg.iA >= 0 ? clip(seg.tA + (f.qOff[seg.iA] - qA) * scale) : null,
+    hop: 0,
+  };
 }
 
 /** Reverse a partially applied commit (worker error, exit mid-flight). */
@@ -2584,10 +2889,13 @@ function _toggleMark() {
   const t = f.aud?.ready ? _audPos() : g ? _groupRefTime(g) : null;
   if (!Number.isFinite(t)) return;
   const near = _marks.findIndex((m) => Math.abs(m - t) <= MARK_HIT_SEC);
-  if (near !== -1) _marks.splice(near, 1);
-  else {
+  if (near !== -1) {
+    if (_marks[near] === _activeMarkT) _activeMarkT = null;
+    _marks.splice(near, 1);
+  } else {
     _marks.push(t);
     _marks.sort((a, b) => a - b);
+    _activeMarkT = null; // attention moved to the new mark; N activates
   }
   _scheduleRedraw();
 }
@@ -2595,6 +2903,15 @@ function _toggleMark() {
 /** The mark the last N-jump landed on (its preroll parks the playhead BEFORE
  *  the mark, so the next N must step from the mark itself, not the preroll). */
 let _lastMarkJumpT = null;
+
+/** Delete/Backspace on the ACTIVE mark (the last N-jump's target). */
+function _removeActiveMark() {
+  const at = _marks.indexOf(_activeMarkT);
+  if (at !== -1) _marks.splice(at, 1);
+  if (_lastMarkJumpT === _activeMarkT) _lastMarkJumpT = null;
+  _activeMarkT = null;
+  _scheduleRedraw();
+}
 
 /** N / Shift+N: skip to the next / previous mark (wrapping), selecting the
  *  onset there and seeking just before it — the fix → replay → next-mark
@@ -2620,10 +2937,13 @@ function _jumpMark(dir) {
     target = before.length ? before[before.length - 1] : _marks[_marks.length - 1];
   }
   _lastMarkJumpT = target;
+  _activeMarkT = target;
   const ix = _groupIxAtTime(target);
   if (ix !== -1) _select(ix, { seek: false });
   if (f.aud?.ready) {
     f.followFloor = null;
+    // Mark jumps may cross pages; the pass expires at the mark itself.
+    f.pageOnlyPassUntilT = target;
     _audSeek(Math.max(0, target - SEEK_PREROLL_SEC));
   }
   _scheduleRedraw();
@@ -2663,6 +2983,7 @@ function _onFixKeydown(e) {
       break;
     case "ArrowLeft":
     case "ArrowRight": {
+      _heldArrows.add(e.code);
       const dir = e.code === "ArrowLeft" ? -1 : 1;
       if (e.shiftKey) _nudge(dir, e.altKey);
       else if (e.altKey) handled = false;
@@ -2711,9 +3032,21 @@ function _onFixKeydown(e) {
       _commitPendingNudge();
       _jumpMark(e.shiftKey ? -1 : 1);
       break;
+    case "Delete":
+    case "Backspace":
+      if (e.altKey || _activeMarkT === null) {
+        handled = false;
+        break;
+      }
+      _commitPendingNudge();
+      _removeActiveMark();
+      break;
     case "Escape":
       if (hadPendingNudge) _cancelPendingNudge();
-      else exitFixMode();
+      else if (_activeMarkT !== null) {
+        _activeMarkT = null; // first Escape deselects the mark…
+        _scheduleRedraw();
+      } else exitFixMode(); // …a bare one exits
       break;
     default:
       handled = false;
@@ -2902,6 +3235,7 @@ export function fixTestState() {
     groupStats: _lastGroupStats ? { ..._lastGroupStats } : null,
     corrections,
     marks: [..._marks],
+    activeMark: _activeMarkT,
     lastAnnounce: _lastAnnounce,
     engineReady: f.engineReady,
     realignBusy: f.realignBusy,
@@ -2910,6 +3244,13 @@ export function fixTestState() {
       : null,
     lastCommit: f.lastCommit ? { ...f.lastCommit } : null,
     soundingGroup: f.soundingGroupIx,
+    pageOnly: _pageOnly,
+    pageWindow: (() => {
+      const w = _pageTimeSlice();
+      return w
+        ? { startT: w.startT, endT: Number.isFinite(w.endT) ? w.endT : null }
+        : null;
+    })(),
     aud: f.aud
       ? {
           ready: f.aud.ready,
@@ -2918,6 +3259,9 @@ export function fixTestState() {
           time: _audPos(),
           duration: f.aud.duration,
           balance: _audBalance,
+          rate: f.aud.rate,
+          stretch: !!f.aud.stretch,
+          workletPos: f.aud.workletPos,
           gainL: f.aud.gainL.gain.value,
           gainR: f.aud.gainR.gain.value,
           renderWindow: f.aud.lastRenderWindow ? { ...f.aud.lastRenderWindow } : null,
@@ -2938,11 +3282,6 @@ export const fixTestControl = {
   play: () => _audPlay(),
   pause: () => _audPause(),
   pos: () => _audPos(),
-  /** Widen (or shrink) the nudge commit window so keyboard tests never race
-   *  a real-time transient (the ≥1.2 s rule). */
-  setNudgeCommitMs(ms) {
-    _nudgeCommitMs = ms;
-  },
   /** RMS of one channel over [t0, t1] — proves an ear holds real signal. */
   channelRms(ch, t0, t1) {
     const a = _fix?.aud;

@@ -671,21 +671,23 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    // Wide commit window so the three presses always land inside it.
-    await page.evaluate(() =>
-      (window as any)._listenTest.fixCtl.setNudgeCommitMs(1500),
-    );
     for (let k = 0; k < 5; k++) await page.click('.fix-onset-next');
     const before = await fixState(page);
-    await page.keyboard.press('Shift+ArrowRight');
-    await page.keyboard.press('Shift+ArrowRight');
-    await page.keyboard.press('Shift+Alt+ArrowRight');
-    // The provisional state floats (no anchor yet), 2×100 ms + 20 ms along.
+    // Hold Shift across the presses — the nudge floats until full release.
+    await page.keyboard.down('Shift');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.down('Alt');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.up('Alt');
+    // While Shift is still down nothing can commit: the provisional state
+    // floats (no anchor yet), 2×100 ms + 20 ms along.
     let st = await fixState(page);
     expect(st.corrections.anchors).toHaveLength(0);
     expect(st.pendingNudge).not.toBeNull();
     expect(st.pendingNudge.curT).toBeCloseTo(before.selT + 0.22, 6);
-    // The quiet period elapses: one commit, one realign pair, one undo entry.
+    // Full release IS the commit: one anchor, one realign pair, one undo entry.
+    await page.keyboard.up('Shift');
     await page.waitForFunction(
       () => {
         const f = (window as any)._listenTest.fix;
@@ -712,12 +714,11 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    await page.evaluate(() =>
-      (window as any)._listenTest.fixCtl.setNudgeCommitMs(30_000),
-    );
     for (let k = 0; k < 3; k++) await page.click('.fix-onset-next');
     const before = await fixState(page);
-    await page.keyboard.press('Shift+ArrowLeft');
+    // Shift stays held: the nudge floats, and Escape lands on it.
+    await page.keyboard.down('Shift');
+    await page.keyboard.press('ArrowLeft');
     expect((await fixState(page)).pendingNudge).not.toBeNull();
     await page.keyboard.press('Escape');
     const st = await fixState(page);
@@ -726,10 +727,218 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(st.pendingNudge).toBeNull();
     expect(st.corrections.anchors).toHaveLength(0);
     expect(st.selT).toBeCloseTo(before.selT, 9);
+    // Releasing Shift after the cancel must not resurrect a commit.
+    await page.keyboard.up('Shift');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(0);
     await page.keyboard.press('Escape');
     await page.waitForFunction(
       () => !(window as any)._listenTest.fix.active,
     );
+  });
+
+  test('43.21 page-only mode clamps playback at the page boundary; play snaps back into the page', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    let st = await fixState(page);
+    expect(st.pageOnly).toBe(false);
+    const win = st.pageWindow;
+    expect(win).not.toBeNull();
+    expect(win.endT).toBeGreaterThan(win.startT);
+    await page.click('#fix-page-only');
+    expect(await page.getAttribute('#fix-page-only', 'aria-pressed')).toBe(
+      'true',
+    );
+    // Play into the boundary: the audition pauses there instead of turning
+    // the page (paused-at-boundary is a stable state — polling is safe).
+    await page.evaluate((t) => {
+      const ct = (window as any)._listenTest.fixCtl;
+      ct.seek(t);
+      ct.play();
+    }, win.endT - 0.4);
+    await page.waitForFunction(
+      () => !(window as any)._listenTest.fix.aud.playing,
+      undefined,
+      { timeout: 15_000 },
+    );
+    st = await fixState(page);
+    expect(st.page).toBe(1);
+    expect(st.aud.time).toBeGreaterThan(win.endT - 0.05);
+    expect(st.aud.time).toBeLessThan(win.endT + 0.05);
+    // Play again from the boundary: the position snaps back into the page.
+    await page.click('#fix-play');
+    st = await fixState(page);
+    expect(st.aud.playing).toBe(true);
+    expect(st.aud.time).toBeLessThan(win.endT - 0.3);
+    expect(st.aud.time).toBeGreaterThan(Math.max(0, win.startT - 0.6) - 0.01);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    // Mode off: the same approach crosses the boundary and turns the page.
+    await page.click('#fix-page-only');
+    expect(await page.getAttribute('#fix-page-only', 'aria-pressed')).toBe(
+      'false',
+    );
+    await page.evaluate((t) => {
+      const ct = (window as any)._listenTest.fixCtl;
+      ct.seek(t);
+      ct.play();
+    }, win.endT - 0.4);
+    await page.waitForFunction(
+      (endT) => {
+        const f = (window as any)._listenTest.fix;
+        return f.aud.playing && f.aud.time > endT + 0.2 && f.page === 2;
+      },
+      win.endT,
+      { timeout: 15_000 },
+    );
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+  });
+
+  test('43.22 a drag beside an existing anchor still remaps the dragged event\'s own offset', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    // Find two adjacent groups holding CONSECUTIVE event indices, so the
+    // flanking segment between them has no interior (no worker realign).
+    let prev = await fixState(page);
+    let leftEvent: number | null = null;
+    for (let k = 0; k < 12 && leftEvent === null; k++) {
+      await page.click('.fix-onset-next');
+      const cur = await fixState(page);
+      if (cur.selEventIx === prev.selEventIx + 1) leftEvent = prev.selEventIx;
+      else prev = cur;
+    }
+    expect(leftEvent).not.toBeNull();
+    const i = leftEvent!;
+    // Anchor the RIGHT neighbour (approve: zero-drag, no data change) …
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 1,
+    );
+    // … then drag the event beside it rightward. Before the fix the skipped
+    // interior-empty segment left the dragged event's offset STALE — it
+    // could land at or before the new onset, a 20 ms blip in the audition.
+    await page.click('.fix-onset-prev');
+    const before = await page.evaluate((ev) => {
+      const sc = (window as any)._listenTest.session.scoreAlignment;
+      return {
+        on: sc.ref_onset[ev],
+        off: sc.ref_offset[ev],
+        nextOn: sc.ref_onset[ev + 1],
+      };
+    }, i);
+    await dragSelectedTick(page, 25);
+    const st = await fixState(page);
+    const a = st.corrections.anchors.find((x: any) => x.i === i);
+    expect(a).toBeTruthy();
+    const after = await page.evaluate((ev) => {
+      const sc = (window as any)._listenTest.session.scoreAlignment;
+      return { on: sc.ref_onset[ev], off: sc.ref_offset[ev] };
+    }, i);
+    // The offset followed the drag instead of staying stale: strictly after
+    // its onset, clipped inside the span to the next anchor.
+    expect(after.on).toBeCloseTo(a.t, 6);
+    expect(after.off).not.toBeCloseTo(before.off, 6);
+    expect(after.off).toBeGreaterThan(after.on);
+    expect(after.off).toBeLessThanOrEqual(before.nextOn + 1e-9);
+    // Undo restores the as-was pair exactly (snapshot semantics).
+    await page.click('#undo-btn');
+    const undone = await page.evaluate((ev) => {
+      const sc = (window as any)._listenTest.session.scoreAlignment;
+      return { on: sc.ref_onset[ev], off: sc.ref_offset[ev] };
+    }, i);
+    expect(undone.on).toBeCloseTo(before.on, 9);
+    expect(undone.off).toBeCloseTo(before.off, 9);
+  });
+
+  test('43.23 N activates the jumped-to mark, Delete removes it, Escape deactivates first', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    // Two marks at different times; laying does NOT activate.
+    await page.keyboard.press('m');
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    await page.keyboard.press('m');
+    let st = await fixState(page);
+    expect(st.marks).toHaveLength(2);
+    expect(st.activeMark).toBeNull();
+    // N jumps to a mark and activates it; Delete removes exactly that one.
+    await page.keyboard.press('n');
+    st = await fixState(page);
+    const victim = st.activeMark;
+    expect(victim).not.toBeNull();
+    expect(st.marks).toContain(victim);
+    await page.keyboard.press('Delete');
+    st = await fixState(page);
+    expect(st.marks).toHaveLength(1);
+    expect(st.marks).not.toContain(victim);
+    expect(st.activeMark).toBeNull();
+    // Delete with nothing active is inert.
+    await page.keyboard.press('Delete');
+    expect((await fixState(page)).marks).toHaveLength(1);
+    // Escape deactivates before it exits: the first Escape only deselects.
+    await page.keyboard.press('n');
+    expect((await fixState(page)).activeMark).not.toBeNull();
+    await page.keyboard.press('Escape');
+    st = await fixState(page);
+    expect(st.active).toBe(true);
+    expect(st.activeMark).toBeNull();
+    expect(st.marks).toHaveLength(1);
+  });
+
+  test('43.24 the speed slider slows playback pitch-preserved; the % button resets to 100', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    let st = await fixState(page);
+    expect(st.aud.stretch).toBe(true);
+    expect(st.aud.rate).toBe(1);
+    await expect(page.locator('.fix-speed-reset')).toHaveText('100%');
+    await page.locator('.fix-speed input').fill('50');
+    st = await fixState(page);
+    expect(st.aud.rate).toBe(0.5);
+    await expect(page.locator('.fix-speed-reset')).toHaveText('50%');
+    // Play ~1.2 s and compare the worklet's OWN head advance to wall time:
+    // at rate 0.5 the head must move at roughly half real time (the reports
+    // come from the worklet's process loop, so this proves real stretching).
+    const meas = await page.evaluate(async () => {
+      const lt = (window as any)._listenTest;
+      lt.fixCtl.seek(0.5);
+      lt.fixCtl.play();
+      const t0 = performance.now();
+      while (performance.now() - t0 < 4000) {
+        const a = lt.fix.aud;
+        if (a.workletPos !== null && a.workletPos >= 0.5) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const p1 = lt.fix.aud.workletPos;
+      const w1 = performance.now();
+      await new Promise((r) => setTimeout(r, 1200));
+      const p2 = lt.fix.aud.workletPos;
+      const w2 = performance.now();
+      lt.fixCtl.pause();
+      return { p1, p2, ratio: (p2 - p1) / ((w2 - w1) / 1000) };
+    });
+    expect(meas.p2).toBeGreaterThan(meas.p1);
+    expect(meas.ratio).toBeGreaterThan(0.25);
+    expect(meas.ratio).toBeLessThan(0.75);
+    // The % button is the way home: exactly 100% again, slider included.
+    await page.click('.fix-speed-reset');
+    st = await fixState(page);
+    expect(st.aud.rate).toBe(1);
+    await expect(page.locator('.fix-speed-reset')).toHaveText('100%');
+    expect(await page.locator('.fix-speed input').inputValue()).toBe('100');
   });
 
   test('43.16 the balance slider trims each ear\'s gain in real time', async ({

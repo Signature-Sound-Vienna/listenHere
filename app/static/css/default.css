@@ -6853,6 +6853,23 @@ body.lh-v6-drawer-open .drawer-btns {
 .fix-chip[data-state="idle"] {
   display: none;
 }
+/* The header must hold ONE stable line: the score pane's height feeds the
+   prewarm fit test, and a squeezed button wrapping to two lines (the chip's
+   text length varies) once broke re-entry's layout reuse. Buttons and
+   controls never shrink or wrap; the title and chip absorb the squeeze
+   through their ellipses. */
+.fix-header > * {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.fix-header .fix-title {
+  flex: 0 1 auto;
+  min-width: 4ch;
+}
+.fix-header .fix-chip {
+  flex: 0 1 auto;
+  min-width: 6ch;
+}
 .fix-chip[data-state="ready"] {
   color: var(--color-success-text, #166534);
   border-color: var(--color-success-border, rgba(22, 101, 52, 0.4));
@@ -7030,6 +7047,49 @@ body.lh-v6-drawer-open .drawer-btns {
 #fix-play:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+/* Page-only playback toggle. Pressed state signals via box-shadow + weight
+   only: the blanket themed button rule owns background/color/border with
+   ID-level specificity (see the .gm-modal note above it), and box-shadow is
+   a property it never sets, so this survives every theme. */
+#fix-page-only {
+  padding: 0.15em 0.45em;
+  font-size: 0.85em;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+#fix-page-only[aria-pressed="true"] {
+  box-shadow: inset 0 0 0 2px var(--color-accent, #2563eb);
+  font-weight: 700;
+}
+
+/* Playback speed (pitch preserved). The % button doubles as reset-to-100
+   and lights up whenever speed is off unity — via box-shadow + weight only,
+   which the blanket themed button rule never sets (see #fix-page-only). */
+.fix-speed {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  font-size: 0.8em;
+  white-space: nowrap;
+}
+.fix-speed[hidden] {
+  display: none; /* author display:flex would beat the UA [hidden] rule */
+}
+.fix-speed input[type="range"] {
+  width: 70px;
+  margin: 0;
+}
+.fix-speed-reset {
+  min-width: 4ch;
+  padding: 0.15em 0.35em;
+  font-size: 1em;
+  line-height: 1.4;
+}
+.fix-speed-reset.fix-speed-off-unity {
+  box-shadow: inset 0 0 0 2px var(--color-marker, #e03030);
+  font-weight: 700;
 }
 
 /* Real-time audition balance (left ear: recording, right ear: synth). */

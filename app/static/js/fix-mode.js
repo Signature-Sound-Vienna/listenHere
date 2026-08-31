@@ -1468,6 +1468,23 @@ function _buildStrip(source) {
   scrollEl.addEventListener("scroll", () => _scheduleRedraw(), {
     passive: true,
   });
+  // WaveSurfer decodes ASYNCHRONOUSLY even when the peaks and duration are
+  // handed over at construction (loadAudio awaits before setting decodedData),
+  // so the synchronous call below is refused — `zoom()` throws "No audio
+  // loaded" — and the strip was left at whole-piece zoom until the next page
+  // turn happened to call this again. The ticks meanwhile used the page
+  // window's scale, so the waveform under them was a DIFFERENT stretch of
+  // audio: the shape disagreed with every tick and with the playhead, which
+  // is what "the playhead lags" turned out to be on first entry (user repro,
+  // 2026-08-31: enter → page forward → page back gives three different
+  // waveforms for the same page). Applying it again on `ready` is the fix;
+  // the synchronous attempt stays because it sets the tick scale immediately.
+  const ws = f.stripWS;
+  ws.once("ready", () => {
+    if (_fix !== f || f.stripWS !== ws) return;
+    _updateStripWindow();
+    _scheduleRedraw();
+  });
   _updateStripWindow();
 }
 
@@ -3596,6 +3613,17 @@ export function fixTestState() {
     connectorCount: f.els.conn?.childElementCount ?? 0,
     stripWindow: f.stripWindow || null,
     stripHasWave: !!f.stripWS,
+    stripPps: f.stripPps || 0,
+    // The RENDERER's own geometry: scrollWidth is duration × pps once the zoom
+    // has actually landed, and equals clientWidth while it has not — the one
+    // observable that separates "the waveform shows this page" from "the
+    // waveform shows the whole piece with this page's ticks over it".
+    stripScroll: (() => {
+      const el = f.stripWS?.getWrapper?.()?.parentElement;
+      return el
+        ? { left: el.scrollLeft, width: el.scrollWidth, client: el.clientWidth }
+        : null;
+    })(),
     chipState: f.chipState,
     groupStats: _lastGroupStats ? { ..._lastGroupStats } : null,
     corrections,

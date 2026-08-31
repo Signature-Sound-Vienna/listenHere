@@ -1,5 +1,9 @@
 # Listen Here! CHANGELOG.md
 
+### 0.44.1 -- bugfix
+* Ensure waveform zooms to score excerpt on initial load (was showing full recording)
+* Testing: spec 42 grows to 21 (the strip's rendered zoom and scroll on first entry, and page 1 identical on the way back). 
+
 ### 0.44.0 -- The fix-mode playhead becomes a bracket
 * The correction strip's playhead is now two filled arrowheads bracketing the position — one just inside the strip's top edge, one in a gutter beneath the waveform — with no line drawn across the waveform, which was the alignment ticks' own shape.
 * The selected tick's cap is a bar rather than a filled triangle; ticks, anchor glyphs, and drag ghosts stop at the waveform's bottom edge so the gutter is the playhead's alone.

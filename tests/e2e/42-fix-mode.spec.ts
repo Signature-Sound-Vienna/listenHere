@@ -318,6 +318,59 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await expect(page.locator('.fix-page-label')).toHaveText(/Page 2 \/ \d+/);
   });
 
+  test('42.21 the strip WAVEFORM gets the page window on first entry, not only after a page turn', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page, REF_ROW);
+    // The decode rebuilds the strip with full-rate peaks; that rebuild is the
+    // one the user hit, so wait for the engine (which the decode precedes).
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.chipState === 'ready',
+      undefined,
+      { timeout: 45_000 },
+    );
+    const dur = await page.evaluate(
+      () =>
+        (window as any)._listenTest.session.waveformPeaks['audio-b.mp3']
+          .duration,
+    );
+    // WaveSurfer decodes asynchronously even when handed peaks + duration at
+    // construction, so the window applied synchronously in _buildStrip was
+    // refused and the strip sat at WHOLE-PIECE zoom — with this page's ticks
+    // drawn over a different stretch of audio. scrollWidth is the witness: it
+    // equals clientWidth while the zoom has not landed, and duration × pps
+    // once it has.
+    const entry = await fixState(page);
+    expect(entry.page).toBe(1);
+    expect(entry.stripScroll.width).toBeGreaterThan(
+      entry.stripScroll.client * 3,
+    );
+    expect(Math.abs(entry.stripScroll.width - dur * entry.stripPps)).toBeLessThan(3);
+    expect(
+      Math.abs(
+        entry.stripScroll.left -
+          Math.max(0, entry.stripWindow.t0 * entry.stripPps),
+      ),
+    ).toBeLessThan(2);
+
+    // The user's repro as an assertion: page 1 must look the same on the way
+    // back as it did on entry (it used to show the whole piece, then the page).
+    await page.click('.fix-page-next');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.page === 2,
+    );
+    await page.click('.fix-page-prev');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.page === 1,
+    );
+    const back = await fixState(page);
+    expect(back.stripPps).toBeCloseTo(entry.stripPps, 6);
+    expect(back.stripScroll.width).toBe(entry.stripScroll.width);
+    expect(back.stripScroll.left).toBe(entry.stripScroll.left);
+  });
+
   test('42.11 skipping back from a page\'s first onset turns the page back', async ({
     page,
   }) => {

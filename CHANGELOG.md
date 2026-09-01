@@ -1,5 +1,19 @@
 # Listen Here! CHANGELOG.md
 
+### 0.47.0 -- Chanda's demo feedback: the per-recording notes appear, the band says whose turn it is
+* The annotator's per-recording notes are rendered for the first time. 31 of the 61 targets in the shown set carry one and no code path read any of them; the note for the audible recording now appears below the shared description, headed by that recording's strip caption.
+* Strips the shown annotation has a note for carry a dot while it paints, so which of the ten were commented on is visible at a glance. `?targetNotes=off` is the comparator.
+* New band orientation `?bandOrientation=flip`: one cluster, turned to face whichever side last took the clock. Same height as upright, so it costs the commentary panel nothing; the play control and time readouts stay out of the rotation.
+* The flip changes over as a cross-fade — the cluster dips almost out, turns while it is faint, and settles. `?bandFlipMotion=spin` keeps the animated rotation for comparison; reduced-motion gets neither.
+* The band marks the side whose tap the clock is answering (`?turnIndicator=edge|wash|off`), in every orientation. Under the request policy it means that side may play back; under the others, that side chose what you are hearing.
+* A single viewport keeps the middle band, at the top of the screen. It had none, taking the discographic identity and the exhibit's only play/pause and time readout with it.
+* `?groupIndicator=wide|tint` makes the grouping edge more prominent. When a grouping paints is unchanged: it still needs the annotation to have something authored to say about its groups.
+* The first Gen-AI conductor portraits: Karajan (1987), Kleiber (1989), and Barenboim (2022) appear in the middle band and on the strap medallions. Recordings without one keep their initials.
+* New `tools/split_portraits.py` cuts a contact sheet into one medallion per sitter, finding each by its gold ring and cutting cells on the sheet's own rules.
+* Portrait URLs resolve against the exhibit root rather than the current document, like the audio paths.
+* Study panel: strip height offers 38 and recordings offers 10 (neither was selectable, so the shipped exhibit could not be restored from the panel); a footer line reports how much of the commentary is visible at the current geometry; the Defaults preset moves to the request policy, direct taps, and the listening marker.
+* Testing: specs 34 to 37 gain one test each and spec 35 gains two (the single-viewport band, the grouping salience, the turn mark, flip, the per-recording note and its off switch, the portraits). All verified red first.
+
 ### 0.46.0 -- Chanda's annotation feedback; the exhibit shows ten recordings
 * The exhibit's shown set rises from eight recordings to ten: `VPO-2002` (the pivot of "D or E?") and `VPO-1951-1954` join it.
 * Strip height drops 48 → 38 px. At ten strips and 48 px the annotation panel loses 100 px and the description text disappears entirely; 38 px leaves the panel exactly the height eight strips left it.

@@ -817,7 +817,7 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     await boot(page, 'studyPanel=true&stripHeight=60');
     await page.click('.study-cog');
     await page.click('.study-defaults');
-    await page.waitForURL(/turnPolicy=attribution/);
+    await page.waitForURL(/turnPolicy=request/);
     const search = await page.evaluate(() => location.search);
     for (const pair of [
       'focus=playhead',
@@ -828,7 +828,13 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       'zoomControls=false',
       'bandOrientation=mirrored',
       'annotationColors=theme',
-      'turnPolicy=attribution',
+      // The three that alpha testing settled on (user, 2026-09-01): the preset
+      // is no longer "convenient to debug with", it is the configuration that
+      // keeps winning. `request` also changes what the turn state MEANS —
+      // entitlement rather than attribution.
+      'turnPolicy=request',
+      'tapMode=direct',
+      'marker=glass',
       'audienceAll=true',
       'pinExpiry=auto',
     ]) {
@@ -1396,5 +1402,207 @@ test.describe('35. Regions vs an unsettled boot layout', () => {
         },
       )
       .toBeLessThan(0.05);
+  });
+});
+
+test.describe('35. Demo feedback — the band at a single viewport', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 35.27 The band was built PER GAP, so `?viewports=1` — no gap — mounted no
+  // band at all (Chanda, demo feedback 2026-09-01). That was never a decision:
+  // the band carries the discographic identity AND the exhibit's only
+  // play/pause and time readout, so a single-viewport screen silently lost the
+  // transport with the metadata. The band object was even constructed and
+  // ticked every frame; nothing ever put it in the document.
+  //
+  // Pinned here: it mounts, it mounts ABOVE the strips (the "now playing"
+  // position for one reader, which needs the plain column direction the
+  // two-sided layout reverses), it brings the transport with it, and a
+  // two-sided orientation degrades instead of rendering one reader the same
+  // facts twice. The last clause re-pins the TWO-viewport geometry, because
+  // the whole risk of this change is disturbing the shipped table layout.
+  test('35.27 one viewport still gets the band, above the strips, with the transport', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&viewports=1');
+
+    const single = await page.evaluate(() => {
+      const screen = document.getElementById('screen')!;
+      const band = document.querySelector('.middle-band') as HTMLElement | null;
+      const vp = document.querySelector('.vp') as HTMLElement;
+      // Null-SAFE throughout: an unmounted band is the regression this test
+      // exists for, and it should be reported by the `mounted` assertion below
+      // rather than as a getBoundingClientRect throw with no message.
+      const b = band?.getBoundingClientRect();
+      return {
+        mounted: !!band?.isConnected,
+        bands: document.querySelectorAll('.middle-band').length,
+        slotsLeft: document.querySelectorAll('.middle-band-slot').length,
+        orientation: band?.dataset.orientation ?? null,
+        clusters: band?.querySelectorAll('.mb-cluster').length ?? 0,
+        flexDirection: getComputedStyle(screen).flexDirection,
+        bandBottom: b ? Math.round(b.bottom) : null,
+        vpTop: Math.round(vp.getBoundingClientRect().top),
+        height: b ? Math.round(b.height) : null,
+        play: !!band?.querySelector('.mb-play'),
+        times: band?.querySelectorAll('.mb-time').length ?? 0,
+        conductor: !!band?.querySelector('.mb-conductor'),
+      };
+    });
+    expect(single.mounted, 'the band must be in the document at one viewport').toBe(true);
+    expect(single.bands).toBe(1);
+    // The placeholder is REPLACED, not left behind holding reserved height.
+    expect(single.slotsLeft).toBe(0);
+    expect(single.height).toBe(96);
+    expect(single.clusters).toBe(1);
+    // Above the strips, and by the layout rather than by a margin.
+    expect(single.flexDirection).toBe('column');
+    expect(single.bandBottom!).toBeLessThanOrEqual(single.vpTop);
+    // The transport came with it — the reason this is a bug and not a cosmetic gap.
+    expect(single.play, 'the only play/pause in the exhibit lives in the band').toBe(true);
+    expect(single.times).toBe(2);
+    expect(single.conductor).toBe(true);
+
+    // …and it actually drives the clock from there.
+    await page.click('.mb-play');
+    await expect(page.locator('.mb-play')).toHaveText('❚❚');
+    await page.click('.mb-play');
+    await expect(page.locator('.mb-play')).toHaveText('▶');
+
+    // A two-sided orientation has no second side to serve: one cluster, upright.
+    await boot(page, 'debug=1&viewports=1&bandOrientation=mirrored');
+    const degraded = await page.evaluate(() => {
+      const band = document.querySelector('.middle-band') as HTMLElement;
+      return {
+        orientation: band.dataset.orientation,
+        clusters: band.querySelectorAll('.mb-cluster').length,
+        height: Math.round(band.getBoundingClientRect().height),
+      };
+    });
+    expect(degraded.orientation).toBe('upright');
+    expect(degraded.clusters).toBe(1);
+    expect(degraded.height).toBe(96);
+
+    // THE REGRESSION GUARD: two viewports keep the shipped table geometry —
+    // one band, BETWEEN the halves, with the reversal that puts viewport 0 at
+    // the near edge still in force.
+    await boot(page, 'debug=1');
+    const table = await page.evaluate(() => {
+      const screen = document.getElementById('screen')!;
+      const band = document.querySelector('.middle-band') as HTMLElement;
+      const vps = [...document.querySelectorAll('.vp')] as HTMLElement[];
+      const b = band.getBoundingClientRect();
+      return {
+        bands: document.querySelectorAll('.middle-band').length,
+        single: screen.dataset.singleViewport ?? null,
+        flexDirection: getComputedStyle(screen).flexDirection,
+        above: vps.filter((v) => v.getBoundingClientRect().bottom <= b.top + 1).length,
+        below: vps.filter((v) => v.getBoundingClientRect().top >= b.bottom - 1).length,
+      };
+    });
+    expect(table.bands).toBe(1);
+    expect(table.single).toBeNull();
+    expect(table.flexDirection).toBe('column-reverse');
+    expect(table.above, 'one half above the band').toBe(1);
+    expect(table.below, 'one half below the band').toBe(1);
+  });
+});
+
+test.describe('35. Demo feedback — how loudly the grouping speaks', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 35.28 ?groupIndicator raises the grouping edge's salience (Chanda, demo
+  // feedback 2026-09-01: it can get overlooked). What it must NOT do is change
+  // when a grouping paints at all — that stays `hasGroupStory`, reaffirmed the
+  // same day, and 35.15 pins it. So this asserts the loudness and re-asserts
+  // the gate underneath it.
+  test('35.28 the grouping indicator gets louder without painting where it did not', async ({
+    page,
+  }) => {
+    // The annotation with an authored group story, from the payload.
+    const withStory = async () =>
+      page.evaluate(() => {
+        const T = (window as any)._exhibitTest;
+        const hasText = (v: any) =>
+          typeof v === 'string'
+            ? v.trim() !== ''
+            : !!v && Object.values(v).some((s: any) => typeof s === 'string' && s.trim() !== '');
+        const ann = T.exhibit.annotations.find(
+          (a: any) =>
+            a.grouping?.groups?.length &&
+            (Object.values(a.groupNotes || {}).some(hasText) ||
+              (a.comparisons || []).some((c: any) => hasText(c.text))),
+        );
+        return { id: ann.id as string, audience: ann.audience as string };
+      });
+
+    const paint = (annId: string) =>
+      page.evaluate((id) => {
+        const vp = document.querySelector('.vp[data-viewport="0"]') as HTMLElement;
+        (vp.querySelector(`.ann-chip[data-ann="${id}"]`) as HTMLElement).click();
+        const strip = vp.querySelector('.strip[data-group]') as HTMLElement;
+        return {
+          attr: vp.dataset.groupIndicator ?? null,
+          grouped: vp.querySelectorAll('.strip[data-group]').length,
+          border: strip ? getComputedStyle(strip).borderLeftWidth : null,
+          washColor: strip ? getComputedStyle(strip, '::before').backgroundColor : null,
+          washOpacity: strip ? getComputedStyle(strip, '::before').opacity : null,
+          edgeColor: strip ? getComputedStyle(strip).getPropertyValue('--group-color').trim() : null,
+        };
+      }, annId);
+
+    await boot(page, 'debug=1');
+    const story = await withStory();
+    await boot(page, `debug=1&audiences=${story.audience},${story.audience}`);
+    const shipped = await paint(story.id);
+    expect(shipped.attr, 'the default writes no attribute at all').toBeNull();
+    expect(shipped.border).toBe('4px');
+    expect(shipped.grouped).toBeGreaterThan(0);
+
+    await boot(page, `debug=1&audiences=${story.audience},${story.audience}&groupIndicator=wide`);
+    const wide = await paint(story.id);
+    expect(wide.border).toBe('12px');
+    // Wide is only a wider rule — no wash.
+    expect(wide.washColor).toBe('rgba(0, 0, 0, 0)');
+
+    await boot(page, `debug=1&audiences=${story.audience},${story.audience}&groupIndicator=tint`);
+    const tint = await paint(story.id);
+    expect(tint.border).toBe('12px');
+    expect(Number(tint.washOpacity)).toBeGreaterThan(0);
+    // ONE interpretation of the authored colour: the wash and the edge are the
+    // same value, so the strip cannot say two different things about its group.
+    const asRgb = await page.evaluate((hex) => {
+      const d = document.createElement('div');
+      d.style.color = hex;
+      document.body.appendChild(d);
+      const v = getComputedStyle(d).color;
+      d.remove();
+      return v;
+    }, tint.edgeColor!);
+    expect(tint.washColor).toBe(asRgb);
+
+    // THE GATE IS UNTOUCHED: an annotation with no group story paints no
+    // grouping, however loud the setting.
+    const noStory = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const hasText = (v: any) =>
+        typeof v === 'string'
+          ? v.trim() !== ''
+          : !!v && Object.values(v).some((s: any) => typeof s === 'string' && s.trim() !== '');
+      const ann = T.exhibit.annotations.find(
+        (a: any) =>
+          a.grouping?.groups?.length &&
+          !Object.values(a.groupNotes || {}).some(hasText) &&
+          !(a.comparisons || []).some((c: any) => hasText(c.text)),
+      );
+      return ann ? { id: ann.id as string, audience: ann.audience as string } : null;
+    });
+    expect(noStory, 'fixture needs a grouped annotation without a story').not.toBeNull();
+    await boot(
+      page,
+      `debug=1&audiences=${noStory!.audience},${noStory!.audience}&groupIndicator=tint`,
+    );
+    const silent = await paint(noStory!.id);
+    expect(silent.grouped, 'a bare legend stays noise, however loud the option').toBe(0);
   });
 });

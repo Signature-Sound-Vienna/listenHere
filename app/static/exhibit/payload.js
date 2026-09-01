@@ -156,6 +156,26 @@ export function metadataFor(data, file) {
   return data.metadata?.recordings?.[file] || {};
 }
 
+/**
+ * Absolute URL for a recording's Gen-AI portrait, or "" when it has none.
+ *
+ * Resolved against the EXHIBIT ROOT for the same reason `recordings[].audio` is
+ * (see buildExhibitData): the sidecar stores "portraits/vpo-1987.jpg", a path
+ * relative to this directory, and the only thing that makes a bare relative URL
+ * work in the band today is that the document happens to live in this directory
+ * too. That is a coincidence the route comment in app/routes.py already warns
+ * about — /exhibit is a REDIRECT to /static/exhibit/index.html precisely
+ * because serving the page from /exhibit would break relative resolution — so
+ * the portrait should not be the one asset relying on it.
+ *
+ * @param {object} meta  from metadataFor
+ * @returns {string}
+ */
+export function portraitUrl(meta) {
+  if (!meta?.portrait) return "";
+  return new URL(meta.portrait, EXHIBIT_BASE).href;
+}
+
 async function _fetchJson(url, { required }) {
   let res;
   try {

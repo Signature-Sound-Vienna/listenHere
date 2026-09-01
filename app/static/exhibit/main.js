@@ -18,14 +18,14 @@
 // tests/e2e/33-exhibit-boundary.spec.ts, ratcheted at zero. Anything the engine
 // will not give us gets copied WITH A ROW IN ENGINE-WANTS.md.
 
-import { readConfig, rotationFor, DEFAULTS } from "./config.js";
+import { readConfig, rotationFor, bandOrientationFor, DEFAULTS } from "./config.js";
 import { resolveText, setDebug, t } from "./strings.js";
 import {
   getClosestAlignmentIx,
   getCorrespondingTime,
 } from "../js/engine/align-core.js";
 import { configureGroupingCore, safeColor } from "../js/engine/grouping-core.js";
-import { AUDIENCES, loadExhibitData, metadataFor } from "./payload.js";
+import { AUDIENCES, loadExhibitData, metadataFor, portraitUrl } from "./payload.js";
 import { mountStrips } from "./strips.js";
 import { createStrap } from "./strap.js";
 import { createMarkerLayer } from "./marker.js";
@@ -52,7 +52,17 @@ const data = {
   alignment: null, // the merged exhibit payload, once the loader has run
   grids: {}, // filename -> number[] of times, for align-core
   exhibit: null, // the indexed view of it, from payload.js
+  // The transport, for the few module-level renderers that need to know what
+  // is AUDIBLE rather than what a viewport chose — the per-recording note is
+  // the first (renderAnnotations). Same holder idiom as the payload above,
+  // rather than threading the transport through every render signature.
+  transport: null,
 };
+
+/** The recording the shared clock is on, or null before the first selection. */
+function activeFileForNotes() {
+  return data.transport?.activeFile || null;
+}
 
 configureGroupingCore({
   getAlignment: () => data.alignment,
@@ -131,8 +141,9 @@ function buildScreen(root) {
   // a taller band by default — but an EXPLICIT ?middleBandHeight= always wins,
   // because the whole point of the orientation switch is comparing variants
   // whose geometry the user can still pin down per URL.
+  const bandOrientation = bandOrientationFor(config);
   const bandHeight =
-    config.bandOrientation === "rotated" && config.middleBandHeight === DEFAULTS.middleBandHeight
+    bandOrientation === "rotated" && config.middleBandHeight === DEFAULTS.middleBandHeight
       ? config.middleBandHeightRotated
       : config.middleBandHeight;
   root.style.setProperty("--middle-band-height", bandHeight + "px");
@@ -152,6 +163,26 @@ function buildScreen(root) {
 
   const viewports = [];
   const bands = [];
+  // ONE BAND PER GAP is the two-sided rule, and with a single viewport there is
+  // no gap — which used to mean no band at all. That was never a decision: the
+  // band is also the only place the exhibit carries the discographic identity
+  // (conductor, orchestra, year, portrait) and the ONLY play/pause and time
+  // readout anywhere in the interface, so a single-viewport screen lost the
+  // transport with them (Chanda, demo feedback 2026-09-01). The band is built
+  // either way, so the whole bug was that nothing ever mounted it.
+  //
+  // It goes at the TOP for one reader — the "now playing" position — which
+  // needs the plain column direction: the two-sided layout is column-REVERSE so
+  // that viewport 0 sits at the near edge, and under that a first child renders
+  // at the bottom. One viewport has nothing to reverse, so the attribute turns
+  // the reversal off and DOM order is reading order again.
+  if (config.viewports === 1) {
+    root.dataset.singleViewport = "1";
+    const slot = document.createElement("div");
+    slot.className = "middle-band-slot";
+    root.appendChild(slot);
+    bands.push(slot);
+  }
   for (let i = 0; i < config.viewports; i++) {
     if (i > 0) {
       // One band per gap. It is built later than the viewports because it needs
@@ -186,6 +217,16 @@ function buildScreen(root) {
     // itself (the CSS unions the two selectors into one padding), and it must
     // do so HERE for the same canvas-sizing reason as the strap above.
     if (config.marker === "glass") vp.dataset.marker = "glass";
+    // Set BEFORE any strip mounts, like the strap and the side slot above: the
+    // caption column reserves the note dot's width, and reserving it later
+    // would shift ten captions sideways after the visitor could already read
+    // them. Pure paint, so unlike the strap it costs no canvas re-measure.
+    if (config.targetNotes === "on") vp.dataset.targetNotes = "on";
+    // The grouping edge's WIDTH is part of the strip's border box, so a
+    // waveform sized at creation would be a few pixels wrong if this arrived
+    // later — the same before-any-strip-mounts rule as the strap above, and
+    // the reason this is set here rather than when a grouping first paints.
+    if (config.groupIndicator !== "edge") vp.dataset.groupIndicator = config.groupIndicator;
     const rot = rotationFor(config, i);
     if (rot) vp.style.transform = `rotate(${rot}deg)`;
 
@@ -401,6 +442,8 @@ async function boot() {
     debug: config.debug,
   });
   window._exhibitTest.transport = transport;
+  // The module-level holder, so renderAnnotations can ask what is audible.
+  data.transport = transport;
 
   // THE READING CLOCK (ruled 2026-08-25): every fade and expiry window counts
   // only time the music actually runs. The pause button freezes a reader's
@@ -439,6 +482,10 @@ async function boot() {
     grantMs: config.turnGrantMs,
   });
   window._exhibitTest.turns = turns;
+  // The resolved configuration, so a spec can assert against the value in
+  // force rather than restating it — the same discipline as reading the shown
+  // set from the payload instead of hardcoding eight (the 34.13/38.4 lesson).
+  window._exhibitTest.config = config;
 
   // Room-level audio arbitration (arbiter.js): claim on every silence-to-sound
   // transition, pause when another screen claims. The default "local" arbiter
@@ -461,7 +508,14 @@ async function boot() {
   // language follows viewport 0 — see the documented tension in middle-band.js.
   const band = createMiddleBand(exhibit, {
     language: config.languages[0],
-    orientation: config.bandOrientation,
+    // The RESOLVED orientation, the same one buildScreen reserved height for
+    // (config.js bandOrientationFor) — a single viewport cannot mirror or flip.
+    orientation: bandOrientationFor(config),
+    // A turn mark needs somebody to take a turn FROM: with one viewport the
+    // holder is always the only reader, so the mark would be decoration that
+    // never changes. Suppressed there rather than painted permanently.
+    turnIndicator: config.viewports > 1 ? config.turnIndicator : "off",
+    flipMotion: config.bandFlipMotion,
     // The band's shared play/pause. toggle() needs a fallback for the very
     // first tap of a session, before anything is active — the same resting
     // recording preselect names below.
@@ -634,6 +688,10 @@ async function boot() {
         files: [...mounted.strips.keys()],
         labelFor: (file) => strapLabel(exhibit, file),
         titleFor: (file) => stripLabel(exhibit, file, vp.language),
+        // The medallion the initials were standing in for (plan §5.5). Same
+        // resolver as the band's, so the two surfaces cannot end up showing a
+        // recording two different faces.
+        portraitFor: (file) => portraitUrl(metadataFor(exhibit, file)),
         onPick: bareSwitch,
         // The arrows: the same aligned switch, one strip up or down from the
         // audible recording, wrapping at the ends (always set post-boot — the
@@ -876,6 +934,17 @@ async function boot() {
       for (const [file, strip] of vp.strips) strip.setSelected(file === chosen);
       paintTurn(vp, state, event, turns);
     }
+    // …and the shared band, which is the surface both sides read: it carries
+    // the turn mark in every orientation, and under ?bandOrientation=flip it
+    // also turns to face the holder. The rotation comes from the viewport's
+    // own configured angle, never a hardcoded 180 — the table's geometry is
+    // configuration (§7.8), and a two-sided assumption here would be the one
+    // place the exhibit stopped being one build.
+    band.setTurn(
+      state.holder,
+      state.holder == null ? 0 : rotationFor(config, state.holder),
+      config.turnPolicy,
+    );
   });
 
   // ?focus=playhead: the follow machinery. One subscriber watches the shared
@@ -1326,7 +1395,7 @@ async function boot() {
     }
   });
 
-  transport.subscribe(onTransport(band));
+  transport.subscribe(onTransport(band, store));
 
   // The resting state: the reference recording is the subject, so the band has a
   // conductor to show and one strip is marked as what a tap would play. No audio
@@ -1547,10 +1616,18 @@ function renderAnnotations(vp, store) {
       : paintIds.includes(vp.shownId)
         ? vp.shownId
         : (paintIds[0] ?? null);
+  // The per-recording note follows the AUDIBLE recording, not this viewport's
+  // selection: the note explains what you are hearing, and under the request
+  // policy a side's selection can be a recording nobody is playing yet.
+  const audible = config.targetNotes === "on" ? activeFileForNotes() : null;
   vp.annList.update(
     annotations,
     { paintIds, shownId: vp.shownId, pinned: vp.focusPinned },
-    { markAudience: showAll },
+    {
+      markAudience: showAll,
+      targetFile: audible,
+      targetLabel: audible ? stripLabel(data.exhibit, audible, vp.language) : "",
+    },
   );
   syncRegions(vp.strips, annotations, {
     minRegionPx: config.minRegionPx,
@@ -1558,6 +1635,43 @@ function renderAnnotations(vp, store) {
   });
   paintGroups(vp, annotations, paintPrimary);
   paintDim(vp, annotations, paintIds);
+  paintTargetNotes(vp, annotations, paintIds);
+}
+
+/**
+ * Mark the strips that the painted annotation has something to say ABOUT.
+ *
+ * The exhibit's question is "the same moment, ten interpretations" — so the
+ * question a visitor has, looking at ten stacked waveforms, is which of them
+ * the annotator actually commented on. That fact is in the payload
+ * (`targets[].description`) and was invisible: the strips looked identical
+ * whether the annotator wrote 235 characters about a recording or nothing at
+ * all. A dot, not text: a 38 px strip cannot hold a sentence, and the sentence
+ * itself belongs in the panel where it can be read.
+ *
+ * Follows the WASH, like the group edges and the dimming, so the marks appear
+ * with the annotation they belong to and leave with it — a permanent dot would
+ * be claiming something about the strip rather than about this annotation. At
+ * overlaps any painted annotation with a note for the strip lights it, the
+ * same union rule paintDim uses.
+ */
+function paintTargetNotes(vp, annotations, paintIds) {
+  const painted =
+    config.targetNotes === "on" ? annotations.filter((a) => paintIds.includes(a.id)) : [];
+  for (const [file, strip] of vp.strips) {
+    const has = painted.some((a) =>
+      (a.targets || []).some((t) => t.file === file && _hasNote(t.description)),
+    );
+    strip.el.classList.toggle("has-note", has);
+  }
+}
+
+/** A non-empty authored value — plain string or language map (the list's rule). */
+function _hasNote(v) {
+  if (typeof v === "string") return v.trim() !== "";
+  if (v && typeof v === "object")
+    return Object.values(v).some((s) => typeof s === "string" && s.trim() !== "");
+  return false;
 }
 
 /** Empty the wash set and its hold bookkeeping — every unfocus path's job. */
@@ -1712,7 +1826,7 @@ function paintDim(vp, annotations, paintIds) {
  * are DOM writes and a re-render, and doing them sixty times a second for a value
  * that changes on a tap is how a 60 fps interface stops being one.
  */
-function onTransport(band) {
+function onTransport(band, store) {
   let lastFile = null;
   let lastLoading = null;
   let graceTimer = 0;
@@ -1740,6 +1854,13 @@ function onTransport(band) {
         vp.strap?.setActive(state.file);
       }
       band.update(state.file);
+      // The per-recording note is about the AUDIBLE recording, so a switch
+      // changes which note (if any) the panel should be showing — the same
+      // re-derivation a chip tap does, at tap frequency, not per frame. The
+      // guard above is what keeps it there.
+      if (config.targetNotes === "on") {
+        for (const vp of viewports) renderAnnotations(vp, store);
+      }
     }
     // Guarded like the band above, and for the same reason: this runs per frame
     // while playing, and the loading flag changes on a tap, not sixty times a

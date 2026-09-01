@@ -69,16 +69,24 @@ const TABS = [
       {
         key: "stripHeight",
         label: "Strip height (px)",
-        options: [40, 44, 48, 54, 60],
+        // 38 IS THE SHIPPED VALUE and was missing from this list until
+        // 2026-09-01, so the panel could not put the exhibit back the way it
+        // found it. The taller options stay, and are still worth trying — but
+        // read the FIT LINE in the footer after picking one: strips and the
+        // commentary share one budget, and at ten recordings 48 px takes the
+        // description text to zero pixels visible with nothing failing.
+        options: [32, 38, 44, 48, 54],
         hint:
-          "Height of each waveform strip. Shorter strips leave more room for the commentary below; 54 is the week-1 look.",
+          "Height of each waveform strip. The commentary panel is the RESIDUAL — it gets whatever the strips leave — so a taller strip is paid for out of the text. 38 is shipped; watch the fit line in the footer.",
       },
       {
         key: "stackedRecordings",
         label: "Recordings",
-        options: [4, 6, 8],
+        // 10 since 2026-09-01, when the author raised the cap and named
+        // VPO-2002. Without it here the panel could not select the shipped set.
+        options: [4, 6, 8, 10],
         hint:
-          "How many curated recordings each viewport stacks. The exhibit's claim is the same moment across eight interpretations; fewer is a debug view.",
+          "How many curated recordings each viewport stacks. The exhibit's claim is the same moment across ten interpretations; fewer is a debug view. More strips means less commentary — see the fit line.",
       },
       {
         key: "zoomControls",
@@ -114,9 +122,23 @@ const TABS = [
       {
         key: "bandOrientation",
         label: "Orientation",
-        options: ["upright", "rotated", "mirrored"],
+        options: ["upright", "rotated", "mirrored", "flip"],
         hint:
-          "How one surface is read from two opposite sides: upright favours the near visitor, rotated is equally sideways for both, and mirrored renders two copies with the far one turned 180°.",
+          "How one surface is read from two opposite sides: upright favours the near visitor, rotated is equally sideways for both, mirrored renders two copies with the far one turned 180\u00b0, and flip turns the single cluster to face whichever side last took the clock. Flip costs no band height, and under the hijack policy it turns on every tap \u2014 try it with request.",
+      },
+      {
+        key: "turnIndicator",
+        label: "Turn mark",
+        options: ["edge", "wash", "off"],
+        hint:
+          "Marks the side of the band whose tap the clock is answering. Under the request policy that means \u201cthis side may play back\u201d; under hijack and attribution nobody can withhold the audio, so it means \u201cthis side chose what you are hearing\u201d. Edge is a bar on the holder's side, wash a tint rising from it.",
+      },
+      {
+        key: "bandFlipMotion",
+        label: "Flip cue",
+        options: ["fade", "spin"],
+        hint:
+          "How the flip orientation changes over: fade dips the cluster almost out, turns it while it is faint, and lets it settle; spin animates the rotation itself, which reads as a large gesture for a small fact. Only applies to bandOrientation=flip, and reduced-motion gets neither.",
       },
       {
         key: "middleBandHeight",
@@ -204,6 +226,15 @@ const TABS = [
     label: "Misc",
     hint: "Focus and reading behaviour, tap semantics, the marker, and kiosk readiness.",
     params: [
+      // Chanda's demo feedback (2026-09-01): the per-recording notes were
+      // authored, shipped in the payload, and rendered nowhere.
+      {
+        key: "targetNotes",
+        label: "Per-recording notes",
+        options: ["on", "off"],
+        hint:
+          "The annotator's note about the RECORDING you are hearing, below the shared description, plus a dot on every strip the shown annotation has a note for. 31 of the 61 targets in the shown set carry one and none were rendered before 2026-09-01. Off is the comparator, not a fallback.",
+      },
       // Feedback item 4: the audience switch's union position.
       {
         key: "audienceAll",
@@ -289,6 +320,14 @@ const TABS = [
         hint:
           "The visitor's own “listen here” marker: a magnifying glass resting beside the waveforms — drag it, or tap-lift then tap, to anchor a musical moment. While it stands, that side's bare recording switches land on it, and the other side sees a ghost it can adopt.",
       },
+      // Chanda's demo feedback (2026-09-01): the grouping edge can be missed.
+      {
+        key: "groupIndicator",
+        label: "Grouping indicator",
+        options: ["edge", "wide", "tint"],
+        hint:
+          "How loudly a strip says which group it is in: edge is the shipped 4 px rule, wide is the same rule at 12 px, tint adds the group's colour washed behind the waveform. None of them changes WHEN a grouping paints \u2014 that still needs the annotation to have something authored to say about its groups, so today only \u201cDie Glocke\u201d shows one.",
+      },
       {
         key: "minRegionPx",
         label: "Region floor (px)",
@@ -350,7 +389,19 @@ const STUDY_PRESET = {
   zoomControls: false,
   bandOrientation: "mirrored",
   annotationColors: "theme",
-  turnPolicy: "attribution",
+  // WHAT ALPHA TESTING HAS SETTLED ON (user, 2026-09-01). These four are no
+  // longer "convenient to debug with" — they are the variants that keep
+  // winning, so the button that resets the table now resets it to them:
+  //   request  — the turn policy testers prefer; it is also the only policy
+  //              under which the turn indicator means "allowed to play back"
+  //              rather than "chose what you are hearing".
+  //   direct   — a waveform tap taken literally on both axes, with the
+  //              aligned switch on the strap of medallion buttons.
+  //   glass    — the visitor's own listening marker on its hook.
+  // (sideSlot: "annotations" above is the fourth, and it predates them.)
+  turnPolicy: "request",
+  tapMode: "direct",
+  marker: "glass",
   audienceAll: true,
   pinExpiry: "auto",
   // The warm-kiosk experience asked for on the iPad (2026-08-26): everything
@@ -409,6 +460,14 @@ export function mountStudyPanel(config) {
   footer.className = "study-footer";
   const url = document.createElement("code");
   url.className = "study-url";
+  // THE FIT LINE. Strip height, recording count, and the commentary panel are
+  // one budget, and the panel is the residual — so a taller strip or an extra
+  // recording is paid for out of the description text. The failure is silent:
+  // at ten strips of 48 px the text box measures ZERO pixels while every strip
+  // still renders and every test still passes (measured 2026-09-01). Nothing in
+  // the suite catches it, so the panel that can cause it reports it.
+  const fit = document.createElement("span");
+  fit.className = "study-fit";
   const copy = document.createElement("button");
   copy.type = "button";
   copy.className = "study-copy";
@@ -436,7 +495,48 @@ export function mountStudyPanel(config) {
     for (const [key, value] of Object.entries(STUDY_PRESET)) params.set(key, String(value));
     location.href = location.pathname + `?${params.toString()}`;
   });
-  footer.append(url, reset, copy);
+  footer.append(url, fit, reset, copy);
+
+  /**
+   * Measure what a visitor can actually READ, and say so.
+   *
+   * `clientHeight` is the box; `scrollHeight` is the text in it. Their ratio is
+   * the honest answer to "does the commentary fit", and both numbers are read
+   * from the first viewport's live panel rather than computed from the config —
+   * the budget runs through flexbox, and a model of it would be a second thing
+   * to keep in step. Under 40 px the box cannot hold a line, which is the
+   * regression this line exists to catch.
+   */
+  let fitWatched = null;
+  let fitDebounce = 0;
+  function paintFit() {
+    const detail = document.querySelector(".ann-detail");
+    if (!detail) {
+      fit.textContent = "";
+      return;
+    }
+    // The number has to follow the TEXT ON SHOW, not the hint that was there
+    // when the panel opened. Without this the line reports the resting state
+    // ("Tap to listen", 21 px) and reads healthy while a 1,669-character
+    // description behind it is showing none of itself. One observer, attached
+    // the first time the element exists, because the component builds it once
+    // and rewrites its textContent thereafter.
+    if (fitWatched !== detail) {
+      fitWatched = detail;
+      new MutationObserver(() => {
+        clearTimeout(fitDebounce);
+        fitDebounce = setTimeout(paintFit, 120);
+      }).observe(detail, { childList: true, characterData: true, subtree: true });
+    }
+    const box = detail.clientHeight;
+    const text = detail.scrollHeight;
+    const pct = text > 0 ? Math.round((Math.min(box, text) / text) * 100) : 100;
+    fit.textContent = `commentary ${box} px` + (text > box ? ` of ${text} (${pct}%)` : "");
+    fit.dataset.level = box < 40 ? "bad" : pct < 50 ? "warn" : "";
+    fit.title =
+      "How much of the shown commentary is visible without scrolling. The strips " +
+      "and this box share one budget; under 40 px the text is effectively gone.";
+  }
 
   panel.append(tabs, body, footer);
 
@@ -484,6 +584,7 @@ export function mountStudyPanel(config) {
       body.appendChild(row);
     }
     url.textContent = location.search || "(defaults)";
+    paintFit();
   }
 
   /**
@@ -529,5 +630,14 @@ export function mountStudyPanel(config) {
     panel.hidden = false;
     paint();
   }
+  // The fit line measures a LAID-OUT panel, and the strips are still settling
+  // when this mounts — so re-measure once boot has stopped moving, and again
+  // whenever the geometry changes under it. Cheap: two reads of one element.
+  setTimeout(paintFit, 1200);
+  let fitTimer = 0;
+  window.addEventListener("resize", () => {
+    clearTimeout(fitTimer);
+    fitTimer = setTimeout(paintFit, 250);
+  });
   return { cog, panel };
 }

@@ -1314,3 +1314,174 @@ test.describe('37. Playhead-driven focus', () => {
       .toBe(target!.annId);
   });
 });
+
+test.describe('37. Demo feedback — the per-recording note', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 37.28 `targets[].description` is the annotator's comment about ONE
+  // recording within one annotation — "Here it stays on E6, as in every VPO
+  // recording before 2002" — and until 2026-09-01 the exhibit fetched all 31 of
+  // them in the shown set and rendered NONE (Chanda, demo feedback: the
+  // per-waveform annotations are completely hidden). Two surfaces answer it:
+  // the note itself, for whichever recording is AUDIBLE, and a dot on every
+  // strip the painted annotation has a note for — the "which of these ten did
+  // she comment on?" question that ten identical-looking strips provoke.
+  //
+  // The counts asserted below are the payload's own, read from it in the test
+  // rather than hardcoded: the point is that what renders matches what was
+  // authored, and a hardcoded 6 would just re-break the moment the sets are
+  // re-exported (the 34.13/38.4 lesson from the shown-set change).
+  test('37.28 the audible recording gets its own note, and marked strips match the payload', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&audiences=expert,expert');
+
+    // Which annotation, and which recordings it has notes for, straight from
+    // the payload this page booted.
+    const authored = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const hasText = (v: any) =>
+        typeof v === 'string'
+          ? v.trim() !== ''
+          : !!v && Object.values(v).some((s: any) => typeof s === 'string' && s.trim() !== '');
+      const shownFiles: string[] = T.exhibit.order.slice(
+        0,
+        document.querySelectorAll('.vp[data-viewport="0"] .strip').length,
+      );
+      // PARTIAL COVERAGE on purpose: an annotation whose notes cover some but
+      // not all of the shown strips is the only fixture that can prove both
+      // halves at once — that marked strips are the noted ones, and that an
+      // unnoted recording hides the block instead of showing an empty heading.
+      // "D or E?" carries all ten and would prove neither.
+      const notedOf = (a: any) =>
+        (a.targets || [])
+          .filter((t: any) => hasText(t.description) && shownFiles.includes(t.file))
+          .map((t: any) => t.file);
+      const ann = T.exhibit.byAudience.expert.find((a: any) => {
+        const n = notedOf(a).length;
+        return n > 0 && n < shownFiles.length;
+      });
+      const noted = notedOf(ann);
+      return {
+        annId: ann.id as string,
+        noted: noted as string[],
+        // A recording this annotation has NO note for, to prove absence hides
+        // the block rather than leaving an empty heading.
+        silent: shownFiles.find((f) => !noted.includes(f)) as string,
+      };
+    });
+    expect(authored.noted.length, 'fixture needs an annotation with notes').toBeGreaterThan(0);
+    expect(
+      authored.noted.length,
+      'fixture needs an annotation that does NOT cover every strip',
+    ).toBeLessThan(await page.locator('.vp[data-viewport="0"] .strip').count());
+
+    // Show it, and put the clock on a recording it has a note for.
+    await page.evaluate(async (a) => {
+      const T = (window as any)._exhibitTest;
+      const chip = document.querySelector(
+        `.vp[data-viewport="0"] .ann-chip[data-ann="${a.annId}"]`,
+      ) as HTMLElement;
+      chip.click();
+      await T.transport.select(a.noted[0], 5, false);
+    }, authored);
+
+    const noteFor = (file: string) =>
+      page.evaluate(async (f) => {
+        const T = (window as any)._exhibitTest;
+        await T.transport.select(f, 5, false);
+        await new Promise((r) => setTimeout(r, 60));
+        const vp = document.querySelector('.vp[data-viewport="0"]')!;
+        const block = vp.querySelector('.ann-target') as HTMLElement;
+        return {
+          hidden: block.hidden,
+          who: vp.querySelector('.ann-target-who')!.textContent,
+          note: vp.querySelector('.ann-target-note')!.textContent,
+        };
+      }, file);
+
+    // The note is the AUDIBLE recording's, headed by that recording's own strip
+    // caption — the language-free identity, so the panel can name its subject
+    // without picking a language for it.
+    const shown = await noteFor(authored.noted[0]);
+    expect(shown.hidden).toBe(false);
+    expect(shown.note!.length).toBeGreaterThan(0);
+    const caption = await page
+      .locator(`.vp[data-viewport="0"] .strip[data-file="${authored.noted[0]}"] .strip-label`)
+      .textContent();
+    expect(shown.who, 'the note names its recording exactly as the strip does').toBe(caption);
+    // It is the note the payload holds for THAT recording, not another target's.
+    const authoredText = await page.evaluate((a) => {
+      const T = (window as any)._exhibitTest;
+      const ann = T.exhibit.annotations.find((x: any) => x.id === a.annId);
+      const t = ann.targets.find((x: any) => x.file === a.noted[0]);
+      return typeof t.description === 'string' ? t.description : t.description.en;
+    }, authored);
+    expect(shown.note).toBe(authoredText);
+
+    // A recording the annotator said nothing about hides the block entirely.
+    const silent = await noteFor(authored.silent);
+    expect(silent.hidden, 'no note means no empty heading').toBe(true);
+
+    // THE STRIP MARKS: exactly the recordings with notes, in both viewports —
+    // the panel is per viewport but the payload is not.
+    const marked = await page.evaluate(() =>
+      [...document.querySelectorAll('.vp[data-viewport="0"] .strip.has-note')].map(
+        (s) => (s as HTMLElement).dataset.file,
+      ),
+    );
+    expect(marked.sort()).toEqual([...authored.noted].sort());
+
+    // The marks follow the WASH: unfocus the annotation and they go with it,
+    // because a permanent dot would claim something about the strip rather
+    // than about this annotation.
+    await page.evaluate((a) => {
+      const chip = document.querySelector(
+        `.vp[data-viewport="0"] .ann-chip[data-ann="${a.annId}"]`,
+      ) as HTMLElement;
+      chip.click(); // the below-layout toggle-off
+    }, authored);
+    await expect(page.locator('.vp[data-viewport="0"] .strip.has-note')).toHaveCount(0);
+    await expect(page.locator('.vp[data-viewport="0"] .ann-target')).toBeHidden();
+  });
+
+  // 37.29 ?targetNotes=off is the A/B comparator, and it must leave the
+  // shipped layout untouched — not merely hide the note. The reserved caption
+  // column is the part that could leak: it exists so a wash cannot shuffle ten
+  // captions sideways, and it is scoped to the viewport attribute for exactly
+  // this reason.
+  test('37.29 ?targetNotes=off renders neither the note nor its reserved column', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&audiences=expert,expert&targetNotes=off');
+    const off = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const vp = document.querySelector('.vp[data-viewport="0"]') as HTMLElement;
+      const chip = vp.querySelector('.ann-chip') as HTMLElement;
+      chip.click();
+      const label = vp.querySelector('.strip-label') as HTMLElement;
+      return {
+        attr: vp.dataset.targetNotes ?? null,
+        blockHidden: (vp.querySelector('.ann-target') as HTMLElement).hidden,
+        marks: vp.querySelectorAll('.strip.has-note').length,
+        labelLeft: getComputedStyle(label).left,
+        active: T.transport.activeFile,
+      };
+    });
+    expect(off.attr).toBeNull();
+    expect(off.blockHidden).toBe(true);
+    expect(off.marks).toBe(0);
+    expect(off.labelLeft, 'the caption column is not reserved when notes are off').toBe('6px');
+
+    // …and on, the column IS reserved, whether or not this strip has a note.
+    await boot(page, 'debug=1&audiences=expert,expert');
+    expect(
+      await page.evaluate(
+        () =>
+          getComputedStyle(
+            document.querySelector('.vp[data-viewport="0"] .strip-label') as HTMLElement,
+          ).left,
+      ),
+    ).toBe('18px');
+  });
+});

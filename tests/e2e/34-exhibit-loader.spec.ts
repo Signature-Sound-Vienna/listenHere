@@ -663,3 +663,81 @@ test.describe('34. The exhibit loader', () => {
     await expect.poll(active).toBe(order[order.length - 1]);
   });
 });
+
+test.describe('34. The Gen-AI conductor portraits', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 34.20 The first batch of portraits landed 2026-09-01 and three of the shown
+  // ten have one. Two things are worth pinning, and the second is the one that
+  // would rot silently:
+  //
+  //  * the FALLBACK still works — a recording without a portrait keeps the
+  //    conductor's initials, and the Warren recording (a decided-unknown
+  //    identity) keeps its "?" — because portraits arrive in batches over
+  //    months and most recordings will be without one for most of that time;
+  //  * the URL is resolved against the EXHIBIT ROOT, not against whatever
+  //    document is showing the band. The sidecar stores "portraits/x.jpg", and
+  //    a bare relative URL only works because the page happens to live in that
+  //    directory — the very coincidence app/routes.py redirects /exhibit to
+  //    preserve. Asserting the resolved href is what stops that regressing.
+  test('34.20 a portrait renders resolved against the exhibit root; initials still fall back', async ({
+    page,
+  }) => {
+    await boot(page);
+
+    const shot = (file: string) =>
+      page.evaluate(async (f) => {
+        const T = (window as any)._exhibitTest;
+        await T.transport.select(f, 5, false);
+        await new Promise((r) => setTimeout(r, 60));
+        const el = document.querySelector('.mb-portrait') as HTMLElement;
+        return {
+          background: getComputedStyle(el).backgroundImage,
+          text: el.textContent,
+          meta: T.exhibit.metadata.recordings[f] ?? {},
+        };
+      }, file);
+
+    const withPortrait: string[] = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const recs = T.exhibit.metadata?.recordings ?? {};
+      return T.exhibit.order.filter((f: string) => recs[f]?.portrait);
+    });
+    expect(withPortrait.length, 'no portraits wired up yet').toBeGreaterThan(0);
+
+    for (const file of withPortrait) {
+      const s = await shot(file);
+      // Absolute, under the exhibit root, and exactly the sidecar's own path —
+      // no second interpretation of it anywhere.
+      const expected = new URL(
+        s.meta.portrait as string,
+        new URL('/static/exhibit/', page.url()).href,
+      ).href;
+      expect(s.background, `portrait not rendered for ${file}`).toContain(expected);
+      expect(s.text, 'a portrait replaces the initials placeholder').toBe('');
+    }
+
+    // A recording with no portrait keeps the conductor's initials…
+    const bare: string | undefined = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const recs = T.exhibit.metadata?.recordings ?? {};
+      return T.exhibit.order.find((f: string) => !recs[f]?.portrait && recs[f]?.conductor);
+    });
+    expect(bare, 'fixture needs a recording without a portrait').toBeTruthy();
+    const fallback = await shot(bare!);
+    expect(fallback.background).toBe('none');
+    expect(fallback.text!.length).toBeGreaterThan(0);
+
+    // …and a decided-unknown identity keeps its "?" rather than gaining a face.
+    const unknown: string | undefined = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const recs = T.exhibit.metadata?.recordings ?? {};
+      return T.exhibit.order.find((f: string) => recs[f]?.displayNote && !recs[f]?.conductor);
+    });
+    if (unknown) {
+      const q = await shot(unknown);
+      expect(q.background).toBe('none');
+      expect(q.text).toBe('?');
+    }
+  });
+});

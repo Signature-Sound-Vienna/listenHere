@@ -22,8 +22,23 @@
 // is equally sideways for both; "mirrored" renders the whole cluster TWICE, the
 // far copy turned 180°, so each reader gets a right-way-up copy — at the price of
 // naming the piece once per reader rather than once per view (34.12 pins the
-// upright default only). The clusters are built by one function and updated in
-// lockstep, so the copies cannot drift apart.
+// upright default only); and "flip" turns the single cluster to face whichever
+// side last took the clock, so it is right-way-up for the person who just acted
+// (Chanda, demo feedback 2026-09-01). The clusters are built by one function and
+// updated in lockstep, so the copies cannot drift apart.
+//
+// FLIP IS ALSO A TURN SIGNAL, which is why it and the indicator below landed
+// together: a band that turns towards you is the most legible statement the
+// shared surface can make about whose tap the clock is answering. It does not
+// replace the indicator, though — a band already facing you says nothing about
+// whether you still hold the clock or merely read it last, and it says nothing
+// at all in the other three orientations.
+//
+// The known cost, worth watching at the October testing rather than pre-solving:
+// under the default `hijack` policy the holder changes on EVERY tap, so two
+// visitors taking turns quickly make the band turn back and forth. Flip is much
+// better behaved under `attribution` and `request`, where the clock changes
+// hands as an event rather than as a side effect of touching anything.
 //
 // Portraits are null on all eight recordings today: they are to be generated, which
 // is an open editorial item and not a code one, so the placeholder is the
@@ -33,7 +48,7 @@
 // band; with `?viewports=1` there is none, and the update below is a no-op rather
 // than a special case.
 
-import { metadataFor } from "./payload.js";
+import { metadataFor, portraitUrl } from "./payload.js";
 import { resolveText, t } from "./strings.js";
 
 /**
@@ -50,11 +65,22 @@ import { resolveText, t } from "./strings.js";
  */
 export function createMiddleBand(
   data,
-  { language = "en", orientation = "upright", onToggle } = {},
+  {
+    language = "en",
+    orientation = "upright",
+    turnIndicator = "off",
+    flipMotion = "fade",
+    onToggle,
+  } = {},
 ) {
   const el = document.createElement("div");
   el.className = "middle-band";
   el.dataset.orientation = orientation;
+  el.dataset.flipMotion = flipMotion;
+  // "edge" | "wash" | "off" — which mark the band wears for the side holding
+  // the clock. An attribute rather than a class so the CSS reads as a switch
+  // over named variants, the same shape as data-orientation above.
+  el.dataset.turnIndicator = turnIndicator;
 
   // Two copies for "mirrored", one for everything else. Same builder, same
   // update loop — the far reader's copy is a CSS rotation of an identical
@@ -66,6 +92,29 @@ export function createMiddleBand(
     el.appendChild(c.root);
   });
 
+  // "flip" keeps ONE cluster, like upright, and turns it to face whoever holds
+  // the clock. The play control must stay out of that rotation for two
+  // separate reasons, and both are load-bearing: ▶ turned 180° is ◀, which
+  // would say the opposite of what it does; and the shared button is the one
+  // surface on the table both visitors own equally (turns.js exempts it from
+  // the turn machine entirely), so it must not jump from one END of the band
+  // to the other every time the clock changes hands. So flip borrows
+  // mirrored's structural placement — the control as its own child of the band
+  // — while rendering upright's single cluster.
+  //
+  // It does still SHIFT a few pixels as the cluster beside it changes width
+  // with the conductor's name, exactly as it does in upright and mirrored.
+  // That is a pre-existing property of a centred flex row and not something
+  // flip introduces; pinning the control to the band's centre would fix it for
+  // all three orientations and is a separate change.
+  const flips = orientation === "flip";
+  // The cross-fade's first beat. Kept just under the CSS opacity transition so
+  // the facing changes at the faintest point rather than on the way back up —
+  // the whole trick is that the turn itself is never seen.
+  const FADE_OUT_MS = 150;
+  let turnTimer = 0;
+  let turning = false;
+
   // The shared transport control: one LARGE play/pause in the middle of the
   // band (the one place both visitors own equally), with the current playback
   // time below it TWICE, the far copy rotated — numerals, so the no-labels
@@ -75,6 +124,7 @@ export function createMiddleBand(
   // as the flex layout naturally puts it.
   const play = buildPlayControl(language, onToggle);
   if (orientation === "mirrored") el.insertBefore(play.root, clusters[1].root);
+  else if (flips) el.appendChild(play.root);
   else clusters[0].root.insertBefore(play.root, clusters[0].pieceEl);
 
   function update(file) {
@@ -83,8 +133,84 @@ export function createMiddleBand(
     for (const c of clusters) c.update(meta);
   }
 
+  /**
+   * Whose tap the clock is currently answering — the one piece of turn state
+   * the shared band knows about (Chanda, demo feedback 2026-09-01).
+   *
+   * It drives TWO things that were asked for separately and turn out to be one
+   * fact seen twice:
+   *
+   *  * THE TURN INDICATOR, in every orientation: an edge or a wash on the
+   *    holder's side of the band. What it MEANS depends on the policy in
+   *    force, and the difference is real — under `request` the holder may
+   *    actually withhold the audio, so the mark reads "this side may play
+   *    back"; under `hijack` and `attribution` nobody can withhold anything,
+   *    so it reads "this side chose what you are hearing". Same pixels, same
+   *    source; the caller passes the policy so the panel and the study notes
+   *    can say which claim is being made.
+   *  * THE FLIP, in that orientation only: the cluster turns to face the
+   *    holder. The rotation arrives in DEGREES from the caller rather than
+   *    being derived from the viewport index here, because which way a
+   *    viewport faces is configuration (`rotations`, §7.8) — a band that
+   *    assumed 180 would be wrong the day the table is not two-sided.
+   *
+   * @param {number|null} holder     viewport index, or null before any tap
+   * @param {number} [rotation]      degrees the holder's viewport is rotated
+   * @param {string} [policy]        the turn policy in force, for the label
+   */
+  function setTurn(holder, rotation = 0, policy = "") {
+    el.dataset.turnHolder = holder == null ? "" : String(holder);
+    if (policy) el.dataset.turnPolicy = policy;
+    if (!flips) return;
+    // One transform on the cluster, so the play control and the mirrored time
+    // readouts are untouched by it. Normalised, because a rotation the CSS
+    // cannot animate sensibly (say 540) would spin the band on a museum wall.
+    const deg = ((Number(rotation) || 0) % 360 + 360) % 360;
+    turnTo(deg ? `rotate(${deg}deg)` : "");
+  }
+
+  /**
+   * Change the cluster's facing, with the configured cue.
+   *
+   * "spin" is one assignment and lets the CSS transition animate the rotation.
+   * "fade" is a two-beat cross-fade instead: dip the cluster almost out, change
+   * the facing WHILE IT IS FAINT so the turn itself is never seen sweeping
+   * across the band, then let it settle back. The user's reading (2026-09-01)
+   * is that the spin was over the top for what it reports, and a soft beat
+   * still says "this turned towards you" without moving anything across the one
+   * surface both visitors are reading from.
+   *
+   * The timer is re-armed rather than stacked, because under ?turnPolicy=hijack
+   * the holder changes on EVERY tap and two visitors alternating can land
+   * changes closer together than the fade lasts. `turning` is what stops a
+   * change that happens to be a no-op from returning early and leaving the
+   * cluster parked at 12% opacity for the rest of the session.
+   */
+  function turnTo(next) {
+    const cluster = clusters[0].root;
+    if (next === cluster.style.transform && !turning) return;
+    const still =
+      flipMotion !== "fade" ||
+      (typeof matchMedia === "function" &&
+        matchMedia("(prefers-reduced-motion: reduce)").matches);
+    if (still) {
+      cluster.style.transform = next;
+      return;
+    }
+    clearTimeout(turnTimer);
+    turning = true;
+    cluster.classList.add("mb-turning");
+    turnTimer = setTimeout(() => {
+      turnTimer = 0;
+      turning = false;
+      cluster.style.transform = next;
+      cluster.classList.remove("mb-turning");
+    }, FADE_OUT_MS);
+  }
+
   update(null);
-  return { el, update, tick: play.tick };
+  setTurn(null);
+  return { el, update, setTurn, tick: play.tick };
 }
 
 /** The play/pause button plus the mirrored pair of time readouts. */
@@ -203,11 +329,13 @@ function buildCluster(data, language) {
 
     portrait.textContent = "";
     portrait.style.backgroundImage = "";
-    if (meta.portrait) {
+    const portraitSrc = portraitUrl(meta);
+    if (portraitSrc) {
       // A generated portrait, once there is one. Set as a background rather than
       // an <img> so a missing file degrades to the placeholder circle instead of
-      // a broken-image glyph on a museum wall.
-      portrait.style.backgroundImage = `url("${encodeURI(meta.portrait)}")`;
+      // a broken-image glyph on a museum wall. Resolved against the exhibit root
+      // by payload.js, not left relative to whatever document is showing this.
+      portrait.style.backgroundImage = `url("${encodeURI(portraitSrc)}")`;
     } else {
       // "?" for an identity decided to be unknown (the displayNote says why);
       // initials otherwise. An empty circle only when the sidecar has nothing.

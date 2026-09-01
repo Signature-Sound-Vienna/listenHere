@@ -104,6 +104,15 @@ html, body {
 #screen[data-split="horizontal"] { flex-direction: column-reverse; }
 #screen[data-split="vertical"]   { flex-direction: row; }
 
+/* ONE VIEWPORT (?viewports=1) has nothing to split and nothing to reverse, and
+ * it gets the band at the TOP — the "now playing" position for a single reader.
+ * The reversal exists only to put viewport 0 at the near edge of a two-sided
+ * table, so turning it off here costs the single viewport nothing and makes DOM
+ * order reading order again, which is what puts the band above the strips. The
+ * split attribute is left alone rather than rewritten: it still describes the
+ * configuration, it simply has no work to do. */
+#screen[data-single-viewport] { flex-direction: column; }
+
 /* Desktop-debugging stage rotation (?stageRotation=90|270, config.js): paint the
  * whole composed screen sideways so a physically turned laptop or a swivelled
  * monitor shows the portrait kiosk at its intended aspect. A FINAL-TOUCH
@@ -156,6 +165,44 @@ html, body {
   border-left: 4px solid var(--group-color, transparent);
 }
 
+/* MORE SALIENT GROUPING (?groupIndicator, Chanda 2026-09-01: the current one
+ * can get overlooked). Four pixels down the left of a ~1000 px strip is a
+ * legend you have to already be looking for.
+ *
+ * Both variants are set on the VIEWPORT before any strip mounts, because the
+ * edge is part of the strip's border box and WaveSurfer sizes its canvas from
+ * the width it sees at creation — the strap's rule, for the same reason.
+ *
+ * They change how loudly a grouping speaks, never WHEN it speaks: that is
+ * still `hasGroupStory` (main.js paintGroups), reaffirmed 2026-09-01. */
+.vp[data-group-indicator="wide"] .strip,
+.vp[data-group-indicator="tint"] .strip { border-left-width: 12px; }
+
+/* The tint: the group's own colour washed across the strip, behind the
+ * waveform. A pseudo-element at low opacity rather than color-mix() on the
+ * background — the authored palette arrives as opaque hex from the payload,
+ * and this keeps one interpretation of it (the edge and the wash are the same
+ * value, so they cannot disagree) without depending on a colour function.
+ * Painted BELOW .strip-ws in DOM order, so the waveform stays on top of it.
+ *
+ * Transparent when no grouping paints, because --group-color is, so the wash
+ * appears and leaves with the edge and the legend cards. */
+.vp[data-group-indicator="tint"] .strip::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--group-color, transparent);
+  opacity: 0.14;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+/* A strip the painted annotation does not target fades its waveform; its group
+ * wash goes with it, so a dimmed strip does not end up the loudest thing on
+ * the screen. The EDGE stays at full strength either way — "not in this
+ * annotation's regions" and "in the story's Other group" are both true at once
+ * (see paintDim). */
+.vp[data-group-indicator="tint"] .strip.is-dimmed::before { opacity: 0.06; }
+
 /* The audible recording. A brighter waveform rather than an outline: the strips
  * are 54px tall and stacked two pixels apart, so a border reads as a gap. */
 .strip.is-active { background: var(--ex-surface-active); }
@@ -167,6 +214,41 @@ html, body {
  * (the .strip-ws overlay is inset against it), and the LEFT edge already
  * belongs to the grouping colour. */
 .strip.is-selected { box-shadow: inset -4px 0 0 var(--ex-accent); }
+
+/* THE PER-RECORDING NOTE MARK. While an annotation paints, the strips it has
+ * something written ABOUT carry a dot — the answer to the question ten stacked
+ * waveforms provoke, which is "which of these did she actually comment on?".
+ * That fact was in the payload and invisible: a recording with 235 characters
+ * of commentary looked exactly like one with none.
+ *
+ * A pseudo-element, so it costs no DOM per strip and no layout at all — the
+ * strip's box is the shared budget with the commentary panel, and this must not
+ * touch it. It sits beside the caption at the top-left, inside the grouping
+ * edge, and fades with the caption when the strip is dimmed: a dot claiming
+ * "there is something here" on a strip the current annotation is not about
+ * would be the opposite of the point. pointer-events stay off, like the
+ * caption's, so it can never eat a tap meant for the waveform. */
+.vp[data-target-notes="on"] .strip.has-note::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ex-mark);
+  box-shadow: var(--ex-glow);
+  z-index: 2;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+.vp[data-target-notes="on"] .strip.is-dimmed.has-note::after { opacity: 0.45; }
+/* The dot's column is RESERVED, not made when a dot appears: every caption in
+ * the viewport indents past it, so a wash arriving cannot shuffle ten captions
+ * sideways at the moment the visitor is reading them (the .strip border-left
+ * precedent). Scoped to the viewport attribute so ?targetNotes=off leaves the
+ * shipped layout byte-for-byte, per the A/B rule. */
+.vp[data-target-notes="on"] .strip-label { left: 18px; }
 
 .strip-ws { position: absolute; inset: 0; }
 
@@ -313,6 +395,28 @@ html, body {
 .strap-btn.is-active { color: var(--ex-on-accent); }
 .strap-btn.is-active::before { background: var(--ex-accent); }
 .strap-btn.is-active::after { border-color: var(--ex-thread-accent, transparent); }
+
+/* THE GEN-AI PORTRAIT on a strap button (first batch 2026-09-01), which is what
+ * the initials were always standing in for (plan §5.5). It goes on the disc
+ * itself — the ::before — so it inherits the medallion's circle, its drop
+ * shadow, and the stitching ring over it for free; strap.js supplies the URL as
+ * a custom property, since a pseudo-element cannot be given an <img>.
+ *
+ * The initials stay in the DOM and are hidden rather than dropped: they are the
+ * button's written identity, the aria-label carries the full name regardless,
+ * and it means the year is still there to fall back on if a portrait 404s.
+ *
+ * The disc keeps its background COLOUR underneath, so a slow or missing image
+ * shows the resting medallion rather than a hole. The active state stops
+ * repainting the disc — a bronze wash over a face would fight it — and marks
+ * itself with the stitching ring and the caption instead. */
+.strap-btn.has-portrait::before {
+  background-image: var(--strap-portrait);
+  background-size: cover;
+  background-position: center;
+}
+.strap-btn.has-portrait > span { visibility: hidden; }
+.strap-btn.has-portrait.is-active::before { background-color: var(--ex-accent); }
 
 /* The arrow medallions: above the top medallion and below the bottom one,
  * anchored to the rail's ends so the eight rows keep their strip alignment.
@@ -868,7 +972,11 @@ html, body {
 .ann-detail {
   margin: 0;
   flex: 1 1 auto;
-  min-height: 0;
+  /* Two lines, so the per-recording note below can never take the shared
+   * description to nothing (see .ann-target). Two rather than one because a
+   * single visible line of a 1,247-character description reads as a rendering
+   * fault rather than as text you can scroll. */
+  min-height: 2.6em;
   min-width: 0;
   font-size: 0.9rem;
   line-height: 1.45;
@@ -885,6 +993,63 @@ html, body {
   scrollbar-color: var(--ex-border-strong) transparent;
   padding-right: 6px;
 }
+/* THE PER-RECORDING NOTE (`targets[].description`). Below the description and
+ * OUTSIDE its scroll container — flex: 0 0 auto, so it keeps its own height and
+ * the description gives up the space, which is the right trade: the note is
+ * short (23–235 characters, against 657–1,669 for the descriptions) and it is
+ * the sentence about the recording actually playing.
+ *
+ * Marked as a quotation from the annotator with an accent rule down its inner
+ * edge rather than a heading word, because a heading would have to be a
+ * translated label and the panel's whole discipline is that authored text and
+ * proper names carry themselves (plan §6.3). `padding-inline-start` and not
+ * `padding-left`: the exhibit will run in German and is designed not to assume
+ * a writing direction. */
+/* NEITHER TEXT MAY STARVE THE OTHER, and below the strips they genuinely
+ * compete: the panel is 159 px there, and an unbounded note took the shared
+ * description to ZERO visible pixels the first time this was measured (D or E?,
+ * 1024×1366, 2026-09-01) — reintroducing exactly the failure `stripHeight: 38`
+ * exists to prevent, from the other end. So both get a floor and both scroll,
+ * with the same containment discipline as the description: the alternative was
+ * clamping one of them, and silently hiding authored text is the thing this
+ * panel has refused from the beginning.
+ *
+ * In the side slot none of this binds — measured there, the description runs at
+ * 100% WITH the note beside it — which is why the note's real home is the side
+ * layout and this is the graceful case, not the intended one. */
+.ann-target {
+  /* 0 0 auto, NOT 0 1 auto: the note must keep its natural height up to the
+   * cap. Letting it flex-shrink alongside the description produced the worst
+   * of both — a 37 px description and a 12 px note, neither readable. */
+  flex: 0 0 auto;
+  max-height: 45%;
+  margin-top: 8px;
+  padding-inline-start: 10px;
+  border-inline-start: 2px solid var(--ex-accent-border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ex-border-strong) transparent;
+}
+.ann-target[hidden] { display: none; }
+/* The recording it is about, in the strip caption's own words (conductor ·
+ * ensemble · year) so the note and the strip name their subject identically. */
+.ann-target-who {
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--ex-text-dim);
+}
+.ann-target-note {
+  font-size: 0.86rem;
+  line-height: 1.4;
+  color: var(--ex-text-body);
+}
+
 .ann-detail::-webkit-scrollbar { width: 6px; }
 .ann-detail::-webkit-scrollbar-thumb { background: var(--ex-border-strong); border-radius: 3px; }
 /* Auto margins, not align-self: the detail now lives in the .ann-text column,
@@ -1088,6 +1253,119 @@ html, body {
 /* "mirrored": the far reader's identical copy, turned to face them. Slightly
  * tightened type so two full clusters share the width without truncating a
  * proper name — an ellipsis on a conductor is not an option on a museum wall. */
+/* FLIP (?bandOrientation=flip, Chanda 2026-09-01): upright's single cluster,
+ * turned to face whichever side last took the clock. The transform is written
+ * by JS (middle-band.js setTurn) from the holder's CONFIGURED viewport
+ * rotation, so this rule only supplies the motion.
+ *
+ * Animated, and that is a decision: an instant 180° snap reads as a glitch,
+ * while a turn reads as the table facing you — and the movement is itself the
+ * clearest statement the shared surface can make about the clock changing
+ * hands. transform only, so nothing re-lays-out and the strips above and below
+ * cannot move; the band keeps upright's 96 px, unlike rotated.
+ *
+ * The play control and the time readouts are OUTSIDE the rotated cluster by
+ * construction, so the button never turns into ◀ and never changes sides. */
+/* TWO CUES, one switch (?bandFlipMotion). The first cut animated the rotation
+ * itself, and the user found it over the top: a 180-degree sweep across the one
+ * surface both visitors are reading is a large gesture for a small fact.
+ *
+ * "fade" (default) dips the cluster almost out, changes the facing while it is
+ * faint — middle-band.js times the swap to land here — and lets it settle. The
+ * change is still announced; nothing is seen travelling.
+ *
+ * "spin" keeps the original rotation, so the two stay comparable at the user
+ * testing instead of being settled by one viewing. */
+.middle-band[data-orientation="flip"][data-flip-motion="fade"] .mb-cluster {
+  transition: opacity 160ms ease;
+}
+.middle-band[data-orientation="flip"][data-flip-motion="fade"] .mb-cluster.mb-turning {
+  opacity: 0.12;
+}
+.middle-band[data-orientation="flip"][data-flip-motion="spin"] .mb-cluster {
+  transition: transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+/* Reduced motion gets the change and none of the cue. middle-band.js checks the
+ * same query before arming the fade, so the facing is not left mid-dip. */
+@media (prefers-reduced-motion: reduce) {
+  .middle-band[data-orientation="flip"] .mb-cluster { transition: none; }
+}
+
+/* THE TURN MARK. Which side the clock is answering — see config.js's
+ * turnIndicator for what that claim means under each policy, because it is not
+ * the same claim under `request` as under `hijack`.
+ *
+ * Painted with a pseudo-element rather than a border or a background, so it
+ * costs the band no height and cannot disturb the layout budget the strips and
+ * the commentary share. Nothing paints while the holder is unset — before the
+ * first tap of a session nobody has taken anything, and a mark on one side by
+ * default would be a claim about a visitor who has not arrived. */
+.middle-band[data-turn-indicator="off"]::before,
+.middle-band[data-turn-holder=""]::before { content: none; }
+
+.middle-band[data-turn-indicator="edge"]::before,
+.middle-band[data-turn-indicator="wash"]::before {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  /* Opacity only. The mark moves between OPPOSITE edges, so its `inset` goes
+   * from `auto 0 0 0` to `0 0 auto 0` — a pair no browser can interpolate, and
+   * a half-animated bar sliding across the band would misreport the holder for
+   * the length of the animation anyway. The turn changes hands instantly; the
+   * mark should say so instantly. */
+  transition: opacity 320ms ease;
+}
+/* HORIZONTAL SPLIT — the table. Viewport 0 renders BELOW the band (the column
+ * is reversed so the near reader is at the near edge), viewport 1 above, so
+ * the holder's side is literally the band's bottom or top edge. */
+#screen[data-split="horizontal"] .middle-band[data-turn-indicator="edge"][data-turn-holder="0"]::before {
+  inset: auto 0 0 0;
+  height: 4px;
+  background: var(--ex-accent-border);
+}
+#screen[data-split="horizontal"] .middle-band[data-turn-indicator="edge"][data-turn-holder="1"]::before {
+  inset: 0 0 auto 0;
+  height: 4px;
+  background: var(--ex-accent-border);
+}
+#screen[data-split="horizontal"] .middle-band[data-turn-indicator="wash"][data-turn-holder="0"]::before {
+  inset: 0;
+  background: linear-gradient(to top, var(--ex-accent) 0%, transparent 70%);
+  opacity: 0.55;
+}
+#screen[data-split="horizontal"] .middle-band[data-turn-indicator="wash"][data-turn-holder="1"]::before {
+  inset: 0;
+  background: linear-gradient(to bottom, var(--ex-accent) 0%, transparent 70%);
+  opacity: 0.55;
+}
+
+/* VERTICAL SPLIT — the laptop case, where the halves sit side by side and the
+ * band is the column between them: viewport 0 is to its left, 1 to its right. */
+#screen[data-split="vertical"] .middle-band[data-turn-indicator="edge"][data-turn-holder="0"]::before {
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--ex-accent-border);
+}
+#screen[data-split="vertical"] .middle-band[data-turn-indicator="edge"][data-turn-holder="1"]::before {
+  inset: 0 0 0 auto;
+  width: 4px;
+  background: var(--ex-accent-border);
+}
+#screen[data-split="vertical"] .middle-band[data-turn-indicator="wash"][data-turn-holder="0"]::before {
+  inset: 0;
+  background: linear-gradient(to left, var(--ex-accent) 0%, transparent 70%);
+  opacity: 0.55;
+}
+#screen[data-split="vertical"] .middle-band[data-turn-indicator="wash"][data-turn-holder="1"]::before {
+  inset: 0;
+  background: linear-gradient(to right, var(--ex-accent) 0%, transparent 70%);
+  opacity: 0.55;
+}
+/* The wash sits UNDER the band's content — it is a ground, not an overlay, and
+ * the conductor's name has to stay the most legible thing on the surface. */
+.middle-band[data-turn-indicator="wash"]::before { z-index: 0; }
+.middle-band > * { position: relative; z-index: 1; }
+
 .middle-band[data-orientation="mirrored"] .mb-flipped { transform: rotate(180deg); }
 .middle-band[data-orientation="mirrored"] .mb-cluster { gap: 10px; }
 .middle-band[data-orientation="mirrored"] .mb-portrait {
@@ -1406,6 +1684,31 @@ html, body {
   -webkit-user-select: text;
   user-select: text;
 }
+/* The fit line: how much of the commentary a visitor can read at the current
+ * geometry. Neutral while the text fits, amber under half, red once the box is
+ * too short to hold a line at all — the state that ships silently, because the
+ * strips still render and the suite still passes.
+ *
+ * The two status colours are DELIBERATE LITERALS, not missing tokens: no
+ * palette defines a warn or danger colour, and `var(--ex-warn, #d9a441)` would
+ * read as themed while being a hardcoded value in all eight — the exact shape
+ * of a bug this codebase has already shipped once. The study panel is staff
+ * tooling, exempt from the palette like its English labels, so adding two
+ * tokens to eight themes to serve one debug line would be the wrong trade. */
+.study-fit {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ex-text-dim);
+  white-space: nowrap;
+}
+.study-fit[data-level="warn"] { color: #d9a441; }
+.study-fit[data-level="bad"] {
+  color: #e06c6c;
+  font-weight: 600;
+}
+.study-fit:empty { display: none; }
+
 .study-copy {
   flex: 0 0 auto;
   padding: 6px 10px;

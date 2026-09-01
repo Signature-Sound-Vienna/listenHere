@@ -41,13 +41,20 @@ const ARROW_SVG =
  * @param {string[]} opts.files                     recordings, in strip order
  * @param {(file: string) => string} opts.labelFor  the short button text
  * @param {(file: string) => string} opts.titleFor  the accessible full name
+ * @param {(file: string) => string} [opts.portraitFor]  the recording's Gen-AI
+ *   portrait URL, or "" — the medallion the initials were standing in for
+ *   (plan §5.5; first batch 2026-09-01). The disc is the button's ::before, so
+ *   the image arrives as a custom property rather than as an element
  * @param {(file: string) => void} opts.onPick      the aligned switch
  * @param {(delta: number) => void} [opts.onNav]    step to the adjacent strip
  *   (−1 up, +1 down), the aligned switch again — mounts the arrow buttons
  * @param {{up: string, down: string}} [opts.navLabels]  their accessible names
  * @returns {{el: HTMLElement, setActive(file: string|null): void}}
  */
-export function createStrap(parent, { files, labelFor, titleFor, onPick, onNav, navLabels }) {
+export function createStrap(
+  parent,
+  { files, labelFor, titleFor, portraitFor, onPick, onNav, navLabels },
+) {
   const el = document.createElement("div");
   el.className = "vp-strap";
   const buttons = new Map();
@@ -67,6 +74,17 @@ export function createStrap(parent, { files, labelFor, titleFor, onPick, onNav, 
       line.textContent = word;
       btn.appendChild(line);
     });
+    // THE PORTRAIT, where one exists. The disc a strap button wears is its
+    // ::before, so the image cannot be an element and arrives as a custom
+    // property the CSS reads. The initials stay IN THE DOM, hidden — they are
+    // this button's written identity, the `aria-label` above is what a screen
+    // reader gets either way, and a recording with no portrait yet (most of
+    // them, for months) simply keeps showing them.
+    const portrait = portraitFor?.(file);
+    if (portrait) {
+      btn.style.setProperty("--strap-portrait", `url("${encodeURI(portrait)}")`);
+      btn.classList.add("has-portrait");
+    }
     btn.setAttribute("aria-label", titleFor(file));
     btn.addEventListener("click", () => onPick(file));
     el.appendChild(btn);

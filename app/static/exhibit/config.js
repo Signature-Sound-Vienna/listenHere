@@ -74,7 +74,27 @@ const DEFAULTS = {
   //   "mirrored" — two copies, the far one rotated 180°: each reader gets a
   //                right-way-up copy at no height cost, but the piece is named
   //                once per READER rather than once per view.
+  //   "flip"     — upright, but the cluster TURNS to face whichever side last
+  //                took the clock (Chanda, demo feedback 2026-09-01). One
+  //                cluster, so the piece is named once per view like upright,
+  //                and the same 96 px — unlike rotated it costs the commentary
+  //                panel nothing. The play control and the time readouts stay
+  //                out of the rotation (middle-band.js says why). Needs two
+  //                facing viewports to mean anything, so it degrades to
+  //                upright at ?viewports=1, like mirrored.
   bandOrientation: "upright",
+  // HOW the flip changes over, which is a separate question from whether it
+  // flips at all. The first cut animated the rotation itself and the user found
+  // it over the top (2026-09-01) — a 180° spin on the one surface both visitors
+  // are reading is a large gesture for a small fact.
+  //   "fade" — the cluster dips almost out, turns while it is faint, and
+  //            settles. The change is still announced, but as a soft beat
+  //            rather than a movement across the band. THE DEFAULT.
+  //   "spin" — the original animated rotation, kept so the two are comparable
+  //            at the user testing rather than settled by one viewing.
+  // Either way `prefers-reduced-motion: reduce` gets the change with no
+  // animation at all.
+  bandFlipMotion: "fade",
   middleBandHeightRotated: 176, // fits the longest sidecar name turned 90°
   // The GENERIC side slot (feedback item 5, 2026-08-24): a region beside the
   // strips, on each viewport's own right — "right" is per READER for free,
@@ -129,6 +149,26 @@ const DEFAULTS = {
   // and marked provisional when they were flagged for hand placement, rather than
   // being silently dropped or silently drawn at a misleading width.
   minRegionPx: 4,
+  // HOW LOUDLY a strip says which group it is in (Chanda, demo feedback
+  // 2026-09-01: the current indicator can get overlooked). The shipped edge is
+  // 4 px on the left of a ~1000 px strip, which is a legend a visitor has to
+  // be looking for.
+  //
+  //   "edge" — the shipped 4 px rule. The default, per the A/B rule.
+  //   "wide" — the same rule at 12 px: the cheapest real gain in salience, and
+  //            still nothing but a rule, so it cannot be read as meaning
+  //            anything the 4 px version did not.
+  //   "tint" — the wide rule PLUS the group's colour washed across the strip
+  //            behind the waveform. The loudest option, and the one that most
+  //            risks reading as "this recording is highlighted" rather than
+  //            "this recording is in that group".
+  //
+  // WHAT THIS DOES NOT CHANGE is WHEN a grouping paints at all: that is still
+  // `hasGroupStory` — an annotation must have something authored to say about
+  // its groups — which the user reaffirmed on 2026-09-01, the observation
+  // having been made about the one annotation that does. So these variants
+  // make "Die Glocke" louder; they do not give the other five a legend.
+  groupIndicator: "edge",
 
   // --- content ---
   // Audience and language are resolved PER VIEWPORT, never swapped globally, so
@@ -235,6 +275,26 @@ const DEFAULTS = {
   // music; "off" keeps it A/B-testable.
   detailJump: "on",
 
+  // The PER-RECORDING note (`targets[].description`) — the annotator's comment
+  // about one recording within one annotation, as distinct from the annotation's
+  // shared description. 31 of the 61 targets in the shown set carry one and NO
+  // CODE PATH READ THEM until 2026-09-01 (Chanda, demo feedback: "we need a way
+  // to access per-waveform annotations, which are currently completely hidden").
+  // Among the invisible: all ten "D or E?" notes, and the 235-character danced-
+  // origins note that was the whole argument for showing VPO-1951-1954.
+  //
+  //   "on"  — the audible recording's note under the shared description, and a
+  //           dot on every strip that has one while its annotation paints.
+  //   "off" — the shipped-until-now behaviour, kept so the addition stays
+  //           A/B-comparable at the user testing.
+  //
+  // ON BY DEFAULT, deliberately against the usual params-keep-defaults rule:
+  // this is not a variant of a shipped behaviour, it is authored content that
+  // was never rendered. The notes are also SHORT — 23 to 235 characters against
+  // the shared descriptions' 657 to 1,669 — so the panel absorbs them where it
+  // cannot absorb the long text (Q13). See the marks note in main.js.
+  targetNotes: "on",
+
   // --- tap semantics (alpha-tester feedback, 2026-08-26) ---
   // What a tap on a NON-ACTIVE waveform means:
   //   "aligned" — the shipped behaviour: switch to that recording and carry
@@ -269,6 +329,30 @@ const DEFAULTS = {
   //                   a request they grant or deny (auto-grant below).
   // "hijack" stays the default so the variants are opt-in per the A/B rule.
   turnPolicy: "hijack",
+  // WHOSE SIDE THE CLOCK IS ANSWERING, marked on the shared band (Chanda, demo
+  // feedback 2026-09-01: signal the turn more clearly, and in every band
+  // orientation). Nothing marked it before — `.strip.is-selected` says what
+  // YOUR side chose, and the `.vp-turn` notices are transient and exist only
+  // under two of the three policies.
+  //
+  //   "edge" — a bar along the holder's edge of the band. Hard-edged,
+  //            language-free, orientation-free, and safe on every palette.
+  //   "wash" — the author's own suggestion, a tint rising from the holder's
+  //            side. Prettier, and the riskier of the two: the band's text and
+  //            portrait contrast is tuned against a flat background.
+  //   "off"  — no mark, the behaviour before this landed.
+  //
+  // ON by default, unlike the other A/B parameters, because this is a MISSING
+  // signal rather than a variant of a shipped one — the same reasoning as
+  // targetNotes above, and "off" keeps the comparison available.
+  //
+  // WHAT IT CLAIMS DEPENDS ON THE POLICY, and the difference is not cosmetic:
+  // under ?turnPolicy=request the holder can actually withhold the audio, so
+  // the mark means "this side may play back"; under hijack and attribution
+  // nobody can withhold anything and it means "this side chose what you are
+  // hearing". Marking a turn nobody has would be the dishonest reading, which
+  // is why the honest one is written down here and in the study panel.
+  turnIndicator: "edge",
   // request policy: a pending request is granted by itself after this many ms,
   // so an absent visitor can never lock the table. 0 = explicit grant only.
   turnGrantMs: 8000,
@@ -343,6 +427,47 @@ export function readConfig(search = typeof location === "undefined" ? "" : locat
 /** Rotation in degrees for viewport `i` — 0 for anything the config doesn't name. */
 export function rotationFor(config, i) {
   return Number(config.rotations?.[i]) || 0;
+}
+
+/**
+ * Orientations that only mean something when TWO readers face each other across
+ * the band. "mirrored" renders a second cluster for the far reader; "flip" turns
+ * the cluster towards whoever holds the clock. With one viewport there is no far
+ * reader, so mirrored would show one person the same facts twice and flip would
+ * spin the band under the only person reading it.
+ */
+const TWO_SIDED_ORIENTATIONS = new Set(["mirrored", "flip"]);
+
+/**
+ * Configs already warned about, so the two callers below do not say the same
+ * thing twice. Keyed on the config object rather than on the value, because the
+ * attract loop may one day resolve a second piece with its own config.
+ */
+const _warnedOrientation = new WeakSet();
+
+/**
+ * The band orientation actually in force, which is not always the configured one.
+ *
+ * Resolved in ONE place because two callers need to agree about it: buildScreen
+ * sizes the band from it (rotated is taller) and the band itself builds its
+ * clusters from it. A disagreement would reserve height for a shape that was
+ * never rendered.
+ *
+ * A single viewport falls back to "upright" and says so, rather than honouring a
+ * request that cannot mean anything — "rotated" is left alone, because equally
+ * sideways for one reader is a legitimate (if odd) debug choice, while mirrored
+ * and flip are not choices at all without a second side.
+ */
+export function bandOrientationFor(config) {
+  const want = config.bandOrientation;
+  if (config.viewports > 1 || !TWO_SIDED_ORIENTATIONS.has(want)) return want;
+  if (!_warnedOrientation.has(config)) {
+    _warnedOrientation.add(config);
+    console.warn(
+      `exhibit: bandOrientation "${want}" needs two facing viewports — using "upright"`,
+    );
+  }
+  return "upright";
 }
 
 export { DEFAULTS };

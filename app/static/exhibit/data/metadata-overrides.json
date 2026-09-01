@@ -271,5 +271,20 @@
     "  recordings 320f36ec / 62866812 are acoustically provable duplicates of the",
     "  Scholz cluster 48ca91d9, and Warren is a candidate addition to the MB Scholz",
     "  pseudonym lists."
-  ]
+  ],
+  "VPO-1987.wav": {
+    "portrait": "portraits/vpo-1987-karajan.jpg",
+    "_disposition": "editorial",
+    "_why": "PORTRAIT ONLY. A Gen-AI stylised portrait of Herbert von Karajan, from the first batch delivered 2026-09-01 (see portraits/README.md for provenance and the labelling obligation). Not an upstream fact and not derivable: portraits are commissioned per RECORDING, not per conductor, so that the sitter can be shown at the age they were at that concert."
+  },
+  "VPO-1989.wav": {
+    "portrait": "portraits/vpo-1989-kleiber.jpg",
+    "_disposition": "editorial",
+    "_why": "PORTRAIT ONLY. A Gen-AI stylised portrait of Carlos Kleiber, from the first batch delivered 2026-09-01 (see portraits/README.md for provenance and the labelling obligation). Not an upstream fact and not derivable: portraits are commissioned per RECORDING, not per conductor, so that the sitter can be shown at the age they were at that concert."
+  },
+  "VPO-2022.wav": {
+    "portrait": "portraits/vpo-2022-barenboim.jpg",
+    "_disposition": "editorial",
+    "_why": "PORTRAIT ONLY. A Gen-AI stylised portrait of Daniel Barenboim, from the first batch delivered 2026-09-01 (see portraits/README.md for provenance and the labelling obligation). Not an upstream fact and not derivable: portraits are commissioned per RECORDING, not per conductor, so that the sitter can be shown at the age they were at that concert."
+  }
 }

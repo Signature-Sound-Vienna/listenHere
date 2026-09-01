@@ -512,3 +512,203 @@ test.describe('36b. The AudioArbiter', () => {
     await pageB.close();
   });
 });
+
+test.describe('36. Demo feedback — the band says whose turn it is', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 36.18 THE TURN MARK. Nothing on the shared band said whose tap the clock was
+  // answering (Chanda, demo feedback 2026-09-01) — `.strip.is-selected` speaks
+  // for one viewport only, and the `.vp-turn` notices are transient and exist
+  // under two of the three policies. The mark is on the HOLDER'S EDGE of the
+  // band, which makes it language-free and orientation-free, and it paints
+  // nothing before the first tap: with no holder there is no claim to make.
+  test('36.18 the turn mark paints on the holder’s edge, in every band orientation', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1');
+
+    const markFor = (holder: number | null) =>
+      page.evaluate(async (h) => {
+        const T = (window as any)._exhibitTest;
+        if (h != null) T.turns.request(h, T.exhibit.order[h === 0 ? 1 : 2]);
+        await new Promise((r) => setTimeout(r, 60));
+        const band = T.band.el as HTMLElement;
+        const cs = getComputedStyle(band, '::before');
+        return {
+          holder: band.dataset.turnHolder,
+          height: cs.height,
+          top: cs.top,
+          bottom: cs.bottom,
+          transparent: cs.backgroundColor === 'rgba(0, 0, 0, 0)',
+        };
+      }, holder);
+
+    // Before anybody has taken the clock: no mark at all.
+    const idle = await markFor(null);
+    expect(idle.holder).toBe('');
+    expect(idle.height).toBe('0px');
+    expect(idle.transparent).toBe(true);
+
+    // Viewport 0 renders BELOW the band (the column is reversed so the near
+    // reader is at the near edge), so its mark is the band's bottom edge.
+    const near = await markFor(0);
+    expect(near.holder).toBe('0');
+    expect(near.height).toBe('4px');
+    expect(near.bottom).toBe('0px');
+    expect(near.transparent).toBe(false);
+
+    // Viewport 1 is above it.
+    const far = await markFor(1);
+    expect(far.holder).toBe('1');
+    expect(far.top).toBe('0px');
+    expect(far.transparent).toBe(false);
+
+    // It is not tied to one orientation — that was the explicit ask.
+    for (const orientation of ['rotated', 'mirrored', 'flip']) {
+      await boot(page, `debug=1&bandOrientation=${orientation}`);
+      const m = await markFor(0);
+      expect(m.holder, `holder unset under ${orientation}`).toBe('0');
+      expect(m.transparent, `no mark painted under ${orientation}`).toBe(false);
+    }
+
+    // ?turnIndicator=off is the comparator and paints nothing at all.
+    await boot(page, 'debug=1&turnIndicator=off');
+    const off = await markFor(0);
+    expect(off.holder).toBe('0');
+    expect(off.transparent, 'turnIndicator=off must paint nothing').toBe(true);
+
+    // One viewport has no turn to signal, so the mark is suppressed rather
+    // than painted permanently for the only reader there is.
+    await boot(page, 'debug=1&viewports=1');
+    expect(
+      await page.evaluate(
+        () => ((window as any)._exhibitTest.band.el as HTMLElement).dataset.turnIndicator,
+      ),
+    ).toBe('off');
+  });
+
+  // 36.19 FLIP: the fourth band orientation (Chanda, demo feedback 2026-09-01) —
+  // upright's single cluster, turned to face whoever last took the clock.
+  //
+  // The assertions read the INLINE transform, not the computed one, and that is
+  // deliberate: the rotation is animated, so the computed value is a matrix
+  // somewhere along a 420 ms curve — and in a backgrounded page transitions do
+  // not advance at all, which would read as a permanent identity matrix. The
+  // inline value is the app's decision, which is what this pins.
+  test('36.19 ?bandOrientation=flip turns the cluster to the holder and never the play control', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&bandOrientation=flip');
+
+    const read = () =>
+      page.evaluate(() => {
+        const band = (window as any)._exhibitTest.band.el as HTMLElement;
+        const cluster = band.querySelector('.mb-cluster') as HTMLElement;
+        const play = band.querySelector('.mb-play') as HTMLElement;
+        return {
+          orientation: band.dataset.orientation,
+          clusters: band.querySelectorAll('.mb-cluster').length,
+          height: Math.round(band.getBoundingClientRect().height),
+          cluster: cluster.style.transform || '',
+          // The play control must never be inside the rotation: ▶ turned 180°
+          // is ◀, which would say the opposite of what the button does.
+          playInsideCluster: !!play.closest('.mb-cluster'),
+          playRotation: getComputedStyle(play).transform,
+          glyph: play.textContent,
+          turning: cluster.classList.contains('mb-turning'),
+          opacity: getComputedStyle(cluster).opacity,
+        };
+      });
+
+    const take = (v: number) =>
+      page.evaluate((i) => {
+        const T = (window as any)._exhibitTest;
+        T.turns.request(i, T.exhibit.order[i + 1]);
+      }, v);
+
+    // RETRYING, because the default cue is a cross-fade: the facing changes at
+    // the faint midpoint, ~150 ms after the tap, not synchronously with it. A
+    // one-shot read a few frames later would see the OLD facing and fail, which
+    // is how the fade first announced itself here.
+    const expectFacing = (want: string) =>
+      expect
+        .poll(async () =>
+          page.evaluate(
+            () =>
+              (
+                (window as any)._exhibitTest.band.el.querySelector(
+                  '.mb-cluster',
+                ) as HTMLElement
+              ).style.transform || '',
+          ),
+        )
+        .toBe(want);
+
+    const idle = await read();
+    // ONE cluster, like upright — the piece is named once per view, not once
+    // per reader — and upright's height, so unlike `rotated` the flip costs
+    // the commentary panel nothing.
+    expect(idle.clusters).toBe(1);
+    expect(idle.height).toBe(96);
+    expect(idle.cluster, 'no rotation before anyone has taken the clock').toBe('');
+    expect(idle.playInsideCluster).toBe(false);
+
+    await take(0);
+    await expectFacing('');
+
+    await take(1);
+    // …and viewport 1's configured rotation, read from the config rather than
+    // assumed: a hardcoded 180 here would be wrong the day the table is not
+    // two facing halves (§7.8).
+    const expected = await page.evaluate(
+      () => (window as any)._exhibitTest.config?.rotations?.[1] ?? 180,
+    );
+    await expectFacing(`rotate(${expected}deg)`);
+    const far = await read();
+    expect(far.playRotation, 'the play control is never rotated').toBe('none');
+    expect(far.glyph, 'and never becomes ◀').not.toBe('◀');
+    // The cue never leaves the cluster parked mid-dip. `turning` is the state
+    // machine and is settled the moment the facing lands; the OPACITY is a CSS
+    // transition still running back up at that instant, so it has to be polled
+    // rather than read once — asserting a mid-transition value is precisely the
+    // flake this suite has been bitten by before.
+    expect(far.turning, 'the fade settles').toBe(false);
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          () =>
+            getComputedStyle(
+              (window as any)._exhibitTest.band.el.querySelector('.mb-cluster'),
+            ).opacity,
+        ),
+      )
+      .toBe('1');
+
+    // Back again — the band returns, it does not accumulate rotation.
+    await take(0);
+    await expectFacing('');
+
+    // ?bandFlipMotion=spin is the comparator: the rotation itself animates, so
+    // the facing is set at once and the CSS carries it.
+    await boot(page, 'debug=1&bandOrientation=flip&bandFlipMotion=spin');
+    await take(1);
+    await expectFacing(`rotate(${expected}deg)`);
+    expect(
+      await page.evaluate(() => {
+        const c = (window as any)._exhibitTest.band.el.querySelector(
+          '.mb-cluster',
+        ) as HTMLElement;
+        return getComputedStyle(c).transitionProperty;
+      }),
+      'spin animates transform, fade animates opacity',
+    ).toContain('transform');
+
+    // Flip needs a second side to face. One viewport degrades to upright.
+    await boot(page, 'debug=1&viewports=1&bandOrientation=flip');
+    expect(
+      await page.evaluate(
+        () => ((window as any)._exhibitTest.band.el as HTMLElement).dataset.orientation,
+      ),
+    ).toBe('upright');
+  });
+});

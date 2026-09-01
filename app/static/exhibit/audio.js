@@ -21,7 +21,7 @@
 // SWITCHING PRESERVES THE MUSICAL MOMENT, not the wall-clock second. Tapping a
 // different strip continues at the same place *in the piece* — the current time is
 // projected through the alignment into the new recording's own timeline. Seconds
-// would be the wrong invariant: the eight recordings differ by up to a minute over
+// would be the wrong invariant: the curated recordings differ by up to a minute over
 // the overture, which is the very thing on display.
 //
 // LEDGER: the player builder is copied from engine/normalization.js — see

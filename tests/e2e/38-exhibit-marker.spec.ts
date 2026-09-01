@@ -133,7 +133,7 @@ test.describe('38. The listening marker', () => {
   // and placement is the reader's own jump, so it PLAYS there (ruled). The
   // ticks appear on every strip and settle visible after the fresh window.
   test('38.4 a waveform tap while lifted places the marker and plays there', async ({ page }) => {
-    const { ref } = await boot(page, 'debug=1&marker=glass');
+    const { ref, order } = await boot(page, 'debug=1&marker=glass');
     await page.click('.vp[data-viewport="0"] .marker-glass');
 
     const strip = page.locator(`.vp[data-viewport="0"] .strip[data-file="${ref}"] .strip-ws`);
@@ -150,7 +150,7 @@ test.describe('38. The listening marker', () => {
     // One tick per strip, visible (settled-subtle is still visible — ruled).
     expect(
       await page.locator('.vp[data-viewport="0"] .marker-tick:not([hidden])').count(),
-    ).toBe(8);
+    ).toBe(order.length);
 
     // Placement is a jump: the tapped recording is audible AT the tapped
     // moment, playing. Same tolerance shape as 34.17.

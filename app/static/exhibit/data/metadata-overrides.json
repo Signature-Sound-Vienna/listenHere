@@ -23,10 +23,17 @@
   "_upstreamWorkList": [
     "MusicBrainz work-list, triaged 2026-08-24.",
     "",
-    "LIVE:",
-    "  1. 'Lugansk Philarmonic Orchestra' is missing an h. EDIT UNDER REVIEW.",
-    "     https://musicbrainz.org/artist/76df8c92-6c67-4e47-8c4d-f7715e818c5c",
-    "     Clears this file's remaining Lugansk ensemble stopgap when accepted.",
+    "LIVE — the author's, 2026-09-01 (Q14): 'we digitised them wrongly.' Both are",
+    "corrections at source, per the correct-at-source policy; the user files them.",
+    "  1. 'Strauß' should be 'Strauss' in the digitised names.",
+    "  2. 'Josef Francek' should be 'Joseph Francek'.",
+    "",
+    "DONE and accepted upstream 2026-08-31: 'Lugansk Philarmonic Orchestra' ->",
+    "  'Lugansk Philharmonic Orchestra' (artist 76df8c92-6c67-4e47-8c4d-f7715e818c5c).",
+    "  API-verified. The ensemble stopgap in this file can now be dropped — but the",
+    "  DISPLAY-NAME question is open and was NOT answered by the author (it was asked",
+    "  outside the numbered list): English MB form on screen, or the German",
+    "  'Philharmonie Lugansk'? Ask before dropping the override.",
     "",
     "*** WITHDRAWN — DO NOT SUBMIT: 'London Philharmonia Orchestra' ***",
     "  Earlier in this session I proposed correcting artist 67da2cc7 on the grounds",
@@ -56,7 +63,27 @@
     "  - cosmetic: stray space before the comma in artist-credit join phrases.",
     "",
     "NOT MusicBrainz, ours: the inlay lists 13 tracks; the SSV RDF records",
-    "track_count 14."
+    "track_count 14.",
+    "",
+    "*** STANDING: THE RDF ITSELF, raised 2026-09-01. Two problems, both upstream of",
+    "this repository, both needing whoever generates the graph dumps: ***",
+    "  A. record/1951-1954 is threadbare. No mo:musicbrainz, no dcterms:issued, no",
+    "     publisher, catalogue_number and release_event atYear both the literal",
+    "     string \"__NONE__\", and no rdfs:label on the record (only on the release).",
+    "     Its whole identity is hand-authored above as a result. Fix it and delete",
+    "     that entry. From the liner notes: Clemens Krauss, Wiener Philharmoniker,",
+    "     recorded 16 September 1950 — NOT a New Year's Concert, and outside the",
+    "     disc's own \"1951-54\" title on both the year and the occasion.",
+    "  B. THE DUMPS HAVE DIVERGED, and neither is a superset. Measured 2026-09-01:",
+    "     20250826 holds 63 records and 20250605 holds 76; the newer LOST 21 that the",
+    "     older had (1951-1954, 1980-1983, Das Grosse CD1/CD2, the 1963-1979 DVDs,",
+    "     the LSO/Proms Mackerras compilation, the ten-CD Wiener Philharmoniker box,",
+    "     1996, 1997, 2013 …) and GAINED 8 (1941, 1979, 1988, 1989, 1999, 2001, the",
+    "     1984 Karajan Kaiser-Walzer). All the recordings curated before today happen",
+    "     to survive in 20250826, which is why this has never bitten — but",
+    "     prep_exhibit_metadata.py pins ONE dump, so a re-run against a newer one can",
+    "     silently empty a curated recording's identity band. Until the generator is",
+    "     fixed, check this list against the dump before changing --dump."
   ],
   "_stillNeeded": [
     "Nothing outstanding. The Lugansk year was RESOLVED 2026-08-24 from the physical",
@@ -108,16 +135,32 @@
     "conductor": "",
     "ensemble": "",
     "displayNote": {
-      "en": "Orchestra and conductor unidentified — a pseudonymous Alfred Scholz production, first issued 1982."
+      "en": "Orchestra and conductor unidentified: the credited names are inventions. Producer Alfred Scholz (1920–1999) reissued real performances under invented names. First issued 1982."
     },
-    "displayShort": { "en": "Unidentified orchestra" },
+    "displayShort": {
+      "en": "Unidentified orchestra"
+    },
     "_disposition": "editorial",
-    "_why": "THE B-SHAPE RULING (user, 2026-08-27; to be confirmed with Chanda): the honest label. Empty-string conductor/ensemble are DECIDED-EMPTY (distinct from null, which apply_overrides treats as still-unanswered): the credited names are pseudonymous inventions (see _scholzConcern) and displaying them with museum authority is the false impression to avoid. displayNote is the middle band's explanation where the names would be; displayShort takes the ensemble's slot in the strip caption; the strap medallion renders a '?' disc (main.js strapLabel). Both display fields are language maps — German is in-house translation work, the strings.js discipline. Previous entry (kept for the record): the corpus-form ensemble override, RECLASSIFIED 2026-08-24 from 'until-upstream-fixed' to 'editorial' and HELD pending this decision."
+    "_why": "THE B-SHAPE RULING (user, 2026-08-27), CONFIRMED BY THE AUTHOR 2026-09-01 (Q17a, 'please proceed'): the honest label. Q17b asked that her own Francek sentence do the explaining, so displayNote now says what a Scholz production IS rather than naming one — her substance, adapted, because the Francek note itself sits on an unshown recording and this band shows in every audience mode. Empty-string conductor/ensemble are DECIDED-EMPTY (distinct from null, which apply_overrides treats as still-unanswered): the credited names are pseudonymous inventions (see _scholzConcern) and displaying them with museum authority is the false impression to avoid. displayNote is the middle band's explanation where the names would be; displayShort takes the ensemble's slot in the strip caption; the strap medallion renders a '?' disc (main.js strapLabel). Both display fields are language maps — German is in-house translation work, the strings.js discipline. Previous entry (kept for the record): the corpus-form ensemble override, RECLASSIFIED 2026-08-24 from 'until-upstream-fixed' to 'editorial' and HELD pending this decision."
   },
   "Wiener Volksopernorchester, Franz Bauer-Theussl (1985).wav": {
     "ensemble": "Wiener Volksopernorchester",
     "_disposition": "editorial",
     "_why": "MusicBrainz's 'Orchester der Wiener Volksoper' is a legitimate variant, not an error — no upstream change needed. The corpus form is what the annotations and the filenames use."
+  },
+  "VPO-1951-1954.wav": {
+    "conductor": "Clemens Krauss",
+    "ensemble": "Wiener Philharmoniker",
+    "year": 1950,
+    "recordTitle": "The New Year Concerts 1951-54",
+    "recordDate": "1950-09-16",
+    "_disposition": "until-upstream-fixed",
+    "_why": "IDENTITY HAND-AUTHORED, because the graph cannot answer any of it. Added 2026-09-01 when the author raised the shown set to ten (Q1) and this recording was chosen as the tenth, for the danced-origins note in Agogic and \"Schwung\". THE GAP: record/1951-1954 is absent from the 20250826 dump the sidecar is built from, and in the 20250605 dump where it does exist it carries no mo:musicbrainz, no dcterms:issued, no publisher, catalogue_number \"__NONE__\", release_event atYear \"__NONE__\", and no rdfs:label on the record itself — only on the release. Conductor and ensemble normally arrive through the MusicBrainz release link, so with that absent there is nothing to derive. EVERY VALUE HERE IS FROM THE PHYSICAL LINER NOTES (user, 2026-09-01): Clemens Krauss conducting the Wiener Philharmoniker, recorded 16 SEPTEMBER 1950, and NOT a New Year's Concert — the album title, \"The New Year Concerts 1951-54\", describes the compilation and not this track, whose date falls outside it on both the year and the occasion. The corpus filename VPO-1951-1954 names the disc. A NOTE ON HOW THE CONDUCTOR WAS ARRIVED AT, because the wrong route was tried first: an earlier draft inferred Krauss from his conducting every VPO New Year's Concert between 1948 and his death in May 1954. That reasoning collapsed the moment the recording turned out to be a September session, and the name was withdrawn before the liner notes independently confirmed it. Same answer, but it is here on evidence and not on the inference. DELETE THIS ENTRY once the RDF is fixed; see _upstreamWorkList."
+  },
+  "VPO-2002.wav": {
+    "conductor": "Seiji Ozawa",
+    "_disposition": "editorial",
+    "_why": "CONDUCTOR ONLY, and NOT an upstream error. MusicBrainz's artist entity for Ozawa carries 小澤征爾 as its primary name, which is correct there and is what the byArtist path resolves to. This RELEASE's own artist credit reads \"Wiener Philharmoniker , Seiji Ozawa\" (see mbCreditedTo in the generated sidecar) — the Latin form is what the disc says, what the annotation text says, and what a German- and English-reading visitor can use. Nothing to fix upstream, so this is permanent. Deliberately NOT generalised into a prefer-the-release-credit rule: the same disagreement on Kendlinger resolves the other way, where MusicBrainz's fuller \"Matthias Georg Kendlinger\" beats the slug's bare \"Kendlinger\". Added 2026-09-01 when VPO-2002 entered the shown set."
   },
   "_settled": [
     "Georg / George Randolph Warren — SETTLED 2026-08-24: the CD liner notes read",
@@ -127,8 +170,22 @@
     "  filename is only a key.)"
   ],
   "_scholzConcern": [
-    "*** DECIDED 2026-08-27 (user): OPTION B, the honest label — pending Chanda's",
-    "confirmation. Implemented in this file's Warren entry (displayNote/displayShort,",
+    "*** CONFIRMED BY THE AUTHOR 2026-09-01 (Q17): 'Please proceed, using the Francek",
+    "sentence to explain it.' The b-shape label below is therefore settled, and the",
+    "Warren displayNote was rewritten to carry her explanation of what a Scholz",
+    "production is. ***",
+    "",
+    "*** THE SOURCE, supplied by the author 2026-09-01 (Q11c). The exhibit states",
+    "under museum authority that a named real person issued performances under",
+    "invented names; this is what that rests on: ***",
+    "  John F. Berky, 'Pseudonyms: Alfred Scholz and the South German Philharmonic',",
+    "  abruckner.com 2003, rev. 2014.",
+    "  https://www.abruckner.com/Data/articles/articlesenglish/berkyjohnpseudonym/pseudonyms.pdf",
+    "  Cited here rather than on screen: 'worth having on file' was the ask, and a URL",
+    "  in a kiosk annotation reads as apparatus, not as the exhibit's voice.",
+    "",
+    "*** DECIDED 2026-08-27 (user): OPTION B, the honest label — CONFIRMED by the",
+    "author 2026-09-01 (Q17). Implemented in this file's Warren entry",
     "decided-empty names) plus the '?' strap medallion; the researcher-suggested",
     "short form below is the shipped display copy verbatim. The record below is",
     "kept as the evidence. ***",

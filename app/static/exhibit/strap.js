@@ -73,7 +73,7 @@ export function createStrap(parent, { files, labelFor, titleFor, onPick, onNav, 
     buttons.set(file, btn);
   }
   // The arrow medallions: above the top medallion and below the bottom one,
-  // anchored to the rail's ends (absolute, so the eight rows keep their exact
+  // anchored to the rail's ends (absolute, so the rows keep their exact
   // strip alignment), stepping to the adjacent recording along the alignment.
   if (onNav) {
     for (const [dir, delta] of [["up", -1], ["down", 1]]) {

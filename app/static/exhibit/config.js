@@ -19,7 +19,7 @@
  * the other side reads it the right way up.
  *
  * Measured on the real device 2026-08-24: the 13-inch iPad Air is 1024×1366 CSS
- * at dpr 2, so each half gets 1024×~640 and eight 54 px strips use 432 px of it.
+ * at dpr 2, so each half gets 1024×~640 and ten 38 px strips use 380 px of it.
  */
 const DEFAULTS = {
   // --- content selection ---
@@ -33,14 +33,33 @@ const DEFAULTS = {
   viewports: 2,
   splitOrientation: "horizontal", // "horizontal" = stacked halves; "vertical" = side by side
   rotations: [0, 180], // per viewport, degrees; index beyond the end means 0
-  stackedRecordings: 8,
-  // 48, down from week 1's 54: the commentary panel absorbs whatever height the
-  // strips leave over, and at 54 the longest authored text showed two lines on
-  // the iPad's halves (measured; annotation-list.js). Six pixels a strip buys
-  // the panel ~78 px — the waveforms are the overview, the commentary is the
-  // exhibit's voice, and `?stripHeight=54` puts the week-1 look back for an
-  // eyeball comparison.
-  stripHeight: 48, // CSS px per waveform strip
+  // TEN since 2026-09-01, eight before it: the author raised the shown-set cap for
+  // this piece and every future one, and named VPO-2002 (the "D or E?" pivot) as
+  // the first addition. A cap, not a target — `tools/prep_exhibit_data.py` decides
+  // WHICH recordings; this is only how many of them a viewport stacks.
+  stackedRecordings: 10,
+  // 38, down from 48, down from week 1's 54. The commentary panel absorbs
+  // whatever height the strips leave over, so the strip height IS the panel
+  // height, inverted — and each cut has been made for the panel, because the
+  // waveforms are the overview and the commentary is the exhibit's voice.
+  //
+  // WHY 38 AND NOT 48: raising the shown set to ten (2026-09-01) added 96 px of
+  // strips, and the panel is the residual. Measured at 1024×1366, the real iPad
+  // geometry, with the Expert set shown:
+  //     8 × 48  panel 159 px   description box 57 px visible
+  //    10 × 48  panel  59 px   description box  0 px visible — the text is GONE
+  //    10 × 38  panel 159 px   description box 57 px visible
+  // So 38 is not a taste call: it is the height at which ten strips leave the
+  // panel exactly what eight strips left it. `?stripHeight=48` still shows the
+  // taller waveforms, at the cost of the annotation text.
+  //
+  // SEPARATELY, and NOT caused by the above: `.ann-detail` is `overflow: auto`,
+  // and even at the 159 px baseline the long Expert descriptions show 57 px of
+  // the 397 they need — 14% of "Oboe Solos", 18% of Agogic, 34% of "D or E?".
+  // That is the museum-hardware check the author asked for on Q13, answered
+  // early: they do not run in full at this geometry, on a kiosk whose rule is
+  // that nothing scrolls. It needs an editorial or UI decision, not a number.
+  stripHeight: 38, // CSS px per waveform strip
   middleBandHeight: 96, // conductor, year, portrait — and NO UI labels (plan §6.3)
   // How the shared band handles being read from two opposite sides at once —
   // plan §4.3's orientation question, pulled forward by user feedback after the
@@ -85,7 +104,7 @@ const DEFAULTS = {
   // 0 means FIT THE WHOLE RECORDING INTO THE STRIP, which is WaveSurfer's
   // `fillParent` behaviour when `minPxPerSec` is 0. That is the right resting
   // state for this interface and not merely a convenient default: the exhibit's
-  // whole proposition is seeing eight interpretations of the *same* moment at
+  // whole proposition is seeing every interpretation of the *same* moment at
   // once, and at the previous default of 30 px/s a 582 s overture shows about 3%
   // of itself, so the stacked comparison has nothing to compare. Per-viewport
   // zoom and scroll arrive in week 2 (plan §4.2); until then `?zoom=30` is still

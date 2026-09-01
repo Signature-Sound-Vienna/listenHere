@@ -1,5 +1,19 @@
 # Listen Here! CHANGELOG.md
 
+### 0.46.0 -- Chanda's annotation feedback; the exhibit shows ten recordings
+* The exhibit's shown set rises from eight recordings to ten: `VPO-2002` (the pivot of "D or E?") and `VPO-1951-1954` join it.
+* Strip height drops 48 → 38 px. At ten strips and 48 px the annotation panel loses 100 px and the description text disappears entirely; 38 px leaves the panel exactly the height eight strips left it.
+* The authored annotation text is applied as answered: 24 spelling and grammar fixes, "chance" not "change", the recut *Oboe Solos* closing sentence, Eulenburg, Peters, Baumgärtel 1900, "the slowest in this section", Strauss and Joseph throughout.
+* Six one-word "E6" notes become sentences; the Warren recording gains its *Lonely Bell* note; `VPO-1987` gains a note in all three Expert annotations.
+* Group names: "VPO" → "Vienna Philharmonic Orchestra", "New Group" → "Other Orchestras", and "Ungrouped" is gone from every annotation (its Expert members move into the VPO group).
+* The zero-length first region in *Clapping Detective* is deleted at source.
+* The Warren identity note now explains what a Scholz production is; the Berky article is recorded as its source.
+* `VPO-1951-1954`'s identity is hand-authored from the liner notes (Clemens Krauss, Wiener Philharmoniker, recorded 16 September 1950) — the RDF has no usable record for it. `VPO-2002`'s conductor is pinned to "Seiji Ozawa"; MusicBrainz's artist entity carries 小澤征爾.
+* The strap medallion omits the apostrophe-year when the year is not a plain four digits, rather than printing the last two characters of a range.
+* New `tools/annots_text.py`: splits the authored ~20 KB out of each 19 MB annotation set so the text is version-controlled, and splices it back over a fresh export.
+* Prep warns when a curated recording's note is too short to be a sentence.
+* Testing: spec 34's counts derive from the payload's own order, with the set size pinned in one assertion.
+
 ### 0.45.0 -- The correction controls move into the left nav
 * The correction screen's controls now live in a "Correction" nav region; the Controls and Waveforms regions stand down while it is open, and the header strip over the score is gone (the score and strip get its height).
 * Undo, Redo, Revert alignment edits, and Save data join that region for the session and return to Controls on exit.

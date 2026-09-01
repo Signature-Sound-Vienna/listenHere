@@ -41,8 +41,9 @@ docs/exhibit-prototype-plan.md, not a preference:
 * **Every visitor-visible string becomes a language map** (`{"en": …}`), so German
   drops in without touching the exhibit. Bilingual is release-blocking for
   December; retrofitting i18n later is the expensive path (§6.6).
-* **Audio is transcoded to 48 kHz** (§5.2e). The corpus is mixed 44.1/48 — the four
-  curated VPO recordings are 48 kHz and the four non-VPO ones are 44.1 — and the
+* **Audio is transcoded to 48 kHz** (§5.2e). The corpus is mixed 44.1/48 — it was
+  an exact VPO/non-VPO split at eight, and stopped being one at ten (VPO-1951-1954
+  is 44.1, so it is six 48 kHz against four 44.1) — and the
   iPad's AudioContext runs at 48 kHz, so half the set would hit iOS's resampling
   path inside `windowed-audio-player.js`'s gapless calibration. Resampling once,
   offline, deletes that risk instead of testing it, and costs no re-alignment
@@ -83,13 +84,24 @@ SOURCES = {
 }
 AUDIENCES = ["kids", "adults", "expert"]
 
-# The curated eight (§5.2). Barely a choice: the four narrow annotations plus the
-# reference force exactly this set, and it lands on an exact 4 VPO / 4 non-VPO
-# split — which turns out to be the 48 kHz / 44.1 kHz split too (§5.2e).
+# The curated set: reference first, then chronological, then the non-VPO four.
+#
+# EIGHT UNTIL 2026-09-01, when the author raised the cap to TEN for this piece and
+# every future one (Q1). The eight were forced: the four narrow annotations plus
+# the reference, landing on an exact 4 VPO / 4 non-VPO split, which is also the
+# 48 kHz / 44.1 kHz split (§5.2e). The two additions are chosen, not forced:
+#   VPO-2002       her own pick — the pivot recording of "D or E?", the year the
+#                  correction first appears. Without it the annotation names a
+#                  moment a visitor cannot hear (Q2, answered by adding it).
+#   VPO-1951-1954  unstrands the danced-origins argument in Agogic and "Schwung"
+#                  (Q3): 239 characters that had nowhere to appear.
+# TEN IS A CAP, NOT A TARGET. Adding an eleventh needs the author, not this file.
 CURATED = [
     "VPO-2010.wav",  # the reference, and the slowest
+    "VPO-1951-1954.wav",
     "VPO-1987.wav",  # NB: the plain file is the 48 kHz one; both alternate 1987 releases are 44.1
     "VPO-1989.wav",
+    "VPO-2002.wav",
     "VPO-2022.wav",
     "Philharmonia Orchestra London, Georg Randolph Warren (1982).wav",
     "K&K Philharmoniker, Kendlinger (2010).wav",
@@ -107,22 +119,31 @@ CANONICAL_PAIRS = {
     "rgn_msvpcupp_5": (12772, 13933),  # Expert, Oboe Solos (a)
     "rgn_msvpd6fv_6": (14990, 15582),  # Expert, Oboe Solos (b)
     "rgn_msvqekba_8": (8564, 9414),   # Expert, Agogic and "Schwung"
-    "rgn_mrxa6xz4_2": (0, 0),         # Kids, Clapping Detective — DEGENERATE, dropped
     "rgn_mrxebibu_3": (26315, 29120),  # Kids, Clapping Detective
     "rgn_mrxej01r_5": (2843, 2866),   # Kids, Lonely Bell (a)
     "rgn_mrxeqqiz_6": (2755, 3420),   # Kids, Lonely Bell (b)
     "rgn_ms4gs23a_2": (25280, 26589),  # Kids, Rollercoaster Ending
 }
 
-# A stray empty region the author must delete; a re-derive cannot repair a
-# zero-length one, and drawing it would put an invisible target on the wall.
-DEGENERATE_REGIONS = {"rgn_mrxa6xz4_2"}
+# Zero-length regions: a re-derive cannot repair one, and drawing it would put an
+# invisible target on the wall, so the payload drops it and the author must delete
+# it at source. EMPTY since 2026-09-01: the one known instance, Kids / Clapping
+# Detective's `rgn_mrxa6xz4_2`, was deleted at source on the author's instruction
+# (Q8). The mechanism stays for the next one.
+DEGENERATE_REGIONS = set()
 
 # Region → recordings whose times Chanda hand-places, and which this script must
 # therefore leave alone once they arrive in the overrides file (§5.2d).
 NEEDS_HAND_PLACEMENT = {"rgn_msvors30_2"}
 
 OVERRIDES_FILE = "overrides.json"
+
+# A per-recording note this short is a data cell, not something written for a
+# reader. Five of the "D or E?" notes were the two characters "E6" until the author
+# replaced them with sentences (Q5) — but only on the recordings that were curated
+# at the time. Raising the cap can pull a bare one into view, so this warns rather
+# than waiting for somebody to notice it on the wall.
+STUB_TEXT_CHARS = 8
 
 
 # --------------------------------------------------------------------------- util
@@ -363,6 +384,12 @@ def build_annotations(sets, warnings):
                 if tgt["file"] not in curated:
                     dropped += 1
                     continue
+                desc = (tgt.get("description") or "").strip()
+                if 0 < len(desc) < STUB_TEXT_CHARS:
+                    warnings.add("stub-target-text",
+                                 f"{audience}/{ann['label']} → {tgt['file']}: "
+                                 f"{desc!r} is a data cell, not a sentence. The "
+                                 f"AUTHOR must write it out (Q5).")
                 targets.append({
                     "file": tgt["file"],
                     "description": lang_map(tgt.get("description")),
@@ -372,7 +399,7 @@ def build_annotations(sets, warnings):
             if dropped:
                 warnings.add("targets-outside-curation",
                              f"{audience}/{ann['label']}: {dropped} of "
-                             f"{len(ann.get('targets', []))} targets are not in the curated 8",
+                             f"{len(ann.get('targets', []))} targets are not in the curated set",
                              kept=len(targets))
             if not targets:
                 warnings.add("annotation-has-no-targets",
@@ -520,7 +547,7 @@ def seed_overrides(path):
                 "Expert / 'D or E?' region (a), rgn_msvors30_2, index 705-711.",
                 "6 indices / 0.12 s wide, against up to 2.53 s of alignment disagreement",
                 "at that point - 21x the region width - so no alignment preset can place",
-                "it. Chanda hand-places it on the eight curated recordings AFTER the",
+                "it. Chanda hand-places it on the curated recordings AFTER the",
                 "re-derive; the tool supports per-recording edge-drag. Once those times",
                 "land here they are overrides forever: no future re-alignment may",
                 "recompute them. See plan 5.2d.",

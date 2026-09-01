@@ -66,7 +66,7 @@ test.describe('34. The exhibit loader', () => {
   // Air measured 1024×1366 CSS, plan §4.0a) and its CSS deliberately has NO
   // scroll container anywhere (overscroll-behavior: none; nothing overflows) —
   // that is the kiosk feel, not an oversight. Left at Playwright's 1280×720
-  // desktop default, most of a stacked-eight-strip viewport renders below the
+  // desktop default, most of a stacked-strip viewport renders below the
   // fold with nothing to scroll it into view, and every click on it times out
   // "element is outside of the viewport". Match the geometry the page assumes.
   test.use({ viewport: { width: 1024, height: 1366 } });
@@ -79,7 +79,10 @@ test.describe('34. The exhibit loader', () => {
     page,
   }) => {
     const { order } = await boot(page);
-    expect(order).toHaveLength(8);
+    // The ONE place the curated-set size is pinned. Eight until 2026-09-01, when
+    // the author raised the cap to ten (Q1); every other count below derives from
+    // `order`, so a future change to the set costs this line alone.
+    expect(order).toHaveLength(10);
 
     const shape = await page.evaluate(() => {
       const T = (window as any)._exhibitTest;
@@ -94,7 +97,7 @@ test.describe('34. The exhibit loader', () => {
       }));
     });
     for (const vp of shape) {
-      expect(vp.stripCount).toBe(8);
+      expect(vp.stripCount).toBe(order.length);
       // TWO per strip (one waveform canvas under `.canvases`, one under
       // `.progress`) — not Spike C's measured "4 canvases / renderer" (plan
       // §4.0a), which was at a real zoom over a 582 s recording wide enough to
@@ -103,7 +106,7 @@ test.describe('34. The exhibit loader', () => {
       // waveform is one chunk. A jump to 4 here would mean either the zoom
       // default regressed away from fit-to-width, or a chunk-splitting
       // recording made it into the curated set at a size that no longer fits.
-      expect(vp.canvasesPerStrip).toEqual(new Array(8).fill(2));
+      expect(vp.canvasesPerStrip).toEqual(new Array(order.length).fill(2));
     }
   });
 
@@ -426,7 +429,7 @@ test.describe('34. The exhibit loader', () => {
   }) => {
     const { order } = await boot(page, 'preload=on&debug=1');
     const warm = await page.evaluate(() => (window as any)._exhibitTest.preloaded);
-    expect(warm).toEqual({ warmed: 8, skipped: 0, failed: 0 });
+    expect(warm).toEqual({ warmed: order.length, skipped: 0, failed: 0 });
 
     await page.route('**/static/exhibit/audio/**', (route) => route.abort());
     const after = await page.evaluate(async (order) => {
@@ -598,7 +601,7 @@ test.describe('34. The exhibit loader', () => {
     const [fileA, fileB] = order;
     expect(await page.locator('.vp-strap-band').count(), 'one leather band per viewport').toBe(2);
     const buttons = page.locator('.vp[data-viewport="0"] .vp-strap .strap-btn');
-    await expect(buttons).toHaveCount(8);
+    await expect(buttons).toHaveCount(order.length);
 
     const probe = await page.evaluate(
       async ({ fileA, fileB }) => {

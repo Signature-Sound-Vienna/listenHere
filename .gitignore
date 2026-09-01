@@ -28,6 +28,8 @@ test-results/
 /docs/exhibit-prototype-plan.md
 /docs/chanda-session-2026-09-01.md
 /docs/chanda-questions-2026-09-01.md
+/docs/chanda-responses-2026-09-01.md
+/docs/chanda-followup-2026-09-01.md
 # Authored exhibit annotation sets (kids/adults/expert) — text still in flux
 /ExhibitAnnots/
 # Unclear provenance — kept local pending review
@@ -77,6 +79,10 @@ test-results/
 
 # Phase-0 de-risking spikes (throwaway probes, local-only)
 /app/static/spikes/
+
+# Local dev convenience for Claude Code's browser preview; assumes a venv at
+# ./venv, so it is one developer's setup rather than the project's
+/.claude/launch.json
 
 # Throwaway repro harnesses (local-only; promote to a numbered scenario if kept)
 /tests/e2e/zz-*.spec.ts

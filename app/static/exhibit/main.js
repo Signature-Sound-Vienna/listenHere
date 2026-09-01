@@ -1365,7 +1365,7 @@ async function boot() {
  * numeral are the things that need no translation (plan §6.3). Without them the
  * stack is eight identical grey rectangles, which makes "compare these
  * interpretations" an instruction nobody can follow. Conductor FIRST, because
- * five of the eight share an orchestra and a shared prefix would bury the one
+ * most of the set shares an orchestra and a shared prefix would bury the one
  * word that tells the strips apart. The filename is the fallback so a missing
  * sidecar is visible rather than blank.
  */
@@ -1389,20 +1389,27 @@ function stripLabel(exhibit, file, language) {
  * (plan §5.5): conductor initials and the year — "HvK ’87", "CK ’89" (ruled
  * 2026-08-26). Initials keep each name part's own case, so the particle in
  * "Herbert von Karajan" reads as the lowercase v it is, and hyphenated
- * surnames contribute each half ("Franz Bauer-Theussl" → FBT). All eight
- * conductors are distinct where four ensembles are not, which is why the
- * conductor and not the ensemble. The filename fallback keeps a missing
- * sidecar visible, the stripLabel precedent.
+ * surnames contribute each half ("Franz Bauer-Theussl" → FBT). The conductors
+ * are distinct where several ensembles are not, which is why the conductor and
+ * not the ensemble. The filename fallback keeps a missing sidecar visible, the
+ * stripLabel precedent.
  */
 function strapLabel(exhibit, file) {
   const meta = metadataFor(exhibit, file);
+  // A YEAR THAT IS NOT A PLAIN FOUR DIGITS gets no apostrophe-year: the medallion
+  // is built by taking the last two characters, so a range like "1951–1954" would
+  // print "CK ’54" and assert one concert out of four. Initials alone are honest.
+  // No curated recording needs this today — VPO-1951-1954's performance year came
+  // off the liner notes as 1950 — but a compilation with an unresolved year is the
+  // normal case for this corpus, so the guard stays.
+  const yr = /^\d{4}$/.test(String(meta.year ?? "")) ? String(meta.year) : null;
   // An identity DECIDED to be unknown (the Scholz b-shape ruling, 2026-08-27,
-  // pending Chanda's confirmation) is not a missing sidecar: the medallion
+  // confirmed by the author 2026-09-01) is not a missing sidecar: the medallion
   // owns up with a "?" rather than minting initials from a pseudonymous
   // filename. Distinguished from genuine absence by the display fields the
   // decision authored, so a broken sidecar still fails visibly below.
   if (!meta.conductor && (meta.displayShort || meta.displayNote)) {
-    return meta.year ? `? ’${String(meta.year).slice(-2)}` : "?";
+    return yr ? `? ’${yr.slice(-2)}` : "?";
   }
   const name = meta.conductor || file.replace(/\.wav$/i, "");
   const initials = name
@@ -1410,7 +1417,7 @@ function strapLabel(exhibit, file) {
     .filter(Boolean)
     .map((part) => part[0])
     .join("");
-  return meta.year ? `${initials} ’${String(meta.year).slice(-2)}` : initials;
+  return yr ? `${initials} ’${yr.slice(-2)}` : initials;
 }
 
 /**

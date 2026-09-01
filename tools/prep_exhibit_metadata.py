@@ -85,8 +85,10 @@ MB_MIN_INTERVAL = 1.1  # seconds between requests — MusicBrainz allows ~1/s
 # `%` written as `_-` (so `_-20` is a space, `_-2C` a comma, `_-28` a paren).
 CURATED_SLUGS = {
     "VPO-2010.wav": "2010",
+    "VPO-1951-1954.wav": "1951-1954",
     "VPO-1987.wav": "1987",
     "VPO-1989.wav": "1989",
+    "VPO-2002.wav": "2002",
     "VPO-2022.wav": "2022",
     "Philharmonia Orchestra London, Georg Randolph Warren (1982).wav":
         "Philharmonia_-20Orchestra_-20London_-2C_-20Georg_-20Randolph_-20Warren_-20_-281982_-29",

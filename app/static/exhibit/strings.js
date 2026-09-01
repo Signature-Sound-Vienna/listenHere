@@ -69,6 +69,15 @@ const CATALOGUE = {
   // without jumping stays possible, jumping is one tap. PROVISIONAL wording,
   // to be settled by the Oct/Nov user testing.
   "panel.jumpToAnnotation": { en: "Jump to annotation" },
+  // The detail header's MARK control, beside the jump (?marker=glass only):
+  // puts this reader's own marker on the annotation's first region. Deliberately
+  // a labelled button rather than a bare glass glyph — a magnifying glass with
+  // no chrome invites a visitor to try to DRAG it, and the draggable one is the
+  // object on the hook. PROVISIONAL wording, like the jump beside it.
+  "panel.markAnnotation": { en: "Mark" },
+  "panel.markAnnotationLong": {
+    en: "Place my marker at the start of this annotation",
+  },
   // Turn-taking (plan §4.3; ?turnPolicy=…, turns.js). These render on the
   // viewports' own surfaces, so unlike the middle band they MAY carry language
   // — each half shows its own reader's copy. PROVISIONAL wording, to be

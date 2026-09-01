@@ -1190,6 +1190,93 @@ test.describe('37. Playhead-driven focus', () => {
     await expect(page.locator('.vp[data-viewport="0"] .ann-jump')).toBeHidden();
   });
 
+  // 37.27 THE MARK BUTTON (?marker=glass): the same landing the jump uses —
+  // the annotation's earliest region start on a targeted recording — but it
+  // puts this reader's MARKER there. Gated on the marker feature, and it must
+  // read as a control rather than as the draggable glass, so the chrome is
+  // asserted too: a real <button> with a label, not the glass artwork.
+  test('37.27 the mark button places the marker at the annotation start, and is a button not the glass', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&marker=glass');
+    const pick = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const ref = T.transport.activeFile as string;
+      const earliest = (ann: any, f: string) => {
+        const tg = (ann.targets || []).find((t: any) => t.file === f);
+        if (!tg) return null;
+        let s: number | null = null;
+        for (const r of ann.regions || []) {
+          const sp = tg.regionTimes?.[r.id];
+          if (sp && sp.end > sp.start && (s == null || sp.start < s)) s = sp.start;
+        }
+        return s;
+      };
+      const anns = T.exhibit.byAudience['adults'] || [];
+      const ann = anns.find((a: any) => earliest(a, ref) != null);
+      return ann ? { id: ann.id, file: ref, start: earliest(ann, ref) } : null;
+    });
+    expect(pick, 'an adults annotation targets the reference').toBeTruthy();
+    await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const orig = T.transport.select.bind(T.transport);
+      T.transport.select = (file: string, time?: number) => orig(file, time, false);
+    });
+    const marker = (i = 0) =>
+      page.evaluate((i) => (window as any)._exhibitTest.marker(i), i);
+
+    await page.click(`.vp[data-viewport="0"] .ann-chip[data-ann="${pick!.id}"]`);
+    expect((await marker()).ix, 'nothing placed yet').toBeNull();
+    await page.click('.vp[data-viewport="0"] .ann-mark');
+    const placed = await marker();
+    expect(placed.homeFile).toBe(pick!.file);
+    // Ground truth for "the annotation's start": placing BY TIME at the
+    // earliest region start must land on the very same alignment index.
+    const byTime = await page.evaluate(
+      ([f, t]) => {
+        const T = (window as any)._exhibitTest;
+        T.placeMarker(0, f, t);
+        return T.marker(0).ix;
+      },
+      [pick!.file, pick!.start] as [string, number],
+    );
+    expect(placed.ix).toBe(byTime);
+    // The other side sees it, as it does for any placement.
+    expect((await marker(1)).ghost).toEqual(
+      expect.objectContaining({ file: pick!.file, ix: placed.ix }),
+    );
+
+    // It must not be mistakable for the glass: a labelled button with a border
+    // and a pointer cursor, carrying none of the glass's own artwork.
+    const chrome = await page.evaluate(() => {
+      const b = document.querySelector(
+        '.vp[data-viewport="0"] .ann-mark',
+      ) as HTMLElement;
+      const cs = getComputedStyle(b);
+      return {
+        tag: b.tagName.toLowerCase(),
+        text: (b.textContent || '').trim(),
+        cursor: cs.cursor,
+        bordered: parseFloat(cs.borderTopWidth) > 0,
+        labelled: !!b.getAttribute('aria-label'),
+        glassParts: b.querySelectorAll(
+          '.glass-lens, .glass-ring, .glass-handle, .glass-stitch',
+        ).length,
+      };
+    });
+    expect(chrome.tag).toBe('button');
+    expect(chrome.text.length, 'the control carries a word, not just a glyph').toBeGreaterThan(0);
+    expect(chrome.cursor, 'grab would say "drag me" — the glass on the hook is the draggable one').toBe('pointer');
+    expect(chrome.bordered).toBe(true);
+    expect(chrome.labelled).toBe(true);
+    expect(chrome.glassParts, 'the glass artwork must not appear here').toBe(0);
+
+    // Gated on the feature: no marker, no button.
+    await boot(page, 'debug=1');
+    await page.click(`.vp[data-viewport="0"] .ann-chip[data-ann="${pick!.id}"]`);
+    await expect(page.locator('.vp[data-viewport="0"] .ann-mark')).toBeHidden();
+  });
+
   // 37.8 The genuine path, once: real playback crossing a region start raises
   // the entry and the wash focuses it, driven by the real per-frame clock.
   test('37.8 real playback washes focus in as the clock crosses a region start', async ({

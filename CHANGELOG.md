@@ -77,6 +77,12 @@
 * Licenses verified for the stand-in render step: MuseScore_General is MIT, VSCO 2 CE is CC0 1.0.
 * Testing: spec 41 (model: segments, validation, gaps, undo round-trip, serialization, quarters guard; worker: analytic tempo-map recovery, wrong-anchor flank behaviour, adaptive hop, error paths).
 
+### 0.38.2 -- Exhibit marker: round lens, no magnifier, and a Mark button
+* The listening marker's lens is a circle again (was an oval), and it no longer magnifies the waveform beneath it.
+* The lens spans 80% of a strip's height rather than all of it, and the hook's dashed ring fits inside the strap (was 8 px wider than it).
+* New "Mark" button beside "Jump to annotation", shown only under `?marker=glass`: it places the reader's marker at the start of the shown annotation's first region — the same landing the jump uses. Styled as a labelled pill with a plain glyph, so it is not mistaken for the draggable glass.
+* Testing: spec 38.17 now pins the round lens and the absent magnifier, and 37.27 the Mark button's landing and its button chrome; exhibit specs 222/222.
+
 ### 0.38.1 -- Stand-in tool: stereo audition mix
 * `make_standins.mjs --stereo --audio-dir DIR`: one sample-locked audition WAV per recording — left = the real recording mono at 22050 Hz (via ffmpeg), right = the warped synth, channels normalised separately (§13 ruling 2's construction, offline; misalignment is heard as inter-ear flams). The in-app listen.js row remains session 2.
 

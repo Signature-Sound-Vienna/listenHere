@@ -251,6 +251,16 @@
   --color-measure-drag-text: #fde68a;
   --color-measure-drag-bg: rgba(120, 80, 0, 0.85);
   --color-measure-drag-border: rgba(245, 158, 11, 0.6);
+
+  /* Fix-mode status chip. The four semantic vars are defined ONLY here:
+     the light themes use the literals in the var() fallbacks, which measure
+     4.3–5.8:1 there, while the same literals land at 1.2–1.7:1 on a dark
+     surface — unreadable. These clear 4.5:1 on this theme's surface-alt
+     (#4ade80 5.94:1, #fca5a5 5.46:1). */
+  --color-success-text: #4ade80;
+  --color-success-border: #4ade8073;
+  --color-danger-text: #fca5a5;
+  --color-danger-border: #fca5a573;
 }
 
 /* ============================================================
@@ -470,6 +480,16 @@
   --color-group-bg: rgba(68, 71, 90, 0.60);
   --color-group-ungrouped-bg: rgba(40, 42, 54, 0.60);
   --color-wf-overlay-staged-bg: rgba(189, 147, 249, 0.22);
+
+  /* Fix-mode status chip. The four semantic vars are defined ONLY here:
+     the light themes use the literals in the var() fallbacks, which measure
+     4.3–5.8:1 there, while the same literals land at 1.2–1.7:1 on a dark
+     surface — unreadable. These clear 4.5:1 on this theme's surface-alt
+     (#50fa7b 6.67:1, #ffb3b3 5.38:1). */
+  --color-success-text: #50fa7b;
+  --color-success-border: #50fa7b73;
+  --color-danger-text: #ffb3b3;
+  --color-danger-border: #ffb3b373;
 }
 
 /* ============================================================
@@ -528,6 +548,16 @@
   --color-group-bg: rgba(46, 77, 34, 0.60);
   --color-group-ungrouped-bg: rgba(23, 35, 18, 0.55);
   --color-wf-overlay-staged-bg: rgba(128, 200, 248, 0.22);
+
+  /* Fix-mode status chip. The four semantic vars are defined ONLY here:
+     the light themes use the literals in the var() fallbacks, which measure
+     4.3–5.8:1 there, while the same literals land at 1.2–1.7:1 on a dark
+     surface — unreadable. These clear 4.5:1 on this theme's surface-alt
+     (#60d060 5.57:1, #fca5a5 5.76:1). */
+  --color-success-text: #60d060;
+  --color-success-border: #60d06073;
+  --color-danger-text: #fca5a5;
+  --color-danger-border: #fca5a573;
 }
 
 /* ============================================================
@@ -586,6 +616,16 @@
   --color-group-bg: rgba(67, 76, 94, 0.60);
   --color-group-ungrouped-bg: rgba(46, 52, 64, 0.55);
   --color-wf-overlay-staged-bg: rgba(136, 192, 208, 0.22);
+
+  /* Fix-mode status chip. The four semantic vars are defined ONLY here:
+     the light themes use the literals in the var() fallbacks, which measure
+     4.3–5.8:1 there, while the same literals land at 1.2–1.7:1 on a dark
+     surface — unreadable. These clear 4.5:1 on this theme's surface-alt
+     (#b5cfa0 5.09:1, #eab0b6 4.68:1). */
+  --color-success-text: #b5cfa0;
+  --color-success-border: #b5cfa073;
+  --color-danger-text: #eab0b6;
+  --color-danger-border: #eab0b673;
 }
 
 html,
@@ -6825,31 +6865,95 @@ body.lh-v6-drawer-open .drawer-btns {
   overflow: hidden;
 }
 
-.fix-header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 0.8em;
-  padding: 0.3em 0.6em;
-  border-bottom: 1px solid var(--color-waveform-border, #cbd5e1);
-  font-size: var(--font-size-small, 0.9em);
-  color: var(--color-text, #222);
+/* The correction controls live in the nav, in the region that replaces
+   Controls and Waveforms while a session is open. Both of those drive things
+   fix mode has hidden, so they stand down rather than sit there inert — and
+   the content pane is left entirely to the score and the strip. */
+body.fix-mode-open #region-controls,
+body.fix-mode-open #region-waveforms {
+  display: none;
 }
+/* Grows to fill the nav, so the version footer stays on the bottom edge as
+   it does in listen mode (where Waveforms is the region that grows). The
+   card inside keeps its content height — .nav-card is flex: 0 1 auto. */
+#region-fix {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+#region-fix .nav-card {
+  background-color: var(--color-nav-bg, #f7faeb);
+  border-color: var(--color-nav-border, #cbd5e1);
+}
+#region-fix .nav-section-header {
+  cursor: default;
+}
+#region-fix .nav-section-body {
+  gap: 0.45em;
+  padding-bottom: 0.5em;
+  font-size: var(--font-size-small, 0.9em);
+}
+/* Buttons pair on a row and split it; everything else takes a full row. */
+.fix-nav-row {
+  display: flex;
+  gap: 0.35em;
+}
+.fix-nav-row > button {
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* The correction buttons sit in the same column as the nav's own (Save data,
+   Undo, Redo, Revert), so they carry the same metrics: full width, the nav's
+   padding and radius, no shrunken header sizing. Colour is deliberately left
+   alone — the blanket themed button rule owns background/color/border with
+   ID-level specificity, and matching the neighbours means being subject to
+   the same rule they are, not fighting it (see the .gm-modal note). */
+#region-fix button {
+  font-family: inherit;
+  font-size: var(--font-size-medium);
+  border-radius: 4px;
+  padding: 0.35em 0.7em;
+  width: 100%;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+/* The % readout is a compact inline control, not a full-width nav button. */
+#region-fix .fix-speed button {
+  width: auto;
+  padding: 0.15em 0.35em;
+  font-size: 0.95em;
+}
+#fix-exit {
+  margin-top: 0.15em;
+}
+/* Wraps rather than ellipsising: the nowrap was a HEADER constraint (one
+   stable line, whose height fed the prewarm fit) and in a nav column it only
+   hid the filename — the informative half of the line. */
 .fix-title {
   font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 .fix-page-ctl {
   display: flex;
   align-items: center;
   gap: 0.35em;
-  margin-left: auto;
   white-space: nowrap;
+  color: var(--color-text-secondary, #475569);
+}
+/* The outer transport buttons turn pages while correcting, so their
+   "to the start / to the end" glyphs would be a lie; the inner pair keep
+   theirs, since a step icon still steps (one onset instead of ten seconds). */
+.icon-fix-mode {
+  display: none;
+}
+body.fix-mode-open .icon-listen-mode {
+  display: none;
+}
+body.fix-mode-open .icon-fix-mode {
+  display: inline;
 }
 .fix-chip {
-  max-width: 28ch;
+  align-self: flex-start;
+  max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6862,23 +6966,6 @@ body.lh-v6-drawer-open .drawer-btns {
 }
 .fix-chip[data-state="idle"] {
   display: none;
-}
-/* The header must hold ONE stable line: the score pane's height feeds the
-   prewarm fit test, and a squeezed button wrapping to two lines (the chip's
-   text length varies) once broke re-entry's layout reuse. Buttons and
-   controls never shrink or wrap; the title and chip absorb the squeeze
-   through their ellipses. */
-.fix-header > * {
-  flex: 0 0 auto;
-  white-space: nowrap;
-}
-.fix-header .fix-title {
-  flex: 0 1 auto;
-  min-width: 4ch;
-}
-.fix-header .fix-chip {
-  flex: 0 1 auto;
-  min-width: 6ch;
 }
 .fix-chip[data-state="ready"] {
   color: var(--color-success-text, #166534);
@@ -7068,56 +7155,69 @@ body.lh-v6-drawer-open .drawer-btns {
 
 /* --- Increment 3: the interaction loop --- */
 
-/* L/R audition play/pause (left ear: recording, right ear: aligned synth). */
-#fix-play {
-  min-width: 2em;
-  padding: 0.15em 0.45em;
-  font-size: 1em;
-  line-height: 1;
-}
-#fix-play:disabled {
+/* The audition's play/pause is the MAIN transport's — see fixTransport. It
+   is disabled until the audition's buffers exist. */
+.transport-btn:disabled {
   opacity: 0.45;
   cursor: default;
 }
-
-/* Page-only playback toggle. Pressed state signals via box-shadow + weight
-   only: the blanket themed button rule owns background/color/border with
-   ID-level specificity (see the .gm-modal note above it), and box-shadow is
-   a property it never sets, so this survives every theme. */
-#fix-page-only,
-#fix-replay-off {
-  padding: 0.15em 0.45em;
-  font-size: 0.85em;
-  line-height: 1.4;
-  white-space: nowrap;
+.transport-btn:disabled:hover {
+  background: none;
 }
-#fix-page-only[aria-pressed="true"],
-#fix-replay-off[aria-pressed="true"] {
-  box-shadow: inset 0 0 0 2px var(--color-accent, #2563eb);
-  font-weight: 700;
+
+/* Page-only playback and auto-replay suppression are checkboxes in listen
+   mode's own shape (input + label per row), so they need no colour of their
+   own — which also puts them out of reach of the blanket themed button rule
+   that made the previous toggle buttons signal via box-shadow. */
+.fix-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1em;
+}
+.fix-toggles span {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+}
+.fix-toggles label {
+  cursor: pointer;
 }
 
 /* Playback speed (pitch preserved). The % button doubles as reset-to-100
    and lights up whenever speed is off unity — via box-shadow + weight only,
    which the blanket themed button rule never sets (see #fix-page-only). */
+/* Both slider rows follow the zoom control's shape — a flanking icon, the
+   slider taking the rest — so they read as the same kind of control as the
+   nav's own. */
+.fix-slider-icon {
+  opacity: 0.9;
+  /* Emoji carry their detail in a few pixels, so they need real size: at the
+     row's own small font they were illegible. */
+  font-size: 1.7em;
+  line-height: 1;
+  cursor: default;
+}
 .fix-speed {
   display: flex;
   align-items: center;
-  gap: 0.3em;
-  font-size: 0.8em;
+  gap: 0.25em;
+  font-size: var(--font-size-small, 0.85em);
   white-space: nowrap;
 }
 .fix-speed[hidden] {
   display: none; /* author display:flex would beat the UA [hidden] rule */
 }
+/* In the nav column the sliders take the width they are given rather than
+   the fixed one the header row allowed them. */
 .fix-speed input[type="range"] {
-  width: 70px;
+  flex: 1;
+  min-width: 40px;
   margin: 0;
 }
 .fix-speed-reset {
-  min-width: 4ch;
+  min-width: 5ch;
   padding: 0.15em 0.35em;
-  font-size: 1em;
+  font-size: 0.95em;
   line-height: 1.4;
 }
 .fix-speed-reset.fix-speed-off-unity {
@@ -7129,13 +7229,14 @@ body.lh-v6-drawer-open .drawer-btns {
 .fix-balance {
   display: flex;
   align-items: center;
-  gap: 0.3em;
-  font-size: 0.8em;
+  gap: 0.25em;
+  font-size: var(--font-size-small, 0.85em);
   color: var(--color-text-secondary, #64748b);
   white-space: nowrap;
 }
 .fix-balance input[type="range"] {
-  width: 84px;
+  flex: 1;
+  min-width: 40px;
   margin: 0;
 }
 

@@ -209,7 +209,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     const st = await fixState(page);
     expect(st.aud.duration).toBeGreaterThan(60);
     expect(st.aud.playing).toBe(false);
-    await expect(page.locator('#fix-play')).toBeEnabled();
+    await expect(page.locator('#playpause')).toBeEnabled();
     // Both ears hold real signal over the piece's opening (first onset ~3 s).
     const rms = await page.evaluate(() => {
       const ctl = (window as any)._listenTest.fixCtl;
@@ -232,7 +232,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    await page.click('#fix-play');
+    await page.click('#playpause');
     await page.waitForFunction(
       () => (window as any)._listenTest.fix.aud.playing,
     );
@@ -241,7 +241,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
       undefined,
       { timeout: 10_000 },
     );
-    await page.click('#fix-play');
+    await page.click('#playpause');
     const st = await fixState(page);
     expect(st.aud.playing).toBe(false);
     const held = st.aud.time;
@@ -277,7 +277,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     for (let k = 0; k < 5; k++) await page.click('.fix-onset-next');
     const t5 = (await fixState(page)).selT;
     await page.evaluate((t) => (window as any)._listenTest.fixCtl.seek(t), t5 - 0.2);
-    await page.click('#fix-play');
+    await page.click('#playpause');
     const trace = await page.evaluate(
       () =>
         new Promise<any[]>((done) => {
@@ -320,13 +320,13 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     // Find page 2's first onset time, then play across the boundary from
     // 1 s before it: the follower first re-selects page 1's tail, then
     // crosses onto page 2.
-    await page.click('.fix-page-next');
+    await page.click('#skip-end');
     await page.waitForFunction(
       () => (window as any)._listenTest.fix.page === 2,
     );
     const t2 = (await fixState(page)).selT;
     await page.evaluate((t) => (window as any)._listenTest.fixCtl.seek(t), t2 - 1.0);
-    await page.click('#fix-play');
+    await page.click('#playpause');
     await page.waitForFunction(
       () => (window as any)._listenTest.fix.page === 1,
       undefined,
@@ -773,9 +773,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(win).not.toBeNull();
     expect(win.endT).toBeGreaterThan(win.startT);
     await page.click('#fix-page-only');
-    expect(await page.getAttribute('#fix-page-only', 'aria-pressed')).toBe(
-      'true',
-    );
+    await expect(page.locator('#fix-page-only')).toBeChecked();
     // Play into the boundary: the audition pauses there instead of turning
     // the page (paused-at-boundary is a stable state — polling is safe).
     await page.evaluate((t) => {
@@ -793,7 +791,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(st.aud.time).toBeGreaterThan(win.endT - 0.05);
     expect(st.aud.time).toBeLessThan(win.endT + 0.05);
     // Play again from the boundary: the position snaps back into the page.
-    await page.click('#fix-play');
+    await page.click('#playpause');
     st = await fixState(page);
     expect(st.aud.playing).toBe(true);
     expect(st.aud.time).toBeLessThan(win.endT - 0.3);
@@ -801,9 +799,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
     // Mode off: the same approach crosses the boundary and turns the page.
     await page.click('#fix-page-only');
-    expect(await page.getAttribute('#fix-page-only', 'aria-pressed')).toBe(
-      'false',
-    );
+    await expect(page.locator('#fix-page-only')).not.toBeChecked();
     await page.evaluate((t) => {
       const ct = (window as any)._listenTest.fixCtl;
       ct.seek(t);
@@ -1091,7 +1087,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(st.aud.gainR).toBe(1);
     // Toward the synth ear: the recording attenuates, the synth stays at 1 —
     // live on the gain nodes, playing or not.
-    await page.click('#fix-play');
+    await page.click('#playpause');
     await page.locator('.fix-balance input').fill('60');
     st = await fixState(page);
     expect(st.aud.balance).toBeCloseTo(0.6, 6);
@@ -1158,10 +1154,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await waitLoopReady(page);
 
     await page.click('#fix-replay-off');
-    await expect(page.locator('#fix-replay-off')).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
+    await expect(page.locator('#fix-replay-off')).toBeChecked();
     expect((await fixState(page)).replaySuppressed).toBe(true);
 
     const before = await refChecksum(page);

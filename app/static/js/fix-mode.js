@@ -60,6 +60,7 @@ import {
   deserialize as deserializeCorrections,
 } from "./engine/correction-model.js";
 import { parseMidi } from "./engine/mei-synth.js";
+import { updateTransportIcons } from "./engine/transport.js";
 import { confirmDialog } from "./annotation/ui-common.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 
@@ -80,7 +81,7 @@ const TICK_HIT_PX = 8;
 const STRIP_PEAK_COUNT = 8000;
 /** The aligner's sample rate — fix_begin expects ref samples at this rate. */
 const FIX_SR = 22050;
-/** The granular time-stretch worklet behind the header's speed slider. */
+/** The granular time-stretch worklet behind the nav's speed slider. */
 const FIX_STRETCH_WORKLET_URL = "/static/js/fix-stretch-worklet.js";
 /**
  * The audition's minimum SOUNDING length, the renderer's alone — it never
@@ -585,6 +586,9 @@ function _teardownFixDom(f) {
     f.stripWS?.destroy();
   } catch (_) {}
   f.els.root?.remove();
+  _returnNavActions(); // before the region goes, or they go with it
+  f.els.navRegion?.remove();
+  _restoreTransport();
   document.body.classList.remove("fix-mode-open");
   const waveformsEl = document.getElementById("waveforms");
   if (waveformsEl) waveformsEl.style.display = "";
@@ -754,19 +758,16 @@ function _measurePaneDims() {
   probe.style.cssText =
     "position:absolute;visibility:hidden;pointer-events:none;left:0;top:0;" +
     `width:${content.clientWidth}px;height:${content.clientHeight}px;`;
-  const header = document.createElement("div");
-  header.className = "fix-header";
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.textContent = "✕ Exit correction mode";
-  header.appendChild(btn);
+  // No header: the correction controls live in the nav, so the content pane
+  // is score + gap + strip and nothing else. Keep this skeleton in step with
+  // _buildDom's — a divergence here silently costs every entry its prewarm.
   const score = document.createElement("div");
   score.className = "fix-score";
   const gap = document.createElement("div");
   gap.className = "fix-gap";
   const strip = document.createElement("div");
   strip.className = "fix-strip";
-  probe.append(header, score, gap, strip);
+  probe.append(score, gap, strip);
   content.appendChild(probe);
   const dims = { w: score.clientWidth, h: score.clientHeight };
   probe.remove();
@@ -881,6 +882,74 @@ function _refDuration() {
 // DOM skeleton
 // ---------------------------------------------------------------------------
 
+/**
+ * A nav checkbox in listen mode's own shape: <span><input><label></span>.
+ * Returns [row, input] — the input keeps the id the specs and CSS know it by,
+ * and `checked` is the state (these were aria-pressed buttons before).
+ * It blurs itself after a click for the reason the sliders do: a focused
+ * control swallows the keys fix mode's own handler needs (Space above all).
+ */
+function _navCheckbox(id, labelText, title, checked, onChange) {
+  const row = document.createElement("span");
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.id = id;
+  input.title = title;
+  input.checked = checked;
+  const label = document.createElement("label");
+  label.htmlFor = id;
+  label.title = title;
+  label.textContent = labelText;
+  input.addEventListener("change", () => {
+    onChange(input.checked);
+    input.blur();
+  });
+  row.append(input, label);
+  return [row, input];
+}
+
+/** A slider's end label: an emoji hint, in the manner of the zoom control's
+ *  icon. Decorative — every slider carries its own aria-label. */
+function _sliderIcon(glyph, title) {
+  const el = document.createElement("span");
+  el.className = "fix-slider-icon";
+  el.textContent = glyph;
+  el.title = title;
+  el.setAttribute("aria-hidden", "true");
+  return el;
+}
+
+/** Nav buttons on loan to the correction region, with the place to put each
+ *  back (the parent AND the next sibling, so the row order survives). */
+const FIX_BORROWED_IDS = [
+  "undo-btn",
+  "redo-btn",
+  "revert-all-btn",
+  "download-json-btn",
+];
+let _borrowedNav = null;
+
+function _borrowNavActions(slots, fallback) {
+  _borrowedNav = [];
+  for (const id of FIX_BORROWED_IDS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    _borrowedNav.push({ el, parent: el.parentElement, next: el.nextSibling });
+    (slots[id] || fallback).appendChild(el);
+  }
+}
+
+function _returnNavActions() {
+  for (const b of _borrowedNav || []) {
+    try {
+      b.parent?.insertBefore(b.el, b.next);
+    } catch (_) {
+      b.parent?.appendChild(b.el);
+    }
+  }
+  _borrowedNav = null;
+}
+
 function _buildDom(contentEl, waveformsEl) {
   const f = _fix;
   waveformsEl.style.display = "none";
@@ -894,8 +963,27 @@ function _buildDom(contentEl, waveformsEl) {
   const root = document.createElement("div");
   root.id = "fix-mode";
 
-  const header = document.createElement("div");
-  header.className = "fix-header";
+  // The correction controls live in the LEFT NAV, not in a header strip over
+  // the score. Neither of the nav's own regions means anything while
+  // correcting — Controls drives the hidden waveform pane, Waveforms lists
+  // recordings that cannot be switched to — so both stand down (CSS, on
+  // body.fix-mode-open) and this region takes their place. Two consequences
+  // the build depends on: the content pane belongs entirely to the score and
+  // the strip (no header, so _measurePaneDims has none either), and the main
+  // transport stays exactly where it is and drives the audition instead of
+  // the hidden recording (see fixTransport).
+  const navRegion = document.createElement("div");
+  navRegion.className = "nav-region";
+  navRegion.id = "region-fix";
+  const navCard = document.createElement("div");
+  navCard.className = "nav-card";
+  const navHead = document.createElement("div");
+  navHead.className = "nav-section-header";
+  navHead.textContent = "Correction";
+  const navBody = document.createElement("div");
+  navBody.className = "nav-section-body grow";
+  navCard.append(navHead, navBody);
+  navRegion.appendChild(navCard);
 
   const exitBtn = document.createElement("button");
   exitBtn.type = "button";
@@ -903,46 +991,36 @@ function _buildDom(contentEl, waveformsEl) {
   exitBtn.textContent = "✕ Exit correction mode";
   exitBtn.addEventListener("click", () => exitFixMode());
 
-  const playBtn = document.createElement("button");
-  playBtn.type = "button";
-  playBtn.id = "fix-play";
-  playBtn.textContent = "⏵";
-  playBtn.disabled = true;
-  playBtn.title =
-    "Play audition (left ear: the recording, right ear: the aligned synth) — Space";
-  playBtn.addEventListener("mousedown", (e) => e.preventDefault());
-  playBtn.addEventListener("click", () => _audToggle());
+  // The audition has no play button of its own: the main transport's is it
+  // (fixTransport routes the click, _updatePlayBtn owns its glyph and its
+  // disabled state while the session lasts, and _restoreTransport puts both
+  // back at exit).
+  const playBtn = document.getElementById("playpause");
 
   // Page-only playback toggle: play stops at the current page's boundary.
-  const pageOnlyBtn = document.createElement("button");
-  pageOnlyBtn.type = "button";
-  pageOnlyBtn.id = "fix-page-only";
-  pageOnlyBtn.textContent = "Page only";
-  pageOnlyBtn.title =
-    "Play only the current page — playback stops at the page boundary";
-  pageOnlyBtn.setAttribute("aria-pressed", String(_pageOnly));
-  pageOnlyBtn.addEventListener("mousedown", (e) => e.preventDefault());
-  pageOnlyBtn.addEventListener("click", () => {
-    _pageOnly = !_pageOnly;
-    pageOnlyBtn.setAttribute("aria-pressed", String(_pageOnly));
-    if (_fix) _fix.pageOnlyPassUntilT = null;
-  });
+  const [pageOnlyRow, pageOnlyBtn] = _navCheckbox(
+    "fix-page-only",
+    "Page only",
+    "Play only the current page — playback stops at the page boundary",
+    _pageOnly,
+    (on) => {
+      _pageOnly = on;
+      if (_fix) _fix.pageOnlyPassUntilT = null;
+    },
+  );
 
-  // Auto-replay suppression (sticky). Pressed = no replay after a commit;
+  // Auto-replay suppression (sticky). Checked = no replay after a commit;
   // R replays the last fix on demand.
-  const replayBtn = document.createElement("button");
-  replayBtn.type = "button";
-  replayBtn.id = "fix-replay-off";
-  replayBtn.textContent = "Replay off";
-  replayBtn.title =
+  const [replayRow, replayBtn] = _navCheckbox(
+    "fix-replay-off",
+    "Replay off",
     "Suppress the automatic replay after each fix (the fix is still " +
-    "committed) — R replays the last fix on demand";
-  replayBtn.setAttribute("aria-pressed", String(_replaySuppressed));
-  replayBtn.addEventListener("mousedown", (e) => e.preventDefault());
-  replayBtn.addEventListener("click", () => {
-    _replaySuppressed = !_replaySuppressed;
-    replayBtn.setAttribute("aria-pressed", String(_replaySuppressed));
-  });
+      "committed) — R replays the last fix on demand",
+    _replaySuppressed,
+    (on) => {
+      _replaySuppressed = on;
+    },
+  );
 
   // Playback speed (pitch preserved via the stretch worklet). The % button
   // is the "back to 100%" affordance and lights up whenever speed ≠ 100%.
@@ -958,6 +1036,8 @@ function _buildDom(contentEl, waveformsEl) {
   speedInput.value = "100";
   speedInput.disabled = true; // enabled once the stretch worklet attaches
   speedInput.setAttribute("aria-label", "Playback speed (%)");
+  const speedSlow = _sliderIcon("\u{1F422}", "Slower");
+  const speedFast = _sliderIcon("\u{1F483}", "Full speed");
   const speedReset = document.createElement("button");
   speedReset.type = "button";
   speedReset.className = "fix-speed-reset";
@@ -973,15 +1053,14 @@ function _buildDom(contentEl, waveformsEl) {
   speedReset.addEventListener("click", () => {
     _audSetRate(1);
   });
-  speed.append(speedInput, speedReset);
+  speed.append(speedSlow, speedInput, speedFast, speedReset);
 
   // Real-time L/R balance: left ear = the recording, right ear = the synth.
   const balance = document.createElement("span");
   balance.className = "fix-balance";
   balance.title =
     "Audition balance — left ear: the recording, right ear: the aligned synth";
-  const balanceL = document.createElement("span");
-  balanceL.textContent = "rec";
+  const balanceL = _sliderIcon("\u{1F3BB}", "Left ear: the recording");
   const balanceInput = document.createElement("input");
   balanceInput.type = "range";
   balanceInput.min = "-100";
@@ -989,8 +1068,7 @@ function _buildDom(contentEl, waveformsEl) {
   balanceInput.step = "5";
   balanceInput.value = String(Math.round(_audBalance * 100));
   balanceInput.setAttribute("aria-label", "Audition balance (recording ↔ synth)");
-  const balanceR = document.createElement("span");
-  balanceR.textContent = "synth";
+  const balanceR = _sliderIcon("\u{1F4BB}", "Right ear: the aligned synth");
   balanceInput.addEventListener("input", () => {
     _audBalance = Number(balanceInput.value) / 100;
     if (_fix?.aud) _applyAudBalance(_fix.aud);
@@ -1002,41 +1080,39 @@ function _buildDom(contentEl, waveformsEl) {
 
   const title = document.createElement("span");
   title.className = "fix-title";
-  title.textContent = `Correcting alignment: score ↔ ${f.refFile}`;
+  // The card is already headed "Correction", so the line carries only what
+  // that header cannot: which two things are being aligned.
+  title.textContent = `score ↔ ${f.refFile}`;
 
+  // Page arrows of its own would duplicate the transport's skip buttons,
+  // which turn pages while the session is open; what is left here is the
+  // READOUT, beside the controls it belongs with.
   const pageCtl = document.createElement("span");
   pageCtl.className = "fix-page-ctl";
-  const pagePrev = document.createElement("button");
-  pagePrev.type = "button";
-  pagePrev.className = "fix-page-prev";
-  pagePrev.textContent = "◀";
-  pagePrev.title = "Previous page";
   const pageLabel = document.createElement("span");
   pageLabel.className = "fix-page-label";
-  const pageNext = document.createElement("button");
-  pageNext.type = "button";
-  pageNext.className = "fix-page-next";
-  pageNext.textContent = "▶";
-  pageNext.title = "Next page";
-  pagePrev.addEventListener("click", () => _turnPage(-1));
-  pageNext.addEventListener("click", () => _turnPage(1));
-  pageCtl.append(pagePrev, pageLabel, pageNext);
+  pageCtl.appendChild(pageLabel);
 
   const chip = document.createElement("span");
   chip.className = "fix-chip";
   chip.dataset.state = "idle";
 
-  header.append(
-    exitBtn,
-    playBtn,
-    pageOnlyBtn,
-    replayBtn,
-    speed,
-    balance,
-    title,
-    pageCtl,
-    chip,
-  );
+  // Toggles pair on one row; the sliders each take a row of their own; exit
+  // sits last, away from the controls used while correcting.
+  const toggles = document.createElement("div");
+  toggles.className = "fix-toggles";
+  toggles.append(pageOnlyRow, replayRow);
+  // Undo, redo, revert, and Save data are NOT listen-mode controls that
+  // happen to sit in the nav — a correction session needs every one of them
+  // (undo is unified onto listen.js's stack by ruling, and an unsaveable
+  // session would be pointless). They are borrowed from the Controls region
+  // rather than duplicated, so their enable/disable wiring keeps working
+  // untouched, and handed back at exit.
+  const undoRow = document.createElement("div");
+  undoRow.className = "fix-nav-row";
+  navBody.append(title, pageCtl, chip, toggles, speed, balance, undoRow);
+  _borrowNavActions({ "undo-btn": undoRow, "redo-btn": undoRow }, navBody);
+  navBody.appendChild(exitBtn);
 
   const score = document.createElement("div");
   score.className = "fix-score";
@@ -1091,11 +1167,16 @@ function _buildDom(contentEl, waveformsEl) {
   loadingText.className = "fix-loading-text";
   loading.append(loadingSpin, loadingText);
 
-  root.append(header, score, gap, strip, conn, loading);
+  root.append(score, gap, strip, conn, loading);
   contentEl.appendChild(root);
+  // The region goes where Controls and Waveforms were, above the footer.
+  const navFooter = document.getElementById("nav-footer");
+  navFooter?.parentElement?.insertBefore(navRegion, navFooter);
+  _takeOverTransport();
 
   f.els = {
     root,
+    navRegion,
     scoreEl: score,
     scoreSvg,
     strip,
@@ -1124,6 +1205,99 @@ function _buildDom(contentEl, waveformsEl) {
       .trim() || "#8b0000";
 }
 
+// ---------------------------------------------------------------------------
+// The main transport, while a session is open
+// ---------------------------------------------------------------------------
+
+/**
+ * What each transport button means while correcting. Not invented here: every
+ * one of these is the button's KEYBOARD twin in _onFixKeydown, so the two
+ * routes cannot drift. The icons for the outer pair swap (CSS, on
+ * body.fix-mode-open) because "to the start/end" would be a lie about a page
+ * turn; the inner pair keep theirs, since a step icon still steps — one
+ * onset instead of ten seconds.
+ */
+const FIX_TRANSPORT_TITLES = {
+  "skip-back": "Previous page (Up arrow)",
+  "seek-back": "Previous onset (Left arrow)",
+  playpause:
+    "Play audition (left ear: the recording, right ear: the aligned synth) — Space",
+  "seek-fwd": "Next onset (Right arrow)",
+  "skip-end": "Next page (Down arrow)",
+  mark: "Place or remove a session mark at the playhead (M)",
+};
+
+/** Titles displaced by the takeover, restored verbatim at exit. */
+let _transportTitles = null;
+
+function _takeOverTransport() {
+  _transportTitles = {};
+  for (const [id, title] of Object.entries(FIX_TRANSPORT_TITLES)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    _transportTitles[id] = el.title;
+    el.title = title;
+  }
+  // The audition is not playable until its buffers exist; _updatePlayBtn
+  // releases the button when they do.
+  const pp = document.getElementById("playpause");
+  if (pp) pp.disabled = true;
+  // A recording still playing when the session opens would have no stop:
+  // the transport now belongs to the audition and the keyboard stands down.
+  Object.values(wavesurfers).forEach((ws) => {
+    try {
+      if (ws?.isPlaying?.()) ws.pause();
+    } catch (_) {}
+  });
+}
+
+function _restoreTransport() {
+  for (const [id, title] of Object.entries(_transportTitles || {})) {
+    const el = document.getElementById(id);
+    if (el) el.title = title;
+  }
+  _transportTitles = null;
+  const pp = document.getElementById("playpause");
+  if (pp) {
+    pp.disabled = false;
+    updateTransportIcons(false);
+  }
+}
+
+/**
+ * listen.js's transport handlers hand their click here first. Returns true
+ * when a fix session took it, so the caller stops; false leaves listen mode's
+ * behaviour untouched.
+ */
+export function fixTransport(action) {
+  if (!_fix) return false;
+  switch (action) {
+    case "playpause":
+      _commitPendingNudge();
+      _audToggle();
+      break;
+    case "seek-back":
+      _skipOnset(-1);
+      break;
+    case "seek-fwd":
+      _skipOnset(1);
+      break;
+    case "skip-back":
+      _turnPage(-1);
+      break;
+    case "skip-end":
+      _turnPage(1);
+      break;
+    case "mark":
+      _commitPendingNudge();
+      _toggleMark();
+      break;
+    default:
+      return false;
+  }
+  return true;
+}
+
 function _showFixLoading(text) {
   if (!_fix) return;
   _fix.els.loadingText.textContent = text;
@@ -1140,17 +1314,17 @@ function _setChip(state, text, full) {
   _fix.chipState = state;
   _fix.els.chip.dataset.state = state;
   _fix.els.chip.textContent = text;
-  // The chip is ellipsised on purpose (the header must hold ONE line, whose
-  // height feeds the prewarm fit), so the untruncated message lives in the
-  // tooltip — `full` when the short form dropped something.
+  // The chip is ellipsised on purpose (the nav column is narrow), so the
+  // untruncated message lives in the tooltip — `full` when the short form
+  // dropped something.
   _fix.els.chip.title = full || text;
 }
 
 /**
  * While the engine is arming, the strip reads as not-yet-live: the ticks dim
- * and the cursor says wait. The marker a user reaches for first is bottom
- * left and the chip is top right, so "why will this not move" has to be
- * answerable without looking away from the marker.
+ * and the cursor says wait. The marker a user reaches for first is in the
+ * strip and the chip is over in the nav, so "why will this not move" has to
+ * be answerable without looking away from the marker.
  */
 function _syncReadyAffordance() {
   const f = _fix;
@@ -2097,7 +2271,7 @@ function _buildAudition(f, refSamples) {
   const buffer = ctx.createBuffer(2, n, FIX_SR);
   buffer.copyToChannel(refSamples, 0);
   // Persistent per-ear gain graph: source → splitter → gainL/gainR → merger
-  // → out. The gains move in real time from the header's balance slider.
+  // → out. The gains move in real time from the nav's balance slider.
   const splitter = ctx.createChannelSplitter(2);
   const gainL = ctx.createGain();
   const gainR = ctx.createGain();
@@ -2561,9 +2735,9 @@ function _audToggle() {
 
 function _updatePlayBtn() {
   const f = _fix;
-  if (!f) return;
+  if (!f || !f.els.playBtn) return;
   f.els.playBtn.disabled = !f.aud?.ready;
-  f.els.playBtn.textContent = f.aud?.playing ? "⏸" : "⏵";
+  updateTransportIcons(!!f.aud?.playing);
 }
 
 // ---------------------------------------------------------------------------

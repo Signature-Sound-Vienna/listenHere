@@ -71,6 +71,7 @@ import {
   fixTestState,
   fixTestControl,
   isFixModeActive,
+  fixTransport,
   fixRealignBusy,
   applyFixCorrectionUndo,
   applyFixCorrectionRedo,
@@ -2016,6 +2017,9 @@ export function updateDirtyState() {
 export function updateMarkBtnTooltip() {
   const btn = document.getElementById("mark");
   if (!btn) return;
+  // Fix mode owns the button while a session is open (session marks, not
+  // markers); this would overwrite its title, icon, and mode behind its back.
+  if (isFixModeActive()) return;
   let atMarker = false;
   const ws =
     currentAudioIx && wavesurfers[currentAudioIx]
@@ -2041,7 +2045,9 @@ export function updateMarkBtnTooltip() {
   }
   btn.title = atMarker
     ? "Remove the currently-active marker"
-    : "Place a marker at the current playback position";
+    : // Keep the shortcut hint the markup ships with: this runs on the first
+      // marker refresh and silently dropped it (M places; removal has no key).
+      "Place a marker at the current playback position (M)";
   const iconMark = btn.querySelector(".icon-mark");
   const iconMarkX = btn.querySelector(".icon-mark-x");
   if (iconMark) iconMark.style.display = atMarker ? "none" : "";
@@ -4641,29 +4647,38 @@ document.addEventListener("DOMContentLoaded", () => {
     })
     .catch((err) => console.warn("Couldn't load colormap:", err));
   // --- Transport controls ---
+  // While a fix session is open these same buttons drive the CORRECTION
+  // screen — the audition, onset stepping, page turns, session marks — since
+  // every one of them would otherwise act on the hidden waveform pane. The
+  // mapping is fixTransport's, and matches fix mode's own keyboard exactly.
   // Play/pause
   document.getElementById("playpause").addEventListener("click", function () {
+    if (fixTransport("playpause")) return;
     playpause();
   });
 
   // Skip to start
   document.getElementById("skip-back").addEventListener("click", function () {
+    if (fixTransport("skip-back")) return;
     if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
     wavesurfers[currentAudioIx].seekTo(0);
   });
 
   // Rewind 10s
   document.getElementById("seek-back").addEventListener("click", function () {
+    if (fixTransport("seek-back")) return;
     seekBy(-10);
   });
 
   // Forward 10s
   document.getElementById("seek-fwd").addEventListener("click", function () {
+    if (fixTransport("seek-fwd")) return;
     seekBy(10);
   });
 
   // Skip to end
   document.getElementById("skip-end").addEventListener("click", function () {
+    if (fixTransport("skip-end")) return;
     if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
     wavesurfers[currentAudioIx].seekTo(1);
   });
@@ -4671,6 +4686,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // mark button — places a new marker, or removes the active marker when
   // paused at one in close-listening mode
   document.getElementById("mark").addEventListener("click", function (e) {
+    if (fixTransport("mark")) return;
     if (this.dataset.mode === "remove") {
       _deleteActiveMarker();
       updateMarkBtnTooltip();

@@ -304,7 +304,7 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await installWorkerStub(page);
     await enterFix(page, REF_ROW);
     const before = await fixState(page);
-    await page.click('.fix-page-next');
+    await page.click('#skip-end');
     await page.waitForFunction(
       () => (window as any)._listenTest.fix.page === 2,
     );
@@ -357,11 +357,11 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
 
     // The user's repro as an assertion: page 1 must look the same on the way
     // back as it did on entry (it used to show the whole piece, then the page).
-    await page.click('.fix-page-next');
+    await page.click('#skip-end');
     await page.waitForFunction(
       () => (window as any)._listenTest.fix.page === 2,
     );
-    await page.click('.fix-page-prev');
+    await page.click('#skip-back');
     await page.waitForFunction(
       () => (window as any)._listenTest.fix.page === 1,
     );
@@ -377,7 +377,7 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await gotoFixMode(page);
     await installWorkerStub(page);
     await enterFix(page, REF_ROW);
-    await page.click('.fix-page-next');
+    await page.click('#skip-end');
     await page.waitForFunction(
       () => (window as any)._listenTest.fix.page === 2,
     );
@@ -484,7 +484,7 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     // fix-mode "page" is exactly one system (the fixture MEI has 14 sb).
     expect(await page.locator('.fix-score-svg g.system').count()).toBe(1);
     expect((await fixState(page)).pageCount).toBeGreaterThanOrEqual(10);
-    await page.click('.fix-page-next');
+    await page.click('#skip-end');
     await page.waitForFunction(
       () => (window as any)._listenTest.fix.page === 2,
     );
@@ -593,6 +593,113 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await expect(page.locator('.lh-v6-pull-tab')).toBeVisible();
   });
 
+  test('42.22 the nav consolidates: Controls and Waveforms stand down, the Correction region takes their place', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    // Computed display, not toBeVisible: at this viewport the Waveforms
+    // region is flex-squeezed to zero height by Controls above it, so it is
+    // already "not visible" while being perfectly present — and it is the
+    // display the consolidation actually changes.
+    const shown = () =>
+      page.evaluate(() =>
+        ['region-controls', 'region-waveforms'].map(
+          (id) => getComputedStyle(document.getElementById(id)!).display,
+        ),
+      );
+    expect((await shown()).every((d) => d !== 'none')).toBe(true);
+    expect(await page.locator('#region-fix').count()).toBe(0);
+    await enterFix(page, REF_ROW);
+    // Both regions drive things fix mode has hidden, so neither may sit there
+    // inert: they go, and the correction controls arrive in their place.
+    expect(await shown()).toEqual(['none', 'none']);
+    await expect(page.locator('#region-fix')).toBeVisible();
+    // Everything the header used to carry is in the region — and IN it, not
+    // merely present somewhere on the page.
+    for (const sel of [
+      '#fix-exit',
+      '#fix-page-only',
+      '#fix-replay-off',
+      '.fix-speed',
+      '.fix-balance',
+      '.fix-title',
+      '.fix-page-label',
+    ]) {
+      await expect(page.locator(`#region-fix ${sel}`)).toHaveCount(1);
+    }
+    // No header over the score: the content pane is score + gap + strip, and
+    // _measurePaneDims's skeleton has to agree with that or every entry
+    // silently loses its prewarm.
+    expect(await page.locator('.fix-header').count()).toBe(0);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    expect((await shown()).every((d) => d !== 'none')).toBe(true);
+    expect(await page.locator('#region-fix').count()).toBe(0);
+  });
+
+  test('42.23 the main transport drives the correction screen, and is given back at exit', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    const titlesBefore = await page.evaluate(() =>
+      ['skip-back', 'seek-back', 'playpause', 'seek-fwd', 'skip-end', 'mark'].map(
+        (id) => document.getElementById(id)!.title,
+      ),
+    );
+    await enterFix(page, REF_ROW);
+    // Every button says what it now does; the outer pair also swap their
+    // glyphs, since "to the start / to the end" would be a lie about a page.
+    const titlesDuring = await page.evaluate(() =>
+      ['skip-back', 'seek-back', 'playpause', 'seek-fwd', 'skip-end', 'mark'].map(
+        (id) => document.getElementById(id)!.title,
+      ),
+    );
+    expect(titlesDuring[0]).toContain('Previous page');
+    expect(titlesDuring[1]).toContain('Previous onset');
+    expect(titlesDuring[4]).toContain('Next page');
+    // toBeVisible, not isVisible(): the glyph swap is a CSS class change on
+    // <body>, and only the retrying assertion waits for it to resolve (the
+    // one-shot read is green on Chromium and racy on Firefox).
+    await expect(page.locator('#skip-end .icon-fix-mode')).toBeVisible();
+    await expect(page.locator('#skip-end .icon-listen-mode')).toBeHidden();
+    // The outer pair turn pages…
+    const p0 = (await fixState(page)).page;
+    await page.click('#skip-end');
+    await page.waitForFunction(
+      (p) => (window as any)._listenTest.fix.page > p,
+      p0,
+    );
+    await page.click('#skip-back');
+    await page.waitForFunction(
+      (p) => (window as any)._listenTest.fix.page === p,
+      p0,
+    );
+    // …and the inner pair step onsets.
+    const sel0 = (await fixState(page)).selGroup;
+    await page.click('#seek-fwd');
+    await page.waitForFunction(
+      (s) => (window as any)._listenTest.fix.selGroup !== s,
+      sel0,
+    );
+    await page.click('#seek-back');
+    expect((await fixState(page)).selGroup).toBe(sel0);
+    // Exit hands the transport back, titles and glyphs included.
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    expect(
+      await page.evaluate(() =>
+        ['skip-back', 'seek-back', 'playpause', 'seek-fwd', 'skip-end', 'mark'].map(
+          (id) => document.getElementById(id)!.title,
+        ),
+      ),
+    ).toEqual(titlesBefore);
+    await expect(page.locator('#skip-end .icon-listen-mode')).toBeVisible();
+    await expect(page.locator('#skip-end .icon-fix-mode')).toBeHidden();
+    await expect(page.locator('#playpause')).toBeEnabled();
+  });
+
   test('42.13 the bootstrap posts fix_begin with decoded samples, the MIDI, and the stored params', async ({
     page,
   }) => {
@@ -648,7 +755,7 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
       'synthetic engine failure',
     );
     // Still inspectable: paging works after the failure.
-    await page.click('.fix-page-next');
+    await page.click('#skip-end');
     await page.waitForFunction(
       () => (window as any)._listenTest.fix.page === 2,
     );

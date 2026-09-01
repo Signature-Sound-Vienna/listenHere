@@ -1,5 +1,14 @@
 # Listen Here! CHANGELOG.md
 
+### 0.45.0 -- The correction controls move into the left nav
+* The correction screen's controls now live in a "Correction" nav region; the Controls and Waveforms regions stand down while it is open, and the header strip over the score is gone (the score and strip get its height).
+* Undo, Redo, Revert alignment edits, and Save data join that region for the session and return to Controls on exit.
+* The main transport drives the correction screen: play/pause is the audition, the seek buttons step onsets, the skip buttons turn pages, and the marker button places a session mark. Tooltips and the two skip glyphs change with it.
+* Page only and Replay off are checkboxes; the speed and balance sliders gain emoji end-labels.
+* Fixed: the correction status chip was unreadable on the dark themes (dark green or dark red on a dark background).
+* Fixed: the marker button's tooltip dropped its "(M)" hint after the first marker refresh.
+* Testing: spec 42 grows to 23 (the nav consolidation, the transport takeover and its restoration at exit). Both verified red first.
+
 ### 0.44.1 -- bugfix
 * Ensure waveform zooms to score excerpt on initial load (was showing full recording)
 * Testing: spec 42 grows to 21 (the strip's rendered zoom and scroll on first entry, and page 1 identical on the way back). 

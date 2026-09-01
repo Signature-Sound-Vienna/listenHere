@@ -675,29 +675,41 @@ test.describe('38. The listening marker', () => {
     );
   });
 
-  // 38.17 The magnifier: a placed glass shows the waveform under its lens at
-  // 2×, drawn from the payload's own peaks — present, sized, and non-blank.
-  test('38.17 the placed glass magnifies the waveform under its lens', async ({ page }) => {
+  // 38.17 The lens is a CIRCLE, and nothing is magnified under it. Both are
+  // rulings rather than incidentals — the oval and the 4× zoom shipped
+  // together in 0.36.0 and were both taken back after alpha feedback around
+  // the institute (2026-09-01) — so both are pinned here.
+  test('38.17 the lens is circular and magnifies nothing under it', async ({ page }) => {
     const { ref } = await boot(page, 'debug=1&marker=glass');
     await page.evaluate((ref) => {
       const T = (window as any)._exhibitTest;
-      // A loud moment, so the magnified peaks are unambiguously non-blank.
       T.placeMarker(0, ref, 120);
       T.transport.pause();
     }, ref);
     const probe = await page.evaluate(() => {
-      const mag = document.querySelector(
-        '.vp[data-viewport="0"] .marker-glass .marker-mag',
-      ) as HTMLCanvasElement;
-      if (!mag) return null;
-      const ctx = mag.getContext('2d')!;
-      const data = ctx.getImageData(0, 0, mag.width, mag.height).data;
-      let painted = 0;
-      for (let i = 3; i < data.length; i += 4) if (data[i] > 0) painted++;
-      return { w: mag.width, h: mag.height, painted };
+      const glass = document.querySelector(
+        '.vp[data-viewport="0"] .marker-glass',
+      ) as HTMLElement;
+      const lens = glass.querySelector('.glass-lens')!;
+      const ring = glass.querySelector('.glass-ring')!;
+      const box = lens.getBoundingClientRect();
+      return {
+        lensTag: lens.tagName.toLowerCase(),
+        ringTag: ring.tagName.toLowerCase(),
+        ellipses: glass.querySelectorAll('ellipse').length,
+        canvases: glass.querySelectorAll('canvas').length,
+        w: box.width,
+        h: box.height,
+      };
     });
-    expect(probe, 'no magnifier canvas in the glass').not.toBeNull();
-    expect(probe!.w).toBeGreaterThan(0);
-    expect(probe!.painted, 'the lens is blank over a loud moment').toBeGreaterThan(50);
+    expect(probe.lensTag).toBe('circle');
+    expect(probe.ringTag).toBe('circle');
+    expect(probe.ellipses, 'no oval geometry left in the glass').toBe(0);
+    expect(probe.canvases, 'the zoom under the lens was removed').toBe(0);
+    // Round on the screen, not merely in the markup: a placed glass hangs
+    // straight, and every viewport/stage rotation here is a right angle, so a
+    // circle's painted box is square either way.
+    expect(probe.w).toBeGreaterThan(0);
+    expect(Math.abs(probe.w - probe.h), 'the lens paints as an oval').toBeLessThan(1.5);
   });
 });

@@ -658,12 +658,8 @@ async function boot() {
       vp.marker = createMarkerLayer({
         stripsEl: vp.stripsEl,
         strips: mounted.strips,
-        // The oval lens spans one strip top-to-bottom when placed.
+        // The lens spans one strip top-to-bottom when placed.
         stripHeight: config.stripHeight,
-        // The magnifier draws from the payload's own peaks, in the active-
-        // waveform ink so the lens reads as focusing on the same material.
-        peaksFor: (file) => exhibit.peaks[file],
-        lensWave: themeColors?.waveActive,
         ixFor: (file, time) => getClosestAlignmentIx(exhibit.grids, time, file),
         timeFor: (file, ix) => getCorrespondingTime(exhibit.grids, file, ix),
         // For the drag's client→local mapping: the viewport's own rotation
@@ -733,6 +729,21 @@ async function boot() {
           vp,
         );
         if (spot) turns.jump(vp.index, spot.file, spot.time);
+      },
+      // The MARK button lands this reader's marker on the annotation's first
+      // region — the same target the jump uses, so the two buttons agree about
+      // where the annotation "starts". Only offered when there is a marker to
+      // place. It goes through placeMarker, so the audio follows exactly as it
+      // does for a drag or a tap-placement: a placed glass plays there, by
+      // ruling, and a marker that arrived silently would be the odd one out.
+      showMark: config.marker === "glass",
+      onMarkTap: (annId) => {
+        if (!vp.marker) return;
+        const spot = jumpTarget(
+          vp.currentAnnotations?.find((a) => a.id === annId),
+          vp,
+        );
+        if (spot) placeMarker(vp, spot.file, spot.time);
       },
       // What a chip tap MEANS depends on the layout, so the machine lives
       // here, not in the component. Below the strips (default): a plain focus

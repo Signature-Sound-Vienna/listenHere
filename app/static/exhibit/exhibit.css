@@ -357,9 +357,8 @@ html, body {
 
 /* The listening marker (?marker=glass — week 4, ruled 2026-08-27; marker.js
  * has the design record). A physical magnifying glass: brass ring (the
- * theme's accent — parchment's bronze was chosen for exactly this metal), a
- * hairline cursor point through the lens, the medallion stitching inside the
- * rim. It rests on a stitched hook in the left rail, floats while lifted
+ * theme's accent — parchment's bronze was chosen for exactly this metal) and
+ * the medallion stitching inside the rim. It rests on a stitched hook in the left rail, floats while lifted
  * (expect-placement), and rides under the finger while dragged. All chrome is
  * out of the strips' flex flow — the layer, glass, and ghost are absolute, so
  * mounting them can never move a strip. */
@@ -385,10 +384,12 @@ html, body {
 .marker-hook {
   position: absolute;
   left: 50%;
-  margin-left: -25px;
+  margin-left: -22px;
   top: calc(100% + 10px);
-  width: 50px;
-  height: 60px; /* an oval ring, matching the oval lens */
+  /* Round, matching the round lens, and comfortably inside the rail's
+     --ex-strap-w (52px): a 60px ring overhung the strap by 4px a side. */
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   border: 2px dashed var(--ex-accent);
   opacity: 0.45;
@@ -402,8 +403,8 @@ html, body {
   opacity: 0.8;
 }
 
-/* Sized by marker.js (inline width/height): the oval lens spans one strip
- * top-to-bottom, so the rendered scale follows --strip-height. */
+/* Sized by marker.js (inline width/height): the lens is a fraction of one
+ * strip's height (LENS_SPAN), so the rendered scale follows --strip-height. */
 .marker-glass {
   position: absolute;
   z-index: 3;
@@ -499,14 +500,6 @@ html, body {
   pointer-events: none;
   transition: opacity 250ms ease;
 }
-/* The magnifier: the peaks under the lens at 2×, clipped to the oval, painted
- * UNDER the SVG so the translucent lens tint ages the view. Display only. */
-.marker-mag {
-  position: absolute;
-  border-radius: 50%;
-  pointer-events: none;
-}
-.marker-ghost .marker-mag { display: none; }
 /* Mirrored about the LENS CENTRE, not the box centre: the ghost is positioned
  * by the same anchor math as the glass (the lens centre sits at 31.1% of the
  * box), so a default-origin rotation would paint the lens ~38% of the box
@@ -573,7 +566,7 @@ html, body {
  * pin-expiry pill (its conic countdown ring is already its own edge).
  * Repurposing `outline` eats the UA focus ring, so :focus-visible restores
  * one below. */
-.audience-btn, .zoom-btn, .ann-jump, .side-close, .mb-play,
+.audience-btn, .zoom-btn, .ann-jump, .ann-mark, .side-close, .mb-play,
 .vp-turn button, .study-cog, .study-tab, .study-option, .study-copy {
   outline: 1px dashed var(--ex-thread, transparent);
   outline-offset: -4px;
@@ -582,6 +575,7 @@ html, body {
   outline-color: var(--ex-thread-accent, transparent);
 }
 .audience-btn:focus-visible, .zoom-btn:focus-visible, .ann-jump:focus-visible,
+.ann-mark:focus-visible,
 .side-close:focus-visible, .mb-play:focus-visible, .vp-turn button:focus-visible,
 .study-cog:focus-visible, .study-tab:focus-visible, .study-option:focus-visible,
 .study-copy:focus-visible {
@@ -825,11 +819,43 @@ html, body {
   color: var(--ex-text-body);
   font-size: 0.8rem;
 }
+/* The MARK button (?marker=glass): puts the reader's marker on the shown
+ * annotation's first region. It wears the jump's pill chrome ON PURPOSE — a
+ * bare magnifying glass here would read as the draggable object and invite a
+ * visitor to pull it off the panel, when the one they can pick up is the one
+ * on the hook. Hence a border, a word, a pointer cursor (the glass's is grab),
+ * and a plain line-art glyph with none of the brass, leather, or tilt. */
+.ann-mark {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px; /* the same touch floor as the jump beside it */
+  padding: 0 14px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+/* The title normally grows and pushes the pair right; with no title the JUMP's
+ * auto margin does it. A second auto margin here would split the free space
+ * between the two buttons instead of keeping them a pair, so mark takes one
+ * only when it is the sole control in the row. */
+.ann-head > .ann-jump[hidden] ~ .ann-mark { margin-left: auto; }
+.ann-mark-icon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  overflow: visible;
+}
 /* display:flex above would silently beat the UA's [hidden] { display:none } —
  * the hidden attribute is these controls' off switch, so honour it. */
 .ann-head[hidden],
 .ann-title[hidden],
-.ann-jump[hidden] { display: none; }
+.ann-jump[hidden],
+.ann-mark[hidden] { display: none; }
 /* Inline colour from the payload through safeColor, same as the chip border —
  * never a theme variable (the coloured-surface lesson, spec 9.16). */
 .ann-title-swatch {

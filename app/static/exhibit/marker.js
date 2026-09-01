@@ -68,7 +68,7 @@ const FRESH_MS = 1400;
 // reads as pointing INTO the waveform. Classed paths take theme tokens, the
 // strap-arrow precedent; the dashed ring inside the rim is the stitching
 // language. The chunky handle is the grip the whole design asks a finger to
-// take. The anchor point is (32, 30) in this viewBox.
+// take. The anchor point is the lens centre, (32, 28) in this viewBox.
 // The handle is ASSEMBLED like the tool it plays: a grip between a brass
 // ferrule at the ring and a brass end cap, with one highlight and one shade
 // strip faking the cylinder (plain alpha layers, so every theme gets the
@@ -77,12 +77,17 @@ const FRESH_MS = 1400;
 // paint, not SVG gradients: gradient defs need document-unique ids and this
 // markup is instantiated four times per screen (two glasses, two ghosts).
 //
-// The lens is an OVAL (second iteration round, 2026-08-27): sized so that a
-// placed, vertical glass covers one strip top-to-bottom — the layer scales the
-// whole rendering so the lens's vertical diameter equals the strip height.
+// The lens is a CIRCLE (restored 2026-09-01 after alpha feedback around the
+// institute; it was an oval for one round). The hairline cursor point stays
+// removed — the lens itself is the point — and the handle keeps its length.
+//
+// It still scales with the strip, but a round lens spanning the WHOLE strip
+// reads far heavier than the slim oval that rule was written for (the box is
+// the same size; the glass just fills it), so the lens now spans LENS_SPAN of
+// the row rather than all of it.
 const GLASS_SVG =
   "<svg viewBox='0 0 64 90' aria-hidden='true'>" +
-  "<ellipse class='glass-lens' cx='32' cy='28' rx='17' ry='26'/>" +
+  "<circle class='glass-lens' cx='32' cy='28' r='26'/>" +
   "<rect class='glass-handle' x='25.5' y='53' width='13' height='33' rx='6'/>" +
   "<rect class='glass-handle-hl' x='27' y='59' width='3.5' height='20' rx='1.75'/>" +
   "<rect class='glass-handle-sh' x='34.5' y='59' width='2.8' height='20' rx='1.4'/>" +
@@ -90,17 +95,19 @@ const GLASS_SVG =
   "M25.5 71 L38.5 75 M25.5 75.5 L38.5 79.5'/>" +
   "<rect class='glass-ferrule' x='24.5' y='52' width='15' height='6.5' rx='3'/>" +
   "<rect class='glass-ferrule' x='24.5' y='80.5' width='15' height='6.5' rx='3'/>" +
-  "<ellipse class='glass-ring' cx='32' cy='28' rx='17' ry='26'/>" +
-  "<ellipse class='glass-stitch' cx='32' cy='28' rx='13.5' ry='22.5'/>" +
+  "<circle class='glass-ring' cx='32' cy='28' r='26'/>" +
+  "<circle class='glass-stitch' cx='32' cy='28' r='22.5'/>" +
   "</svg>";
 const GLASS_ANCHOR = { x: 32, y: 28 };
-const LENS = { rx: 17, ry: 26 };
+const LENS = { r: 26 };
 // The box follows the paint: a placed glass overhangs its row's neighbours,
 // and an INVISIBLE overhang would keep stealing their taps after the visible
 // one stopped covering them (the handle was trimmed 25% for exactly that).
 const GLASS_VIEW = { w: 64, h: 90 };
-/** How much bigger the lens shows the waveform under it (the magnifier). */
-const MAG = 4;
+/** The lens's rendered diameter, as a fraction of one strip's height. 1 would
+ *  cover the row exactly and makes the glass overbearing; this leaves the row
+ *  legible around it and keeps the hook inside the strap's width. */
+const LENS_SPAN = 0.8;
 
 /**
  * Mount one viewport's marker layer.
@@ -110,9 +117,6 @@ const MAG = 4;
  * @param {Map<string, object>} opts.strips  file -> Strip (strips.js)
  * @param {{glass: string, ghost: string}} [opts.labels]  accessible names
  * @param {number} [opts.stripHeight]        CSS px; sizes the lens to the row
- * @param {(file: string) => number[]|undefined} [opts.peaksFor]  the payload's
- *   peaks, for the lens's magnified view; absent = no magnifier
- * @param {string} [opts.lensWave]           the magnified waveform's colour
  * @param {(file: string, time: number) => number} opts.ixFor      align-core
  * @param {(file: string, ix: number) => number|undefined} opts.timeFor
  * @param {() => number} opts.rotationOf     total rotation of this viewport's
@@ -139,12 +143,12 @@ export function createMarkerLayer({
   onRemove,
   labels = {},
   stripHeight = 48,
-  peaksFor,
-  lensWave = "#8fb8e8",
 }) {
-  // The rendering scales so the oval lens spans exactly one strip: rendered
-  // lens height = stripHeight, everything else follows the viewBox ratio.
-  const glassW = Math.round((stripHeight * GLASS_VIEW.w) / (2 * LENS.ry));
+  // The rendering scales to the row: rendered lens diameter = stripHeight ×
+  // LENS_SPAN, everything else follows the viewBox ratio.
+  const glassW = Math.round(
+    (stripHeight * LENS_SPAN * GLASS_VIEW.w) / (2 * LENS.r),
+  );
   const glassH = Math.round((glassW * GLASS_VIEW.h) / GLASS_VIEW.w);
   const scale = glassW / GLASS_VIEW.w;
   // Display state. `ix`/`homeFile` mirror main.js's semantic state via
@@ -202,24 +206,6 @@ export function createMarkerLayer({
   glass.setAttribute("tabindex", "0");
   glass.setAttribute("aria-label", labels.glass || "");
 
-  // The magnifier: a small canvas under the SVG, clipped to the lens oval,
-  // showing the waveform beneath the glass at MAG× — drawn from the payload's
-  // own peaks, so it costs no renderer access and works mid-drag. The SVG's
-  // translucent lens tint paints OVER it: aged glass, with something behind it.
-  const mag = document.createElement("canvas");
-  mag.className = "marker-mag";
-  {
-    const rx = LENS.rx * scale;
-    const ry = LENS.ry * scale;
-    mag.style.width = `${2 * rx}px`;
-    mag.style.height = `${2 * ry}px`;
-    mag.style.left = `${glassW / 2 - rx}px`;
-    mag.style.top = `${GLASS_ANCHOR.y * scale - ry}px`;
-    const dpr = window.devicePixelRatio || 1;
-    mag.width = Math.round(2 * rx * dpr);
-    mag.height = Math.round(2 * ry * dpr);
-  }
-  glass.insertBefore(mag, glass.firstChild);
   stripsEl.appendChild(glass);
   stripsEl.appendChild(layer);
 
@@ -345,65 +331,25 @@ export function createMarkerLayer({
     }
   };
 
-  // ---- the magnifier ----------------------------------------------------------
-
-  const magCtx = mag.getContext("2d");
-  const clearMag = () => magCtx.clearRect(0, 0, mag.width, mag.height);
-  /** The lens shows its own width's worth of strip, at MAG×, from the peaks. */
-  const drawMag = (file, time) => {
-    clearMag();
-    const strip = strips.get(file);
-    const peaks = peaksFor?.(file);
-    if (!strip || !Array.isArray(peaks) || !peaks.length || !Number.isFinite(time)) return;
-    const wrapper = strip.ws.getWrapper?.();
-    const full = wrapper?.clientWidth || strip.host.clientWidth;
-    if (!full) return;
-    const pxPerSec = full / strip.duration;
-    const windowSec = (2 * LENS.rx * scale) / (pxPerSec * MAG);
-    const t0 = time - windowSec / 2;
-    const w = mag.width;
-    const h = mag.height;
-    const mid = h / 2;
-    magCtx.fillStyle = lensWave;
-    magCtx.globalAlpha = 0.65;
-    for (let x = 0; x < w; x++) {
-      const t = t0 + (x / w) * windowSec;
-      if (t < 0 || t > strip.duration) continue;
-      const i = Math.min(
-        peaks.length - 1,
-        Math.max(0, Math.floor((t / strip.duration) * peaks.length)),
-      );
-      const v = Math.min(1, Math.abs(peaks[i] || 0));
-      const bar = Math.max(h * 0.02, v * mid * 0.9);
-      magCtx.fillRect(x, mid - bar, 1, bar * 2);
-    }
-    magCtx.globalAlpha = 1;
-  };
-
   /** Recompute every position from state — THE one rendering entry point. */
   const reposition = () => {
     if (drag) {
       // Mid-drag the glass is under the finger; only the projections move.
       paintTicks(drag.hoverIx ?? ix);
       paintGhost();
-      if (drag.spot) drawMag(drag.spot.file, drag.spot.time);
-      else clearMag();
       return;
     }
     if (lifted) {
       moveGlass(floatAnchor());
-      clearMag();
     } else if (ix != null && homeFile) {
       const p = stripAnchor(homeFile, timeFor(homeFile, ix));
       // A placed glass whose moment is scrolled out of view hides honestly
       // rather than pinning to an edge it is not at; the ticks already do.
       glass.classList.toggle("is-offview", p == null);
       if (p) moveGlass(p);
-      drawMag(homeFile, timeFor(homeFile, ix));
     } else {
       glass.classList.remove("is-offview");
       moveGlass(hookAnchor());
-      clearMag();
     }
     paintTicks(ix);
     paintGhost();

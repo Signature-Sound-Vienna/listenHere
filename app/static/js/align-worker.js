@@ -1105,6 +1105,136 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
         'hop': hop,
     }
 
+# --- fix-mode v2 lanes (plan §14 Layout Q2): mel spectrogram + onset curve + peaks ---
+# Display and snapping products, computed ONCE per correction session from the
+# resident reference audio, AFTER fix_ready — arming never waits for them.
+
+LANE_HOP = 512           # samples (~23 ms) — one lane column per hop
+LANE_N_MELS = 64
+LANE_N_FFT = 2048        # 93 ms window for the mel lane (frequency resolution)
+LANE_DB_RANGE = 80.0     # dynamic range kept below the recording's loudest frame
+LANE_FMIN = 30.0
+
+def _mel_filterbank(n_fft, n_mels, fmin, fmax):
+    """Triangular mel filters (HTK mel scale, Slaney area normalisation): (n_mels, bins)."""
+    def hz2mel(f):
+        return 2595.0 * np.log10(1.0 + f / 700.0)
+    def mel2hz(m):
+        return 700.0 * (10.0 ** (m / 2595.0) - 1.0)
+    freqs = np.fft.rfftfreq(n_fft, d=1.0 / SR)
+    edges = mel2hz(np.linspace(hz2mel(fmin), hz2mel(fmax), n_mels + 2))
+    fb = np.zeros((n_mels, len(freqs)), dtype=np.float32)
+    for m in range(n_mels):
+        lo, c, hi = edges[m], edges[m + 1], edges[m + 2]
+        up = (freqs - lo) / max(c - lo, 1e-9)
+        down = (hi - freqs) / max(hi - c, 1e-9)
+        fb[m] = np.maximum(0.0, np.minimum(up, down))
+    fb *= (2.0 / (edges[2:] - edges[:-2])).astype(np.float32)[:, None]
+    return fb
+
+def compute_mel_spectrogram(audio, n_fft=None, hop=None, n_mels=None):
+    """Log-power mel spectrogram quantised to uint8 over LANE_DB_RANGE below the
+    loudest frame: (n_mels, n_frames), row 0 = the lowest band. Streaming like
+    the other features (peak extra memory ~CHUNK x n_fft floats)."""
+    if n_fft is None: n_fft = LANE_N_FFT
+    if hop is None: hop = LANE_HOP
+    if n_mels is None: n_mels = LANE_N_MELS
+    audio_pad, window, n_frames, s = _stft_setup(audio, n_fft, hop)
+    fb_t = _mel_filterbank(n_fft, n_mels, LANE_FMIN, SR / 2.0).T    # (bins, n_mels)
+    CHUNK = 256
+    mel_db = np.zeros((n_mels, n_frames), dtype=np.float32)
+    for cs in range(0, n_frames, CHUNK):
+        ce = min(n_frames, cs + CHUNK)
+        frames = np.lib.stride_tricks.as_strided(
+            audio_pad[cs * hop:],
+            shape=(ce - cs, n_fft),
+            strides=(s * hop, s)
+        )
+        spec = np.fft.rfft(frames * window, axis=1)
+        power = (spec.real * spec.real + spec.imag * spec.imag).astype(np.float32)
+        del spec
+        mel = power @ fb_t                                    # (chunk, n_mels)
+        del power
+        mel_db[:, cs:ce] = (10.0 * np.log10(np.maximum(mel, 1e-10))).T
+        del mel
+    mel_db -= mel_db.max()
+    np.clip(mel_db, -LANE_DB_RANGE, 0.0, out=mel_db)
+    return ((mel_db + LANE_DB_RANGE) * (255.0 / LANE_DB_RANGE)).astype(np.uint8)
+
+def pick_onset_peaks(env, hop, pre_max=0.05, post_max=0.05, pre_avg=0.10,
+                     post_avg=0.10, delta=0.10, wait=0.05, abs_floor=0.02,
+                     norm_win=3.0):
+    """Peak-pick an onset-strength curve (librosa's onset_detect shape, made
+    dynamics-aware): frame i is a peak when it is the maximum over
+    [i - pre_max, i + post_max], exceeds the mean over [i - pre_avg, i + post_avg]
+    by delta x the local maximum over +-norm_win (so a quiet passage keeps its
+    onsets), clears an absolute floor (a fraction of the global peak), and comes
+    at least 'wait' after the previous peak. Returns seconds, refined to
+    sub-frame precision by a parabola through the peak's three frames; frame
+    times are window CENTRES, (i * hop + ONSET_N_FFT / 2) / SR."""
+    from scipy.ndimage import maximum_filter1d
+    env = np.asarray(env, dtype=np.float64)
+    n = len(env)
+    if n < 3:
+        return []
+    fr = SR / float(hop)
+    def frames(sec):
+        return max(1, int(round(sec * fr)))
+    pre_m, post_m = frames(pre_max), frames(post_max)
+    pre_a, post_a = frames(pre_avg), frames(post_avg)
+    loc_max = env.copy()
+    for d in range(1, pre_m + 1):
+        loc_max[d:] = np.maximum(loc_max[d:], env[:-d])
+    for d in range(1, post_m + 1):
+        loc_max[:-d] = np.maximum(loc_max[:-d], env[d:])
+    csum = np.concatenate([[0.0], np.cumsum(env)])
+    idx = np.arange(n)
+    lo = np.maximum(0, idx - pre_a)
+    hi = np.minimum(n, idx + post_a + 1)
+    loc_mean = (csum[hi] - csum[lo]) / (hi - lo)
+    scale = maximum_filter1d(env, size=2 * frames(norm_win) + 1, mode='nearest')
+    cand = (env >= loc_max) & (env >= loc_mean + delta * scale) & (env >= abs_floor)
+    w = frames(wait)
+    peaks = []
+    last = -n
+    for i in np.flatnonzero(cand):
+        if i - last > w:
+            peaks.append(int(i))
+            last = i
+    times = []
+    for i in peaks:
+        off = 0.0
+        if 0 < i < n - 1:
+            a, b, c = env[i - 1], env[i], env[i + 1]
+            denom = a - 2.0 * b + c
+            if denom < 0:
+                off = min(0.5, max(-0.5, 0.5 * (a - c) / denom))
+        times.append(((i + off) * hop + ONSET_N_FFT / 2.0) / SR)
+    return times
+
+def fix_lanes(hop=None, n_mels=None):
+    """The v2 lanes for the current correction session: the mel spectrogram and
+    the fine-hop onset curve of the resident reference audio, plus the picked
+    onset peaks (the snap-to-onset targets). Frame i of either lane is centred
+    at i * hop / SR + that lane's t0."""
+    if _fix is None:
+        raise RuntimeError('fix_lanes before fix_begin')
+    hop = LANE_HOP if hop is None else int(hop)
+    n_mels = LANE_N_MELS if n_mels is None else int(n_mels)
+    ref = _fix['ref']
+    mel = compute_mel_spectrogram(ref, LANE_N_FFT, hop, n_mels)
+    onset = compute_onset_strength(ref, hop=hop)
+    n = mel.shape[1]
+    onset = onset[:n] if len(onset) >= n else np.pad(onset, (0, n - len(onset)))
+    peaks = pick_onset_peaks(onset, hop)
+    return {
+        'hop': hop, 'sr': SR, 'n_mels': n_mels, 'n_frames': int(n),
+        'mel_t0': LANE_N_FFT / 2.0 / SR, 'onset_t0': ONSET_N_FFT / 2.0 / SR,
+        'mel': np.ascontiguousarray(mel),
+        'onset': np.ascontiguousarray(onset, dtype=np.float32),
+        'peaks': [float(t) for t in peaks],
+    }
+
 def fix_dispose():
     """Release the correction session's resident audio."""
     global _fix
@@ -1114,6 +1244,19 @@ def fix_dispose():
 `;
 
 /* --- Pyodide lifecycle --- */
+
+/** Copy a numpy array out of Pyodide's heap as a typed array, then release the
+ *  view and the proxy (a raw `.data` view would dangle once Python frees it). */
+function takeBuffer(pyodide, name, fmt, Ctor) {
+  const proxy = pyodide.globals.get(name);
+  const view = proxy.getBuffer(fmt);
+  try {
+    return new Ctor(view.data);
+  } finally {
+    view.release();
+    proxy.destroy();
+  }
+}
 
 let pyodideReady = null;
 
@@ -1294,6 +1437,36 @@ json.dumps(fix_realign_segment(
 ))
 `);
       self.postMessage({ type: "fix_segment", iA, iB, result: JSON.parse(segJson) });
+      return;
+    }
+
+    if (e.data.type === "fix_lanes") {
+      // The v2 lanes (mel spectrogram, onset curve, onset peaks) for the
+      // resident session. Failures post under their OWN type: a generic
+      // "error" would be claimed by whatever realign the client has pending.
+      try {
+        const pyodide = await pyodideReady;
+        const { hop, nMels } = e.data;
+        pyodide.globals.set("_lanes_hop", hop ?? 512);
+        pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
+        const metaJson = await pyodide.runPythonAsync(`
+import json
+_lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels))
+_lanes_mel = _lanes.pop('mel')
+_lanes_onset = _lanes.pop('onset')
+json.dumps(_lanes)
+`);
+        const meta = JSON.parse(metaJson);
+        const mel = takeBuffer(pyodide, "_lanes_mel", "u8", Uint8Array);
+        const onset = takeBuffer(pyodide, "_lanes_onset", "f32", Float32Array);
+        await pyodide.runPythonAsync("del _lanes, _lanes_mel, _lanes_onset");
+        self.postMessage({ type: "fix_lanes", ...meta, mel, onset }, [
+          mel.buffer,
+          onset.buffer,
+        ]);
+      } catch (err) {
+        self.postMessage({ type: "fix_lanes_error", message: err.toString() });
+      }
       return;
     }
 

@@ -7011,20 +7011,66 @@ body.fix-mode-open .icon-fix-mode {
 
 .fix-strip {
   --fix-strip-gutter: 12px;
-  flex: 15 0 auto;
-  min-height: 84px;
+  /* The v2 lanes grow the strip: flex units of the pane plus a px floor, per
+     lane, switched by the classes _stripClassName() produces — which the
+     prewarm probe (_measurePaneDims) shares, so the score pane it measures is
+     the one _buildDom builds. With both lanes on the pane splits 85 : 24, so
+     the 85/15 ruling's pin (score > 3 × strip, spec 42.6) still holds. */
+  --fix-lane-spec: 0;
+  --fix-lane-onset: 0;
+  --fix-lane-spec-px: 0px;
+  --fix-lane-onset-px: 0px;
+  flex-grow: calc(15 + var(--fix-lane-spec) + var(--fix-lane-onset));
+  flex-shrink: 0;
+  flex-basis: auto;
+  min-height: calc(84px + var(--fix-lane-spec-px) + var(--fix-lane-onset-px));
   position: relative;
   border-top: 1px solid var(--color-waveform-border, #cbd5e1);
 }
-/* The waveform stops short of the strip's bottom edge. That gutter is where
-   the playhead's lower arrowhead sits — outside the waveform, on the strip's
+.fix-strip.fix-lanes-spec {
+  --fix-lane-spec: 6;
+  --fix-lane-spec-px: 32px;
+}
+.fix-strip.fix-lanes-onset {
+  --fix-lane-onset: 3;
+  --fix-lane-onset-px: 16px;
+}
+/* The lane stack stops short of the strip's bottom edge. That gutter is where
+   the playhead's lower arrowhead sits — outside every lane, on the strip's
    one uncluttered edge — and it comes out of the STRIP's own height: the
    score pane's height feeds the prewarm fit and must not move (the header
    trap on the other axis). JS reads the gutter back off the two elements
-   rather than repeating the number, so this rule is its only definition. */
-.fix-strip-ws {
+   rather than repeating the number, so this rule is its only definition.
+   Inside the stack the lanes share ONE time→x mapping (the waveform's
+   zoom + scroll); each is a flex row, the waveform's share shrinking a little
+   when a lane joins. */
+.fix-lanes {
   position: absolute;
   inset: 0 0 var(--fix-strip-gutter, 12px) 0;
+  display: flex;
+  flex-direction: column;
+}
+.fix-strip-ws {
+  position: relative;
+  flex: 10 1 0;
+  min-height: 0;
+}
+.fix-lane-spec,
+.fix-lane-onset {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  border-top: 1px solid var(--color-waveform-border, #cbd5e1);
+}
+.fix-lane-spec {
+  flex: 10 1 0;
+}
+.fix-lane-onset {
+  flex: 4 1 0;
+}
+.fix-lane-spec[hidden],
+.fix-lane-onset[hidden] {
+  display: none; /* the author display would beat the UA [hidden] rule */
 }
 .fix-strip-ws[data-placeholder]::after {
   content: attr(data-placeholder);

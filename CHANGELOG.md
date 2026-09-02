@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.49.0 -- Fix mode v2 lanes: spectrogram, onset curve, snap-to-onset
+* The correction strip is a lane stack: beneath the reference waveform sit a mel spectrogram and the recording's onset-strength curve, all three at the waveform's zoom and scroll, with the playhead's gutter beneath them. The alignment ticks cross every lane.
+* Detected onsets hang from the onset lane's top as marks, and a dragged tick snaps to the nearest one within 8 px; holding Alt while dragging places it freely, and a "Snap to onsets" checkbox in the Correction region is the sticky switch. Keyboard nudges never snap.
+* "Spectrogram" and "Onset curve" checkboxes switch the lanes (sticky across sessions); the strip grows to hold them and the score pane re-fits, still above three times the strip's height.
+* The correction engine computes both lanes and picks the onset peaks after it has armed (`fix_lanes`), so arming time is unchanged; until they arrive the lanes say they are computing. Peaks are picked from the onset curve at 23 ms resolution with a dynamics-aware threshold and a sub-frame parabolic refinement; on the synthetic ladder every peak lands within 9 ms of the analytic onset.
+* Testing: spec 41 grows to 11 (the lanes' numerics and peak-picking against closed-form onsets), spec 42 to 25 (the lane stack, its toggles and the prewarm fit; the lanes painting from the engine), spec 43 to 31 (snap, Alt bypass, the sticky switch). All verified red first; 43.30 now measures the ticks against the lane stack's bottom.
+
 ### 0.48.1 -- The test harness follows APP_BASE_URL everywhere
 * Every URL the e2e harness builds now derives from `APP_BASE_URL` (six files hardcoded `localhost:5001`), and the auto-started Flask listens on that URL's port, so a second checkout can run the suite on its own port beside a main checkout that owns :5001.
 * The debug-only fixture route rewrites the fixtures' `localhost:5001` origin to the requesting origin, and the file-picker helpers do the same in memory, so a tree under test never fetches its MEI from another tree's server.

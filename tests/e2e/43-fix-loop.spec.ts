@@ -60,6 +60,9 @@ async function installWorkerStub(
     /** Hold fix_ready back until __fixStub.releaseReady() — the arming state
      *  is otherwise 5 ms wide and cannot be asserted. */
     deferReady?: boolean;
+    /** Answer fix_lanes at once with synthetic lanes carrying these onset
+     *  peaks; without it the test calls __fixStub.sendLanes(peaks) itself. */
+    lanes?: { peaks: number[] };
   } = {},
 ) {
   await page.evaluate((o) => {
@@ -72,6 +75,38 @@ async function installWorkerStub(
         posted: [] as any[],
         terminated: false,
       };
+      // Synthetic v2 lanes (the real worker's fix_lanes reply shape): a mel
+      // gradient, a near-silent onset curve with a spike per given peak.
+      w.sendLanes = (peaks: number[]) => {
+        const hop = 512;
+        const sr = 22050;
+        const nMels = 64;
+        const nFrames = Math.floor((200 * sr) / hop);
+        const mel = new Uint8Array(nMels * nFrames);
+        for (let m = 0; m < nMels; m++) {
+          for (let i = 0; i < nFrames; i++) mel[m * nFrames + i] = (i * 3 + m * 4) & 255;
+        }
+        const onset = new Float32Array(nFrames).fill(0.01);
+        const onsetT0 = 1024 / 2 / sr;
+        for (const t of peaks) {
+          const i = Math.round(((t - onsetT0) * sr) / hop);
+          if (i >= 0 && i < nFrames) onset[i] = 1;
+        }
+        w.onmessage?.({
+          data: {
+            type: 'fix_lanes',
+            hop,
+            sr,
+            n_mels: nMels,
+            n_frames: nFrames,
+            mel_t0: 2048 / 2 / sr,
+            onset_t0: onsetT0,
+            peaks: peaks.slice().sort((a, b) => a - b),
+            mel,
+            onset,
+          },
+        });
+      };
       w.postMessage = (msg: any) => {
         const rec: any = { type: msg.type };
         if (msg.type === 'fix_realign') {
@@ -80,6 +115,11 @@ async function installWorkerStub(
           rec.iB = msg.iB;
           rec.tB = msg.tB;
           rec.priorLen = msg.priorRef?.length ?? null;
+        }
+        if (msg.type === 'fix_lanes') {
+          rec.hop = msg.hop;
+          rec.nMels = msg.nMels;
+          if (o.lanes) setTimeout(() => w.sendLanes(o.lanes!.peaks ?? []), 5);
         }
         w.posted.push(rec);
         if (msg.type === 'fix_begin') {
@@ -1276,11 +1316,11 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
 
     const geom = await page.evaluate(() => ({
       stripH: (document.querySelector('.fix-strip') as HTMLElement).clientHeight,
-      waveH: (document.querySelector('.fix-strip-ws') as HTMLElement).clientHeight,
+      lanesH: (document.querySelector('.fix-lanes') as HTMLElement).clientHeight,
     }));
     // The gutter the lower arrowhead lives in comes out of the STRIP's own
     // height (the score pane's must not move — it feeds the prewarm fit).
-    const gutter = geom.stripH - geom.waveH;
+    const gutter = geom.stripH - geom.lanesH;
     expect(gutter).toBeGreaterThanOrEqual(8);
 
     const ph = await rows('.fix-playhead');
@@ -1301,7 +1341,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(Math.min(...top.map((r) => r.y))).toBeGreaterThanOrEqual(0);
     expect(top[0].n).toBeGreaterThan(top[top.length - 1].n);
     // The bottom one is OUTSIDE the waveform, in the gutter, tapering up.
-    expect(Math.min(...bot.map((r) => r.y))).toBeGreaterThanOrEqual(geom.waveH);
+    expect(Math.min(...bot.map((r) => r.y))).toBeGreaterThanOrEqual(geom.lanesH);
     expect(bot[bot.length - 1].n).toBeGreaterThan(bot[0].n);
     // Both apexes sit on the position, and the position is the tick's x.
     const centre = (r: { minX: number; maxX: number }) => (r.minX + r.maxX) / 2;
@@ -1311,6 +1351,60 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     // The ticks keep out of the gutter: it belongs to the playhead alone.
     const tk = await rows('.fix-ticks');
     expect(tk.out.length).toBeGreaterThan(0);
-    expect(Math.max(...tk.out.map((r) => r.y))).toBeLessThan(geom.waveH);
+    expect(Math.max(...tk.out.map((r) => r.y))).toBeLessThan(geom.lanesH);
+  });
+
+  test('43.31 a released drag snaps to the nearest detected onset; Alt while dragging, or Snap off, places it freely', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    for (let k = 0; k < 5; k++) await page.click('.fix-onset-next');
+    const before = await fixState(page);
+    const pps = before.stripPps;
+    const dropT = before.selT + 40 / pps; // where a 40 px drag lands
+    const peakT = dropT + 3 / pps; // 3 px past it: inside the snap radius
+    await page.evaluate((peaks) => (window as any).__fixStub.sendLanes(peaks), [peakT, peakT + 5]);
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 2);
+
+    // Snapped: the anchor lands EXACTLY on the detected onset.
+    await dragSelectedTick(page, 40);
+    let st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    expect(st.corrections.anchors[0].t).toBeCloseTo(peakT, 6);
+    expect(st.lastDrag).toMatchObject({ snapped: true });
+    expect(st.lastDrag.t).toBeCloseTo(peakT, 6);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await page.click('#undo-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 0,
+    );
+
+    // Alt held through the release: the raw drop point, not the peak.
+    await page.keyboard.down('Alt');
+    await dragSelectedTick(page, 40);
+    await page.keyboard.up('Alt');
+    st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    expect(st.lastDrag.snapped).toBe(false);
+    expect(Math.abs(st.corrections.anchors[0].t - peakT)).toBeGreaterThan(1 / pps);
+    expect(Math.abs(st.corrections.anchors[0].t - dropT)).toBeLessThan(1.5 / pps);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await page.click('#undo-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 0,
+    );
+
+    // Snap off (the sticky switch): free placement without any modifier.
+    await page.click('#fix-snap-onsets');
+    await dragSelectedTick(page, 40);
+    st = await fixState(page);
+    expect(st.snapOnsets).toBe(false);
+    expect(st.corrections.anchors).toHaveLength(1);
+    expect(st.lastDrag.snapped).toBe(false);
+    expect(Math.abs(st.corrections.anchors[0].t - dropT)).toBeLessThan(1.5 / pps);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
   });
 });

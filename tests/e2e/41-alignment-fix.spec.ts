@@ -208,6 +208,69 @@ def run(i_a, i_b):
 print(json.dumps({'events': ev, 'over': run(2, 4), 'ctrl': run(2, 7)}))
 `;
 
+// The v2 lanes (plan §14 Layout Q2): fix_lanes computes a mel spectrogram, a
+// fine-hop onset-strength curve, and picks its peaks — the snap targets — from
+// the SAME resident reference audio fix_begin keeps. Same ladder, same tempo
+// map as HARNESS, so every true onset is known in closed form.
+const HARNESS_LANES = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+tcs_b = [(0, 500000), (960, 375000)]
+dur_b = _tick_to_sec(max(n[1] for n in notes), tpq, tcs_b) + 0.5
+# Half a second of silence first: spectral flux needs a predecessor frame, so
+# an onset at the very first sample is undetectable BY CONSTRUCTION (the
+# ladder's first note sits at tick 0). Real recordings begin in silence.
+LEAD = 0.5
+ref_audio = np.concatenate([
+    np.zeros(int(LEAD * SR), dtype=np.float32),
+    synth_midi_audio(notes, tpq, tcs_b, dur_b),
+])
+
+try:
+    fix_lanes(512, 64); before_begin = False
+except RuntimeError:
+    before_begin = True
+
+ev = fix_begin(ref_audio, midi)
+lanes = fix_lanes(512, 64)
+mel = lanes['mel']; onset = lanes['onset']
+
+def true_on(k):
+    return LEAD + _tick_to_sec(int(round(ev['score_onset'][k] * tpq)), tpq, tcs_b)
+
+span = int(0.4 * SR / 512)
+lead_f = int(LEAD * SR / 512)
+fix_dispose()
+try:
+    fix_lanes(512, 64); after_dispose = False
+except RuntimeError:
+    after_dispose = True
+
+print(json.dumps({
+    'hop': lanes['hop'], 'sr': lanes['sr'], 'n_mels': lanes['n_mels'],
+    'n_frames': lanes['n_frames'], 'mel_t0': lanes['mel_t0'], 'onset_t0': lanes['onset_t0'],
+    'mel_shape': list(mel.shape), 'mel_dtype': str(mel.dtype), 'mel_max': int(mel.max()),
+    'mel_lead_mean': float(mel[:, :lead_f - 2].mean()),
+    'mel_tail_mean': float(mel[:, -span:].mean()),
+    'mel_note_mean': float(mel[:, lead_f:lead_f + span].mean()),
+    'onset_len': int(len(onset)), 'onset_dtype': str(onset.dtype),
+    'onset_max': float(onset.max()),
+    'peaks': lanes['peaks'],
+    'true_on': [true_on(k) for k in range(len(ev['score_onset']))],
+    'ref_duration': ev['ref_duration'],
+    'before_begin': before_begin, 'after_dispose': after_dispose,
+}))
+`;
+
 /** Run one python harness over align-worker.js's own PYTHON_CODE blob. */
 function execPython(harness: string, midiB64: string): any {
   const workerSrc = fs.readFileSync(
@@ -246,6 +309,12 @@ function runOverlapScenario(): any {
     overlapOut = execPython(HARNESS_OVERLAP, buildMidiOverlap().toString('base64'));
   }
   return overlapOut;
+}
+
+let lanesOut: any = null;
+function runLanesScenario(): any {
+  if (!lanesOut) lanesOut = execPython(HARNESS_LANES, buildMidiA().toString('base64'));
+  return lanesOut;
 }
 
 function expectMonotonic(values: number[]) {
@@ -591,5 +660,45 @@ test.describe('41. alignment correction — worker segment realign', () => {
     expect(c.s_off_a).toBeLessThan(c.s_b);
     expect(c.anchor_a_offset).toBeGreaterThan(c.t_a);
     expect(c.anchor_a_offset).toBeLessThan(c.t_b);
+  });
+
+  test('41.11 fix_lanes: a uint8 mel spectrogram, the fine-hop onset curve, and one picked peak per true onset', async () => {
+    test.setTimeout(120_000);
+    const out = runLanesScenario();
+    // Session-bound like the realign: nothing before fix_begin, nothing after dispose.
+    expect(out.before_begin).toBe(true);
+    expect(out.after_dispose).toBe(true);
+    // Geometry: 64 mel bins × one frame per 512 samples, both lanes the same length.
+    expect(out).toMatchObject({ hop: 512, sr: 22050, n_mels: 64 });
+    expect(out.mel_shape).toEqual([64, out.n_frames]);
+    expect(Math.abs(out.n_frames - (out.ref_duration * 22050) / 512)).toBeLessThan(5);
+    expect(out.onset_len).toBe(out.n_frames);
+    expect(out.mel_dtype).toBe('uint8');
+    expect(out.onset_dtype).toBe('float32');
+    // Frame times are window CENTRES: each lane says where its frame 0 sits.
+    expect(out.mel_t0).toBeCloseTo(2048 / 2 / 22050, 9);
+    expect(out.onset_t0).toBeCloseTo(1024 / 2 / 22050, 9);
+    // The mel is scaled to the loudest frame; the silences either side are dark
+    // and the first note is not.
+    expect(out.mel_max).toBe(255);
+    expect(out.mel_lead_mean).toBeLessThan(out.mel_note_mean);
+    expect(out.mel_tail_mean).toBeLessThan(out.mel_note_mean);
+    expect(out.mel_lead_mean).toBeLessThan(60);
+    expect(out.mel_tail_mean).toBeLessThan(60);
+    // The onset curve keeps compute_onset_strength's unit peak.
+    expect(out.onset_max).toBeCloseTo(1, 3);
+    // Peak-picking: exactly one peak per note, each within ONE frame (23 ms) of
+    // the analytic onset — measured at ≤ 9 ms, so the window-centre time
+    // convention is the right one — in order, and no spurious peaks in the
+    // sustains or the releases (energy only ever DROPS there).
+    expect(out.peaks).toHaveLength(N_NOTES);
+    expectMonotonic(out.peaks);
+    const TOL = 512 / 22050;
+    out.peaks.forEach((p: number, k: number) => {
+      expect(
+        Math.abs(p - out.true_on[k]),
+        `peak ${k}: got ${p}, true ${out.true_on[k]}`,
+      ).toBeLessThan(TOL);
+    });
   });
 });

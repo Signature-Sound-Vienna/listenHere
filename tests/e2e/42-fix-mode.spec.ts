@@ -58,7 +58,14 @@ async function gotoFixMode(
  */
 async function installWorkerStub(
   page: Page,
-  opts: { nEvents?: number; silent?: boolean; error?: string } = {},
+  opts: {
+    nEvents?: number;
+    silent?: boolean;
+    error?: string;
+    /** Answer fix_lanes at once with synthetic lanes carrying these onset
+     *  peaks; without it the test calls __fixStub.sendLanes(peaks) itself. */
+    lanes?: { peaks: number[] };
+  } = {},
 ) {
   await page.evaluate((o) => {
     const lt = (window as any)._listenTest;
@@ -70,6 +77,38 @@ async function installWorkerStub(
         posted: [] as any[],
         terminated: false,
       };
+      // Synthetic v2 lanes (the real worker's fix_lanes reply shape): a mel
+      // gradient, a near-silent onset curve with a spike per given peak.
+      w.sendLanes = (peaks: number[]) => {
+        const hop = 512;
+        const sr = 22050;
+        const nMels = 64;
+        const nFrames = Math.floor((200 * sr) / hop);
+        const mel = new Uint8Array(nMels * nFrames);
+        for (let m = 0; m < nMels; m++) {
+          for (let i = 0; i < nFrames; i++) mel[m * nFrames + i] = (i * 3 + m * 4) & 255;
+        }
+        const onset = new Float32Array(nFrames).fill(0.01);
+        const onsetT0 = 1024 / 2 / sr;
+        for (const t of peaks) {
+          const i = Math.round(((t - onsetT0) * sr) / hop);
+          if (i >= 0 && i < nFrames) onset[i] = 1;
+        }
+        w.onmessage?.({
+          data: {
+            type: 'fix_lanes',
+            hop,
+            sr,
+            n_mels: nMels,
+            n_frames: nFrames,
+            mel_t0: 2048 / 2 / sr,
+            onset_t0: onsetT0,
+            peaks: peaks.slice().sort((a, b) => a - b),
+            mel,
+            onset,
+          },
+        });
+      };
       w.postMessage = (msg: any) => {
         w.posted.push({
           type: msg.type,
@@ -78,7 +117,13 @@ async function installWorkerStub(
           midiLen: msg.meiMidi?.length ?? null,
           midiIsU8: msg.meiMidi instanceof Uint8Array,
           options: msg.options ?? null,
+          hop: msg.hop ?? null,
+          nMels: msg.nMels ?? null,
         });
+        if (msg.type === 'fix_lanes') {
+          if (o.lanes) setTimeout(() => w.sendLanes(o.lanes!.peaks ?? []), 5);
+          return;
+        }
         if (msg.type !== 'fix_begin' || o.silent) return;
         setTimeout(() => {
           if (o.error) {
@@ -774,5 +819,138 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
       { timeout: 30_000 },
     );
     await expect(page.locator('.fix-chip')).toContainText('event count');
+  });
+
+  // --- v2 lanes (plan §14 Layout Q2): the strip is a LANE STACK ---
+
+  test('42.24 the strip is a lane stack: waveform over spectrogram over onset curve; the toggles resize it and the prewarm fit follows', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page, REF_ROW);
+    const geo = () =>
+      page.evaluate(() => {
+        const q = (s: string) => document.querySelector(s) as HTMLElement;
+        return {
+          score: q('.fix-score').clientHeight,
+          strip: q('.fix-strip').clientHeight,
+          lanes: q('.fix-lanes').clientHeight,
+          wave: q('.fix-strip-ws').clientHeight,
+          spec: q('.fix-lane-spec').clientHeight,
+          onset: q('.fix-lane-onset').clientHeight,
+          specHidden: q('.fix-lane-spec').hidden,
+          onsetHidden: q('.fix-lane-onset').hidden,
+          children: q('.fix-lanes').childElementCount,
+        };
+      });
+    let g = await geo();
+    // Three lanes, on by default, each with real height, filling the lane box
+    // exactly; the playhead's gutter beneath them is untouched.
+    expect(g.children).toBe(3);
+    expect(g.specHidden).toBe(false);
+    expect(g.onsetHidden).toBe(false);
+    expect(g.wave).toBeGreaterThan(16);
+    expect(g.spec).toBeGreaterThan(16);
+    expect(g.onset).toBeGreaterThan(8);
+    expect(g.wave + g.spec + g.onset).toBeGreaterThanOrEqual(g.lanes - 3);
+    expect(g.wave + g.spec + g.onset).toBeLessThanOrEqual(g.lanes);
+    expect(g.strip - g.lanes).toBeGreaterThanOrEqual(8);
+    // The 85/15 ruling's pin (42.6) still holds with the lanes on.
+    expect(g.score).toBeGreaterThan(g.strip * 3);
+    const stripWithLanes = g.strip;
+    await expect(page.locator('#fix-lane-spec')).toBeChecked();
+    await expect(page.locator('#fix-lane-onset')).toBeChecked();
+    await expect(page.locator('#fix-snap-onsets')).toBeChecked();
+    // Both lanes off: the strip returns to the waveform-only height and the
+    // score pane grows into it (a re-fit, so the loading overlay comes and goes).
+    await page.click('#fix-lane-spec');
+    await page.click('#fix-lane-onset');
+    await page.waitForFunction(() => {
+      const q = (s: string) => document.querySelector(s) as HTMLElement;
+      return q('.fix-lane-spec').hidden && q('.fix-lane-onset').hidden && q('.fix-loading').hidden;
+    });
+    await page.waitForFunction(() => (window as any)._listenTest.fix.ticksOnPage > 0);
+    g = await geo();
+    expect(g.strip).toBeLessThan(stripWithLanes);
+    expect(g.wave).toBe(g.lanes);
+    // The prewarm probe honours the toggles: exit and re-entry still ride the
+    // resident fit, and the choice is sticky across sessions.
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.chipState === 'ready',
+      undefined,
+      { timeout: 30_000 },
+    );
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await enterFix(page, REF_ROW);
+    const st = await fixState(page);
+    expect(st.lastEntry.usedPrewarm).toBe(true);
+    expect(st.laneSpec).toBe(false);
+    expect(st.laneOnset).toBe(false);
+    await expect(page.locator('#fix-lane-spec')).not.toBeChecked();
+    expect((await geo()).wave).toBe((await geo()).lanes);
+  });
+
+  test('42.25 the lanes paint from the engine: spectrogram pixels, the onset curve, and its detected peaks as marks', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page, REF_ROW);
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.chipState === 'ready',
+      undefined,
+      { timeout: 30_000 },
+    );
+    // The lanes are requested once the engine is ready, at the lane resolution;
+    // arming does not wait for them.
+    const req = await page.evaluate(() =>
+      (window as any).__fixStub.posted.find((p: any) => p.type === 'fix_lanes'),
+    );
+    expect(req).toMatchObject({ hop: 512, nMels: 64 });
+    let st = await fixState(page);
+    expect(st.lanes).toBeNull();
+    // Reply with one peak inside the current page's window and one far away.
+    const mid = (Math.max(0, st.stripWindow.t0) + st.stripWindow.t1) / 2;
+    await page.evaluate((peaks) => (window as any).__fixStub.sendLanes(peaks), [mid, mid + 40]);
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 2);
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+    );
+    st = await fixState(page);
+    expect(st.lanes).toMatchObject({ hop: 512, nMels: 64, peakCount: 2 });
+    expect(st.lanes.nFrames).toBeGreaterThan(1000);
+    const painted = await page.evaluate(() => {
+      const scan = (sel: string) => {
+        const c = document.querySelector(sel) as HTMLCanvasElement;
+        const { width: w, height: h } = c;
+        const d = c.getContext('2d')!.getImageData(0, 0, w, h).data;
+        let n = 0;
+        const topCols = new Array(w).fill(0);
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            if (d[(y * w + x) * 4 + 3] > 10) {
+              n++;
+              if (y < 6) topCols[x]++;
+            }
+          }
+        }
+        return { n, w, h, topCols };
+      };
+      return { spec: scan('.fix-lane-spec'), onset: scan('.fix-lane-onset') };
+    });
+    // The spectrogram: most of the lane carries colour (the stub's gradient).
+    expect(painted.spec.w).toBeGreaterThan(100);
+    expect(painted.spec.h).toBeGreaterThan(16);
+    expect(painted.spec.n).toBeGreaterThan(painted.spec.w * painted.spec.h * 0.5);
+    // The onset lane: the curve paints, and the detected onset is a mark
+    // hanging from the lane's top at its time's x — while a column a little
+    // to the right, where the curve is near-silent, has nothing at the top.
+    expect(painted.onset.n).toBeGreaterThan(0);
+    const x = Math.round(mid * st.stripPps - st.stripScroll.left);
+    const sum = (a: number, b: number) => a + b;
+    expect(painted.onset.topCols.slice(Math.max(0, x - 3), x + 4).reduce(sum, 0)).toBeGreaterThan(0);
+    expect(painted.onset.topCols.slice(x + 20, x + 30).reduce(sum, 0)).toBe(0);
   });
 });

@@ -148,6 +148,25 @@ const ANCHOR_EPS_SEC = 0.01;
 /** M within this distance of an existing mark removes it instead of adding. */
 const MARK_HIT_SEC = 0.35;
 
+// The v2 lanes (plan §14 Layout Q2): the strip is a LANE STACK under the
+// waveform's one time→x mapping. The worker computes both lanes from the
+// resident reference audio AFTER fix_ready, so arming never waits for them.
+/** Lane resolution: samples per column at FIX_SR (~23 ms). */
+const LANE_HOP = 512;
+const LANE_N_MELS = 64;
+/** The onset curve is drawn relative to its running maximum over ±this many
+ *  seconds (floored), so a quiet passage's onsets read at full height. */
+const LANE_NORM_WIN_SEC = 2;
+const LANE_NORM_FLOOR = 0.05;
+/** Below this fraction of the mel range the spectrogram fades to transparent,
+ *  so the theme's ground shows through the quiet parts on any theme. */
+const LANE_ALPHA_KNEE = 0.25;
+/** Detected onsets hang from the onset lane's top as marks this tall. */
+const LANE_PEAK_MARK_H = 5;
+/** Snap-to-onset: a dragged tick within this many px of a detected onset lands
+ *  on it (Alt while dragging bypasses; the nav checkbox is the sticky switch). */
+const SNAP_RADIUS_PX = 8;
+
 /** Quantised quarter key — the 1e-6 rounding every quarters consumer uses. */
 const qKey = (q) => Math.round(q * 1e6);
 
@@ -210,6 +229,11 @@ let _pageOnly = false;
  *  rather than a held modifier, because the nudge already owns Shift and
  *  Shift+Alt and commits on the keyup that leaves no nudge key down. */
 let _replaySuppressed = false;
+/** The v2 lanes and snap-to-onset: sticky across fix sessions, like the two
+ *  above. The lane switches also size the strip (see _stripClassName). */
+let _laneSpec = true;
+let _laneOnset = true;
+let _snapOnsets = true;
 /** The last committed fix's replay span, so R can replay it on demand. */
 let _lastReplay = null;
 
@@ -445,6 +469,9 @@ export async function enterFixMode(entryFile) {
     keyupHandler: null,
     blurHandler: null,
     lastCommit: null, // test surface: what the last anchor commit did
+    lanes: null, // the worker's fix_lanes reply (mel, onset curve, peaks)
+    lanesError: null,
+    lastDrag: null, // test surface: { rawT, t, snapped } of the last mouse drag
   };
   const f = _fix;
 
@@ -766,7 +793,7 @@ function _measurePaneDims() {
   const gap = document.createElement("div");
   gap.className = "fix-gap";
   const strip = document.createElement("div");
-  strip.className = "fix-strip";
+  strip.className = _stripClassName(); // the lane switches size the strip
   probe.append(score, gap, strip);
   content.appendChild(probe);
   const dims = { w: score.clientWidth, h: score.clientHeight };
@@ -1022,6 +1049,37 @@ function _buildDom(contentEl, waveformsEl) {
     },
   );
 
+  // Snap-to-onset (sticky): a dragged tick lands on the nearest onset detected
+  // in the recording within a few pixels; Alt while dragging places freely.
+  const [snapRow] = _navCheckbox(
+    "fix-snap-onsets",
+    "Snap to onsets",
+    "Dragged onsets snap to the nearest onset detected in the recording — " +
+      "hold Alt while dragging to place freely",
+    _snapOnsets,
+    (on) => {
+      _snapOnsets = on;
+    },
+  );
+
+  // The v2 lanes (sticky): each adds a lane beneath the waveform at the same
+  // time→x mapping, and the strip grows to hold it.
+  const [specRow] = _navCheckbox(
+    "fix-lane-spec",
+    "Spectrogram",
+    "Show a mel spectrogram of the recording beneath the waveform",
+    _laneSpec,
+    (on) => _setLane("spec", on),
+  );
+  const [onsetRow] = _navCheckbox(
+    "fix-lane-onset",
+    "Onset curve",
+    "Show the recording's onset-strength curve with its detected onsets " +
+      "(the snap targets)",
+    _laneOnset,
+    (on) => _setLane("onset", on),
+  );
+
   // Playback speed (pitch preserved via the stretch worklet). The % button
   // is the "back to 100%" affordance and lights up whenever speed ≠ 100%.
   const speed = document.createElement("span");
@@ -1101,7 +1159,7 @@ function _buildDom(contentEl, waveformsEl) {
   // sits last, away from the controls used while correcting.
   const toggles = document.createElement("div");
   toggles.className = "fix-toggles";
-  toggles.append(pageOnlyRow, replayRow);
+  toggles.append(pageOnlyRow, replayRow, snapRow, specRow, onsetRow);
   // Undo, redo, revert, and Save data are NOT listen-mode controls that
   // happen to sit in the nav — a correction session needs every one of them
   // (undo is unified onto listen.js's stack by ruling, and an unsaveable
@@ -1125,9 +1183,20 @@ function _buildDom(contentEl, waveformsEl) {
   gap.className = "fix-gap";
 
   const strip = document.createElement("div");
-  strip.className = "fix-strip";
+  strip.className = _stripClassName();
+  // The lane stack: waveform, mel spectrogram, onset curve — one column above
+  // the playhead's gutter, all three at the waveform's zoom + scroll.
+  const lanes = document.createElement("div");
+  lanes.className = "fix-lanes";
   const stripWs = document.createElement("div");
   stripWs.className = "fix-strip-ws";
+  const laneSpec = document.createElement("canvas");
+  laneSpec.className = "fix-lane-spec";
+  laneSpec.hidden = !_laneSpec;
+  const laneOnset = document.createElement("canvas");
+  laneOnset.className = "fix-lane-onset";
+  laneOnset.hidden = !_laneOnset;
+  lanes.append(stripWs, laneSpec, laneOnset);
   const ticks = document.createElement("canvas");
   ticks.className = "fix-ticks";
   ticks.addEventListener("mousedown", (e) => _onTickMouseDown(e));
@@ -1149,7 +1218,7 @@ function _buildDom(contentEl, waveformsEl) {
   skipNext.addEventListener("mousedown", (e) => e.preventDefault());
   skipPrev.addEventListener("click", () => _skipOnset(-1));
   skipNext.addEventListener("click", () => _skipOnset(1));
-  strip.append(stripWs, ticks, playhead, skipPrev, skipNext);
+  strip.append(lanes, ticks, playhead, skipPrev, skipNext);
 
   // Connector overlay spans the whole fix container so a polyline can run
   // from a note in the score pane down across the gap into the strip.
@@ -1180,7 +1249,10 @@ function _buildDom(contentEl, waveformsEl) {
     scoreEl: score,
     scoreSvg,
     strip,
+    lanes,
     stripWs,
+    laneSpec,
+    laneOnset,
     ticks,
     playhead,
     conn,
@@ -1729,17 +1801,293 @@ function _scheduleRedraw() {
 }
 
 /**
- * The waveform's bottom edge inside the strip. The strip is taller than its
- * waveform by the CSS gutter the playhead's lower arrowhead lives in; ticks,
+ * The lane stack's bottom edge inside the strip. The strip is taller than its
+ * lanes by the CSS gutter the playhead's lower arrowhead lives in; ticks,
  * anchor glyphs and drag ghosts all stop here so that gutter stays the
- * playhead's alone. Derived from the two elements rather than a duplicated
- * constant: the CSS is the single source of the gutter's size.
+ * playhead's alone. (Ticks deliberately cross every lane: a tick against the
+ * spectrogram's attack edge is the comparison the lanes exist for.) Derived
+ * from the two elements rather than a duplicated constant: the CSS is the
+ * single source of the gutter's size.
  */
-function _waveBottomY() {
+function _lanesBottomY() {
   const f = _fix;
   const h = f.els.strip.clientHeight;
-  const waveH = f.els.stripWs.clientHeight;
-  return waveH > 0 && waveH <= h ? waveH : h;
+  const lanesH = f.els.lanes?.clientHeight || 0;
+  return lanesH > 0 && lanesH <= h ? lanesH : h;
+}
+
+// ---------------------------------------------------------------------------
+// The v2 lanes: spectrogram + onset curve beneath the waveform, one time→x map
+// ---------------------------------------------------------------------------
+
+/**
+ * The strip's class list. The lane switches ride on it so CSS sizes the strip
+ * — and so the score pane — BEFORE anything is measured; _buildDom and the
+ * prewarm probe _measurePaneDims must both use this, or the fit diverges and
+ * every entry silently loses its prewarm.
+ */
+function _stripClassName() {
+  return (
+    "fix-strip" +
+    (_laneSpec ? " fix-lanes-spec" : "") +
+    (_laneOnset ? " fix-lanes-onset" : "")
+  );
+}
+
+/**
+ * A lane switch: resize the stack, rebuild the waveform at its new height (a
+ * WaveSurfer sizes itself at creation), repaint. The score pane's height moved
+ * too, and its ResizeObserver re-fits the page.
+ */
+function _setLane(which, on) {
+  if (which === "spec") _laneSpec = on;
+  else _laneOnset = on;
+  const f = _fix;
+  if (!f) return;
+  f.els.strip.className = _stripClassName();
+  f.els.laneSpec.hidden = !_laneSpec;
+  f.els.laneOnset.hidden = !_laneOnset;
+  _buildStrip(f.stripSource);
+  _scheduleRedraw();
+}
+
+/** Keep the worker's lanes for the session, derive the display curve, paint. */
+function _installLanes(f, d) {
+  f.lanes = {
+    hop: d.hop,
+    sr: d.sr,
+    nMels: d.n_mels,
+    nFrames: d.n_frames,
+    melT0: d.mel_t0,
+    onsetT0: d.onset_t0,
+    mel: d.mel,
+    onset: d.onset,
+    onsetNorm: _localNormalise(d.onset, Math.round((LANE_NORM_WIN_SEC * d.sr) / d.hop)),
+    peaks: Float64Array.from(d.peaks || []),
+    img: null,
+    scratch: null,
+    lastKey: null,
+  };
+  f.lanesError = null;
+  _scheduleRedraw();
+}
+
+/** onset / its running maximum over ±win frames (floored): the tutti no longer
+ *  flattens a quiet passage's onsets to nothing. ~n·win ops, once per session. */
+function _localNormalise(onset, win) {
+  const n = onset.length;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let m = 0;
+    const lo = Math.max(0, i - win);
+    const hi = Math.min(n - 1, i + win);
+    for (let j = lo; j <= hi; j++) if (onset[j] > m) m = onset[j];
+    out[i] = Math.min(1, onset[i] / Math.max(m, LANE_NORM_FLOOR));
+  }
+  return out;
+}
+
+let _melLutCache = null;
+/** A 256-entry RGBA ramp (inferno-like), fading to transparent below the knee
+ *  so the theme's ground shows through the quiet parts, light or dark. */
+function _melLut() {
+  if (_melLutCache) return _melLutCache;
+  const stops = [
+    [0.0, 0, 0, 4],
+    [0.13, 31, 12, 72],
+    [0.25, 85, 15, 109],
+    [0.38, 136, 34, 106],
+    [0.5, 186, 54, 85],
+    [0.63, 227, 89, 51],
+    [0.75, 249, 140, 10],
+    [0.88, 249, 201, 50],
+    [1.0, 252, 255, 164],
+  ];
+  const lut = new Uint8ClampedArray(256 * 4);
+  for (let v = 0; v < 256; v++) {
+    const x = v / 255;
+    let k = 0;
+    while (k < stops.length - 2 && x > stops[k + 1][0]) k++;
+    const [x0, r0, g0, b0] = stops[k];
+    const [x1, r1, g1, b1] = stops[k + 1];
+    const u = (x - x0) / (x1 - x0);
+    lut[v * 4] = r0 + (r1 - r0) * u;
+    lut[v * 4 + 1] = g0 + (g1 - g0) * u;
+    lut[v * 4 + 2] = b0 + (b1 - b0) * u;
+    lut[v * 4 + 3] = Math.min(1, x / LANE_ALPHA_KNEE) * 255;
+  }
+  _melLutCache = lut;
+  return lut;
+}
+
+/** Paint both lanes for the current window (called from _redrawOverlays, so
+ *  every scroll, zoom, resize, or selection redraw lands here too). */
+function _paintLanes() {
+  const f = _fix;
+  if (!f?.els.lanes) return;
+  const L = f.lanes;
+  for (const [el, kind] of [
+    [f.els.laneSpec, "spec"],
+    [f.els.laneOnset, "onset"],
+  ]) {
+    if (el.hidden) continue;
+    const w = el.clientWidth;
+    const h = el.clientHeight;
+    if (!w || !h) continue;
+    if (el.width !== w) el.width = w;
+    if (el.height !== h) el.height = h;
+    const ctx = el.getContext("2d");
+    if (!L || !f.stripWS || !f.stripPps) {
+      ctx.clearRect(0, 0, w, h);
+      _paintLanePlaceholder(ctx, w, h, kind, f.lanesError);
+      continue;
+    }
+    if (kind === "spec") _paintSpectrogram(ctx, L, w, h);
+    else _paintOnsetLane(ctx, L, w, h);
+  }
+}
+
+function _paintLanePlaceholder(ctx, w, h, kind, error) {
+  const style = getComputedStyle(document.documentElement);
+  ctx.fillStyle = style.getPropertyValue("--color-text-muted").trim() || "#64748b";
+  ctx.globalAlpha = 0.8;
+  ctx.font = "11px sans-serif";
+  ctx.textBaseline = "middle";
+  const what = kind === "spec" ? "spectrogram" : "onsets";
+  ctx.fillText(`${what} — ${error ? "unavailable" : "computing…"}`, 8, h / 2);
+  ctx.globalAlpha = 1;
+}
+
+/**
+ * The mel lane: the visible frames are looked up through the colour ramp into
+ * an ImageData the size of the window (a few hundred to a few thousand
+ * columns × the mel bins), put onto a scratch canvas, and drawn scaled onto
+ * the lane with a fractional source rectangle so frame edges land exactly on
+ * the waveform's time→x. The whole recording is never rasterised at once: a
+ * ten-minute piece is ~26k columns, past what a canvas may be wide. Cached on
+ * the (scroll, zoom, size) key — a selection or drag redraw costs nothing.
+ */
+function _paintSpectrogram(ctx, L, w, h) {
+  const f = _fix;
+  const scrollEl = f.stripWS.getWrapper().parentElement;
+  const key = `${scrollEl.scrollLeft}|${f.stripPps}|${w}|${h}`;
+  if (L.lastKey === key) return;
+  L.lastKey = key;
+  ctx.clearRect(0, 0, w, h);
+  const t0 = _stripXToTime(0);
+  const t1 = _stripXToTime(w);
+  if (t0 === null || t1 === null) return;
+  const fr = L.sr / L.hop;
+  // Frame i is centred at i / fr + melT0 and owns the cell [i − ½, i + ½).
+  const F0 = Math.max(0, Math.floor((t0 - L.melT0) * fr - 0.5));
+  const F1 = Math.min(L.nFrames, Math.ceil((t1 - L.melT0) * fr + 0.5) + 1);
+  if (F1 <= F0) return;
+  const nF = F1 - F0;
+  const nM = L.nMels;
+  if (!L.img || L.img.width !== nF) L.img = new ImageData(nF, nM);
+  const data = L.img.data;
+  const lut = _melLut();
+  const mel = L.mel;
+  const stride = L.nFrames;
+  for (let m = 0; m < nM; m++) {
+    let o = (nM - 1 - m) * nF * 4; // the lowest band at the bottom
+    let s = m * stride + F0;
+    for (let i = 0; i < nF; i++, o += 4, s++) {
+      const v = mel[s] * 4;
+      data[o] = lut[v];
+      data[o + 1] = lut[v + 1];
+      data[o + 2] = lut[v + 2];
+      data[o + 3] = lut[v + 3];
+    }
+  }
+  if (!L.scratch) L.scratch = document.createElement("canvas");
+  const sc = L.scratch;
+  if (sc.width !== nF) sc.width = nF;
+  if (sc.height !== nM) sc.height = nM;
+  sc.getContext("2d").putImageData(L.img, 0, 0);
+  const sx0 = (t0 - L.melT0) * fr + 0.5 - F0;
+  const sx1 = (t1 - L.melT0) * fr + 0.5 - F0;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(sc, sx0, 0, sx1 - sx0, nM, 0, 0, w, h);
+}
+
+/**
+ * The onset lane: the locally normalised onset curve as a filled area, the
+ * detected onsets as marks hanging from the lane's top (they are the snap
+ * targets), and a ring on the one a drag is currently snapped to.
+ */
+function _paintOnsetLane(ctx, L, w, h) {
+  const f = _fix;
+  ctx.clearRect(0, 0, w, h);
+  const t0 = _stripXToTime(0);
+  const t1 = _stripXToTime(w);
+  if (t0 === null || t1 === null) return;
+  const fr = L.sr / L.hop;
+  const F0 = Math.max(0, Math.floor((t0 - L.onsetT0) * fr) - 1);
+  const F1 = Math.min(L.nFrames, Math.ceil((t1 - L.onsetT0) * fr) + 2);
+  if (F1 <= F0) return;
+  const style = getComputedStyle(document.documentElement);
+  const fill = style.getPropertyValue("--color-waveform").trim() || "violet";
+  const tickColor =
+    style.getPropertyValue("--color-alignment").trim() || "rgb(140,90,90)";
+  const top = LANE_PEAK_MARK_H + 1; // the curve keeps below the marks' row
+  ctx.beginPath();
+  ctx.moveTo(_timeToStripX(F0 / fr + L.onsetT0), h);
+  for (let i = F0; i < F1; i++) {
+    ctx.lineTo(_timeToStripX(i / fr + L.onsetT0), h - L.onsetNorm[i] * (h - top));
+  }
+  ctx.lineTo(_timeToStripX((F1 - 1) / fr + L.onsetT0), h);
+  ctx.closePath();
+  ctx.globalAlpha = 0.55;
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.globalAlpha = 0.85;
+  ctx.fillStyle = tickColor;
+  const pk = L.peaks;
+  for (let k = _lowerBound(pk, t0 - 1); k < pk.length && pk[k] <= t1 + 1; k++) {
+    const x = _timeToStripX(pk[k]);
+    ctx.fillRect(Math.round(x) - 1, 0, 2, LANE_PEAK_MARK_H);
+  }
+  const snapT = f.drag?.snapT;
+  if (snapT != null) {
+    const x = _timeToStripX(snapT);
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = f.playheadColor;
+    ctx.beginPath();
+    ctx.arc(x, LANE_PEAK_MARK_H, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** The nearest detected onset within `radius` seconds of t, or null. */
+function _nearestOnsetPeak(t, radius) {
+  const pk = _fix?.lanes?.peaks;
+  if (!pk?.length) return null;
+  const k = _lowerBound(pk, t);
+  let best = null;
+  let bestD = radius;
+  for (const c of [pk[k - 1], pk[k]]) {
+    if (c === undefined) continue;
+    const dd = Math.abs(c - t);
+    if (dd <= bestD) {
+      bestD = dd;
+      best = c;
+    }
+  }
+  return best;
+}
+
+/** First index whose value is ≥ v in a sorted array (the array's length if none). */
+function _lowerBound(arr, v) {
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid] < v) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 function _redrawOverlays() {
@@ -1749,11 +2097,13 @@ function _redrawOverlays() {
   const canvas = f.els.ticks;
   const w = strip.clientWidth;
   const h = strip.clientHeight;
-  const wb = _waveBottomY();
+  const wb = _lanesBottomY();
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, w, h);
+
+  _paintLanes();
 
   const rootRect = f.els.root.getBoundingClientRect();
   const stripRect = strip.getBoundingClientRect();
@@ -1850,7 +2200,8 @@ function _redrawOverlays() {
       ctx.font = "11px sans-serif";
       ctx.textAlign = x > w - 60 ? "right" : "left";
       ctx.fillText(
-        `${delta >= 0 ? "+" : ""}${delta.toFixed(3)} s`,
+        `${delta >= 0 ? "+" : ""}${delta.toFixed(3)} s` +
+          (f.drag.snapT != null ? " · onset" : ""),
         x + (x > w - 60 ? -6 : 6),
         14,
       );
@@ -2055,9 +2406,23 @@ function _onTickMouseMove(e) {
     return;
   }
   const rect = f.els.ticks.getBoundingClientRect();
-  const t = _stripXToTime(e.clientX - rect.x);
-  if (t === null) return;
+  const raw = _stripXToTime(e.clientX - rect.x);
+  if (raw === null) return;
+  // Snap-to-onset: magnetic within SNAP_RADIUS_PX of a detected onset, unless
+  // Alt is held (free placement) or the sticky switch is off. The ghost shows
+  // where the tick WILL land, so the release holds no surprise.
+  let t = raw;
+  d.snapT = null;
+  if (_snapOnsets && !e.altKey) {
+    const p = _nearestOnsetPeak(raw, SNAP_RADIUS_PX / f.stripPps);
+    if (p !== null) {
+      t = p;
+      d.snapT = p;
+    }
+  }
+  d.rawT = raw;
   d.curT = Math.min(Math.max(t, d.bounds.lo), d.bounds.hi);
+  if (d.curT !== t) d.snapT = null; // clamped off the onset by a neighbour
   _scheduleRedraw();
 }
 
@@ -2075,6 +2440,7 @@ function _onTickMouseUp(e) {
     _scheduleRedraw();
     return;
   }
+  f.lastDrag = { rawT: d.rawT ?? d.curT, t: d.curT, snapped: d.snapT != null };
   _select(d.groupIx, { seek: false });
   _commitAnchor(d.groupIx, d.curT, "drag").catch((err) => {
     console.error("fix mode: drag commit failed:", err);
@@ -3694,7 +4060,14 @@ async function _bootstrap() {
       return;
     }
     if (!_fix || _fix !== f) return;
-    if (d.type === "progress") {
+    if (d.type === "fix_lanes") {
+      _installLanes(f, d);
+    } else if (d.type === "fix_lanes_error") {
+      // The lanes are a comfort, not the engine: the session stays live.
+      console.warn("fix mode: lanes unavailable:", d.message);
+      f.lanesError = d.message;
+      _scheduleRedraw();
+    } else if (d.type === "progress" && !f.engineReady) {
       // fix_begin's one progress message is the score synth. Shortened to
       // fit the chip's 28ch; the full text stays in the tooltip.
       const short = /synthesis/i.test(d.message) ? "score synth…" : "working…";
@@ -3717,6 +4090,9 @@ async function _bootstrap() {
       f.engineReady = true;
       _setChip("ready", "Ready to correct");
       _syncReadyAffordance();
+      // The v2 lanes come AFTER arming, from the audio the worker now holds:
+      // a few seconds of numpy the correction session never waits for.
+      worker.postMessage({ type: "fix_lanes", hop: LANE_HOP, nMels: LANE_N_MELS });
     } else if (d.type === "error") {
       _setChip("error", `Correction engine failed: ${d.message}`);
     }
@@ -3812,6 +4188,28 @@ export function fixTestState() {
     lastCommit: f.lastCommit ? { ...f.lastCommit } : null,
     soundingGroup: f.soundingGroupIx,
     pageOnly: _pageOnly,
+    laneSpec: _laneSpec,
+    laneOnset: _laneOnset,
+    snapOnsets: _snapOnsets,
+    lanes: f.lanes
+      ? {
+          hop: f.lanes.hop,
+          sr: f.lanes.sr,
+          nMels: f.lanes.nMels,
+          nFrames: f.lanes.nFrames,
+          peakCount: f.lanes.peaks.length,
+          peaks: Array.from(f.lanes.peaks.subarray(0, 64)),
+        }
+      : null,
+    lanesError: f.lanesError,
+    lastDrag: f.lastDrag ? { ...f.lastDrag } : null,
+    laneHeights: {
+      strip: f.els.strip?.clientHeight ?? 0,
+      lanes: f.els.lanes?.clientHeight ?? 0,
+      wave: f.els.stripWs?.clientHeight ?? 0,
+      spec: f.els.laneSpec?.hidden ? 0 : (f.els.laneSpec?.clientHeight ?? 0),
+      onset: f.els.laneOnset?.hidden ? 0 : (f.els.laneOnset?.clientHeight ?? 0),
+    },
     pageWindow: (() => {
       const w = _pageTimeSlice();
       return w

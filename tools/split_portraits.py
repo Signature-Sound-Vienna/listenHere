@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Split a contact sheet of Gen-AI conductor portraits into one file per sitter.
+"""Split a contact sheet of Gen-AI conductor portraits into one file per sitter,
+and mark each one visibly as AI-generated.
 
 The portraits arrive as a single image: a grid of circular gold-ringed medallions
-on blue velvet, separated by white rules. This cuts them out.
+on blue velvet, separated by white rules. This cuts them out and stamps them.
 
 WHY IT FINDS THE RINGS INSTEAD OF DIVIDING BY THE GRID. A nominal 3x3 of a
 1600x898 sheet gives 533x299 cells, and the medallions are neither centred in
@@ -13,10 +14,50 @@ them. Finding each ring by colour and cropping a square around its own centre is
 both more accurate and indifferent to the grid shape, so the next batch can be a
 4x3 or a strip of five without editing anything but --rows and --cols.
 
-MARGIN. The band renders a portrait as a `border-radius: 50%` element with
-`background-size: cover`, so the inscribed circle of the crop is what a visitor
-sees. Cropping flush to the ring's outer edge leaves the ring exactly on that
-boundary, where antialiasing eats it; a few pixels of velvet keeps it whole.
+MARGIN. A few pixels of velvet outside the ring, so the circular cut below has
+clean pixels to antialias against instead of shaving the gold.
+
+THE AI MARK (plan s5.5, designed 2026-09-01). These are invented images of real,
+named, living and recently-living people, so every surface that shows one has to
+show that it is an impression. The mark is burned into the ASSET rather than
+added by the interface, for one reason: a surface cannot forget it. The band,
+the strap, the discographic views still to be built, and anything after them all
+inherit it, and it needs no text, so the band's no-labels rule (plan s6.3 — a
+caption would have to pick one of two readers' languages) survives intact.
+
+Its shape and position are all forced by measurements, not taste:
+
+  * NOT ON THE GOLD RING. The ring is only ~4.5% of the diameter (radius 130 to
+    143 of a 289 px crop) — 3.2 px at the band's 72 and 1.3 px on a strap disc.
+    A mark laid on the metal is invisible even at full asset size. Tried.
+  * NOT IN THE SQUARE'S CORNER EITHER, tempting as it is. Both surfaces clip to
+    a circle (`border-radius: 50%` on `.mb-portrait` and `.strap-btn::before`),
+    so a corner mark is clipped away and never drawn. That is also why the
+    medallion is INSET to MEDALLION_FRAC: the mark needs somewhere to sit that
+    the clip will still keep.
+  * IT STRADDLES THE RIM rather than floating clear of it (user's call,
+    2026-09-01, having seen both). Clear of the gold is possible but costs the
+    face: the mark and its clearance have to fit inside the same circular clip,
+    so a bubble that clears the ring puts the medallion at 0.70-0.76 of the box
+    instead of 0.86 — 56 px in the band against 69. Straddling reads as a seal
+    pinned to the rim and costs nothing.
+  * IT CARRIES ITS OWN CONTRAST. Half the mark lies outside the ring, on the
+    THEME's ground rather than on the portrait, and those grounds run from
+    #17171b to parchment's cream #e0cfa8. A plain gold spark measures ~1.3:1 on
+    the cream and simply disappears. A gold bubble with the spark knocked out of
+    it dark, and a dark keyline round its edge, reads on all four grounds the
+    exhibit uses because its contrast is internal.
+
+Geometry is in units of the canvas HALF-WIDTH, so 1.0 is the clip boundary and
+MEDALLION_FRAC is the medallion's RADIUS (not its diameter — that trap cost a
+round of this design). The invariants are asserted in main().
+
+FORMAT. WebP, not JPEG (no alpha channel, and the inset medallion needs one) and
+not PNG. Measured on a real crop: WebP q88 20 KB, PNG 134 KB, the JPEG this
+replaces 24 KB. Alpha therefore costs nothing.
+
+No font is loaded anywhere: the spark is a polygon and the bubble an ellipse, so
+this reproduces identically on a machine with different fonts installed.
 
 NAMING is per RECORDING, not per conductor (user, 2026-09-01): the corpus runs
 to 90-odd releases and 60-plus New Year's Concerts, the same conductor recurs
@@ -34,17 +75,62 @@ not in venv/ — run it with python3, not venv/bin/python.
 
 import argparse
 import json
+import math
 import os
 import sys
 
 try:
     import numpy as np
-    from PIL import Image
+    from PIL import Image, ImageDraw
 except ImportError as exc:  # pragma: no cover - environment guidance
     sys.exit(f"{exc}. Pillow and numpy are in the system python3 here, not venv/.")
 
 
 OUT_DIR = os.path.join("app", "static", "exhibit", "portraits")
+
+# --- the AI mark (see THE AI MARK in the module docstring) --------------------
+# Fractions of the canvas half-width, so 1.0 is the surfaces' circular clip.
+# MEDALLION_FRAC is the medallion's diameter over the canvas WIDTH, which is the
+# same number as its radius in half-widths — the unit the mark's constants use.
+# Reading it as a radius over the half-width and then halving it again is the
+# mistake that put the mark inside the portrait for a round.
+MEDALLION_FRAC = 0.86  # medallion diameter / canvas = medallion radius in half-widths
+MARK_DIST = 0.74       # bubble centre, out along the upper-right diagonal
+MARK_R = 0.13          # bubble radius
+MARK_SPARK = 0.62      # spark radius, as a fraction of the bubble's
+MARK_ANGLE = -45.0     # upper right
+
+# The bubble wears the medallion's own gold so it reads as part of the object,
+# with a keyline dark enough to hold its edge against parchment's cream.
+MARK_GOLD = (212, 178, 94)
+MARK_KEYLINE = (108, 82, 30)
+MARK_SPARK_INK = (38, 30, 14)
+
+# Everything a viewer or a downstream tool needs to know that this is synthetic.
+# `trainedAlgorithmicMedia` is IPTC's term for it, and the XMP travels with the
+# file — so the claim survives the image being copied out of the exhibit, which
+# a burned-in glyph on its own does not.
+XMP = (
+    '<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+    '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+    '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+    '<rdf:Description rdf:about=""'
+    ' xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/"'
+    ' xmlns:dc="http://purl.org/dc/elements/1.1/">'
+    "<Iptc4xmpExt:DigitalSourceType>"
+    "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+    "</Iptc4xmpExt:DigitalSourceType>"
+    "<dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">"
+    "{description}"
+    "</rdf:li></rdf:Alt></dc:description>"
+    "</rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end=\"w\"?>"
+)
+
+DESCRIPTION = (
+    "AI-generated impression of {sitter}. Not a photograph and not a likeness "
+    "taken from life. Made for the Signature Sound Vienna exhibit; display only, "
+    "no fact is derived from it."
+)
 
 # Batch 1 (2026-09-01), left to right, top to bottom, as delivered. The
 # recording is None for a sitter with no recording in the payload yet.
@@ -150,16 +236,83 @@ def find_medallions(img, rows, cols):
     return out
 
 
+def _spark(cx, cy, r):
+    """A four-point star: the widely-read shorthand for 'generated'."""
+    pts = []
+    for k in range(8):
+        ang = -math.pi / 2 + k * math.pi / 4
+        rad = r if k % 2 == 0 else r * 0.34
+        pts.append((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
+    return pts
+
+
+def compose(img, circle, size, margin, supersample=4, mark=True):
+    """The finished asset: medallion inset on transparency, plus the AI mark.
+
+    Drawn at `supersample` times the output and reduced, because both the
+    circular cut and the spark's points are diagonal edges that look chewed
+    without it — and the strap renders this at 30 px, where chewed is all you
+    would see.
+    """
+    cx, cy, radius = circle
+    S = supersample
+    N = size * S
+    out = Image.new("RGBA", (N, N), (0, 0, 0, 0))
+
+    # The medallion, cut at the ring's own outer edge so the velvet corners go.
+    # One pixel of slack (at source scale) so the cut does not shave the gold.
+    med = int(round(MEDALLION_FRAC * N))
+    half = radius + margin
+    box = (round(cx - half), round(cy - half), round(cx + half), round(cy + half))
+    face = img.crop(box).resize((med, med), Image.LANCZOS)
+    keep = (radius + 1) / half  # the ring's share of the cropped square
+    mask = Image.new("L", (med, med), 0)
+    inset = med * (1 - min(keep, 1.0)) / 2
+    ImageDraw.Draw(mask).ellipse(
+        [inset, inset, med - 1 - inset, med - 1 - inset], fill=255
+    )
+    off = (N - med) // 2
+    out.paste(face, (off, off), mask)
+
+    if mark:
+        dr = ImageDraw.Draw(out)
+        mx = N / 2 + MARK_DIST * (N / 2) * math.cos(math.radians(MARK_ANGLE))
+        my = N / 2 + MARK_DIST * (N / 2) * math.sin(math.radians(MARK_ANGLE))
+        r = MARK_R * (N / 2)
+        dr.ellipse([mx - r, my - r, mx + r, my + r], fill=MARK_GOLD + (255,),
+                   outline=MARK_KEYLINE + (255,), width=max(1, round(r * 0.13)))
+        dr.polygon(_spark(mx, my, r * MARK_SPARK), fill=MARK_SPARK_INK + (255,))
+
+    return out.resize((size, size), Image.LANCZOS)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("sheet", help="the contact sheet image")
     ap.add_argument("--rows", type=int, default=3)
     ap.add_argument("--cols", type=int, default=3)
     ap.add_argument("--margin", type=int, default=3, help="velvet kept outside the ring")
-    ap.add_argument("--quality", type=int, default=90)
+    ap.add_argument("--quality", type=int, default=88, help="WebP quality")
+    ap.add_argument("--size", type=int, default=340,
+                    help="output edge in px; the medallion is MEDALLION_FRAC of it")
     ap.add_argument("--out", default=OUT_DIR)
+    ap.add_argument("--no-mark", dest="mark", action="store_false",
+                    help="omit the AI mark — for inspecting the crop ONLY, never "
+                         "for an asset the exhibit will show")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
+
+    # The three things the mark's position depends on, asserted rather than
+    # trusted. All in half-widths, and MEDALLION_FRAC is already a radius.
+    if MARK_DIST + MARK_R >= 1.0:
+        sys.exit("the AI mark would fall outside the surfaces' circular clip, "
+                 "where it is silently never drawn")
+    if MARK_DIST + MARK_R <= MEDALLION_FRAC:
+        sys.exit("the AI mark would sit wholly inside the medallion, reading as "
+                 "a blemish on the portrait rather than a seal on its rim")
+    if MARK_DIST - MARK_R >= MEDALLION_FRAC:
+        sys.exit("the AI mark would float clear of the rim; it is meant to "
+                 "straddle it (see THE AI MARK), so anchor it to the gold")
 
     img = Image.open(args.sheet).convert("RGB")
     found = find_medallions(img, args.rows, args.cols)
@@ -175,25 +328,29 @@ def main():
         if circle is None:
             print(f"  !! no medallion found for {full}", file=sys.stderr)
             continue
-        cx, cy, radius = circle
-        half = radius + args.margin
-        box = (round(cx - half), round(cy - half), round(cx + half), round(cy + half))
-        crop = img.crop(box)
-        name = f"{recording}-{surname}.jpg" if recording else f"{surname}.jpg"
+        asset = compose(img, circle, args.size, args.margin, mark=args.mark)
+        name = f"{recording}-{surname}.webp" if recording else f"{surname}.webp"
         rel = name if recording else os.path.join("unassigned", name)
         path = os.path.join(args.out, rel)
         if not args.dry_run:
-            crop.save(path, "JPEG", quality=args.quality, optimize=True)
+            asset.save(
+                path, "WEBP", quality=args.quality, method=6,
+                xmp=XMP.format(description=DESCRIPTION.format(sitter=full)).encode(),
+            )
         written.append({"file": rel, "sitter": full, "recording": recording,
-                        "size": crop.size})
-        print(f"  {rel:34s} {full:22s} {crop.size[0]}x{crop.size[1]}")
+                        "size": asset.size, "marked": args.mark})
+        kb = 0 if args.dry_run else os.path.getsize(path) // 1024
+        print(f"  {rel:34s} {full:22s} {asset.size[0]}x{asset.size[1]}  {kb} KB"
+              + ("" if args.mark else "   ** UNMARKED **"))
 
-    print(json.dumps({"written": len(written), "out": args.out}, ensure_ascii=False))
+    print(json.dumps({"written": len(written), "out": args.out,
+                      "marked": args.mark}, ensure_ascii=False))
     print(
         "\nWire one up by adding a `portrait` field to the recording's entry in\n"
         "app/static/exhibit/data/metadata-overrides.json (see portraits/README.md).\n"
-        "These are AI impressions of real, named people: the visible labelling\n"
-        "obligation in that README is NOT yet met."
+        "Every asset carries the AI mark and the IPTC digital-source-type; the\n"
+        "sentence of prose that explains the mark is the about page's job, and\n"
+        "until it ships the labelling obligation is only half met."
     )
 
 

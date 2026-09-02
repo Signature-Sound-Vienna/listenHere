@@ -160,7 +160,7 @@ export function metadataFor(data, file) {
  * Absolute URL for a recording's Gen-AI portrait, or "" when it has none.
  *
  * Resolved against the EXHIBIT ROOT for the same reason `recordings[].audio` is
- * (see buildExhibitData): the sidecar stores "portraits/vpo-1987.jpg", a path
+ * (see buildExhibitData): the sidecar stores "portraits/vpo-1987-karajan.webp", a path
  * relative to this directory, and the only thing that makes a bare relative URL
  * work in the band today is that the document happens to live in this directory
  * too. That is a coincidence the route comment in app/routes.py already warns

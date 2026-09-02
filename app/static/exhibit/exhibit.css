@@ -342,6 +342,16 @@ html, body {
     calc(var(--ex-strap-w, 52px) - 12px),
     calc(var(--strip-height, 54px) - 8px)
   );
+  /* A PORTRAIT NEEDS A BIGGER BOX FOR THE SAME FACE. The marked assets carry a
+   * transparent margin — the AI mark straddles the medallion's rim and needs
+   * room inside the circular clip (tools/split_portraits.py, THE AI MARK) — so
+   * the medallion is 0.86 of its box, not all of it. Growing the portrait discs
+   * by that much keeps the visible gold circle at the same 30 px the paper
+   * discs beside them use, which is the point: the two must line up. */
+  --ex-strap-disc-portrait: min(
+    calc(var(--ex-strap-w, 52px) - 8px),
+    calc(var(--strip-height, 54px) - 3px)
+  );
 }
 .strap-btn {
   flex: 0 0 var(--strip-height, 54px);
@@ -411,12 +421,25 @@ html, body {
  * repainting the disc — a bronze wash over a face would fight it — and marks
  * itself with the stitching ring and the caption instead. */
 .strap-btn.has-portrait::before {
+  width: var(--ex-strap-disc-portrait);
+  height: var(--ex-strap-disc-portrait);
   background-image: var(--strap-portrait);
   background-size: cover;
   background-position: center;
+  /* THE ASSET HAS AN ALPHA CHANNEL NOW (WebP, since the mark needs one), so the
+   * two things that assumed an opaque square have to change. The paper disc
+   * underneath would show through the transparent margin as a pale ring, and a
+   * box-shadow follows the square box rather than the medallion — a drop-shadow
+   * filter follows the alpha, which is the shape a visitor actually sees. */
+  background-color: transparent;
+  box-shadow: none;
+  filter: drop-shadow(0 1px 2px rgba(20, 10, 2, 0.35));
 }
 .strap-btn.has-portrait > span { visibility: hidden; }
-.strap-btn.has-portrait.is-active::before { background-color: var(--ex-accent); }
+/* No accent wash under a portrait. It was already invisible beneath an opaque
+ * one, but through the new transparent margin it would paint a bronze ring
+ * around the medallion — which is exactly the "bronze wash over a face" the
+ * comment above rules out. The active state stays the stitching ring. */
 
 /* The arrow medallions: above the top medallion and below the bottom one,
  * anchored to the rail's ends so the eight rows keep their strip alignment.
@@ -1369,7 +1392,9 @@ html, body {
 .middle-band[data-orientation="mirrored"] .mb-flipped { transform: rotate(180deg); }
 .middle-band[data-orientation="mirrored"] .mb-cluster { gap: 10px; }
 .middle-band[data-orientation="mirrored"] .mb-portrait {
-  width: calc(var(--middle-band-height, 96px) - 44px);
+  /* -36px, not -44px: the same 8 px the upright band gained, for the same
+   * reason. Two clusters still fit the width. */
+  width: calc(var(--middle-band-height, 96px) - 36px);
   font-size: calc(var(--middle-band-height, 96px) / 5);
 }
 .middle-band[data-orientation="mirrored"] .mb-conductor,
@@ -1421,7 +1446,10 @@ html, body {
 }
 
 .mb-portrait {
-  width: calc(var(--middle-band-height, 96px) - 24px);
+  /* Grown from -24px to make room for the marked asset's transparent margin
+   * (see --ex-strap-disc-portrait): 80 px of box gives 69 px of medallion,
+   * within a few percent of the 72 px the unmarked JPEGs filled. */
+  width: calc(var(--middle-band-height, 96px) - 16px);
   aspect-ratio: 1;
   border-radius: 50%;
   background: var(--ex-band-card) center / cover no-repeat;
@@ -1436,6 +1464,10 @@ html, body {
   color: var(--ex-band-faint);
   letter-spacing: 0.02em;
 }
+/* The card colour is the PLACEHOLDER's disc, and a marked portrait is
+ * transparent around its medallion — so leaving it would ring every face with
+ * a pale circle. Only the initials still want a disc behind them. */
+.mb-portrait.has-portrait { background-color: transparent; }
 
 /* Numerals and a proper name: the two things that need no translation. */
 /* Conductor over orchestra, as one column: the conductor is the interpretation's

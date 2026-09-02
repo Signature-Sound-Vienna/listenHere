@@ -676,7 +676,7 @@ test.describe('34. The Gen-AI conductor portraits', () => {
   //    identity) keeps its "?" — because portraits arrive in batches over
   //    months and most recordings will be without one for most of that time;
   //  * the URL is resolved against the EXHIBIT ROOT, not against whatever
-  //    document is showing the band. The sidecar stores "portraits/x.jpg", and
+  //    document is showing the band. The sidecar stores "portraits/x.webp", and
   //    a bare relative URL only works because the page happens to live in that
   //    directory — the very coincidence app/routes.py redirects /exhibit to
   //    preserve. Asserting the resolved href is what stops that regressing.

@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.48.0 -- The Gen-AI portraits are marked as AI-generated
+* Every conductor portrait carries a small gold bubble with a four-point spark, straddling the medallion's rim at the upper right. It is burned into the image, so the band, the strap, and any surface added later all show it.
+* The portraits also carry the IPTC `DigitalSourceType` of `trainedAlgorithmicMedia` in their XMP, so the claim survives the file leaving the exhibit.
+* Portrait assets become WebP with an alpha channel; the nine JPEGs are replaced.
+* The band's portrait grows 72 → 80 px and the strap's portrait discs 30 → 35 px, so the visible medallion stays the size it was; the strap's portrait medallions still line up with the paper discs beside them.
+* `tools/split_portraits.py` draws the mark at split time and refuses to write one that would land inside the portrait or outside the surfaces' circular clip.
+* Still open: one sentence on the about page explaining the mark. Until it ships, the §5.5 labelling obligation is only half met.
+
 ### 0.47.0 -- Chanda's demo feedback: the per-recording notes appear, the band says whose turn it is
 * The annotator's per-recording notes are rendered for the first time. 31 of the 61 targets in the shown set carry one and no code path read any of them; the note for the audible recording now appears below the shared description, headed by that recording's strip caption.
 * Strips the shown annotation has a note for carry a dot while it paints, so which of the ten were commented on is visible at a glance. `?targetNotes=off` is the comparator.

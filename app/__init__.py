@@ -3,7 +3,7 @@ from flask import Flask
 
 app = Flask(__name__)
 
-app.config['VERSION'] = '0.47.0'
+app.config['VERSION'] = '0.48.0'
 app.config['VERSION_DATE'] = '1 September 2026'
 app.config['VERSION_DATE_ISO'] = datetime.strptime(app.config['VERSION_DATE'], '%d %B %Y').strftime('%Y-%m-%d')
 

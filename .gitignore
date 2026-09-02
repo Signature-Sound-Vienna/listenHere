@@ -1,6 +1,7 @@
 app/static/wav
 app/static/npm/node_modules
 app/__pycache__
+tools/__pycache__
 venv
 .DS_STORE
 tests/.env

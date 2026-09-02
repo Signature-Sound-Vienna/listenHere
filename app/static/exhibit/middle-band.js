@@ -330,6 +330,10 @@ function buildCluster(data, language) {
     portrait.textContent = "";
     portrait.style.backgroundImage = "";
     const portraitSrc = portraitUrl(meta);
+    // The class, not the background alone, is what CSS keys the transparent
+    // ground off: a marked asset is transparent around its medallion, and the
+    // card colour behind it would ring the face. The initials still want it.
+    portrait.classList.toggle("has-portrait", Boolean(portraitSrc));
     if (portraitSrc) {
       // A generated portrait, once there is one. Set as a background rather than
       // an <img> so a missing file degrades to the placeholder circle instead of

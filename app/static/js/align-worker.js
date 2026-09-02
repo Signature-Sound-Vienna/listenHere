@@ -1,6 +1,8 @@
 /*
  * align-worker.js
- * Web Worker for in-browser audio alignment using Pyodide (numpy + scipy).
+ * Web Worker for in-browser audio alignment using Pyodide (numpy only —
+ * scipy was dropped 2026-09-02: it cost ~2 s of every runtime boot for three
+ * linear interpolations and one running maximum, all numpy now).
  * Computes chroma features via STFT, aligns recordings using DTW.
  *
  * Architecture:
@@ -49,8 +51,39 @@ function reportStep(phase, step, file, index, total, elapsed) {
 
 const PYTHON_CODE = `
 import numpy as np
-from scipy.interpolate import interp1d
 from js import reportProgress, reportStep
+
+def interp_linear_extrap(x, y, xq):
+    """interp1d(kind='linear', fill_value='extrapolate') without scipy — the
+    only thing scipy was loaded for (~2 s of runtime per session). x must be
+    strictly increasing (make_monotonic guarantees it for warping paths):
+    np.interp inside the range, the end segments' slopes outside. A scalar
+    query returns a float, an array query an array, as interp1d did."""
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    scalar = np.ndim(xq) == 0
+    q = np.atleast_1d(np.asarray(xq, dtype=np.float64))
+    if len(x) < 2:
+        out = np.full(q.shape, y[0] if len(y) else np.nan)
+    else:
+        out = np.interp(q, x, y)
+        lo = q < x[0]
+        if lo.any():
+            out[lo] = y[0] + (q[lo] - x[0]) * (y[1] - y[0]) / (x[1] - x[0])
+        hi = q > x[-1]
+        if hi.any():
+            out[hi] = y[-1] + (q[hi] - x[-1]) * (y[-1] - y[-2]) / (x[-1] - x[-2])
+    return float(out[0]) if scalar else out
+
+def _running_max(a, half):
+    """Maximum over [i - half, i + half], edge-clipped — maximum_filter1d
+    (mode='nearest') without scipy."""
+    a = np.asarray(a, dtype=np.float64)
+    out = a.copy()
+    for d in range(1, int(half) + 1):
+        out[d:] = np.maximum(out[d:], a[:-d])
+        out[:-d] = np.maximum(out[:-d], a[d:])
+    return out
 import time as _time
 
 SR = 22050
@@ -576,9 +609,7 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
     other_times = wp[1].astype(np.float64) * other_duration / max(n_other - 1, 1)
 
     ref_grid   = np.arange(0, ref_duration, ANNOTATION_STEP)
-    transferred = interp1d(
-        ref_times, other_times, kind='linear', fill_value='extrapolate'
-    )(ref_grid)
+    transferred = interp_linear_extrap(ref_times, other_times, ref_grid)
     return transferred.tolist()
 
 
@@ -896,7 +927,7 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
     sc_times_c = wp_c[0].astype(np.float64) * midi_dur / max(n_sc_c - 1, 1)
     rc_times_c = wp_c[1].astype(np.float64) * ref_dur  / max(n_rc_c - 1, 1)
     del wp_c
-    wf = interp1d(sc_times_c, rc_times_c, kind='linear', fill_value='extrapolate')
+    wf = lambda xq: interp_linear_extrap(sc_times_c, rc_times_c, xq)
 
     # Deduplicate chord notes: one entry per unique (onset_tick, offset_tick)
     seen = {}
@@ -1072,7 +1103,7 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
     wp = make_monotonic(_guided_band_dtw(feat_s, feat_r, j_lo, j_hi))
     s_path = s_a + wp[0].astype(np.float64) * seg_s / max(n_s - 1, 1)
     r_path = t_a + wp[1].astype(np.float64) * seg_r / max(n_r - 1, 1)
-    wf = interp1d(s_path, r_path, kind='linear', fill_value='extrapolate')
+    wf = lambda xq: interp_linear_extrap(s_path, r_path, xq)
 
     # An OFFSET may legitimately lie past the segment's right edge: ties,
     # sustained notes under a moving line, any polyphonic overlap. On the
@@ -1132,7 +1163,21 @@ def _mel_filterbank(n_fft, n_mels, fmin, fmax):
     fb *= (2.0 / (edges[2:] - edges[:-2])).astype(np.float32)[:, None]
     return fb
 
-def compute_mel_spectrogram(audio, n_fft=None, hop=None, n_mels=None):
+LANE_WINDOWS = ('hann', 'hamming', 'blackman', 'rect')
+
+def _lane_window(name, n):
+    """The spectrogram's analysis window by name (the user's choice)."""
+    if name == 'hamming':
+        w = np.hamming(n)
+    elif name == 'blackman':
+        w = np.blackman(n)
+    elif name == 'rect':
+        w = np.ones(n)
+    else:
+        w = np.hanning(n)
+    return w.astype(np.float32)
+
+def compute_mel_spectrogram(audio, n_fft=None, hop=None, n_mels=None, win_type='hann'):
     """Log-power mel spectrogram quantised to uint8 over LANE_DB_RANGE below the
     loudest frame: (n_mels, n_frames), row 0 = the lowest band. Streaming like
     the other features (peak extra memory ~CHUNK x n_fft floats)."""
@@ -1140,6 +1185,7 @@ def compute_mel_spectrogram(audio, n_fft=None, hop=None, n_mels=None):
     if hop is None: hop = LANE_HOP
     if n_mels is None: n_mels = LANE_N_MELS
     audio_pad, window, n_frames, s = _stft_setup(audio, n_fft, hop)
+    window = _lane_window(win_type, n_fft)
     fb_t = _mel_filterbank(n_fft, n_mels, LANE_FMIN, SR / 2.0).T    # (bins, n_mels)
     CHUNK = 256
     mel_db = np.zeros((n_mels, n_frames), dtype=np.float32)
@@ -1172,7 +1218,6 @@ def pick_onset_peaks(env, hop, pre_max=0.05, post_max=0.05, pre_avg=0.10,
     at least 'wait' after the previous peak. Returns seconds, refined to
     sub-frame precision by a parabola through the peak's three frames; frame
     times are window CENTRES, (i * hop + ONSET_N_FFT / 2) / SR."""
-    from scipy.ndimage import maximum_filter1d
     env = np.asarray(env, dtype=np.float64)
     n = len(env)
     if n < 3:
@@ -1192,7 +1237,7 @@ def pick_onset_peaks(env, hop, pre_max=0.05, post_max=0.05, pre_avg=0.10,
     lo = np.maximum(0, idx - pre_a)
     hi = np.minimum(n, idx + post_a + 1)
     loc_mean = (csum[hi] - csum[lo]) / (hi - lo)
-    scale = maximum_filter1d(env, size=2 * frames(norm_win) + 1, mode='nearest')
+    scale = _running_max(env, frames(norm_win))
     cand = (env >= loc_max) & (env >= loc_mean + delta * scale) & (env >= abs_floor)
     w = frames(wait)
     peaks = []
@@ -1212,28 +1257,88 @@ def pick_onset_peaks(env, hop, pre_max=0.05, post_max=0.05, pre_avg=0.10,
         times.append(((i + off) * hop + ONSET_N_FFT / 2.0) / SR)
     return times
 
-def fix_lanes(hop=None, n_mels=None):
-    """The v2 lanes for the current correction session: the mel spectrogram and
-    the fine-hop onset curve of the resident reference audio, plus the picked
-    onset peaks (the snap-to-onset targets). Frame i of either lane is centred
-    at i * hop / SR + that lane's t0."""
+PAT_DB = 6.0        # the perceived attack: where the envelope's RISE passes this many dB below its crest
+PAT_ENV_HOP = 0.005 # s — the RMS envelope's resolution
+PAT_ENV_WIN = 0.010 # s
+PAT_BACK = 0.15     # s searched before a flux peak for the attack's foot
+PAT_FWD = 0.20      # s searched after it for the attack's crest
+
+def perceptual_attack_times(audio, peaks, hop):
+    """A perceived-attack estimate per detected onset (the P-centre /
+    perceptual attack time, after Vos & Rasch 1981 and Gordon 1987): the moment
+    the RMS envelope, rising from its foot before the flux peak to its crest
+    after it, passes PAT_DB below the crest (half the rise at 6 dB). A sharp
+    attack puts it on the flux peak; a slow string entry puts it later, where
+    the ear hears the note begin. Linear sub-frame interpolation."""
+    audio = np.asarray(audio, dtype=np.float32)
+    n = len(audio)
+    eh = max(1, int(round(PAT_ENV_HOP * SR)))
+    ew = max(eh, int(round(PAT_ENV_WIN * SR)))
+    ratio = 10.0 ** (-PAT_DB / 20.0)
+    out = []
+    for tp in peaks:
+        tp = float(tp)
+        lo = max(0, int((tp - PAT_BACK) * SR))
+        hi = min(n, int((tp + PAT_FWD) * SR) + ew)
+        if hi - lo < 3 * ew:
+            out.append(tp); continue
+        seg = audio[lo:hi].astype(np.float64)
+        n_fr = (len(seg) - ew) // eh + 1
+        if n_fr < 3:
+            out.append(tp); continue
+        fr = np.lib.stride_tricks.as_strided(
+            seg, shape=(n_fr, ew), strides=(seg.strides[0] * eh, seg.strides[0]))
+        env = np.sqrt(np.mean(fr * fr, axis=1))
+        centres = (lo + np.arange(n_fr) * eh + ew / 2.0) / SR
+        kp = int(np.clip(np.searchsorted(centres, tp), 0, n_fr - 1))
+        kc = kp + int(np.argmax(env[kp:]))          # the crest, from the peak on
+        crest = env[kc]
+        kf = int(np.argmin(env[:kc + 1])) if kc > 0 else 0   # the foot before it
+        foot = env[kf]
+        if crest <= foot * 1.0001:
+            out.append(tp); continue
+        thr = foot + (crest - foot) * ratio
+        k = kf
+        while k < kc and env[k + 1] < thr:
+            k += 1
+        if k >= kc:
+            out.append(float(centres[kc])); continue
+        e0, e1 = env[k], env[k + 1]
+        frac = 0.0 if e1 <= e0 else min(1.0, max(0.0, (thr - e0) / (e1 - e0)))
+        out.append(float(centres[k] + frac * (centres[k + 1] - centres[k])))
+    return out
+
+def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, what='all'):
+    """The v2 lanes for the current correction session: the mel spectrogram
+    (user-configurable FFT size, window, hop, bands) and — unless what == 'mel',
+    a configuration change — the fine-hop onset curve of the resident reference
+    audio with its picked peaks and their perceived attack times (the two
+    snap-to-onset target lists). Frame i of a lane is centred at
+    i * <lane>_hop / SR + <lane>_t0."""
     if _fix is None:
         raise RuntimeError('fix_lanes before fix_begin')
-    hop = LANE_HOP if hop is None else int(hop)
+    onset_hop = LANE_HOP if hop is None else int(hop)
     n_mels = LANE_N_MELS if n_mels is None else int(n_mels)
+    n_fft = LANE_N_FFT if n_fft is None else int(n_fft)
+    mel_hop = onset_hop if mel_hop is None else int(mel_hop)
+    window = window if window in LANE_WINDOWS else 'hann'
     ref = _fix['ref']
-    mel = compute_mel_spectrogram(ref, LANE_N_FFT, hop, n_mels)
-    onset = compute_onset_strength(ref, hop=hop)
-    n = mel.shape[1]
-    onset = onset[:n] if len(onset) >= n else np.pad(onset, (0, n - len(onset)))
-    peaks = pick_onset_peaks(onset, hop)
-    return {
-        'hop': hop, 'sr': SR, 'n_mels': n_mels, 'n_frames': int(n),
-        'mel_t0': LANE_N_FFT / 2.0 / SR, 'onset_t0': ONSET_N_FFT / 2.0 / SR,
+    mel = compute_mel_spectrogram(ref, n_fft, mel_hop, n_mels, window)
+    out = {
+        'sr': SR, 'what': what, 'window': window, 'n_fft': n_fft, 'n_mels': n_mels,
+        'mel_hop': mel_hop, 'mel_frames': int(mel.shape[1]), 'mel_t0': n_fft / 2.0 / SR,
         'mel': np.ascontiguousarray(mel),
-        'onset': np.ascontiguousarray(onset, dtype=np.float32),
-        'peaks': [float(t) for t in peaks],
+        'onset_hop': onset_hop, 'onset_t0': ONSET_N_FFT / 2.0 / SR,
+        'onset_frames': 0, 'onset': None, 'peaks': None, 'pat': None,
     }
+    if what != 'mel':
+        onset = compute_onset_strength(ref, hop=onset_hop)
+        peaks = pick_onset_peaks(onset, onset_hop)
+        out['onset_frames'] = int(len(onset))
+        out['onset'] = np.ascontiguousarray(onset, dtype=np.float32)
+        out['peaks'] = [float(t) for t in peaks]
+        out['pat'] = perceptual_attack_times(ref, peaks, onset_hop)
+    return out
 
 def fix_dispose():
     """Release the correction session's resident audio."""
@@ -1260,16 +1365,24 @@ function takeBuffer(pyodide, name, fmt, Ctor) {
 
 let pyodideReady = null;
 
+/** How long the three boot stages took (ms), for the fix-mode arming trail. */
+let bootTiming = null;
+
 async function initPyodide() {
+  const t0 = performance.now();
   reportProgress("Loading Python runtime...", 0);
   const pyodide = await loadPyodide();
-  reportProgress(
-    "Installing numpy and scipy (first load may take a moment)...",
-    3,
-  );
-  await pyodide.loadPackage(["numpy", "scipy"]);
+  const t1 = performance.now();
+  reportProgress("Installing numpy (first load may take a moment)...", 3);
+  await pyodide.loadPackage(["numpy"]);
+  const t2 = performance.now();
   reportProgress("Initializing alignment engine...", 8);
   await pyodide.runPythonAsync(PYTHON_CODE);
+  bootTiming = {
+    pyodideMs: Math.round(t1 - t0),
+    packagesMs: Math.round(t2 - t1),
+    initMs: Math.round(performance.now() - t2),
+  };
   return pyodide;
 }
 
@@ -1393,9 +1506,21 @@ json.dumps(result)
       return;
     }
 
+    if (e.data.type === "fix_boot") {
+      // Warm the runtime ahead of a session — the load-idle prewarm, and entry
+      // before the decode. Idempotent: fix_begin awaits the same promise.
+      if (!pyodideReady) pyodideReady = initPyodide();
+      await pyodideReady;
+      self.postMessage({ type: "fix_booted", timing: bootTiming });
+      return;
+    }
+
     if (e.data.type === "fix_begin") {
+      const tBoot0 = performance.now();
       if (!pyodideReady) pyodideReady = initPyodide();
       const pyodide = await pyodideReady;
+      const bootMs = Math.round(performance.now() - tBoot0);
+      const tBegin0 = performance.now();
       const { refSamples, meiMidi, options } = e.data;
       const opts = options || {};
       pyodide.globals.set("_opt_coarse", opts.coarse ?? 0);
@@ -1417,7 +1542,17 @@ import gc
 gc.collect()
 json.dumps(_fix_events)
 `);
-      self.postMessage({ type: "fix_ready", events: JSON.parse(eventsJson) });
+      self.postMessage({
+        type: "fix_ready",
+        events: JSON.parse(eventsJson),
+        // The arming trail: how long the runtime took to come up (zero when
+        // it was already resident) and how long fix_begin's synth took.
+        timing: {
+          bootMs,
+          beginMs: Math.round(performance.now() - tBegin0),
+          boot: bootTiming,
+        },
+      });
       return;
     }
 
@@ -1446,24 +1581,31 @@ json.dumps(fix_realign_segment(
       // "error" would be claimed by whatever realign the client has pending.
       try {
         const pyodide = await pyodideReady;
-        const { hop, nMels } = e.data;
+        const { hop, nMels, nFft, window: win, melHop, what } = e.data;
         pyodide.globals.set("_lanes_hop", hop ?? 512);
         pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
+        pyodide.globals.set("_lanes_n_fft", nFft ?? 2048);
+        pyodide.globals.set("_lanes_window", win || "hann");
+        pyodide.globals.set("_lanes_mel_hop", melHop ?? hop ?? 512);
+        pyodide.globals.set("_lanes_what", what || "all");
         const metaJson = await pyodide.runPythonAsync(`
 import json
-_lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels))
+_lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels), int(_lanes_n_fft),
+                   str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what))
 _lanes_mel = _lanes.pop('mel')
 _lanes_onset = _lanes.pop('onset')
 json.dumps(_lanes)
 `);
         const meta = JSON.parse(metaJson);
         const mel = takeBuffer(pyodide, "_lanes_mel", "u8", Uint8Array);
-        const onset = takeBuffer(pyodide, "_lanes_onset", "f32", Float32Array);
+        const onset =
+          meta.what === "mel"
+            ? null
+            : takeBuffer(pyodide, "_lanes_onset", "f32", Float32Array);
         await pyodide.runPythonAsync("del _lanes, _lanes_mel, _lanes_onset");
-        self.postMessage({ type: "fix_lanes", ...meta, mel, onset }, [
-          mel.buffer,
-          onset.buffer,
-        ]);
+        const transfer = [mel.buffer];
+        if (onset) transfer.push(onset.buffer);
+        self.postMessage({ type: "fix_lanes", ...meta, mel, onset }, transfer);
       } catch (err) {
         self.postMessage({ type: "fix_lanes_error", message: err.toString() });
       }

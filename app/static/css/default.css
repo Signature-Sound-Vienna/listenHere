@@ -7007,6 +7007,7 @@ body.fix-mode-open .icon-fix-mode {
 /* The bend band the connectors cross between score and strip. */
 .fix-gap {
   flex: 0 0 26px;
+  cursor: row-resize; /* it drags the lane stack against the score */
 }
 
 .fix-strip {
@@ -7071,6 +7072,52 @@ body.fix-mode-open .icon-fix-mode {
 .fix-lane-spec[hidden],
 .fix-lane-onset[hidden] {
   display: none; /* the author display would beat the UA [hidden] rule */
+}
+/* A user-resized strip: a fixed height in place of the flex share (sticky,
+   set by _applyStripSizing on the strip AND on the prewarm probe). */
+.fix-strip.fix-strip-sized {
+  flex: 0 0 var(--fix-strip-h);
+  min-height: 0;
+}
+/* Handles on the boundaries between visible lanes, above the tick canvas. */
+.fix-lane-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 7px;
+  margin-top: -3px;
+  z-index: 5;
+  cursor: row-resize;
+}
+.fix-lane-handle:hover {
+  background: var(--color-alignment, rgb(140, 90, 90));
+  opacity: 0.25;
+}
+.fix-lane-handle[hidden] {
+  display: none;
+}
+/* Spectrogram configuration: two rows of two small selects under its switch. */
+.fix-spec-cfg {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+  margin: 0.1em 0 0.25em 1.4em;
+}
+.fix-spec-cfg span {
+  display: flex;
+  gap: 0.25em;
+}
+.fix-spec-cfg select,
+#fix-snap-target {
+  font-size: var(--font-size-small, 0.8em);
+  min-width: 0;
+  flex: 1;
+}
+.fix-spec-cfg[hidden] {
+  display: none;
+}
+.fix-snap-target-row {
+  margin-left: 1.4em;
 }
 .fix-strip-ws[data-placeholder]::after {
   content: attr(data-placeholder);

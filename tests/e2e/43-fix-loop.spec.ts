@@ -61,8 +61,9 @@ async function installWorkerStub(
      *  is otherwise 5 ms wide and cannot be asserted. */
     deferReady?: boolean;
     /** Answer fix_lanes at once with synthetic lanes carrying these onset
-     *  peaks; without it the test calls __fixStub.sendLanes(peaks) itself. */
-    lanes?: { peaks: number[] };
+     *  peaks (perceived attacks = peaks + patShift); without it the test
+     *  calls __fixStub.sendLanes(peaks, opts) itself. */
+    lanes?: { peaks: number[]; patShift?: number };
   } = {},
 ) {
   await page.evaluate((o) => {
@@ -76,34 +77,50 @@ async function installWorkerStub(
         terminated: false,
       };
       // Synthetic v2 lanes (the real worker's fix_lanes reply shape): a mel
-      // gradient, a near-silent onset curve with a spike per given peak.
-      w.sendLanes = (peaks: number[]) => {
-        const hop = 512;
+      // gradient at the requested resolution, a near-silent onset curve with
+      // a spike per given peak, and a perceived-attack time per peak.
+      w.sendLanes = (peaks: number[], opts: any = {}) => {
         const sr = 22050;
-        const nMels = 64;
-        const nFrames = Math.floor((200 * sr) / hop);
-        const mel = new Uint8Array(nMels * nFrames);
+        const onsetHop = 512;
+        const melHop = opts.melHop ?? 512;
+        const nMels = opts.nMels ?? 64;
+        const nFft = opts.nFft ?? 2048;
+        const what = opts.what ?? 'all';
+        const dur = 200;
+        const melFrames = Math.floor((dur * sr) / melHop);
+        const onsetFrames = Math.floor((dur * sr) / onsetHop);
+        const mel = new Uint8Array(nMels * melFrames);
         for (let m = 0; m < nMels; m++) {
-          for (let i = 0; i < nFrames; i++) mel[m * nFrames + i] = (i * 3 + m * 4) & 255;
+          for (let i = 0; i < melFrames; i++) mel[m * melFrames + i] = (i * 3 + m * 4) & 255;
         }
-        const onset = new Float32Array(nFrames).fill(0.01);
         const onsetT0 = 1024 / 2 / sr;
-        for (const t of peaks) {
-          const i = Math.round(((t - onsetT0) * sr) / hop);
-          if (i >= 0 && i < nFrames) onset[i] = 1;
+        let onset: Float32Array | null = null;
+        if (what !== 'mel') {
+          onset = new Float32Array(onsetFrames).fill(0.01);
+          for (const t of peaks) {
+            const i = Math.round(((t - onsetT0) * sr) / onsetHop);
+            if (i >= 0 && i < onsetFrames) onset[i] = 1;
+          }
         }
+        const sorted = peaks.slice().sort((a, b) => a - b);
         w.onmessage?.({
           data: {
             type: 'fix_lanes',
-            hop,
+            what,
             sr,
             n_mels: nMels,
-            n_frames: nFrames,
-            mel_t0: 2048 / 2 / sr,
-            onset_t0: onsetT0,
-            peaks: peaks.slice().sort((a, b) => a - b),
+            n_fft: nFft,
+            window: opts.window ?? 'hann',
+            mel_hop: melHop,
+            mel_frames: melFrames,
+            mel_t0: nFft / 2 / sr,
             mel,
+            onset_hop: onsetHop,
+            onset_frames: onsetFrames,
+            onset_t0: onsetT0,
             onset,
+            peaks: what === 'mel' ? null : sorted,
+            pat: what === 'mel' ? null : sorted.map((t) => t + (opts.patShift ?? 0)),
           },
         });
       };
@@ -119,7 +136,24 @@ async function installWorkerStub(
         if (msg.type === 'fix_lanes') {
           rec.hop = msg.hop;
           rec.nMels = msg.nMels;
-          if (o.lanes) setTimeout(() => w.sendLanes(o.lanes!.peaks ?? []), 5);
+          rec.nFft = msg.nFft;
+          rec.window = msg.window;
+          rec.melHop = msg.melHop;
+          rec.what = msg.what;
+          if (o.lanes) {
+            setTimeout(
+              () =>
+                w.sendLanes(o.lanes!.peaks ?? [], {
+                  nFft: msg.nFft,
+                  window: msg.window,
+                  melHop: msg.melHop,
+                  nMels: msg.nMels,
+                  what: msg.what,
+                  patShift: o.lanes!.patShift,
+                }),
+              5,
+            );
+          }
         }
         w.posted.push(rec);
         if (msg.type === 'fix_begin') {
@@ -128,6 +162,7 @@ async function installWorkerStub(
               data: {
                 type: 'fix_ready',
                 events: { n_events: lt.fix?.nEvents },
+                timing: { bootMs: 0, beginMs: 1, boot: null },
               },
             });
           if (o.deferReady) w.releaseReady = sendReady;
@@ -1406,5 +1441,201 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(st.lastDrag.snapped).toBe(false);
     expect(Math.abs(st.corrections.anchors[0].t - dropT)).toBeLessThan(1.5 / pps);
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+  });
+
+  // --- Feedback round 1 (2026-09-02): multi-select and "move to nearest onset" ---
+
+  /** Marquee-select the ticks whose x lies between two page ticks (inclusive). */
+  async function marqueeSelect(page: Page, fromIx: number, toIx: number) {
+    const st = await fixState(page);
+    const ticks: { ix: number; x: number }[] = st.pageTicks;
+    const xs = ticks.map((t) => t.x).sort((a, b) => a - b);
+    const xa = ticks.find((t) => t.ix === fromIx)!.x;
+    const xb = ticks.find((t) => t.ix === toIx)!.x;
+    // Start and end a little outside the two ticks, but clear of any other.
+    const gapBefore = xs.filter((x) => x < xa).pop() ?? -100;
+    const gapAfter = xs.find((x) => x > xb) ?? xb + 100;
+    const x0 = Math.max(xa - 10, (gapBefore + xa) / 2);
+    const x1 = Math.min(xb + 10, (xb + gapAfter) / 2);
+    const box = (await page.locator('.fix-ticks').boundingBox())!;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(box.x + x0, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + (x0 + x1) / 2, y, { steps: 3 });
+    await page.mouse.move(box.x + x1, y, { steps: 3 });
+    await page.mouse.up();
+  }
+
+  test('43.32 marquee, Shift+click and A select several ticks; S moves them to the nearest detected onsets as ONE undo step; Escape clears; default is the selected onset', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    for (let k = 0; k < 5; k++) await page.click('.fix-onset-next');
+    let st = await fixState(page);
+    const sel = st.selGroup;
+    expect(st.multiSel).toEqual([]);
+    const ticksOf = (ixs: number[]) => st.pageTicks.filter((t: any) => ixs.includes(t.ix));
+    // Marquee over three ticks starting at the selected one.
+    await marqueeSelect(page, sel, sel + 2);
+    st = await fixState(page);
+    expect(st.multiSel).toEqual([sel, sel + 1, sel + 2]);
+    // Shift+click toggles membership.
+    const box = (await page.locator('.fix-ticks').boundingBox())!;
+    const y = box.y + box.height / 2;
+    const xSel3 = ticksOf([sel + 3])[0].x;
+    await page.keyboard.down('Shift');
+    await page.mouse.click(box.x + xSel3, y);
+    await page.keyboard.up('Shift');
+    st = await fixState(page);
+    expect(st.multiSel).toEqual([sel, sel + 1, sel + 2, sel + 3]);
+    await page.keyboard.down('Shift');
+    await page.mouse.click(box.x + xSel3, y);
+    await page.keyboard.up('Shift');
+    st = await fixState(page);
+    expect(st.multiSel).toEqual([sel, sel + 1, sel + 2]);
+    // A selects every onset on the page; again clears; Escape clears too.
+    await page.keyboard.press('a');
+    st = await fixState(page);
+    expect(st.multiSel).toHaveLength(st.pageGroupCount);
+    await page.keyboard.press('a');
+    expect((await fixState(page)).multiSel).toEqual([]);
+    await marqueeSelect(page, sel, sel + 1);
+    expect((await fixState(page)).multiSel).toHaveLength(2);
+    await page.keyboard.press('Escape');
+    st = await fixState(page);
+    expect(st.multiSel).toEqual([]);
+    expect(st.active).toBe(true); // Escape cleared the selection, not the session
+
+    // The command: three selected, detected onsets near two of them (80 and
+    // 100 ms off), none within the 250 ms radius of the third.
+    const tOf = (ix: number) => st.pageTicks.find((t: any) => t.ix === ix)!.t;
+    const targets = [tOf(sel) + 0.08, tOf(sel + 1) + 0.1];
+    await page.evaluate((peaks) => (window as any).__fixStub.sendLanes(peaks), targets);
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 2);
+    const checksumBefore = await refChecksum(page);
+    await marqueeSelect(page, sel, sel + 2);
+    await page.keyboard.press('s');
+    await page.waitForFunction(
+      () => {
+        const f = (window as any)._listenTest.fix;
+        return f.lastBatch && !f.realignBusy && f.chipState !== 'realign';
+      },
+      undefined,
+      { timeout: 60_000 },
+    );
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    st = await fixState(page);
+    expect(st.lastBatch).toMatchObject({ requested: 3, moved: 2, noTarget: 1, blocked: 0 });
+    expect(st.corrections.anchors).toHaveLength(2);
+    expect(st.corrections.anchors[0].t).toBeCloseTo(targets[0], 6);
+    expect(st.corrections.anchors[1].t).toBeCloseTo(targets[1], 6);
+    // ONE history entry for the batch: a single undo restores everything.
+    await expect(page.locator('#undo-btn')).toHaveText(/Undo: alignment anchors \(2\)/);
+    await page.click('#undo-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 0,
+    );
+    expect(await refChecksum(page)).toEqual(checksumBefore);
+    await page.click('#redo-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 2,
+    );
+    await page.click('#undo-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 0,
+    );
+
+    // Default scope: with nothing multi-selected, S moves the SELECTED onset
+    // alone, as a plain anchor (a single undo step named like any drag).
+    await page.keyboard.press('Escape');
+    await page.click('.fix-onset-prev');
+    await page.click('.fix-onset-next'); // back on `sel`, multi-selection empty
+    st = await fixState(page);
+    expect(st.selGroup).toBe(sel);
+    expect(st.multiSel).toEqual([]);
+    await page.click('#fix-snap-sel');
+    await page.waitForFunction(
+      () => {
+        const f = (window as any)._listenTest.fix;
+        return f.corrections.anchors.length === 1 && !f.realignBusy;
+      },
+      undefined,
+      { timeout: 60_000 },
+    );
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    st = await fixState(page);
+    expect(st.corrections.anchors[0].t).toBeCloseTo(targets[0], 6);
+    expect(st.lastBatch).toMatchObject({ requested: 1, moved: 1 });
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: alignment anchor');
+  });
+
+  test('43.33 the snap target can be the perceived attack instead of the detected onset — for the drag magnet and for S alike', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    for (let k = 0; k < 5; k++) await page.click('.fix-onset-next');
+    const before = await fixState(page);
+    const pps = before.stripPps;
+    expect(before.snapTarget).toBe('flux');
+    const dropT = before.selT + 40 / pps;
+    const patT = dropT + 3 / pps; // the perceived attack sits 3 px past the drop
+    const peakT = patT - 0.06; // …and the detected onset 60 ms before it
+    // A second pair NEAR the selected onset, for the command (its radius is
+    // 250 ms — the drop point is the best part of a second away).
+    const peakNear = before.selT + 0.12;
+    const patNear = peakNear + 0.06;
+    await page.evaluate(
+      ([p, q, shift]) => (window as any).__fixStub.sendLanes([p, q], { patShift: shift }),
+      [peakT, peakNear, 0.06],
+    );
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.patCount === 2);
+    await page.selectOption('#fix-snap-target', 'perceived');
+    expect((await fixState(page)).snapTarget).toBe('perceived');
+    // The magnet lands on the perceived attack, not the flux peak.
+    await dragSelectedTick(page, 40);
+    let st = await fixState(page);
+    expect(st.lastDrag.snapped).toBe(true);
+    expect(st.corrections.anchors[0].t).toBeCloseTo(patT, 6);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await page.click('#undo-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 0,
+    );
+    // So does the command, on the near pair: the perceived attack, 180 ms on.
+    await page.keyboard.press('s');
+    await page.waitForFunction(
+      () => {
+        const f = (window as any)._listenTest.fix;
+        return f.corrections.anchors.length === 1 && !f.realignBusy;
+      },
+      undefined,
+      { timeout: 60_000 },
+    );
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    st = await fixState(page);
+    expect(st.corrections.anchors[0].t).toBeCloseTo(patNear, 6);
+    // Back to the flux peaks: the same command lands 60 ms earlier.
+    await page.click('#undo-btn');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.corrections.anchors.length === 0,
+    );
+    await page.selectOption('#fix-snap-target', 'flux');
+    await page.keyboard.press('s');
+    await page.waitForFunction(
+      () => {
+        const f = (window as any)._listenTest.fix;
+        return f.corrections.anchors.length === 1 && !f.realignBusy;
+      },
+      undefined,
+      { timeout: 60_000 },
+    );
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    expect((await fixState(page)).corrections.anchors[0].t).toBeCloseTo(peakNear, 6);
   });
 });

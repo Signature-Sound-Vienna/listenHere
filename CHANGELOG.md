@@ -1,5 +1,14 @@
 # Listen Here! CHANGELOG.md
 
+### 0.51.0 -- Fix mode: faster arming, a configurable and resizable lane stack, and "Move to nearest onset"
+* The correction engine arms in about a third of the time: the Python runtime is warmed at load-idle under `?fixMode` and at entry while the audio decodes, and scipy is no longer loaded (its three linear interpolations and one running maximum are numpy now, checked equal to the scipy originals). Measured on the fixture: 5.9 s → 2.0 s to "Ready to correct"; the console now prints where the arming seconds went.
+* The spectrogram is configurable from the Correction region: FFT size, window type, overlap, and mel bands, sticky across sessions, re-requested from the engine on change while the onset curve and its peaks stay.
+* The lane stack is resizable: drag the gap under the score to trade height between score and lanes, drag the boundary between two lanes to trade between them, double-click either to reset. Both sticky; the score re-fits at the end of a drag, and the prewarm fit follows.
+* "Move to nearest onset" (nav button, or `S`): moves the selected onset, or several, to the nearest detected onset within 250 ms, laying anchors in order and realigning; several moves are one undo step and one replay, and the outcome is announced, including how many had no onset in range or were blocked by a neighbouring anchor.
+* Several onsets are selected by dragging across empty strip (a marquee), Shift+clicking ticks, or `A` for the whole page; `Escape` clears the selection first. Members wear their cap in outline.
+* The snap target can be the perceived attack instead of the detected onset, for the drag magnet and for `S` alike: the moment the energy envelope's rise passes 6 dB below its crest, which lags the flux peak on a slow attack and sits on it for a sharp one.
+* Testing: spec 41 grows to 12 (perceived attacks on slow synthetic attacks, the scipy-free interpolation checked against scipy, no scipy import), spec 42 to 28 (configuration, resizing, the runtime warm-up and arming trail), spec 43 to 33 (multi-selection, the batch command and its single undo, the perceived-attack target). All verified red first.
+
 ### 0.49.0 -- Fix mode v2 lanes: spectrogram, onset curve, snap-to-onset
 * The correction strip is a lane stack: beneath the reference waveform sit a mel spectrogram and the recording's onset-strength curve, all three at the waveform's zoom and scroll, with the playhead's gutter beneath them. The alignment ticks cross every lane.
 * Detected onsets hang from the onset lane's top as marks, and a dragged tick snaps to the nearest one within 8 px; holding Alt while dragging places it freely, and a "Snap to onsets" checkbox in the Correction region is the sticky switch. Keyboard nudges never snap.

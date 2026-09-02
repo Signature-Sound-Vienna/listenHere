@@ -3807,6 +3807,7 @@ document.addEventListener("DOMContentLoaded", () => {
         break;
       }
       case "fix-anchor":
+      case "fix-anchor-batch":
       case "fix-gap": {
         // Snapshot semantics: the entry carries its before/after values, so
         // fix-mode applies the hop without the alignment worker; the same
@@ -3888,6 +3889,7 @@ document.addEventListener("DOMContentLoaded", () => {
         break;
       }
       case "fix-anchor":
+      case "fix-anchor-batch":
       case "fix-gap": {
         applyFixCorrectionRedo(entry);
         _undoStack.push(entry);
@@ -3932,6 +3934,8 @@ document.addEventListener("DOMContentLoaded", () => {
         return "move marker";
       case "fix-anchor":
         return "alignment anchor";
+      case "fix-anchor-batch":
+        return `alignment anchors (${entry.count})`;
       case "fix-gap":
         return "unscored-audio gap";
       default:

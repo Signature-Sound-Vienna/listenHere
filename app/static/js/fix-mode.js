@@ -166,6 +166,11 @@ const LANE_PEAK_MARK_H = 5;
 /** Snap-to-onset: a dragged tick within this many px of a detected onset lands
  *  on it (Alt while dragging bypasses; the nav checkbox is the sticky switch). */
 const SNAP_RADIUS_PX = 8;
+/** "Move to nearest onset" (S) looks this far either side of each onset. */
+const SNAP_CMD_RADIUS_SEC = 0.25;
+/** Resizing: a lane keeps at least this much, and the score pane SCORE_MIN_PX. */
+const LANE_MIN_PX = 12;
+const SCORE_MIN_PX = 160;
 
 /** Quantised quarter key — the 1e-6 rounding every quarters consumer uses. */
 const qKey = (q) => Math.round(q * 1e6);
@@ -234,6 +239,17 @@ let _replaySuppressed = false;
 let _laneSpec = true;
 let _laneOnset = true;
 let _snapOnsets = true;
+/** Spectrogram configuration (sticky): FFT size, window, overlap, mel bands. */
+let _specCfg = { nFft: 2048, window: "hann", overlap: 0.75, nMels: 64 };
+/** What a snap lands on: the detected onset ("flux") or the perceived attack. */
+let _snapTarget = "flux";
+/** A user-resized strip (px) and lane weights; null = the CSS defaults. Both
+ *  sticky, and both part of what the prewarm probe must reproduce. */
+let _stripHeightPx = null;
+let _laneWeights = null;
+/** A running "move to nearest onset" batch: its commits collect into ONE
+ *  history entry and replay once at the end. */
+let _batch = null;
 /** The last committed fix's replay span, so R can replay it on demand. */
 let _lastReplay = null;
 
@@ -472,6 +488,10 @@ export async function enterFixMode(entryFile) {
     lanes: null, // the worker's fix_lanes reply (mel, onset curve, peaks)
     lanesError: null,
     lastDrag: null, // test surface: { rawT, t, snapped } of the last mouse drag
+    multiSel: new Set(), // marquee / Shift+click selection of onset groups
+    marquee: null, // an in-progress marquee drag on the strip
+    resizing: null, // an in-progress strip or lane resize drag
+    lastBatch: null, // test surface: the last "move to nearest onset" run
   };
   const f = _fix;
 
@@ -545,6 +565,7 @@ export async function enterFixMode(entryFile) {
   f.lastPaneSize = paneSizeKey();
   f.resizeObserver = new ResizeObserver(() => {
     if (_fix !== f) return;
+    if (f.resizing) return; // a resize drag re-fits once, at its end
     const size = paneSizeKey();
     // A hidden (zero-sized) pane must not re-lay-out to the fallback page
     // dimensions; the relayout runs when it comes back.
@@ -604,6 +625,8 @@ function _teardownFixDom(f) {
   }
   _heldArrows.clear();
   _endDrag(f);
+  _endMarquee(f);
+  _endResize(f);
   _auditionDispose(f);
   if (_pendingRealign) {
     _pendingRealign.reject(new Error("fix mode exited"));
@@ -767,6 +790,8 @@ function _runPrewarm() {
   const firstPage = groups[0]?.page || 1;
   svgCache.set(firstPage, tk.renderToSVG(firstPage, {}));
   _derived = { fresh, groups, dims, pageCount, svgCache };
+  // The engine's runtime is the other half of a slow entry: warm it now too.
+  _warmRuntime();
   console.log(
     `fix mode: prewarmed in ${Math.round(performance.now() - t0)} ms ` +
       `(${pageCount} pages at ${dims.w}×${dims.h}; layout resident)`,
@@ -793,7 +818,7 @@ function _measurePaneDims() {
   const gap = document.createElement("div");
   gap.className = "fix-gap";
   const strip = document.createElement("div");
-  strip.className = _stripClassName(); // the lane switches size the strip
+  _applyStripSizing(strip); // the lane switches and any user resize size the strip
   probe.append(score, gap, strip);
   content.appendChild(probe);
   const dims = { w: score.clientWidth, h: score.clientHeight };
@@ -1080,6 +1105,126 @@ function _buildDom(contentEl, waveformsEl) {
     (on) => _setLane("onset", on),
   );
 
+  /** A compact nav select (blurs after a choice, like the checkboxes). */
+  const mkSelect = (id, title, options, value, onChange) => {
+    const sel = document.createElement("select");
+    sel.id = id;
+    sel.title = title;
+    sel.setAttribute("aria-label", title);
+    for (const [v, label] of options) {
+      const o = document.createElement("option");
+      o.value = String(v);
+      o.textContent = label;
+      sel.appendChild(o);
+    }
+    sel.value = String(value);
+    sel.addEventListener("change", () => {
+      onChange(sel.value);
+      sel.blur();
+    });
+    return sel;
+  };
+
+  // What a snap lands on: the detected (spectral-flux) onset, or the perceived
+  // attack — later on a slow attack, where the ear hears the note begin. Its
+  // own row under the switch: beside the label it overflowed the card.
+  const snapTargetRow = document.createElement("span");
+  snapTargetRow.className = "fix-snap-target-row";
+  snapTargetRow.appendChild(
+    mkSelect(
+      "fix-snap-target",
+      "What a snap lands on: the detected onset, or the perceived attack",
+      [
+        ["flux", "detected onset"],
+        ["perceived", "perceived attack"],
+      ],
+      _snapTarget,
+      (v) => {
+        _snapTarget = v;
+        _scheduleRedraw();
+      },
+    ),
+  );
+
+  // Spectrogram configuration (sticky, re-requested from the engine on change;
+  // shown only while the lane is).
+  const specCfg = document.createElement("div");
+  specCfg.className = "fix-spec-cfg";
+  specCfg.hidden = !_laneSpec;
+  const cfgRow1 = document.createElement("span");
+  const cfgRow2 = document.createElement("span");
+  cfgRow1.append(
+    mkSelect(
+      "fix-spec-nfft",
+      "Spectrogram window size (FFT)",
+      [
+        [512, "512"],
+        [1024, "1024"],
+        [2048, "2048"],
+        [4096, "4096"],
+      ],
+      _specCfg.nFft,
+      (v) => _setSpecCfg({ nFft: Number(v) }),
+    ),
+    mkSelect(
+      "fix-spec-window",
+      "Spectrogram window type",
+      [
+        ["hann", "Hann"],
+        ["hamming", "Hamming"],
+        ["blackman", "Blackman"],
+        ["rect", "Rect."],
+      ],
+      _specCfg.window,
+      (v) => _setSpecCfg({ window: v }),
+    ),
+  );
+  cfgRow2.append(
+    mkSelect(
+      "fix-spec-overlap",
+      "Spectrogram window overlap",
+      [
+        [0.5, "50 %"],
+        [0.75, "75 %"],
+        [0.875, "87.5 %"],
+      ],
+      _specCfg.overlap,
+      (v) => _setSpecCfg({ overlap: Number(v) }),
+    ),
+    mkSelect(
+      "fix-spec-mels",
+      "Spectrogram mel bands",
+      [
+        [32, "32 bands"],
+        [64, "64 bands"],
+        [96, "96 bands"],
+        [128, "128 bands"],
+      ],
+      _specCfg.nMels,
+      (v) => _setSpecCfg({ nMels: Number(v) }),
+    ),
+  );
+  specCfg.append(cfgRow1, cfgRow2);
+
+  // "Move to nearest onset": the selected onset, or the marquee / Shift+click
+  // selection, each to its nearest snap target — S is the keyboard twin.
+  const snapCmdRow = document.createElement("div");
+  snapCmdRow.className = "fix-nav-row";
+  const snapBtn = document.createElement("button");
+  snapBtn.type = "button";
+  snapBtn.id = "fix-snap-sel";
+  snapBtn.textContent = "Move to nearest onset";
+  snapBtn.title =
+    "Move the selected onset(s) to the nearest detected onset within 250 ms (S). " +
+    "Drag across the strip or Shift+click ticks to select several; A selects the page.";
+  snapBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  snapBtn.addEventListener("click", () => {
+    _snapSelectionToOnsets().catch((err) =>
+      console.error("fix mode: move to onset failed:", err),
+    );
+  });
+  snapCmdRow.appendChild(snapBtn);
+
   // Playback speed (pitch preserved via the stretch worklet). The % button
   // is the "back to 100%" affordance and lights up whenever speed ≠ 100%.
   const speed = document.createElement("span");
@@ -1159,7 +1304,7 @@ function _buildDom(contentEl, waveformsEl) {
   // sits last, away from the controls used while correcting.
   const toggles = document.createElement("div");
   toggles.className = "fix-toggles";
-  toggles.append(pageOnlyRow, replayRow, snapRow, specRow, onsetRow);
+  toggles.append(pageOnlyRow, replayRow, snapRow, snapTargetRow, specRow, onsetRow);
   // Undo, redo, revert, and Save data are NOT listen-mode controls that
   // happen to sit in the nav — a correction session needs every one of them
   // (undo is unified onto listen.js's stack by ruling, and an unsaveable
@@ -1168,7 +1313,7 @@ function _buildDom(contentEl, waveformsEl) {
   // untouched, and handed back at exit.
   const undoRow = document.createElement("div");
   undoRow.className = "fix-nav-row";
-  navBody.append(title, pageCtl, chip, toggles, speed, balance, undoRow);
+  navBody.append(title, pageCtl, chip, toggles, specCfg, snapCmdRow, speed, balance, undoRow);
   _borrowNavActions({ "undo-btn": undoRow, "redo-btn": undoRow }, navBody);
   navBody.appendChild(exitBtn);
 
@@ -1179,11 +1324,15 @@ function _buildDom(contentEl, waveformsEl) {
   score.appendChild(scoreSvg);
   scoreSvg.addEventListener("click", (e) => _onScoreClick(e));
 
+  // The gap doubles as the handle that drags the lane stack against the score.
   const gap = document.createElement("div");
   gap.className = "fix-gap";
+  gap.title = "Drag to resize the lanes against the score; double-click to reset";
+  gap.addEventListener("pointerdown", (e) => _onGapPointerDown(e));
+  gap.addEventListener("dblclick", () => _resetStripHeight());
 
   const strip = document.createElement("div");
-  strip.className = _stripClassName();
+  _applyStripSizing(strip);
   // The lane stack: waveform, mel spectrogram, onset curve — one column above
   // the playhead's gutter, all three at the waveform's zoom + scroll.
   const lanes = document.createElement("div");
@@ -1197,6 +1346,19 @@ function _buildDom(contentEl, waveformsEl) {
   laneOnset.className = "fix-lane-onset";
   laneOnset.hidden = !_laneOnset;
   lanes.append(stripWs, laneSpec, laneOnset);
+  _applyLaneWeights({ stripWs, laneSpec, laneOnset });
+  // Handles between neighbouring visible lanes (placed by _layoutLaneHandles;
+  // they sit above the tick canvas, which otherwise takes every strip click).
+  const handleA = document.createElement("div");
+  handleA.className = "fix-lane-handle";
+  handleA.title = "Drag to resize the lanes; double-click to reset";
+  const handleB = document.createElement("div");
+  handleB.className = "fix-lane-handle";
+  handleB.title = handleA.title;
+  for (const h of [handleA, handleB]) {
+    h.addEventListener("pointerdown", (e) => _onLaneHandlePointerDown(e, h));
+    h.addEventListener("dblclick", () => _resetLaneWeights());
+  }
   const ticks = document.createElement("canvas");
   ticks.className = "fix-ticks";
   ticks.addEventListener("mousedown", (e) => _onTickMouseDown(e));
@@ -1218,7 +1380,7 @@ function _buildDom(contentEl, waveformsEl) {
   skipNext.addEventListener("mousedown", (e) => e.preventDefault());
   skipPrev.addEventListener("click", () => _skipOnset(-1));
   skipNext.addEventListener("click", () => _skipOnset(1));
-  strip.append(lanes, ticks, playhead, skipPrev, skipNext);
+  strip.append(lanes, ticks, playhead, handleA, handleB, skipPrev, skipNext);
 
   // Connector overlay spans the whole fix container so a polyline can run
   // from a note in the score pane down across the gap into the strip.
@@ -1248,11 +1410,14 @@ function _buildDom(contentEl, waveformsEl) {
     navRegion,
     scoreEl: score,
     scoreSvg,
+    gap,
     strip,
     lanes,
     stripWs,
     laneSpec,
     laneOnset,
+    laneHandles: [handleA, handleB],
+    specCfg,
     ticks,
     playhead,
     conn,
@@ -1844,30 +2009,235 @@ function _setLane(which, on) {
   else _laneOnset = on;
   const f = _fix;
   if (!f) return;
-  f.els.strip.className = _stripClassName();
+  _applyStripSizing(f.els.strip);
   f.els.laneSpec.hidden = !_laneSpec;
   f.els.laneOnset.hidden = !_laneOnset;
+  f.els.specCfg.hidden = !_laneSpec;
+  _buildStrip(f.stripSource);
+  _scheduleRedraw();
+}
+
+/** A spectrogram configuration change: sticky, and the mel is re-requested
+ *  from the engine (the onset lane and its peaks are kept). */
+function _setSpecCfg(patch) {
+  _specCfg = { ..._specCfg, ...patch };
+  const f = _fix;
+  if (f?.engineReady) _requestLanes(f, "mel");
+}
+
+/** The spectrogram's hop from its FFT size and overlap. */
+function _melHop() {
+  return Math.max(64, Math.round(_specCfg.nFft * (1 - _specCfg.overlap)));
+}
+
+/** Ask the worker for the lanes: everything, or the mel alone after a
+ *  configuration change. The onset lane's hop is fixed (its peaks are the
+ *  snap targets, at a resolution the spectrogram's choices must not move). */
+function _requestLanes(f, what) {
+  _ensureWorker().postMessage({
+    type: "fix_lanes",
+    what,
+    hop: LANE_HOP,
+    nMels: _specCfg.nMels,
+    nFft: _specCfg.nFft,
+    window: _specCfg.window,
+    melHop: _melHop(),
+  });
+}
+
+/** Boot the worker's Python runtime ahead of a session (idempotent there) —
+ *  at the load-idle prewarm, and at entry before the decode, so the seconds
+ *  it takes overlap work instead of being waited for. */
+function _warmRuntime() {
+  try {
+    _ensureWorker().postMessage({ type: "fix_boot" });
+  } catch (e) {
+    console.warn("fix mode: runtime warm-up failed (entry will boot it):", e);
+  }
+}
+
+// --- Resizing: the lane stack against the score, and the lanes against each other ---
+
+/** The strip's classes and (when the user resized it) its fixed height. Both
+ *  _buildDom and the prewarm probe go through here — see _stripClassName. */
+function _applyStripSizing(el) {
+  el.className = _stripClassName() + (_stripHeightPx ? " fix-strip-sized" : "");
+  if (_stripHeightPx) el.style.setProperty("--fix-strip-h", `${Math.round(_stripHeightPx)}px`);
+  else el.style.removeProperty("--fix-strip-h");
+}
+
+/** User lane weights as inline flex-grow (px-proportional); none = CSS. */
+function _applyLaneWeights(els) {
+  const w = _laneWeights;
+  els.stripWs.style.flexGrow = w ? String(w.wave) : "";
+  els.laneSpec.style.flexGrow = w ? String(w.spec) : "";
+  els.laneOnset.style.flexGrow = w ? String(w.onset) : "";
+}
+
+function _visibleLanes(f) {
+  return [
+    [f.els.stripWs, "wave"],
+    [f.els.laneSpec, "spec"],
+    [f.els.laneOnset, "onset"],
+  ].filter(([el]) => !el.hidden);
+}
+
+/** One handle per boundary between visible lanes, on that boundary. */
+function _layoutLaneHandles(f) {
+  const vis = _visibleLanes(f);
+  f.els.laneHandles.forEach((h, k) => {
+    const upper = vis[k];
+    const lower = vis[k + 1];
+    if (!upper || !lower) {
+      h.hidden = true;
+      return;
+    }
+    h.hidden = false;
+    h.style.top = `${upper[0].offsetTop + upper[0].offsetHeight}px`;
+    h.dataset.upper = upper[1];
+    h.dataset.lower = lower[1];
+  });
+}
+
+function _onGapPointerDown(e) {
+  const f = _fix;
+  if (!f || e.button !== 0 || f.resizing) return;
+  e.preventDefault();
+  const paneH = f.els.root.clientHeight;
+  const minH = _visibleLanes(f).length * LANE_MIN_PX + 12 + 8;
+  f.resizing = {
+    kind: "strip",
+    startY: e.clientY,
+    startH: f.els.strip.clientHeight,
+    minH,
+    maxH: Math.max(minH, paneH - f.els.gap.clientHeight - SCORE_MIN_PX),
+    moved: false,
+    onMove: (ev) => _onResizeMove(ev),
+    onUp: (ev) => _onResizeUp(ev),
+  };
+  window.addEventListener("pointermove", f.resizing.onMove);
+  window.addEventListener("pointerup", f.resizing.onUp);
+}
+
+function _onLaneHandlePointerDown(e, h) {
+  const f = _fix;
+  if (!f || e.button !== 0 || h.hidden || f.resizing) return;
+  e.preventDefault();
+  const heights = {};
+  for (const [el, k] of _visibleLanes(f)) heights[k] = el.clientHeight;
+  if (!(h.dataset.upper in heights) || !(h.dataset.lower in heights)) return;
+  f.resizing = {
+    kind: "lanes",
+    startY: e.clientY,
+    upper: h.dataset.upper,
+    lower: h.dataset.lower,
+    heights,
+    moved: false,
+    onMove: (ev) => _onResizeMove(ev),
+    onUp: (ev) => _onResizeUp(ev),
+  };
+  window.addEventListener("pointermove", f.resizing.onMove);
+  window.addEventListener("pointerup", f.resizing.onUp);
+}
+
+function _onResizeMove(e) {
+  const f = _fix;
+  const r = f?.resizing;
+  if (!r) return;
+  const dy = e.clientY - r.startY;
+  if (Math.abs(dy) >= 1) r.moved = true;
+  if (r.kind === "strip") {
+    _stripHeightPx = Math.min(r.maxH, Math.max(r.minH, r.startH - dy));
+    _applyStripSizing(f.els.strip);
+  } else {
+    const total = r.heights[r.upper] + r.heights[r.lower];
+    const up = Math.min(total - LANE_MIN_PX, Math.max(LANE_MIN_PX, r.heights[r.upper] + dy));
+    // Pixels as weights: every visible lane keeps its height, the two
+    // neighbours trade; a hidden lane keeps a default-proportioned weight.
+    const w = { ...(_laneWeights || {}) };
+    for (const k of Object.keys(r.heights)) w[k] = r.heights[k];
+    w[r.upper] = up;
+    w[r.lower] = total - up;
+    const def = { wave: 10, spec: 10, onset: 4 };
+    for (const k of Object.keys(def)) if (w[k] == null) w[k] = (def[k] * total) / 24;
+    _laneWeights = w;
+    _applyLaneWeights(f.els);
+  }
+  _scheduleRedraw();
+}
+
+function _onResizeUp() {
+  const f = _fix;
+  const r = f?.resizing;
+  if (!r) return;
+  _endResize(f);
+  if (!r.moved) return;
+  _buildStrip(f.stripSource); // a WaveSurfer sizes itself at creation
+  // The score pane moved: re-fit it (the observer stood down during the drag).
+  if (r.kind === "strip") _onResize().catch(() => {});
+  _scheduleRedraw();
+}
+
+function _endResize(f) {
+  const r = f.resizing;
+  if (!r) return;
+  window.removeEventListener("pointermove", r.onMove);
+  window.removeEventListener("pointerup", r.onUp);
+  f.resizing = null;
+}
+
+function _resetStripHeight() {
+  _stripHeightPx = null;
+  const f = _fix;
+  if (!f) return;
+  _applyStripSizing(f.els.strip);
+  _buildStrip(f.stripSource);
+  _onResize().catch(() => {});
+}
+
+function _resetLaneWeights() {
+  _laneWeights = null;
+  const f = _fix;
+  if (!f) return;
+  _applyLaneWeights(f.els);
   _buildStrip(f.stripSource);
   _scheduleRedraw();
 }
 
 /** Keep the worker's lanes for the session, derive the display curve, paint. */
 function _installLanes(f, d) {
-  f.lanes = {
-    hop: d.hop,
+  const melPart = {
     sr: d.sr,
     nMels: d.n_mels,
-    nFrames: d.n_frames,
+    nFft: d.n_fft,
+    window: d.window,
+    melHop: d.mel_hop,
+    melFrames: d.mel_frames,
     melT0: d.mel_t0,
-    onsetT0: d.onset_t0,
     mel: d.mel,
-    onset: d.onset,
-    onsetNorm: _localNormalise(d.onset, Math.round((LANE_NORM_WIN_SEC * d.sr) / d.hop)),
-    peaks: Float64Array.from(d.peaks || []),
     img: null,
     scratch: null,
     lastKey: null,
   };
+  if (d.what === "mel" && f.lanes) {
+    // A configuration change: the onset lane and its peaks are kept.
+    f.lanes = { ...f.lanes, ...melPart };
+  } else {
+    const onset = d.onset || new Float32Array(0);
+    f.lanes = {
+      ...melPart,
+      onsetHop: d.onset_hop,
+      onsetFrames: d.onset_frames ?? onset.length,
+      onsetT0: d.onset_t0,
+      onset,
+      onsetNorm: _localNormalise(
+        onset,
+        Math.round((LANE_NORM_WIN_SEC * d.sr) / d.onset_hop),
+      ),
+      peaks: Float64Array.from(d.peaks || []),
+      pat: Float64Array.from(d.pat || []),
+    };
+  }
   f.lanesError = null;
   _scheduleRedraw();
 }
@@ -1925,6 +2295,7 @@ function _melLut() {
 function _paintLanes() {
   const f = _fix;
   if (!f?.els.lanes) return;
+  _layoutLaneHandles(f);
   const L = f.lanes;
   for (const [el, kind] of [
     [f.els.laneSpec, "spec"],
@@ -1977,10 +2348,10 @@ function _paintSpectrogram(ctx, L, w, h) {
   const t0 = _stripXToTime(0);
   const t1 = _stripXToTime(w);
   if (t0 === null || t1 === null) return;
-  const fr = L.sr / L.hop;
+  const fr = L.sr / L.melHop;
   // Frame i is centred at i / fr + melT0 and owns the cell [i − ½, i + ½).
   const F0 = Math.max(0, Math.floor((t0 - L.melT0) * fr - 0.5));
-  const F1 = Math.min(L.nFrames, Math.ceil((t1 - L.melT0) * fr + 0.5) + 1);
+  const F1 = Math.min(L.melFrames, Math.ceil((t1 - L.melT0) * fr + 0.5) + 1);
   if (F1 <= F0) return;
   const nF = F1 - F0;
   const nM = L.nMels;
@@ -1988,7 +2359,7 @@ function _paintSpectrogram(ctx, L, w, h) {
   const data = L.img.data;
   const lut = _melLut();
   const mel = L.mel;
-  const stride = L.nFrames;
+  const stride = L.melFrames;
   for (let m = 0; m < nM; m++) {
     let o = (nM - 1 - m) * nF * 4; // the lowest band at the bottom
     let s = m * stride + F0;
@@ -2022,9 +2393,10 @@ function _paintOnsetLane(ctx, L, w, h) {
   const t0 = _stripXToTime(0);
   const t1 = _stripXToTime(w);
   if (t0 === null || t1 === null) return;
-  const fr = L.sr / L.hop;
+  if (!L.onsetFrames) return;
+  const fr = L.sr / L.onsetHop;
   const F0 = Math.max(0, Math.floor((t0 - L.onsetT0) * fr) - 1);
-  const F1 = Math.min(L.nFrames, Math.ceil((t1 - L.onsetT0) * fr) + 2);
+  const F1 = Math.min(L.onsetFrames, Math.ceil((t1 - L.onsetT0) * fr) + 2);
   if (F1 <= F0) return;
   const style = getComputedStyle(document.documentElement);
   const fill = style.getPropertyValue("--color-waveform").trim() || "violet";
@@ -2043,7 +2415,7 @@ function _paintOnsetLane(ctx, L, w, h) {
   ctx.fill();
   ctx.globalAlpha = 0.85;
   ctx.fillStyle = tickColor;
-  const pk = L.peaks;
+  const pk = _snapTargetList() || [];
   for (let k = _lowerBound(pk, t0 - 1); k < pk.length && pk[k] <= t1 + 1; k++) {
     const x = _timeToStripX(pk[k]);
     ctx.fillRect(Math.round(x) - 1, 0, 2, LANE_PEAK_MARK_H);
@@ -2060,9 +2432,20 @@ function _paintOnsetLane(ctx, L, w, h) {
   ctx.globalAlpha = 1;
 }
 
-/** The nearest detected onset within `radius` seconds of t, or null. */
+/** The active snap-target list — detected onsets, or perceived attacks — or null. */
+function _snapTargetList() {
+  const L = _fix?.lanes;
+  if (!L) return null;
+  const list = _snapTarget === "perceived" && L.pat?.length ? L.pat : L.peaks;
+  return list?.length ? list : null;
+}
+
+/** The nearest active snap target within `radius` seconds of t, or null. */
 function _nearestOnsetPeak(t, radius) {
-  const pk = _fix?.lanes?.peaks;
+  return _nearestIn(_snapTargetList(), t, radius);
+}
+
+function _nearestIn(pk, t, radius) {
   if (!pk?.length) return null;
   const k = _lowerBound(pk, t);
   let best = null;
@@ -2146,13 +2529,14 @@ function _redrawOverlays() {
     const x = _timeToStripX(t);
     if (x === null) continue;
     const selected = g === selGroup;
+    const multi = f.multiSel.size > 0 && f.multiSel.has(f.groups.indexOf(g));
     const anchor = findAnchor(_corrections, g.eventIxs[0]);
     // Tick: the vertical line on the strip — the loop's drag handle.
     if (x >= -1 && x <= w + 1) {
       ctx.beginPath();
-      ctx.lineWidth = selected || anchor ? 2 : 1;
+      ctx.lineWidth = selected || anchor || multi ? 2 : 1;
       ctx.strokeStyle = tickColor;
-      ctx.globalAlpha = selected || dragging ? 0.95 : anchor ? 0.7 : 0.35;
+      ctx.globalAlpha = selected || dragging || multi ? 0.95 : anchor ? 0.7 : 0.35;
       ctx.moveTo(x, 0);
       ctx.lineTo(x, wb);
       ctx.stroke();
@@ -2163,6 +2547,12 @@ function _redrawOverlays() {
         ctx.globalAlpha = 0.95;
         ctx.fillStyle = tickColor;
         ctx.fillRect(x - 5, 0, 10, 3);
+      } else if (multi) {
+        // The multi-selection's members wear the cap in outline.
+        ctx.globalAlpha = 0.95;
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = tickColor;
+        ctx.strokeRect(x - 4.5, 0.75, 9, 2.5);
       }
       if (anchor) {
         // Anchored onsets carry a base glyph: solid square for a drag anchor,
@@ -2247,6 +2637,18 @@ function _redrawOverlays() {
     ctx.lineTo(x - rx, 8);
     ctx.closePath();
     ctx.fill();
+  }
+  // A marquee in progress: the span it will select, over the lanes.
+  if (f.marquee) {
+    const a = Math.min(f.marquee.x0, f.marquee.x1);
+    const b = Math.max(f.marquee.x0, f.marquee.x1);
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = tickColor;
+    ctx.fillRect(a, 0, b - a, wb);
+    ctx.globalAlpha = 0.7;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = tickColor;
+    ctx.strokeRect(a + 0.5, 0.5, Math.max(0, b - a - 1), wb - 1);
   }
   ctx.globalAlpha = 1;
   f.ticksOnPage = ticksDrawn;
@@ -2368,8 +2770,28 @@ function _onTickMouseDown(e) {
   const rect = f.els.ticks.getBoundingClientRect();
   const x = e.clientX - rect.x;
   const hit = _tickHit(x);
-  if (hit === -1) return;
+  if (hit === -1) {
+    // Empty strip: a marquee selects the ticks it spans; a plain click clears.
+    e.preventDefault();
+    f.marquee = {
+      x0: x,
+      x1: x,
+      startX: e.clientX,
+      onMove: (ev) => _onMarqueeMove(ev),
+      onUp: (ev) => _onMarqueeUp(ev),
+    };
+    window.addEventListener("mousemove", f.marquee.onMove);
+    window.addEventListener("mouseup", f.marquee.onUp);
+    return;
+  }
   e.preventDefault();
+  if (e.shiftKey) {
+    // Shift+click toggles the tick's membership in the multi-selection.
+    if (f.multiSel.has(hit)) f.multiSel.delete(hit);
+    else f.multiSel.add(hit);
+    _scheduleRedraw();
+    return;
+  }
   // Editing needs the engine (auto-realign on release); before it is ready a
   // mousedown is only ever a click-select. Deliberately NOT the chip state:
   // a failed realign leaves an error chip standing, but the engine session
@@ -2465,6 +2887,61 @@ function _endDrag(f) {
   if (d.onMove) window.removeEventListener("mousemove", d.onMove);
   if (d.onUp) window.removeEventListener("mouseup", d.onUp);
   f.drag = null;
+}
+
+// --- Marquee selection (a drag on empty strip), the multi-selection's gesture ---
+
+function _onMarqueeMove(e) {
+  const f = _fix;
+  const m = f?.marquee;
+  if (!m) return;
+  const rect = f.els.ticks.getBoundingClientRect();
+  m.x1 = e.clientX - rect.x;
+  _scheduleRedraw();
+}
+
+function _onMarqueeUp(e) {
+  const f = _fix;
+  const m = f?.marquee;
+  if (!m) return;
+  _endMarquee(f);
+  const rect = f.els.ticks.getBoundingClientRect();
+  const x1 = e.clientX - rect.x;
+  if (Math.abs(e.clientX - m.startX) < DRAG_THRESHOLD_PX) {
+    f.multiSel.clear(); // a plain click on empty strip deselects
+    _scheduleRedraw();
+    return;
+  }
+  const a = Math.min(m.x0, x1);
+  const b = Math.max(m.x0, x1);
+  const picked = [];
+  for (const g of _groupsOnPage(f.page)) {
+    const t = _groupRefTime(g);
+    if (!Number.isFinite(t)) continue;
+    const gx = _timeToStripX(t);
+    if (gx !== null && gx >= a && gx <= b) picked.push(f.groups.indexOf(g));
+  }
+  f.multiSel = new Set(picked);
+  if (picked.length && !f.multiSel.has(f.selGroupIx)) _select(picked[0], { seek: false });
+  _scheduleRedraw();
+}
+
+function _endMarquee(f) {
+  const m = f.marquee;
+  if (!m) return;
+  window.removeEventListener("mousemove", m.onMove);
+  window.removeEventListener("mouseup", m.onUp);
+  f.marquee = null;
+}
+
+/** A: every onset on the page joins the multi-selection; again, none. */
+function _toggleSelectAllOnPage() {
+  const f = _fix;
+  if (!f) return;
+  const ixs = _groupsOnPage(f.page).map((g) => f.groups.indexOf(g));
+  const all = ixs.length > 0 && ixs.every((ix) => f.multiSel.has(ix));
+  f.multiSel = all ? new Set() : new Set(ixs);
+  _scheduleRedraw();
 }
 
 // ---------------------------------------------------------------------------
@@ -3315,7 +3792,7 @@ async function _commitAnchor(groupIx, t, kind) {
   if (kind === "approve") {
     entry.selfAfter = { ...entry.selfBefore };
     f.lastCommit = { kind, i, t, realigned: 0, linear: 0, degenerate: 0 };
-    pushFixUndoEntry(entry);
+    _pushCommitEntry(entry);
     _syncCorrectionsHeader();
     _scheduleRedraw();
     return;
@@ -3485,7 +3962,7 @@ async function _commitAnchor(groupIx, t, kind) {
       })
       .catch(() => {});
   }
-  pushFixUndoEntry(entry);
+  _pushCommitEntry(entry);
   _syncCorrectionsHeader();
   _setChip("ready", "Correction engine ready");
   _auditionRerender(entry.window.t0, entry.renderT1);
@@ -3498,7 +3975,106 @@ async function _commitAnchor(groupIx, t, kind) {
     fixedT: entry.t,
     passUntilT: entry.window.t1,
   };
-  if (!_replaySuppressed) _replayFix(_lastReplay);
+  if (_batch) {
+    // A batch replays ONCE at its end, from its first fix to its last.
+    _batch.first = _batch.first || _lastReplay;
+    _batch.last = _lastReplay;
+  } else if (!_replaySuppressed) {
+    _replayFix(_lastReplay);
+  }
+}
+
+/** A commit's history entry: onto listen.js's stack, or into a running batch. */
+function _pushCommitEntry(entry) {
+  if (_batch) _batch.entries.push(entry);
+  else pushFixUndoEntry(entry);
+}
+
+/**
+ * "Move to nearest onset" (S, and the nav button): the multi-selection — or,
+ * with none, the selected onset — each to its nearest active snap target
+ * within SNAP_CMD_RADIUS_SEC, as drag anchors committed in order (each realign
+ * narrows the next one's bounds, so bounds are re-read per commit). Several
+ * anchors make ONE history entry and one replay; the outcome is announced.
+ */
+async function _snapSelectionToOnsets() {
+  const f = _fix;
+  if (!f) return;
+  if (!f.engineReady || f.realignBusy || _batch) {
+    _announce(_notEditableWhy());
+    return;
+  }
+  const targets = _snapTargetList();
+  if (!targets) {
+    _announce("No detected onsets yet — the lanes are still computing.");
+    return;
+  }
+  const ixs = f.multiSel.size ? [...f.multiSel].sort((a, b) => a - b) : [f.selGroupIx];
+  const plan = [];
+  const batch = { requested: ixs.length, moved: 0, noTarget: 0, blocked: 0, already: 0 };
+  for (const ix of ixs) {
+    const g = f.groups[ix];
+    if (!g) continue;
+    const t0 = _groupRefTime(g);
+    if (!Number.isFinite(t0)) continue;
+    const target = _nearestIn(targets, t0, SNAP_CMD_RADIUS_SEC);
+    if (target === null) {
+      batch.noTarget++;
+      continue;
+    }
+    if (Math.abs(target - t0) < ANCHOR_EPS_SEC) {
+      batch.already++;
+      continue;
+    }
+    plan.push({ ix, t: target });
+  }
+  _batch = { entries: [], first: null, last: null };
+  try {
+    for (const p of plan) {
+      const b = _dragBounds(p.ix);
+      if (p.t <= b.lo || p.t >= b.hi) {
+        batch.blocked++;
+        continue;
+      }
+      const before = _batch.entries.length;
+      await _commitAnchor(p.ix, p.t, "drag");
+      if (_fix !== f) return;
+      if (_batch.entries.length > before) batch.moved++;
+    }
+  } finally {
+    const b = _batch;
+    _batch = null;
+    if (b) {
+      if (b.entries.length === 1) {
+        pushFixUndoEntry(b.entries[0]);
+      } else if (b.entries.length > 1) {
+        pushFixUndoEntry({
+          type: "fix-anchor-batch",
+          entries: b.entries,
+          count: b.entries.length,
+          i: b.entries[0].i,
+          barHint: b.entries[0].barHint,
+        });
+      }
+      if (b.first) {
+        _lastReplay = { t0: b.first.t0, fixedT: b.first.fixedT, passUntilT: b.last.passUntilT };
+        if (!_replaySuppressed) _replayFix(_lastReplay);
+      }
+    }
+  }
+  f.lastBatch = batch;
+  const label = _snapTarget === "perceived" ? "perceived attack" : "detected onset";
+  const parts = [];
+  if (batch.noTarget) {
+    parts.push(`${batch.noTarget} had no ${label} within ${Math.round(SNAP_CMD_RADIUS_SEC * 1000)} ms`);
+  }
+  if (batch.blocked) parts.push(`${batch.blocked} blocked by a neighbouring anchor`);
+  if (batch.already) parts.push(`${batch.already} already there`);
+  _announce(
+    `Moved ${batch.moved} of ${batch.requested} onset${batch.requested === 1 ? "" : "s"} ` +
+      `to the nearest ${label}${parts.length ? ` (${parts.join(", ")})` : ""}.`,
+  );
+  _scheduleRedraw();
 }
 
 /**
@@ -3639,6 +4215,18 @@ function _barOfQuarter(q) {
  * off-screen (the cluster-B nicety).
  */
 export function applyFixCorrectionUndo(entry) {
+  if (entry.type === "fix-anchor-batch") {
+    // A "move to nearest onset" batch: its anchors come off in reverse, then
+    // one hop covering the whole span.
+    for (let k = entry.entries.length - 1; k >= 0; k--) _undoEntryData(entry.entries[k]);
+    _afterHistoryHop(entry.entries[0], "Undid", entry.entries.length, _batchWindow(entry));
+    return;
+  }
+  _undoEntryData(entry);
+  _afterHistoryHop(entry, "Undid");
+}
+
+function _undoEntryData(entry) {
   const refOn = scoreAlignment?.ref_onset;
   const refOff = scoreAlignment?.ref_offset;
   if (!refOn) return;
@@ -3654,11 +4242,20 @@ export function applyFixCorrectionUndo(entry) {
     refOff[entry.i] = entry.selfBefore.off;
   }
   _restoreAnchorState(entry);
-  _afterHistoryHop(entry, "Undid");
 }
 
 /** Apply the REDO of a fix-anchor entry: the after-values and the anchor. */
 export function applyFixCorrectionRedo(entry) {
+  if (entry.type === "fix-anchor-batch") {
+    for (const e of entry.entries) _redoEntryData(e);
+    _afterHistoryHop(entry.entries[0], "Redid", entry.entries.length, _batchWindow(entry));
+    return;
+  }
+  _redoEntryData(entry);
+  _afterHistoryHop(entry, "Redid");
+}
+
+function _redoEntryData(entry) {
   const refOn = scoreAlignment?.ref_onset;
   const refOff = scoreAlignment?.ref_offset;
   if (!refOn) return;
@@ -3684,21 +4281,33 @@ export function applyFixCorrectionRedo(entry) {
   if (ins === -1) _corrections.anchors.push(a);
   else _corrections.anchors.splice(ins, 0, a);
   _syncCorrectionsHeader();
-  _afterHistoryHop(entry, "Redid");
 }
 
-function _afterHistoryHop(entry, verb) {
+/** The audition span a batch entry touched, from its first fix to its last. */
+function _batchWindow(batch) {
+  let t0 = Infinity;
+  let t1 = -Infinity;
+  for (const e of batch.entries) {
+    if (!e.window) continue;
+    t0 = Math.min(t0, e.window.t0);
+    t1 = Math.max(t1, e.renderT1 ?? e.window.t1);
+  }
+  return Number.isFinite(t0) ? { t0, t1 } : null;
+}
+
+function _afterHistoryHop(entry, verb, count = 1, win = null) {
   const f = _fix;
   if (f) {
     const ix = f.groups.findIndex((g) => g.eventIxs.includes(entry.i));
     if (ix !== -1) _select(ix, { seek: false });
-    if (entry.window) {
-      _auditionRerender(entry.window.t0, entry.renderT1 ?? entry.window.t1);
-    }
+    const w =
+      win || (entry.window ? { t0: entry.window.t0, t1: entry.renderT1 ?? entry.window.t1 } : null);
+    if (w) _auditionRerender(w.t0, w.t1);
     _scheduleRedraw();
   } else {
     const where = entry.barHint ? `near bar ${entry.barHint}` : `at event ${entry.i}`;
-    _announce(`${verb} alignment correction ${where}.`);
+    const what = count > 1 ? `${count} alignment corrections` : "alignment correction";
+    _announce(`${verb} ${what} ${where}.`);
   }
 }
 
@@ -3917,6 +4526,24 @@ function _onFixKeydown(e) {
         _announce("The audition is still preparing.");
       }
       break;
+    case "KeyA":
+      if (e.altKey || e.shiftKey) {
+        handled = false;
+        break;
+      }
+      _commitPendingNudge();
+      _toggleSelectAllOnPage();
+      break;
+    case "KeyS":
+      if (e.altKey || e.shiftKey) {
+        handled = false;
+        break;
+      }
+      _commitPendingNudge();
+      _snapSelectionToOnsets().catch((err) =>
+        console.error("fix mode: move to onset failed:", err),
+      );
+      break;
     case "KeyM":
       if (e.altKey) {
         handled = false;
@@ -3944,7 +4571,10 @@ function _onFixKeydown(e) {
       break;
     case "Escape":
       if (hadPendingNudge) _cancelPendingNudge();
-      else if (_activeMarkT !== null) {
+      else if (f.multiSel.size) {
+        f.multiSel.clear(); // first Escape drops the multi-selection…
+        _scheduleRedraw();
+      } else if (_activeMarkT !== null) {
         _activeMarkT = null; // first Escape deselects the mark…
         _scheduleRedraw();
       } else exitFixMode(); // …a bare one exits
@@ -3961,6 +4591,26 @@ function _onFixKeydown(e) {
 // ---------------------------------------------------------------------------
 // Correction-engine bootstrap (decode ref audio + the worker's fix_begin)
 // ---------------------------------------------------------------------------
+
+/** One line: where the arming seconds went. */
+function _logArmingTrail(f) {
+  const T = f.timing;
+  if (!T?.readyMs) return;
+  const s = (ms) => (ms == null ? "?" : `${(ms / 1000).toFixed(1)} s`);
+  const w = T.worker || {};
+  const b = w.boot;
+  const runtime =
+    w.bootMs == null
+      ? "runtime ?"
+      : w.bootMs < 50
+        ? "runtime resident"
+        : `runtime ${s(w.bootMs)}` +
+          (b ? ` (pyodide ${s(b.pyodideMs)} + packages ${s(b.packagesMs)} + init ${s(b.initMs)})` : "");
+  console.log(
+    `fix mode: engine armed in ${s(T.readyMs)} — decode ${s(T.decodeMs)}, ` +
+      `${runtime}, score synth ${s(w.beginMs)}; lanes +${s(T.lanesMs)}`,
+  );
+}
 
 /** Decode the reference recording to mono Float32 at the aligner's rate —
  *  the same construction as align.js's decodeAudio. */
@@ -4019,6 +4669,12 @@ function _ensureWorker() {
 
 async function _bootstrap() {
   const f = _fix;
+  // The arming trail: where the seconds go, one console line once the lanes
+  // land (and fixTestState().timing). The user's "loading times are fairly
+  // high" (2026-09-02) is only answerable against these numbers.
+  const T0 = performance.now();
+  f.timing = { decodeMs: null, readyMs: null, worker: null, lanesMs: null };
+  _warmRuntime(); // the runtime boots in the worker while the decode runs here
   _setChip(
     "decoding",
     "Step 1/4: reference audio…",
@@ -4027,6 +4683,7 @@ async function _bootstrap() {
   _syncReadyAffordance();
   const samples = await _decodeRefAudio(f.refFile);
   if (!_fix || _fix !== f) return; // exited while decoding
+  f.timing.decodeMs = Math.round(performance.now() - T0);
 
   // A decode also upgrades (or provides) the strip: peaks derived from the
   // full-rate samples beat the stored ~4k-point envelope at page zoom.
@@ -4062,6 +4719,10 @@ async function _bootstrap() {
     if (!_fix || _fix !== f) return;
     if (d.type === "fix_lanes") {
       _installLanes(f, d);
+      if (f.timing.readyAt) {
+        f.timing.lanesMs = Math.round(performance.now() - f.timing.readyAt);
+      }
+      _logArmingTrail(f);
     } else if (d.type === "fix_lanes_error") {
       // The lanes are a comfort, not the engine: the session stays live.
       console.warn("fix mode: lanes unavailable:", d.message);
@@ -4088,11 +4749,14 @@ async function _bootstrap() {
       }
       f.workerEvents = d.events;
       f.engineReady = true;
+      f.timing.readyMs = Math.round(performance.now() - T0);
+      f.timing.readyAt = performance.now();
+      f.timing.worker = d.timing || null;
       _setChip("ready", "Ready to correct");
       _syncReadyAffordance();
       // The v2 lanes come AFTER arming, from the audio the worker now holds:
       // a few seconds of numpy the correction session never waits for.
-      worker.postMessage({ type: "fix_lanes", hop: LANE_HOP, nMels: LANE_N_MELS });
+      _requestLanes(f, "all");
     } else if (d.type === "error") {
       _setChip("error", `Correction engine failed: ${d.message}`);
     }
@@ -4193,15 +4857,32 @@ export function fixTestState() {
     snapOnsets: _snapOnsets,
     lanes: f.lanes
       ? {
-          hop: f.lanes.hop,
+          hop: f.lanes.onsetHop,
           sr: f.lanes.sr,
           nMels: f.lanes.nMels,
-          nFrames: f.lanes.nFrames,
-          peakCount: f.lanes.peaks.length,
-          peaks: Array.from(f.lanes.peaks.subarray(0, 64)),
+          nFft: f.lanes.nFft,
+          window: f.lanes.window,
+          melHop: f.lanes.melHop,
+          melFrames: f.lanes.melFrames,
+          nFrames: f.lanes.melFrames,
+          onsetFrames: f.lanes.onsetFrames,
+          peakCount: f.lanes.peaks?.length ?? 0,
+          patCount: f.lanes.pat?.length ?? 0,
+          peaks: Array.from((f.lanes.peaks || new Float64Array(0)).subarray(0, 64)),
         }
       : null,
     lanesError: f.lanesError,
+    multiSel: [...f.multiSel].sort((a, b) => a - b),
+    pageTicks: _groupsOnPage(f.page).map((g) => {
+      const t = _groupRefTime(g);
+      return { ix: f.groups.indexOf(g), t, x: Number.isFinite(t) ? _timeToStripX(t) : null };
+    }),
+    specCfg: { ..._specCfg },
+    snapTarget: _snapTarget,
+    stripHeightPx: _stripHeightPx,
+    laneWeights: _laneWeights ? { ..._laneWeights } : null,
+    lastBatch: f.lastBatch ? { ...f.lastBatch } : null,
+    timing: f.timing ? { ...f.timing } : null,
     lastDrag: f.lastDrag ? { ...f.lastDrag } : null,
     laneHeights: {
       strip: f.els.strip?.clientHeight ?? 0,

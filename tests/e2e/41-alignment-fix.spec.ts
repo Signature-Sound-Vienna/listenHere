@@ -256,8 +256,11 @@ except RuntimeError:
     after_dispose = True
 
 print(json.dumps({
-    'hop': lanes['hop'], 'sr': lanes['sr'], 'n_mels': lanes['n_mels'],
-    'n_frames': lanes['n_frames'], 'mel_t0': lanes['mel_t0'], 'onset_t0': lanes['onset_t0'],
+    'hop': lanes['onset_hop'], 'sr': lanes['sr'], 'n_mels': lanes['n_mels'],
+    'n_frames': lanes['mel_frames'], 'mel_t0': lanes['mel_t0'], 'onset_t0': lanes['onset_t0'],
+    'mel_hop': lanes['mel_hop'], 'onset_hop': lanes['onset_hop'], 'mel_window': lanes['window'],
+    'onset_frames': lanes['onset_frames'],
+    'pat': lanes['pat'],
     'mel_shape': list(mel.shape), 'mel_dtype': str(mel.dtype), 'mel_max': int(mel.max()),
     'mel_lead_mean': float(mel[:, :lead_f - 2].mean()),
     'mel_tail_mean': float(mel[:, -span:].mean()),
@@ -268,6 +271,61 @@ print(json.dumps({
     'true_on': [true_on(k) for k in range(len(ev['score_onset']))],
     'ref_duration': ev['ref_duration'],
     'before_begin': before_begin, 'after_dispose': after_dispose,
+}))
+`;
+
+// Feedback round 1: perceived attack times, and the scipy-free interpolation
+// that replaced interp1d (checked against scipy itself, which the dev machine
+// has and the worker no longer loads).
+const HARNESS_PAT = `
+import json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+# Six tones with SLOW attacks: a 200 ms CONCAVE amplitude ramp (sqrt — energy
+# appears quickly, then grows slowly, the shape of a soft string entry), 400 ms
+# of sustain, a 20 ms release, starting every second from t = 0.5. The
+# perceived attack sits where the amplitude reaches half its maximum (-6 dB):
+# a quarter of the way in, 50 ms after the physical start. A linear ramp would
+# give the flux detector a flat plateau and two peaks per tone; this one peaks
+# once, early.
+RAMP = 0.2; SUS = 0.4; REL = 0.02
+starts = [0.5 + k for k in range(6)]
+n = int((starts[-1] + 1.5) * SR)
+audio = np.zeros(n, dtype=np.float32)
+t = np.arange(n) / SR
+for k, s in enumerate(starts):
+    f0 = 220.0 * 2 ** (k / 12.0)
+    i0 = int(s * SR); i1 = int((s + RAMP + SUS + REL) * SR)
+    seg = np.zeros(i1 - i0)
+    for h in range(1, 5):
+        seg += np.sin(2 * np.pi * f0 * h * t[i0:i1]) / h
+    env = np.ones(i1 - i0)
+    nr = int(RAMP * SR); env[:nr] = np.sqrt(np.linspace(0, 1, nr))
+    nrel = int(REL * SR); env[-nrel:] = np.linspace(1, 0, nrel)
+    audio[i0:i1] += (seg * env * 0.3).astype(np.float32)
+onset = compute_onset_strength(audio, hop=512)
+peaks = pick_onset_peaks(onset, 512)
+pat = perceptual_attack_times(audio, peaks, 512)
+
+# interp_linear_extrap vs scipy's interp1d(kind='linear', fill_value='extrapolate')
+from scipy.interpolate import interp1d
+rng = np.random.default_rng(7)
+x = np.cumsum(rng.uniform(0.05, 1.0, 60)); y = np.cumsum(rng.uniform(-1, 2, 60))
+xq = np.concatenate([rng.uniform(x[0] - 5, x[-1] + 5, 400), x, [x[0] - 20, x[-1] + 20]])
+ref = interp1d(x, y, kind='linear', fill_value='extrapolate')(xq)
+mine = interp_linear_extrap(x, y, xq)
+scalar = float(interp_linear_extrap(x, y, float(xq[3])))
+print(json.dumps({
+    'starts': starts, 'peaks': peaks, 'pat': pat,
+    'interp_max_diff': float(np.max(np.abs(ref - mine))),
+    'scalar_ok': abs(scalar - float(ref[3])) < 1e-9,
+    'scalar_type_ok': isinstance(interp_linear_extrap(x, y, 1.0), float),
 }))
 `;
 
@@ -315,6 +373,23 @@ let lanesOut: any = null;
 function runLanesScenario(): any {
   if (!lanesOut) lanesOut = execPython(HARNESS_LANES, buildMidiA().toString('base64'));
   return lanesOut;
+}
+
+let patOut: any = null;
+function runPatScenario(): any {
+  if (!patOut) patOut = execPython(HARNESS_PAT, buildMidiA().toString('base64'));
+  return patOut;
+}
+
+/** The worker's Python, exactly as Pyodide sees it. */
+function workerPython(): string {
+  const workerSrc = fs.readFileSync(
+    path.resolve(__dirname, '../../app/static/js/align-worker.js'),
+    'utf8',
+  );
+  const tpl = workerSrc.match(/const PYTHON_CODE = `([\s\S]*?)`;/);
+  // eslint-disable-next-line no-eval
+  return eval('`' + tpl![1] + '`');
 }
 
 function expectMonotonic(values: number[]) {
@@ -668,11 +743,13 @@ test.describe('41. alignment correction — worker segment realign', () => {
     // Session-bound like the realign: nothing before fix_begin, nothing after dispose.
     expect(out.before_begin).toBe(true);
     expect(out.after_dispose).toBe(true);
-    // Geometry: 64 mel bins × one frame per 512 samples, both lanes the same length.
+    // Geometry: 64 mel bins × one frame per 512 samples; each lane reports its
+    // own frame count (their windows differ, so the tails differ by a frame or two).
     expect(out).toMatchObject({ hop: 512, sr: 22050, n_mels: 64 });
     expect(out.mel_shape).toEqual([64, out.n_frames]);
     expect(Math.abs(out.n_frames - (out.ref_duration * 22050) / 512)).toBeLessThan(5);
-    expect(out.onset_len).toBe(out.n_frames);
+    expect(out.onset_len).toBe(out.onset_frames);
+    expect(Math.abs(out.onset_len - out.n_frames)).toBeLessThan(4);
     expect(out.mel_dtype).toBe('uint8');
     expect(out.onset_dtype).toBe('float32');
     // Frame times are window CENTRES: each lane says where its frame 0 sits.
@@ -700,5 +777,43 @@ test.describe('41. alignment correction — worker segment realign', () => {
         `peak ${k}: got ${p}, true ${out.true_on[k]}`,
       ).toBeLessThan(TOL);
     });
+    // A perceived attack per peak; the ladder's 10 ms attacks put it on the
+    // physical onset (within one frame).
+    expect(out.pat).toHaveLength(N_NOTES);
+    out.pat.forEach((p: number, k: number) => {
+      expect(Math.abs(p - out.true_on[k]), `pat ${k}`).toBeLessThan(TOL + 0.01);
+    });
+    expect(out.mel_window).toBe('hann');
+    expect(out.onset_hop).toBe(512);
+    expect(out.mel_hop).toBe(512);
+  });
+
+  test('41.12 perceived attack times lag slow attacks by half the ramp; interp_linear_extrap matches interp1d; the worker no longer loads scipy', async () => {
+    test.setTimeout(120_000);
+    // The worker's Python must not import scipy anywhere (the ~2 s of runtime
+    // load and import it cost was the largest single arming item).
+    expect(workerPython()).not.toMatch(/^\s*(from|import)\s+scipy/m);
+    const workerJs = fs.readFileSync(
+      path.resolve(__dirname, '../../app/static/js/align-worker.js'),
+      'utf8',
+    );
+    expect(workerJs).toMatch(/loadPackage\(\["numpy"\]\)/);
+    const out = runPatScenario();
+    // One flux peak per tone, early in the ramp; the perceived attack ~50 ms
+    // after each physical start (a sqrt ramp reaches half amplitude a quarter
+    // of the way in), i.e. later than the flux peak.
+    expect(out.peaks).toHaveLength(6);
+    expect(out.pat).toHaveLength(6);
+    out.starts.forEach((s: number, k: number) => {
+      expect(out.peaks[k], `peak ${k}`).toBeGreaterThan(s - 0.03);
+      expect(out.peaks[k], `peak ${k}`).toBeLessThan(s + 0.1);
+      expect(Math.abs(out.pat[k] - (s + 0.05)), `pat ${k}: ${out.pat[k]} vs ${s + 0.05}`).toBeLessThan(0.02);
+      expect(out.pat[k], `pat ${k} after peak`).toBeGreaterThan(out.peaks[k] - 0.01);
+    });
+    // Scipy-free interpolation: identical to interp1d inside AND outside the
+    // range (linear extrapolation from the end segments), scalars included.
+    expect(out.interp_max_diff).toBeLessThan(1e-9);
+    expect(out.scalar_ok).toBe(true);
+    expect(out.scalar_type_ok).toBe(true);
   });
 });

@@ -106,6 +106,7 @@ async function installWorkerStub(
           }
         }
         const sorted = peaks.slice().sort((a, b) => a - b);
+        const bandHz = Array.from({ length: nMels }, (_, m) => 30 * Math.pow(11025 / 30, (m + 0.5) / nMels));
         w.onmessage?.({
           data: {
             type: 'fix_lanes',
@@ -114,6 +115,8 @@ async function installWorkerStub(
             n_mels: nMels,
             n_fft: nFft,
             window: opts.window ?? 'hann',
+            scale: opts.scale ?? 'mel',
+            band_hz: bandHz,
             mel_hop: melHop,
             mel_frames: melFrames,
             mel_t0: nFft / 2 / sr,
@@ -139,6 +142,7 @@ async function installWorkerStub(
           nMels: msg.nMels ?? null,
           nFft: msg.nFft ?? null,
           window: msg.window ?? null,
+          scale: msg.scale ?? null,
           melHop: msg.melHop ?? null,
           what: msg.what ?? null,
         });
@@ -149,6 +153,7 @@ async function installWorkerStub(
                 w.sendLanes(o.lanes!.peaks ?? [], {
                   nFft: msg.nFft,
                   window: msg.window,
+                  scale: msg.scale,
                   melHop: msg.melHop,
                   nMels: msg.nMels,
                   what: msg.what,
@@ -882,7 +887,8 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
           onset: q('.fix-lane-onset').clientHeight,
           specHidden: q('.fix-lane-spec').hidden,
           onsetHidden: q('.fix-lane-onset').hidden,
-          children: q('.fix-lanes').childElementCount,
+          children: q('.fix-lanes').querySelectorAll('.fix-strip-ws, .fix-lane-spec, .fix-lane-onset')
+            .length,
         };
       });
     let g = await geo();
@@ -1005,7 +1011,7 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await enterFix(page, REF_ROW);
     await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 2);
     let st = await fixState(page);
-    expect(st.specCfg).toEqual({ nFft: 2048, window: 'hann', overlap: 0.75, nMels: 64 });
+    expect(st.specCfg).toMatchObject({ nFft: 2048, window: 'hann', overlap: 0.75, nMels: 64 });
     expect(st.lanes).toMatchObject({ melHop: 512, nFft: 2048, window: 'hann', nMels: 64 });
     const cfg = page.locator('.fix-spec-cfg');
     await expect(cfg).toBeVisible();
@@ -1171,5 +1177,168 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     expect(st.timing).toMatchObject({ worker: { bootMs: 0, beginMs: 1 } });
     expect(st.timing.decodeMs).toBeGreaterThanOrEqual(0);
     expect(st.timing.readyMs).toBeGreaterThan(0);
+  });
+
+  // --- Feedback round 2 (2026-09-02): score zoom-and-scroll, spectrogram scale + labels ---
+
+  test('42.29 the score zooms: fit, fill width, fill height, percentages — scrolling when it overflows, connectors following the scroll, the selection scrolled into view, sticky', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page, REF_ROW);
+    const geo = () =>
+      page.evaluate(() => {
+        const pane = document.querySelector('.fix-score') as HTMLElement;
+        const scroller = document.querySelector('.fix-score-scroll') as HTMLElement;
+        const svg = document.querySelector('.fix-score-svg svg') as SVGSVGElement;
+        const r = svg.getBoundingClientRect();
+        return {
+          paneW: pane.clientWidth,
+          paneH: pane.clientHeight,
+          clientW: scroller.clientWidth,
+          clientH: scroller.clientHeight,
+          scrollW: scroller.scrollWidth,
+          scrollH: scroller.scrollHeight,
+          svgW: r.width,
+          svgH: r.height,
+          svgLeft: r.left - scroller.getBoundingClientRect().left,
+        };
+      });
+    let st = await fixState(page);
+    expect(st.scoreZoom).toEqual({ mode: 'fit', pct: 100 });
+    const g0 = await geo();
+    // Fit: the whole page inside the pane, nothing to scroll. The CONTENT box
+    // (the viewBox's letterboxed paint) is the 100 % the percentages refer to.
+    const content0 = st.scoreContent;
+    expect(content0.w).toBeLessThanOrEqual(g0.paneW + 1);
+    expect(content0.h).toBeLessThanOrEqual(g0.paneH + 1);
+    expect(g0.scrollW).toBeLessThanOrEqual(g0.clientW);
+    expect(g0.scrollH).toBeLessThanOrEqual(g0.clientH);
+    // 75 %: narrower than the pane, so it is CENTRED (and nothing scrolls).
+    await page.selectOption('#fix-score-zoom', '75');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.scoreZoom.pct === 75);
+    let g = await geo();
+    expect(Math.abs(g.svgW - 0.75 * content0.w)).toBeLessThanOrEqual(3);
+    expect(Math.abs(g.svgLeft - (g.clientW - g.svgW) / 2)).toBeLessThanOrEqual(2);
+    expect(g.scrollW).toBeLessThanOrEqual(g.clientW);
+    // The pane the prewarm measures did not move: the scroller took the change.
+    expect(g.paneW).toBe(g0.paneW);
+    expect(g.paneH).toBe(g0.paneH);
+    // No "fill height" (dropped in round 3: fit does its job).
+    expect(await page.locator('#fix-score-zoom option[value="height"]').count()).toBe(0);
+    // Fill width: the page spans the width exactly (for this page that is also
+    // the fit, so nothing overflows).
+    await page.selectOption('#fix-score-zoom', 'width');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.scoreZoom.mode === 'width');
+    g = await geo();
+    expect(Math.abs(g.svgW - g.clientW)).toBeLessThanOrEqual(2);
+    expect(g.scrollW).toBeLessThanOrEqual(g.clientW);
+    // 300 %: three times the fit content in both directions, both overflowing
+    // (a one-system page is short — at 200 % it only just reaches the pane's
+    // height).
+    await page.selectOption('#fix-score-zoom', '300');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.scoreZoom.pct === 300);
+    g = await geo();
+    expect(Math.abs(g.svgW - 3 * content0.w)).toBeLessThanOrEqual(4);
+    expect(Math.abs(g.svgH - 3 * content0.h)).toBeLessThanOrEqual(4);
+    expect(g.scrollW).toBeGreaterThan(g.clientW);
+    expect(g.scrollH).toBeGreaterThan(g.clientH);
+    // The selection was scrolled into view, and the connectors follow the scroll.
+    st = await fixState(page);
+    const before = st.selXScore;
+    const visible = await page.evaluate(() => {
+      const sc = (document.querySelector('.fix-score-scroll') as HTMLElement).getBoundingClientRect();
+      const n = document.querySelector('.fix-score-svg .fix-note-sel')!.getBoundingClientRect();
+      return n.left >= sc.left - 1 && n.right <= sc.right + 1 && n.top >= sc.top - 1 && n.bottom <= sc.bottom + 1;
+    });
+    expect(visible).toBe(true);
+    await page.evaluate(() => {
+      const sc = document.querySelector('.fix-score-scroll') as HTMLElement;
+      sc.scrollLeft += 300;
+      sc.dispatchEvent(new Event('scroll'));
+    });
+    await page.waitForFunction(
+      (b) => Math.abs((window as any)._listenTest.fix.selXScore - (b - 300)) < 2,
+      before,
+    );
+    // Selecting the page's last onset scrolls it into view.
+    for (let k = 0; k < st.pageGroupCount - st.selGroup - 1; k++) await page.click('.fix-onset-next');
+    const lastVisible = await page.evaluate(() => {
+      const sc = (document.querySelector('.fix-score-scroll') as HTMLElement).getBoundingClientRect();
+      const n = document.querySelector('.fix-score-svg .fix-note-sel')!.getBoundingClientRect();
+      return n.left >= sc.left - 1 && n.right <= sc.right + 1 && n.top >= sc.top - 1 && n.bottom <= sc.bottom + 1;
+    });
+    expect(lastVisible).toBe(true);
+    // + and − step the percentage; sticky across sessions; fit restores.
+    await page.keyboard.press('Equal');
+    expect((await fixState(page)).scoreZoom).toEqual({ mode: 'pct', pct: 325 });
+    await page.keyboard.press('Minus');
+    await page.keyboard.press('Minus');
+    expect((await fixState(page)).scoreZoom).toEqual({ mode: 'pct', pct: 275 });
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.chipState === 'ready',
+      undefined,
+      { timeout: 30_000 },
+    );
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await enterFix(page, REF_ROW);
+    expect((await fixState(page)).scoreZoom).toEqual({ mode: 'pct', pct: 275 });
+    await expect(page.locator('#fix-score-zoom')).toHaveValue('275');
+    await page.selectOption('#fix-score-zoom', 'fit');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.scoreZoom.mode === 'fit');
+    g = await geo();
+    const contentBack = (await fixState(page)).scoreContent;
+    expect(Math.abs(contentBack.w - content0.w)).toBeLessThanOrEqual(2);
+    expect(g.scrollW).toBeLessThanOrEqual(g.clientW);
+  });
+
+  test('42.30 the spectrogram has a frequency scale (mel, log, linear) and optional Hz labels', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page, { lanes: { peaks: [10, 20] } });
+    await enterFix(page, REF_ROW);
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 2);
+    let st = await fixState(page);
+    expect(st.specCfg).toMatchObject({ scale: 'mel', labels: false });
+    expect(st.lanes).toMatchObject({ scale: 'mel' });
+    expect(st.lanes.bandHz).toHaveLength(64);
+    const lanesReqs = () =>
+      page.evaluate(() => (window as any).__fixStub.posted.filter((m: any) => m.type === 'fix_lanes'));
+    const n0 = (await lanesReqs()).length;
+    // A scale change re-requests the mel at that scale.
+    await page.selectOption('#fix-spec-scale', 'log');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.scale === 'log');
+    let reqs = await lanesReqs();
+    expect(reqs).toHaveLength(n0 + 1);
+    expect(reqs[reqs.length - 1]).toMatchObject({ what: 'mel', scale: 'log' });
+    await page.selectOption('#fix-spec-scale', 'linear');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.scale === 'linear');
+    // Labels are display-only: no request, but labels get drawn on the lane.
+    await page.evaluate(
+      () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+    );
+    expect((await fixState(page)).lanes.labelsDrawn).toBe(0);
+    await page.click('#fix-spec-labels');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes.labelsDrawn > 0);
+    expect((await lanesReqs()).length).toBe(n0 + 2);
+    st = await fixState(page);
+    expect(st.specCfg).toMatchObject({ scale: 'linear', labels: true });
+    // Sticky across sessions.
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.chipState === 'ready',
+      undefined,
+      { timeout: 30_000 },
+    );
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await enterFix(page, REF_ROW);
+    await expect(page.locator('#fix-spec-scale')).toHaveValue('linear');
+    await expect(page.locator('#fix-spec-labels')).toBeChecked();
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 2);
+    reqs = await lanesReqs();
+    expect(reqs[reqs.length - 1]).toMatchObject({ what: 'all', scale: 'linear' });
   });
 });

@@ -329,6 +329,40 @@ print(json.dumps({
 }))
 `;
 
+// Feedback round 2: the spectrogram's frequency scale (mel / log / linear).
+const HARNESS_SCALES = `
+import json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+import base64
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+tcs_b = [(0, 500000), (960, 375000)]
+dur_b = _tick_to_sec(max(n[1] for n in notes), tpq, tcs_b) + 0.5
+ref_audio = np.concatenate([np.zeros(int(0.5 * SR), dtype=np.float32),
+                            synth_midi_audio(notes, tpq, tcs_b, dur_b)])
+ev = fix_begin(ref_audio, midi)
+out = {}
+for scale in ('mel', 'log', 'linear'):
+    fb = _band_filterbank(scale, 2048, 16, 30.0, SR / 2.0)
+    centres = _band_centres(scale, 16, 30.0, SR / 2.0)
+    lanes = fix_lanes(512, 16, 2048, 'hann', 512, 'mel', scale)
+    out[scale] = {
+        'fb_shape': list(fb.shape), 'row_sums_min': float(fb.sum(axis=1).min()),
+        'centres': [float(c) for c in centres],
+        'lanes_scale': lanes['scale'], 'band_hz': lanes['band_hz'],
+        'mel_shape': list(lanes['mel'].shape), 'mel_max': int(lanes['mel'].max()),
+        'onset_none': lanes['onset'] is None,
+    }
+print(json.dumps(out))
+`;
+
 /** Run one python harness over align-worker.js's own PYTHON_CODE blob. */
 function execPython(harness: string, midiB64: string): any {
   const workerSrc = fs.readFileSync(
@@ -379,6 +413,12 @@ let patOut: any = null;
 function runPatScenario(): any {
   if (!patOut) patOut = execPython(HARNESS_PAT, buildMidiA().toString('base64'));
   return patOut;
+}
+
+let scalesOut: any = null;
+function runScalesScenario(): any {
+  if (!scalesOut) scalesOut = execPython(HARNESS_SCALES, buildMidiA().toString('base64'));
+  return scalesOut;
 }
 
 /** The worker's Python, exactly as Pyodide sees it. */
@@ -815,5 +855,30 @@ test.describe('41. alignment correction — worker segment realign', () => {
     expect(out.interp_max_diff).toBeLessThan(1e-9);
     expect(out.scalar_ok).toBe(true);
     expect(out.scalar_type_ok).toBe(true);
+  });
+
+  test('41.13 the spectrogram\'s frequency scale: mel, log (equal ratios), linear (equal steps) filterbanks, band centres reported', async () => {
+    test.setTimeout(120_000);
+    const out = runScalesScenario();
+    for (const scale of ['mel', 'log', 'linear']) {
+      const o = out[scale];
+      expect(o.fb_shape, scale).toEqual([16, 1025]);
+      expect(o.row_sums_min, scale).toBeGreaterThan(0);
+      expect(o.centres, scale).toHaveLength(16);
+      expectMonotonic(o.centres);
+      expect(o.lanes_scale).toBe(scale);
+      expect(o.band_hz).toEqual(o.centres);
+      expect(o.mel_shape[0]).toBe(16);
+      expect(o.mel_max).toBe(255);
+      expect(o.onset_none).toBe(true); // what: 'mel' recomputes the spectrogram alone
+    }
+    // Linear: equal steps. Log: equal ratios. Mel: neither (denser low down).
+    const steps = (c: number[]) => c.slice(1).map((v, k) => v - c[k]);
+    const ratios = (c: number[]) => c.slice(1).map((v, k) => v / c[k]);
+    const spread = (a: number[]) => Math.max(...a) / Math.min(...a);
+    expect(spread(steps(out.linear.centres))).toBeLessThan(1.001);
+    expect(spread(ratios(out.log.centres))).toBeLessThan(1.001);
+    expect(spread(steps(out.mel.centres))).toBeGreaterThan(3);
+    expect(spread(ratios(out.mel.centres))).toBeGreaterThan(1.5);
   });
 });

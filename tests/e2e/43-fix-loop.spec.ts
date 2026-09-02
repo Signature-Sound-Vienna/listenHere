@@ -103,6 +103,7 @@ async function installWorkerStub(
           }
         }
         const sorted = peaks.slice().sort((a, b) => a - b);
+        const bandHz = Array.from({ length: nMels }, (_, m) => 30 * Math.pow(11025 / 30, (m + 0.5) / nMels));
         w.onmessage?.({
           data: {
             type: 'fix_lanes',
@@ -111,6 +112,8 @@ async function installWorkerStub(
             n_mels: nMels,
             n_fft: nFft,
             window: opts.window ?? 'hann',
+            scale: opts.scale ?? 'mel',
+            band_hz: bandHz,
             mel_hop: melHop,
             mel_frames: melFrames,
             mel_t0: nFft / 2 / sr,
@@ -1595,7 +1598,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
       [peakT, peakNear, 0.06],
     );
     await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.patCount === 2);
-    await page.selectOption('#fix-snap-target', 'perceived');
+    await page.check('#fix-snap-target-perceived');
     expect((await fixState(page)).snapTarget).toBe('perceived');
     // The magnet lands on the perceived attack, not the flux peak.
     await dragSelectedTick(page, 40);
@@ -1625,7 +1628,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await page.waitForFunction(
       () => (window as any)._listenTest.fix.corrections.anchors.length === 0,
     );
-    await page.selectOption('#fix-snap-target', 'flux');
+    await page.check('#fix-snap-target-flux');
     await page.keyboard.press('s');
     await page.waitForFunction(
       () => {
@@ -1637,5 +1640,147 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     );
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
     expect((await fixState(page)).corrections.anchors[0].t).toBeCloseTo(peakNear, 6);
+  });
+
+  // --- Feedback round 2 (2026-09-02): one peak, one mark ---
+
+  /** Shift+click the ticks of the given groups (adds them to the multi-selection). */
+  async function shiftClickTicks(page: Page, ixs: number[]) {
+    const st = await fixState(page);
+    const box = (await page.locator('.fix-ticks').boundingBox())!;
+    const y = box.y + box.height / 2;
+    await page.keyboard.down('Shift');
+    for (const ix of ixs) {
+      const x = st.pageTicks.find((t: any) => t.ix === ix)!.x;
+      await page.mouse.click(box.x + x, y);
+    }
+    await page.keyboard.up('Shift');
+  }
+
+  const waitBatch = (page: Page) =>
+    page.waitForFunction(
+      () => {
+        const f = (window as any)._listenTest.fix;
+        return f.lastBatch && !f.realignBusy && f.chipState !== 'realign';
+      },
+      undefined,
+      { timeout: 60_000 },
+    );
+
+  test('43.34 one detected onset attracts ONE mark: the batch assigns peaks monotonically with score-time spacing, a claimed peak repels the drag magnet, and the losers are left to the realign', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    // Two consecutive onsets on the page close enough (< 450 ms apart) that
+    // one peak between them lies within the command's 250 ms radius of BOTH.
+    let st = await fixState(page);
+    const ticks: { ix: number; t: number }[] = st.pageTicks;
+    let a = -1;
+    for (let k = 0; k + 1 < ticks.length; k++) {
+      const d = ticks[k + 1].t - ticks[k].t;
+      if (d > 0.2 && d < 0.45 && ticks[k].ix > st.selGroup) {
+        a = k;
+        break;
+      }
+    }
+    expect(a, 'the fixture page has no suitable onset pair').toBeGreaterThan(-1);
+    const tA = ticks[a].t;
+    const tB = ticks[a + 1].t;
+    const d = tB - tA;
+    const ixA = ticks[a].ix;
+    const ixB = ticks[a + 1].ix;
+    const evA = st.pageTicks.find((t: any) => t.ix === ixA)!.eventIx;
+    const evB = st.pageTicks.find((t: any) => t.ix === ixB)!.eventIx;
+    const undoAll = async () => {
+      while ((await fixState(page)).corrections.anchors.length) {
+        await page.click('#undo-btn');
+        await page.waitForTimeout(50);
+      }
+    };
+    // (a) ONE peak between them, nearer to B (0.55 of the way): one mark takes
+    // it — the nearer — and the other is left to the realign.
+    const shared = tA + 0.55 * d;
+    await page.evaluate((peaks) => (window as any).__fixStub.sendLanes(peaks), [shared]);
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 1);
+    await shiftClickTicks(page, [ixA, ixB]);
+    expect((await fixState(page)).multiSel).toEqual([ixA, ixB]);
+    await page.keyboard.press('s');
+    await waitBatch(page);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    expect(st.corrections.anchors[0].i).toBe(evB);
+    expect(st.corrections.anchors[0].t).toBeCloseTo(shared, 6);
+    expect(st.lastBatch).toMatchObject({ requested: 2, moved: 1, shared: 1 });
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: alignment anchor');
+    // The realign moved A (interior of the refilled segment), but not onto B.
+    const tAfter = await page.evaluate(
+      (ev) => (window as any)._listenTest.session.scoreAlignment.ref_onset[ev],
+      evA,
+    );
+    expect(tAfter).toBeLessThan(shared - 0.01);
+
+    // The drag magnet: a peak claimed by an anchor does not attract another
+    // mark. Select A, drag it to within 3 px of B's peak: no snap.
+    await page.keyboard.press('Escape');
+    await page.evaluate((ix) => {
+      const f = (window as any)._listenTest.fix;
+      const box = document.querySelector('.fix-ticks') as HTMLCanvasElement;
+      // Click A's tick to select it.
+      const x = f.pageTicks.find((t: any) => t.ix === ix).x;
+      const r = box.getBoundingClientRect();
+      box.dispatchEvent(new MouseEvent('mousedown', { clientX: r.x + x, clientY: r.y + r.height / 2, button: 0, bubbles: true }));
+      window.dispatchEvent(new MouseEvent('mouseup', { clientX: r.x + x, clientY: r.y + r.height / 2, button: 0, bubbles: true }));
+    }, ixA);
+    await page.waitForFunction((ix) => (window as any)._listenTest.fix.selGroup === ix, ixA);
+    st = await fixState(page);
+    const pps = st.stripPps;
+    const dx = (shared - st.selT) * pps - 3; // land 3 px before B's peak
+    await dragSelectedTick(page, dx);
+    st = await fixState(page);
+    expect(st.lastDrag.snapped).toBe(false);
+    expect(st.corrections.anchors).toHaveLength(2);
+    // It was clamped just short of B's anchor rather than snapped onto it.
+    const aAnchor = st.corrections.anchors.find((x: any) => x.i === evA)!;
+    expect(aAnchor.t).toBeLessThan(shared);
+    expect(Math.abs(aAnchor.t - shared)).toBeGreaterThan(0.005);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await undoAll();
+
+    // (b) Two peaks, one near each mark, spaced like the marks: both move.
+    await page.evaluate((peaks) => (window as any).__fixStub.sendLanes(peaks), [tA + 0.08, tB + 0.08]);
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 2);
+    await shiftClickTicks(page, [ixA, ixB]);
+    await page.keyboard.press('s');
+    await waitBatch(page);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    st = await fixState(page);
+    const qA = ticks[a].q;
+    const qB = ticks[a + 1].q;
+    expect(
+      st.lastBatch,
+      `batch ${JSON.stringify(st.lastBatch)} for d=${d.toFixed(3)} s, dq=${(qB - qA).toFixed(3)}`,
+    ).toMatchObject({ requested: 2, moved: 2, shared: 0 });
+    expect(st.corrections.anchors.map((x: any) => x.i)).toEqual([evA, evB]);
+    expect(st.corrections.anchors[0].t).toBeCloseTo(tA + 0.08, 6);
+    expect(st.corrections.anchors[1].t).toBeCloseTo(tB + 0.08, 6);
+    await undoAll();
+
+    // (c) A crowded pair — 90 ms apart, for a score interval the local tempo
+    // puts at ~d: the two marks may not BOTH land there. Exactly one moves.
+    await page.evaluate((peaks) => (window as any).__fixStub.sendLanes(peaks), [shared - 0.09, shared]);
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 2);
+    await page.keyboard.press('Escape'); // drop (b)'s multi-selection first
+    await shiftClickTicks(page, [ixA, ixB]);
+    expect((await fixState(page)).multiSel).toEqual([ixA, ixB]);
+    await page.keyboard.press('s');
+    await waitBatch(page);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    expect(st.lastBatch).toMatchObject({ requested: 2, moved: 1, shared: 1 });
   });
 });

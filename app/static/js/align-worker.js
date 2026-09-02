@@ -1146,22 +1146,45 @@ LANE_N_FFT = 2048        # 93 ms window for the mel lane (frequency resolution)
 LANE_DB_RANGE = 80.0     # dynamic range kept below the recording's loudest frame
 LANE_FMIN = 30.0
 
-def _mel_filterbank(n_fft, n_mels, fmin, fmax):
-    """Triangular mel filters (HTK mel scale, Slaney area normalisation): (n_mels, bins)."""
+LANE_SCALES = ('mel', 'log', 'linear')
+
+def _band_edges(scale, n_bands, fmin, fmax):
+    """n_bands + 2 band edges on the chosen frequency scale (Hz)."""
+    if scale == 'linear':
+        return np.linspace(fmin, fmax, n_bands + 2)
+    if scale == 'log':
+        return np.geomspace(fmin, fmax, n_bands + 2)
     def hz2mel(f):
         return 2595.0 * np.log10(1.0 + f / 700.0)
     def mel2hz(m):
         return 700.0 * (10.0 ** (m / 2595.0) - 1.0)
+    return mel2hz(np.linspace(hz2mel(fmin), hz2mel(fmax), n_bands + 2))
+
+def _band_centres(scale, n_bands, fmin, fmax):
+    """Each band's centre frequency (Hz) — the Y-axis labels' data."""
+    return _band_edges(scale, n_bands, fmin, fmax)[1:-1]
+
+def _band_filterbank(scale, n_fft, n_bands, fmin, fmax):
+    """Triangular band filters on a mel / log / linear scale (Slaney-style area
+    normalisation): (n_bands, bins). A band narrower than a bin (many log bands
+    low down) would cover no bin centre and paint black; it takes its nearest
+    bin instead."""
     freqs = np.fft.rfftfreq(n_fft, d=1.0 / SR)
-    edges = mel2hz(np.linspace(hz2mel(fmin), hz2mel(fmax), n_mels + 2))
-    fb = np.zeros((n_mels, len(freqs)), dtype=np.float32)
-    for m in range(n_mels):
+    edges = _band_edges(scale, n_bands, fmin, fmax)
+    fb = np.zeros((n_bands, len(freqs)), dtype=np.float32)
+    for m in range(n_bands):
         lo, c, hi = edges[m], edges[m + 1], edges[m + 2]
         up = (freqs - lo) / max(c - lo, 1e-9)
         down = (hi - freqs) / max(hi - c, 1e-9)
-        fb[m] = np.maximum(0.0, np.minimum(up, down))
+        row = np.maximum(0.0, np.minimum(up, down))
+        if not np.any(row > 0):
+            row[int(np.argmin(np.abs(freqs - c)))] = 1.0
+        fb[m] = row
     fb *= (2.0 / (edges[2:] - edges[:-2])).astype(np.float32)[:, None]
     return fb
+
+def _mel_filterbank(n_fft, n_mels, fmin, fmax):
+    return _band_filterbank('mel', n_fft, n_mels, fmin, fmax)
 
 LANE_WINDOWS = ('hann', 'hamming', 'blackman', 'rect')
 
@@ -1177,16 +1200,17 @@ def _lane_window(name, n):
         w = np.hanning(n)
     return w.astype(np.float32)
 
-def compute_mel_spectrogram(audio, n_fft=None, hop=None, n_mels=None, win_type='hann'):
-    """Log-power mel spectrogram quantised to uint8 over LANE_DB_RANGE below the
-    loudest frame: (n_mels, n_frames), row 0 = the lowest band. Streaming like
-    the other features (peak extra memory ~CHUNK x n_fft floats)."""
+def compute_mel_spectrogram(audio, n_fft=None, hop=None, n_mels=None, win_type='hann', scale='mel'):
+    """Log-power band spectrogram (mel / log / linear bands) quantised to uint8
+    over LANE_DB_RANGE below the loudest frame: (n_bands, n_frames), row 0 =
+    the lowest band. Streaming like the other features (peak extra memory
+    ~CHUNK x n_fft floats)."""
     if n_fft is None: n_fft = LANE_N_FFT
     if hop is None: hop = LANE_HOP
     if n_mels is None: n_mels = LANE_N_MELS
     audio_pad, window, n_frames, s = _stft_setup(audio, n_fft, hop)
     window = _lane_window(win_type, n_fft)
-    fb_t = _mel_filterbank(n_fft, n_mels, LANE_FMIN, SR / 2.0).T    # (bins, n_mels)
+    fb_t = _band_filterbank(scale, n_fft, n_mels, LANE_FMIN, SR / 2.0).T    # (bins, n_bands)
     CHUNK = 256
     mel_db = np.zeros((n_mels, n_frames), dtype=np.float32)
     for cs in range(0, n_frames, CHUNK):
@@ -1308,13 +1332,13 @@ def perceptual_attack_times(audio, peaks, hop):
         out.append(float(centres[k] + frac * (centres[k + 1] - centres[k])))
     return out
 
-def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, what='all'):
-    """The v2 lanes for the current correction session: the mel spectrogram
-    (user-configurable FFT size, window, hop, bands) and — unless what == 'mel',
-    a configuration change — the fine-hop onset curve of the resident reference
-    audio with its picked peaks and their perceived attack times (the two
-    snap-to-onset target lists). Frame i of a lane is centred at
-    i * <lane>_hop / SR + <lane>_t0."""
+def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, what='all', scale='mel'):
+    """The v2 lanes for the current correction session: the band spectrogram
+    (user-configurable FFT size, window, hop, bands, frequency scale) and —
+    unless what == 'mel', a configuration change — the fine-hop onset curve of
+    the resident reference audio with its picked peaks and their perceived
+    attack times (the two snap-to-onset target lists). Frame i of a lane is
+    centred at i * <lane>_hop / SR + <lane>_t0."""
     if _fix is None:
         raise RuntimeError('fix_lanes before fix_begin')
     onset_hop = LANE_HOP if hop is None else int(hop)
@@ -1322,10 +1346,13 @@ def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, wh
     n_fft = LANE_N_FFT if n_fft is None else int(n_fft)
     mel_hop = onset_hop if mel_hop is None else int(mel_hop)
     window = window if window in LANE_WINDOWS else 'hann'
+    scale = scale if scale in LANE_SCALES else 'mel'
     ref = _fix['ref']
-    mel = compute_mel_spectrogram(ref, n_fft, mel_hop, n_mels, window)
+    mel = compute_mel_spectrogram(ref, n_fft, mel_hop, n_mels, window, scale)
     out = {
         'sr': SR, 'what': what, 'window': window, 'n_fft': n_fft, 'n_mels': n_mels,
+        'scale': scale,
+        'band_hz': [float(c) for c in _band_centres(scale, n_mels, LANE_FMIN, SR / 2.0)],
         'mel_hop': mel_hop, 'mel_frames': int(mel.shape[1]), 'mel_t0': n_fft / 2.0 / SR,
         'mel': np.ascontiguousarray(mel),
         'onset_hop': onset_hop, 'onset_t0': ONSET_N_FFT / 2.0 / SR,
@@ -1581,17 +1608,19 @@ json.dumps(fix_realign_segment(
       // "error" would be claimed by whatever realign the client has pending.
       try {
         const pyodide = await pyodideReady;
-        const { hop, nMels, nFft, window: win, melHop, what } = e.data;
+        const { hop, nMels, nFft, window: win, melHop, what, scale } = e.data;
         pyodide.globals.set("_lanes_hop", hop ?? 512);
         pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
         pyodide.globals.set("_lanes_n_fft", nFft ?? 2048);
         pyodide.globals.set("_lanes_window", win || "hann");
         pyodide.globals.set("_lanes_mel_hop", melHop ?? hop ?? 512);
         pyodide.globals.set("_lanes_what", what || "all");
+        pyodide.globals.set("_lanes_scale", scale || "mel");
         const metaJson = await pyodide.runPythonAsync(`
 import json
 _lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels), int(_lanes_n_fft),
-                   str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what))
+                   str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what),
+                   str(_lanes_scale))
 _lanes_mel = _lanes.pop('mel')
 _lanes_onset = _lanes.pop('onset')
 json.dumps(_lanes)

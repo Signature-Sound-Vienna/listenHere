@@ -171,6 +171,24 @@ const SNAP_CMD_RADIUS_SEC = 0.25;
 /** Resizing: a lane keeps at least this much, and the score pane SCORE_MIN_PX. */
 const LANE_MIN_PX = 12;
 const SCORE_MIN_PX = 160;
+/** Score zoom: + / − step, and the range, in percent of the page-fit size. */
+const SCORE_ZOOM_STEP = 25;
+const SCORE_ZOOM_MIN = 25;
+const SCORE_ZOOM_MAX = 400;
+/** Auto-scroll keeps the selected notes this far inside the scroller's edges. */
+const SCORE_SCROLL_MARGIN_PX = 24;
+/** A detected onset within this much of an existing anchor is CLAIMED: it
+ *  attracts no other mark (drag magnet and S alike). */
+const OCCUPIED_EPS_SEC = 0.02;
+/** Dispersal (S on several marks): two moved marks may not land closer than
+ *  this fraction of their score-implied interval at the local tempo… */
+const DISPERSE_ALPHA = 0.5;
+/** …never closer than this; a mild penalty for tempo deviation; and the cost
+ *  of leaving a mark to the realign instead (a move within the radius, which
+ *  costs < 1, is always preferred to that). */
+const DISPERSE_MIN_GAP_SEC = 0.03;
+const DISPERSE_KAPPA = 0.25;
+const DISPERSE_NONE_COST = 1.0;
 
 /** Quantised quarter key — the 1e-6 rounding every quarters consumer uses. */
 const qKey = (q) => Math.round(q * 1e6);
@@ -240,7 +258,16 @@ let _laneSpec = true;
 let _laneOnset = true;
 let _snapOnsets = true;
 /** Spectrogram configuration (sticky): FFT size, window, overlap, mel bands. */
-let _specCfg = { nFft: 2048, window: "hann", overlap: 0.75, nMels: 64 };
+let _specCfg = {
+  nFft: 2048,
+  window: "hann",
+  overlap: 0.75,
+  nMels: 64,
+  scale: "mel", // mel | log | linear
+  labels: false, // Hz labels on the lane's left edge (display only)
+};
+/** Score zoom (sticky): fit | width | height | pct (percent of the fit). */
+let _scoreZoom = { mode: "fit", pct: 100 };
 /** What a snap lands on: the detected onset ("flux") or the perceived attack. */
 let _snapTarget = "flux";
 /** A user-resized strip (px) and lane weights; null = the CSS defaults. Both
@@ -1078,8 +1105,8 @@ function _buildDom(contentEl, waveformsEl) {
   // in the recording within a few pixels; Alt while dragging places freely.
   const [snapRow] = _navCheckbox(
     "fix-snap-onsets",
-    "Snap to onsets",
-    "Dragged onsets snap to the nearest onset detected in the recording — " +
+    "Magnet on drag",
+    "A dragged onset snaps to the nearest detected onset within a few pixels — " +
       "hold Alt while dragging to place freely",
     _snapOnsets,
     (on) => {
@@ -1126,25 +1153,58 @@ function _buildDom(contentEl, waveformsEl) {
   };
 
   // What a snap lands on: the detected (spectral-flux) onset, or the perceived
-  // attack — later on a slow attack, where the ear hears the note begin. Its
-  // own row under the switch: beside the label it overflowed the card.
+  // attack — later on a slow attack, where the ear hears the note begin.
+  // Radios in the listening interface's own shape (user, round 2), on their
+  // own row under the switch.
   const snapTargetRow = document.createElement("span");
   snapTargetRow.className = "fix-snap-target-row";
-  snapTargetRow.appendChild(
-    mkSelect(
-      "fix-snap-target",
-      "What a snap lands on: the detected onset, or the perceived attack",
-      [
-        ["flux", "detected onset"],
-        ["perceived", "perceived attack"],
-      ],
-      _snapTarget,
-      (v) => {
-        _snapTarget = v;
-        _scheduleRedraw();
-      },
-    ),
-  );
+  snapTargetRow.id = "fix-snap-target";
+  for (const [v, label, title] of [
+    ["flux", "detected", "Snap to the detected onset (the spectral-flux peak)"],
+    [
+      "perceived",
+      "perceived",
+      "Snap to the perceived attack — later than the detected onset on a slow attack",
+    ],
+  ]) {
+    const r = document.createElement("input");
+    r.type = "radio";
+    r.name = "fix-snap-target";
+    r.id = `fix-snap-target-${v}`;
+    r.value = v;
+    r.checked = _snapTarget === v;
+    r.title = title;
+    r.addEventListener("change", () => {
+      if (!r.checked) return;
+      _snapTarget = v;
+      r.blur();
+      _scheduleRedraw();
+    });
+    const l = document.createElement("label");
+    l.htmlFor = r.id;
+    l.title = title;
+    l.textContent = label;
+    snapTargetRow.append(r, l);
+  }
+
+  // "Move to nearest onset" as an icon (arrow into a magnet) at the end of the
+  // Snap row — the words live in its tooltip; S is the keyboard twin.
+  const snapBtn = document.createElement("button");
+  snapBtn.type = "button";
+  snapBtn.id = "fix-snap-sel";
+  snapBtn.className = "fix-icon-btn";
+  snapBtn.textContent = "⚡\u{1F9F2}";
+  snapBtn.setAttribute("aria-label", "Move to nearest onset");
+  snapBtn.title =
+    "Move to nearest onset (S): the selected onset — or the marquee / Shift+click " +
+    "selection, A for the page — each to its nearest onset within 250 ms";
+  snapBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  snapBtn.addEventListener("click", () => {
+    _snapSelectionToOnsets().catch((err) =>
+      console.error("fix mode: move to onset failed:", err),
+    );
+  });
+  snapRow.appendChild(snapBtn);
 
   // Spectrogram configuration (sticky, re-requested from the engine on change;
   // shown only while the lane is).
@@ -1204,26 +1264,31 @@ function _buildDom(contentEl, waveformsEl) {
       (v) => _setSpecCfg({ nMels: Number(v) }),
     ),
   );
-  specCfg.append(cfgRow1, cfgRow2);
-
-  // "Move to nearest onset": the selected onset, or the marquee / Shift+click
-  // selection, each to its nearest snap target — S is the keyboard twin.
-  const snapCmdRow = document.createElement("div");
-  snapCmdRow.className = "fix-nav-row";
-  const snapBtn = document.createElement("button");
-  snapBtn.type = "button";
-  snapBtn.id = "fix-snap-sel";
-  snapBtn.textContent = "Move to nearest onset";
-  snapBtn.title =
-    "Move the selected onset(s) to the nearest detected onset within 250 ms (S). " +
-    "Drag across the strip or Shift+click ticks to select several; A selects the page.";
-  snapBtn.addEventListener("mousedown", (e) => e.preventDefault());
-  snapBtn.addEventListener("click", () => {
-    _snapSelectionToOnsets().catch((err) =>
-      console.error("fix mode: move to onset failed:", err),
-    );
-  });
-  snapCmdRow.appendChild(snapBtn);
+  // Frequency scale and the optional Hz labels (labels are display-only).
+  const cfgRow3 = document.createElement("span");
+  cfgRow3.append(
+    mkSelect(
+      "fix-spec-scale",
+      "Spectrogram frequency scale",
+      [
+        ["mel", "mel"],
+        ["log", "log"],
+        ["linear", "linear"],
+      ],
+      _specCfg.scale,
+      (v) => _setSpecCfg({ scale: v }),
+    ),
+  );
+  const [labelsRow] = _navCheckbox(
+    "fix-spec-labels",
+    "Hz",
+    "Label the spectrogram's frequency axis",
+    _specCfg.labels,
+    (on) => _setSpecCfg({ labels: on }),
+  );
+  labelsRow.className = "fix-spec-labels-row";
+  cfgRow3.appendChild(labelsRow);
+  specCfg.append(cfgRow1, cfgRow2, cfgRow3);
 
   // Playback speed (pitch preserved via the stretch worklet). The % button
   // is the "back to 100%" affordance and lights up whenever speed ≠ 100%.
@@ -1294,35 +1359,93 @@ function _buildDom(contentEl, waveformsEl) {
   pageCtl.className = "fix-page-ctl";
   const pageLabel = document.createElement("span");
   pageLabel.className = "fix-page-label";
-  pageCtl.appendChild(pageLabel);
+  // Score zoom beside the page readout: fit, fill width / height, or a
+  // percentage of the fit (+ / − step it); the pane scrolls when it overflows.
+  const zoomSel = mkSelect(
+    "fix-score-zoom",
+    "Score zoom: fit the page, fill the width or height, or a percentage of the fit (+ / −)",
+    [
+      ["fit", "Fit page"],
+      ["width", "Fill width"],
+      [75, "75 %"],
+      [100, "100 %"],
+      [125, "125 %"],
+      [150, "150 %"],
+      [200, "200 %"],
+      [300, "300 %"],
+    ],
+    _scoreZoom.mode === "pct" ? _scoreZoom.pct : _scoreZoom.mode,
+    (v) => {
+      if (v === "fit" || v === "width") _setScoreZoom(v);
+      else _setScoreZoom("pct", Number(v));
+    },
+  );
+  pageCtl.append(pageLabel, zoomSel);
 
   const chip = document.createElement("span");
   chip.className = "fix-chip";
   chip.dataset.state = "idle";
 
-  // Toggles pair on one row; the sliders each take a row of their own; exit
-  // sits last, away from the controls used while correcting.
-  const toggles = document.createElement("div");
-  toggles.className = "fix-toggles";
-  toggles.append(pageOnlyRow, replayRow, snapRow, snapTargetRow, specRow, onsetRow);
+  // The controls in FIELDSETS, the listening interface's own shape (user,
+  // round 3): collapsible legends (listen.js's document-level delegation
+  // toggles them and persists the state by id; the state is restored here),
+  // one group per concern. Exit sits last, away from the controls used while
+  // correcting.
+  const fieldset = (id, label, title) => {
+    const fs = document.createElement("fieldset");
+    fs.className = "collapsible-fieldset fix-fs";
+    fs.id = id;
+    const legend = document.createElement("legend");
+    legend.title = title;
+    legend.append(label, " ");
+    const arrow = document.createElement("span");
+    arrow.className = "collapse-arrow";
+    arrow.textContent = "▾";
+    legend.appendChild(arrow);
+    const body = document.createElement("div");
+    body.className = "fieldset-body";
+    fs.append(legend, body);
+    try {
+      if (localStorage.getItem(`fieldset-collapsed-${id}`) === "true") {
+        fs.classList.add("collapsed");
+      }
+    } catch (_) {}
+    return { fs, body };
+  };
+  const fsScore = fieldset("fix-fs-score", "Score", "Collapse / expand the score controls");
+  fsScore.body.append(pageCtl);
+  const fsPlayback = fieldset("fix-fs-playback", "Playback", "Collapse / expand playback options");
+  fsPlayback.body.append(pageOnlyRow, replayRow, speed, balance);
+  const fsSnap = fieldset("fix-fs-snap", "Snap to onsets", "Collapse / expand the snap-to-onset controls");
+  fsSnap.body.append(snapRow, snapTargetRow);
+  const fsLanes = fieldset("fix-fs-lanes", "Lanes", "Collapse / expand the strip's lanes");
+  fsLanes.body.append(specRow, specCfg, onsetRow);
   // Undo, redo, revert, and Save data are NOT listen-mode controls that
   // happen to sit in the nav — a correction session needs every one of them
   // (undo is unified onto listen.js's stack by ruling, and an unsaveable
   // session would be pointless). They are borrowed from the Controls region
   // rather than duplicated, so their enable/disable wiring keeps working
   // untouched, and handed back at exit.
+  const fsEdits = fieldset("fix-fs-edits", "Edits", "Collapse / expand undo, revert, and save");
   const undoRow = document.createElement("div");
   undoRow.className = "fix-nav-row";
-  navBody.append(title, pageCtl, chip, toggles, specCfg, snapCmdRow, speed, balance, undoRow);
-  _borrowNavActions({ "undo-btn": undoRow, "redo-btn": undoRow }, navBody);
+  fsEdits.body.append(undoRow);
+  navBody.append(title, chip, fsScore.fs, fsPlayback.fs, fsSnap.fs, fsLanes.fs, fsEdits.fs);
+  _borrowNavActions({ "undo-btn": undoRow, "redo-btn": undoRow }, fsEdits.body);
   navBody.appendChild(exitBtn);
 
   const score = document.createElement("div");
   score.className = "fix-score";
+  // The zoom's scroller sits INSIDE the measured pane, so a zoomed page and
+  // its scrollbars never change the box the prewarm fit was measured against.
+  const scoreScroll = document.createElement("div");
+  scoreScroll.className = "fix-score-scroll";
   const scoreSvg = document.createElement("div");
   scoreSvg.className = "fix-score-svg";
-  score.appendChild(scoreSvg);
+  scoreScroll.appendChild(scoreSvg);
+  score.appendChild(scoreScroll);
   scoreSvg.addEventListener("click", (e) => _onScoreClick(e));
+  scoreScroll.addEventListener("scroll", () => _onScoreScroll(), { passive: true });
 
   // The gap doubles as the handle that drags the lane stack against the score.
   const gap = document.createElement("div");
@@ -1346,6 +1469,16 @@ function _buildDom(contentEl, waveformsEl) {
   laneOnset.className = "fix-lane-onset";
   laneOnset.hidden = !_laneOnset;
   lanes.append(stripWs, laneSpec, laneOnset);
+  // "Work is happening": while a spectrogram recompute is pending the lane
+  // dims and this badge sits on it (placed by _layoutLaneBadge).
+  const laneBadge = document.createElement("div");
+  laneBadge.className = "fix-lane-badge";
+  laneBadge.hidden = true;
+  const badgeSpin = document.createElement("span");
+  badgeSpin.className = "fix-spin";
+  badgeSpin.textContent = "⟳";
+  laneBadge.append(badgeSpin, " spectrogram…");
+  lanes.appendChild(laneBadge);
   _applyLaneWeights({ stripWs, laneSpec, laneOnset });
   // Handles between neighbouring visible lanes (placed by _layoutLaneHandles;
   // they sit above the tick canvas, which otherwise takes every strip click).
@@ -1411,11 +1544,14 @@ function _buildDom(contentEl, waveformsEl) {
     scoreEl: score,
     scoreSvg,
     gap,
+    scoreScroll,
+    zoomSel,
     strip,
     lanes,
     stripWs,
     laneSpec,
     laneOnset,
+    laneBadge,
     laneHandles: [handleA, handleB],
     specCfg,
     ticks,
@@ -1685,6 +1821,7 @@ function _renderPage(page) {
   f.els.scoreSvg.querySelectorAll("g[id]").forEach((g) => {
     f.pageIndex.set(g.id, g);
   });
+  _applyScoreZoom(); // size the page BEFORE the geometry reads its rects
   _buildPageGeometry(page);
   f.els.pageLabel.textContent = `Page ${page} / ${f.pageCount}`;
   _updateStripWindow();
@@ -1745,6 +1882,7 @@ function _buildPageGeometry(page) {
   const f = _fix;
   const rootRect = f.els.root.getBoundingClientRect();
   f.underlayByGroup = new Map();
+  f.els.scoreSvg.querySelector(".fix-underlay")?.remove(); // idempotent
   const box = _scoreContentBox();
   // px per viewBox unit, inverted: attribute values (stroke width included)
   // are in the outer svg's user units.
@@ -2022,7 +2160,14 @@ function _setLane(which, on) {
 function _setSpecCfg(patch) {
   _specCfg = { ..._specCfg, ...patch };
   const f = _fix;
-  if (f?.engineReady) _requestLanes(f, "mel");
+  if (!f) return;
+  const displayOnly = Object.keys(patch).every((k) => k === "labels");
+  if (displayOnly) {
+    if (f.lanes) f.lanes.lastKey = null; // repaint the lane, no recompute
+    _scheduleRedraw();
+  } else if (f.engineReady) {
+    _requestLanes(f, "mel");
+  }
 }
 
 /** The spectrogram's hop from its FFT size and overlap. */
@@ -2034,6 +2179,8 @@ function _melHop() {
  *  configuration change. The onset lane's hop is fixed (its peaks are the
  *  snap targets, at a resolution the spectrogram's choices must not move). */
 function _requestLanes(f, what) {
+  f.lanesPending = true;
+  _scheduleRedraw(); // the spectrogram shows its busy state
   _ensureWorker().postMessage({
     type: "fix_lanes",
     what,
@@ -2041,8 +2188,148 @@ function _requestLanes(f, what) {
     nMels: _specCfg.nMels,
     nFft: _specCfg.nFft,
     window: _specCfg.window,
+    scale: _specCfg.scale,
     melHop: _melHop(),
   });
+}
+
+// --- Score zoom-and-scroll (fit | fill width | fill height | percent) ---
+
+/** Size the rendered page for the zoom mode; fit lets the CSS letterbox it. */
+function _applyScoreZoom() {
+  const f = _fix;
+  if (!f) return;
+  if (_scoreZoom.mode === "height") _scoreZoom = { mode: "fit", pct: 100 }; // dropped (round 3)
+  const svg = f.els.scoreSvg.querySelector("svg");
+  const sc = f.els.scoreScroll;
+  const zoomed = _scoreZoom.mode !== "fit";
+  f.els.scoreEl.classList.toggle("fix-score-zoomed", zoomed);
+  _syncZoomSelect();
+  if (!svg) return;
+  if (!zoomed) {
+    svg.style.width = "";
+    svg.style.height = "";
+    f.els.scoreSvg.style.width = "";
+    f.els.scoreSvg.style.height = "";
+    sc.scrollLeft = 0;
+    sc.scrollTop = 0;
+    return;
+  }
+  const vb = svg.viewBox?.baseVal;
+  const W = sc.clientWidth;
+  const H = sc.clientHeight;
+  if (!(vb && vb.width > 0 && vb.height > 0 && W && H)) return;
+  const sFit = Math.min(W / vb.width, H / vb.height);
+  const s = _scoreZoom.mode === "width" ? W / vb.width : (sFit * _scoreZoom.pct) / 100;
+  const w = Math.round(vb.width * s);
+  const h = Math.round(vb.height * s);
+  svg.style.width = `${w}px`;
+  svg.style.height = `${h}px`;
+  f.els.scoreSvg.style.width = `${w}px`;
+  f.els.scoreSvg.style.height = `${h}px`;
+}
+
+/** The current zoom as a percentage of the fit (fill modes included). */
+function _effectiveZoomPct() {
+  if (_scoreZoom.mode === "pct") return _scoreZoom.pct;
+  if (_scoreZoom.mode === "fit") return 100;
+  const f = _fix;
+  const svg = f?.els.scoreSvg.querySelector("svg");
+  const sc = f?.els.scoreScroll;
+  const vb = svg?.viewBox?.baseVal;
+  if (!(vb && vb.width > 0 && vb.height > 0 && sc?.clientWidth && sc?.clientHeight)) return 100;
+  const sFit = Math.min(sc.clientWidth / vb.width, sc.clientHeight / vb.height);
+  return Math.round((sc.clientWidth / vb.width / sFit) * 100); // "width"
+}
+
+function _setScoreZoom(mode, pct) {
+  _scoreZoom = { mode, pct: mode === "pct" ? pct : mode === "fit" ? 100 : _scoreZoom.pct };
+  const f = _fix;
+  if (!f) return;
+  _applyScoreZoom();
+  _scrollScoreToSelection();
+  _updateScoreX();
+  _scheduleRedraw();
+}
+
+/** + / −: step the percentage from wherever the current mode effectively is. */
+function _stepZoom(delta) {
+  const cur = _effectiveZoomPct();
+  const next = Math.min(
+    SCORE_ZOOM_MAX,
+    Math.max(SCORE_ZOOM_MIN, Math.round(cur / SCORE_ZOOM_STEP) * SCORE_ZOOM_STEP + delta),
+  );
+  _setScoreZoom("pct", next);
+}
+
+/** The select shows the mode; a stepped percentage gets an option of its own. */
+function _syncZoomSelect() {
+  const sel = _fix?.els.zoomSel;
+  if (!sel) return;
+  const v = _scoreZoom.mode === "pct" ? String(_scoreZoom.pct) : _scoreZoom.mode;
+  if (![...sel.options].some((o) => o.value === v)) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = `${v} %`;
+    const after = [...sel.options].find((x) => Number(x.value) > Number(v));
+    sel.insertBefore(o, after || null);
+  }
+  sel.value = v;
+}
+
+/** A zoomed page scrolled: the connectors' score-side x moved. */
+function _onScoreScroll() {
+  const f = _fix;
+  if (!f) return;
+  _updateScoreX();
+  _scheduleRedraw();
+}
+
+/** The score-side x of every page group, from the notes' current screen rects
+ *  (the connector overlay's anchors; a zoom or a scroll moves them). */
+function _updateScoreX() {
+  const f = _fix;
+  if (!f) return;
+  const rootRect = f.els.root.getBoundingClientRect();
+  for (const g of _groupsOnPage(f.page)) {
+    let xSum = 0;
+    let n = 0;
+    for (const id of g.ids) {
+      const el = f.pageIndex.get(id);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      xSum += r.x + r.width / 2;
+      n++;
+    }
+    g.xScore = n ? xSum / n - rootRect.x : null;
+  }
+}
+
+/** Zoomed: scroll the selected notes into the scroller's view (with margin). */
+function _scrollScoreToSelection() {
+  const f = _fix;
+  if (!f || _scoreZoom.mode === "fit") return;
+  const sc = f.els.scoreScroll;
+  const sels = f.els.scoreSvg.querySelectorAll(".fix-note-sel");
+  if (!sels.length) return;
+  let left = Infinity;
+  let right = -Infinity;
+  let top = Infinity;
+  let bottom = -Infinity;
+  for (const el of sels) {
+    const r = el.getBoundingClientRect();
+    left = Math.min(left, r.left);
+    right = Math.max(right, r.right);
+    top = Math.min(top, r.top);
+    bottom = Math.max(bottom, r.bottom);
+  }
+  if (!Number.isFinite(left)) return;
+  const sr = sc.getBoundingClientRect();
+  const m = SCORE_SCROLL_MARGIN_PX;
+  if (left < sr.left + m) sc.scrollLeft -= sr.left + m - left;
+  else if (right > sr.right - m) sc.scrollLeft += right - (sr.right - m);
+  if (top < sr.top + m) sc.scrollTop -= sr.top + m - top;
+  else if (bottom > sr.bottom - m) sc.scrollTop += bottom - (sr.bottom - m);
 }
 
 /** Boot the worker's Python runtime ahead of a session (idempotent there) —
@@ -2080,6 +2367,27 @@ function _visibleLanes(f) {
     [f.els.laneSpec, "spec"],
     [f.els.laneOnset, "onset"],
   ].filter(([el]) => !el.hidden);
+}
+
+/** The spectrogram's busy state: a pending RECOMPUTE (a configuration change)
+ *  dims the lane and shows the badge over it; the first computation has the
+ *  lane's own "computing…" placeholder instead. */
+function _layoutLaneBadge(f) {
+  const b = f.els.laneBadge;
+  if (!b) return;
+  const busy = !!(f.lanesPending && f.lanes && !f.els.laneSpec.hidden);
+  f.els.laneSpec.classList.toggle("fix-lane-busy", busy);
+  b.hidden = !busy;
+  if (busy) b.style.top = `${f.els.laneSpec.offsetTop + 3}px`;
+}
+
+/** Realigning (a drag's commit, or S over several marks): the tick canvas
+ *  pulses, the strip's cursor says so, and the magnet button stands down. */
+function _setRealignBusy(f, on) {
+  f.realignBusy = on;
+  f.els.strip?.classList.toggle("fix-realigning", on);
+  const btn = document.getElementById("fix-snap-sel");
+  if (btn) btn.disabled = on;
 }
 
 /** One handle per boundary between visible lanes, on that boundary. */
@@ -2211,6 +2519,9 @@ function _installLanes(f, d) {
     nMels: d.n_mels,
     nFft: d.n_fft,
     window: d.window,
+    scale: d.scale || "mel",
+    bandHz: d.band_hz || null,
+    labelsDrawn: 0,
     melHop: d.mel_hop,
     melFrames: d.mel_frames,
     melT0: d.mel_t0,
@@ -2239,6 +2550,7 @@ function _installLanes(f, d) {
     };
   }
   f.lanesError = null;
+  f.lanesPending = false;
   _scheduleRedraw();
 }
 
@@ -2296,6 +2608,7 @@ function _paintLanes() {
   const f = _fix;
   if (!f?.els.lanes) return;
   _layoutLaneHandles(f);
+  _layoutLaneBadge(f);
   const L = f.lanes;
   for (const [el, kind] of [
     [f.els.laneSpec, "spec"],
@@ -2341,10 +2654,11 @@ function _paintLanePlaceholder(ctx, w, h, kind, error) {
 function _paintSpectrogram(ctx, L, w, h) {
   const f = _fix;
   const scrollEl = f.stripWS.getWrapper().parentElement;
-  const key = `${scrollEl.scrollLeft}|${f.stripPps}|${w}|${h}`;
+  const key = `${scrollEl.scrollLeft}|${f.stripPps}|${w}|${h}|${_specCfg.labels ? 1 : 0}`;
   if (L.lastKey === key) return;
   L.lastKey = key;
   ctx.clearRect(0, 0, w, h);
+  L.labelsDrawn = 0;
   const t0 = _stripXToTime(0);
   const t1 = _stripXToTime(w);
   if (t0 === null || t1 === null) return;
@@ -2380,6 +2694,57 @@ function _paintSpectrogram(ctx, L, w, h) {
   const sx1 = (t1 - L.melT0) * fr + 0.5 - F0;
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(sc, sx0, 0, sx1 - sx0, nM, 0, 0, w, h);
+  if (_specCfg.labels && L.bandHz?.length) L.labelsDrawn = _drawHzLabels(ctx, L, w, h);
+}
+
+/** Frequency labels on the lane's left edge: round values that have a band
+ *  near them, spaced to stay legible, kept clear of the ◀ onset-skip button. */
+function _drawHzLabels(ctx, L, w, h) {
+  const f = _fix;
+  const nB = L.bandHz.length;
+  const yOf = (m) => h * (1 - (m + 0.5) / nB);
+  // The ◀ onset-skip button sits over the strip's middle, i.e. over this lane
+  // in the default stack: labels start just right of it then (a vertical
+  // exclusion zone starved a 49 px lane of every label but one).
+  let x0 = 2;
+  const btn = f.els.strip.querySelector(".fix-onset-prev");
+  if (btn) {
+    const br = btn.getBoundingClientRect();
+    const lr = f.els.laneSpec.getBoundingClientRect();
+    if (br.bottom > lr.top && br.top < lr.bottom) x0 = Math.max(2, br.right - lr.left + 4);
+  }
+  const wanted = [50, 100, 200, 500, 1000, 2000, 5000, 10000];
+  ctx.save();
+  ctx.font = "9px sans-serif";
+  ctx.textBaseline = "middle";
+  let lastY = -Infinity;
+  let drawn = 0;
+  for (const hz of wanted) {
+    let best = -1;
+    let bestErr = Infinity;
+    for (let m = 0; m < nB; m++) {
+      const err = Math.abs(Math.log(L.bandHz[m] / hz));
+      if (err < bestErr) {
+        bestErr = err;
+        best = m;
+      }
+    }
+    if (best < 0 || bestErr > Math.log(1.3)) continue; // no band near this value
+    const y = yOf(best);
+    if (y < 6 || y > h - 6 || Math.abs(y - lastY) < 11) continue; // y falls as Hz rises
+    const text = hz >= 1000 ? `${hz / 1000} kHz` : `${hz} Hz`;
+    const tw = ctx.measureText(text).width;
+    ctx.globalAlpha = 0.72;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(x0, y - 6, tw + 6, 12);
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = "#fff";
+    ctx.fillText(text, x0 + 3, y);
+    lastY = y;
+    drawn++;
+  }
+  ctx.restore();
+  return drawn;
 }
 
 /**
@@ -2440,25 +2805,161 @@ function _snapTargetList() {
   return list?.length ? list : null;
 }
 
-/** The nearest active snap target within `radius` seconds of t, or null. */
-function _nearestOnsetPeak(t, radius) {
-  return _nearestIn(_snapTargetList(), t, radius);
+/** The nearest UNCLAIMED active snap target within `radius` seconds of t, or
+ *  null. A target within OCCUPIED_EPS_SEC of another group's anchor is that
+ *  anchor's: it attracts no second mark (the drag magnet and S alike). */
+function _nearestOnsetPeak(t, radius, groupIx = null) {
+  return _nearestIn(_snapTargetList(), t, radius, _occupiedTimes(groupIx));
 }
 
-function _nearestIn(pk, t, radius) {
+/** Anchor times other than the given group's own (or than the given groups'). */
+function _occupiedTimes(groupIxOrSet) {
+  const f = _fix;
+  if (!f) return [];
+  const own = new Set();
+  if (groupIxOrSet instanceof Set) {
+    for (const ix of groupIxOrSet) {
+      const g = f.groups[ix];
+      if (g) own.add(g.eventIxs[0]);
+    }
+  } else if (groupIxOrSet != null) {
+    const g = f.groups[groupIxOrSet];
+    if (g) own.add(g.eventIxs[0]);
+  }
+  return _corrections.anchors.filter((a) => !own.has(a.i)).map((a) => a.t);
+}
+
+function _isOccupied(t, occupied) {
+  for (const o of occupied) if (Math.abs(o - t) < OCCUPIED_EPS_SEC) return true;
+  return false;
+}
+
+function _nearestIn(pk, t, radius, occupied = []) {
   if (!pk?.length) return null;
   const k = _lowerBound(pk, t);
   let best = null;
   let bestD = radius;
-  for (const c of [pk[k - 1], pk[k]]) {
-    if (c === undefined) continue;
+  for (let j = Math.max(0, k - 3); j <= Math.min(pk.length - 1, k + 2); j++) {
+    const c = pk[j];
     const dd = Math.abs(c - t);
-    if (dd <= bestD) {
+    if (dd <= bestD && !_isOccupied(c, occupied)) {
       bestD = dd;
       best = c;
     }
   }
   return best;
+}
+
+/** Every unclaimed target within `radius` of t, in time order. */
+function _targetsWithin(pk, t, radius, occupied) {
+  const out = [];
+  if (!pk?.length) return out;
+  let j = _lowerBound(pk, t - radius);
+  for (; j < pk.length && pk[j] <= t + radius; j++) {
+    if (!_isOccupied(pk[j], occupied)) out.push(pk[j]);
+  }
+  return out;
+}
+
+/**
+ * The local tempo as seconds per quarter — the yardstick for how far apart two
+ * moved marks should end up. The MEDIAN of the consecutive inter-onset rates
+ * (Δt/Δq) in the current alignment around events iLo..iHi (±8): a fitted
+ * slope over that window was 3× off on the fixture (the window straddles a
+ * tempo change), and a median also shrugs off the piled-up pairs the
+ * dispersal exists to separate (they have Δt ≈ 0 and are skipped).
+ */
+function _localSecondsPerQuarter(iLo, iHi) {
+  const f = _fix;
+  const refOn = scoreAlignment?.ref_onset;
+  if (!f || !refOn) return 0.5;
+  const lo = Math.max(0, iLo - 8);
+  const hi = Math.min(f.nEvents - 1, iHi + 8);
+  const rates = [];
+  let prevQ = null;
+  let prevT = null;
+  for (let i = lo; i <= hi; i++) {
+    const q = f.qOn[i];
+    const t = refOn[i];
+    if (!Number.isFinite(q) || !Number.isFinite(t)) continue;
+    if (prevQ !== null && q > prevQ + 1e-6 && t > prevT + 0.02) {
+      rates.push((t - prevT) / (q - prevQ));
+    }
+    prevQ = q;
+    prevT = t;
+  }
+  if (!rates.length) return 0.5;
+  rates.sort((a, b) => a - b);
+  const mid = rates.length >> 1;
+  const med = rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
+  return med > 0.05 ? med : 0.5;
+}
+
+/**
+ * Which mark takes which target, for S on several marks: a monotonic
+ * assignment (marks in time order, each target used once, targets in order)
+ * minimising moved distance plus a mild tempo-deviation penalty, under the
+ * dispersal constraint — two moved marks may not land closer than
+ * DISPERSE_ALPHA × their score-implied interval at the local tempo. A mark
+ * may be left unassigned (null) at DISPERSE_NONE_COST; the realign of its
+ * neighbour's segment then places it from the audio. Shortest path over
+ * (mark, candidate) nodes; N marks × M candidates is tiny.
+ */
+function _assignSnapTargets(marks, cands, spq) {
+  const N = marks.length;
+  const best = cands.map((cs) => cs.map(() => Infinity));
+  const prev = cands.map((cs) => cs.map(() => null));
+  const expected = (k, i) => {
+    const dq = marks[i].q - marks[k].q;
+    return dq > 0 ? dq * spq : 0;
+  };
+  const feasible = (k, ck, i, ci) => {
+    const dt = ci.t - ck.t;
+    if (dt <= 0) return false;
+    return dt >= Math.max(DISPERSE_MIN_GAP_SEC, DISPERSE_ALPHA * expected(k, i));
+  };
+  const penalty = (k, ck, i, ci) => {
+    const exp = expected(k, i);
+    return exp > 0 ? DISPERSE_KAPPA * Math.abs(Math.log((ci.t - ck.t) / exp)) : 0;
+  };
+  for (let i = 0; i < N; i++) {
+    for (let c = 0; c < cands[i].length; c++) {
+      const ci = cands[i][c];
+      let b = i * DISPERSE_NONE_COST + ci.cost; // straight from the start
+      let p = null;
+      for (let k = 0; k < i; k++) {
+        for (let ck = 0; ck < cands[k].length; ck++) {
+          if (!Number.isFinite(best[k][ck])) continue;
+          const pk = cands[k][ck];
+          if (!feasible(k, pk, i, ci)) continue;
+          const v =
+            best[k][ck] + (i - k - 1) * DISPERSE_NONE_COST + ci.cost + penalty(k, pk, i, ci);
+          if (v < b) {
+            b = v;
+            p = [k, ck];
+          }
+        }
+      }
+      best[i][c] = b;
+      prev[i][c] = p;
+    }
+  }
+  let bestEnd = N * DISPERSE_NONE_COST; // nobody moves
+  let end = null;
+  for (let i = 0; i < N; i++) {
+    for (let c = 0; c < cands[i].length; c++) {
+      const v = best[i][c] + (N - 1 - i) * DISPERSE_NONE_COST;
+      if (v < bestEnd) {
+        bestEnd = v;
+        end = [i, c];
+      }
+    }
+  }
+  const chosen = new Array(N).fill(null);
+  for (let node = end; node; node = prev[node[0]][node[1]]) {
+    chosen[node[0]] = cands[node[0]][node[1]].t;
+  }
+  return chosen;
 }
 
 /** First index whose value is ≥ v in a sorted array (the array's length if none). */
@@ -2605,7 +3106,14 @@ function _redrawOverlays() {
     if (g.xScore !== null) {
       const xt = stripRect.x - rootRect.x + x;
       if (xt < -40 || xt > f.els.root.clientWidth + 40) continue;
-      const yFrom = Math.min(contentBottomY ?? scoreBottomY, scoreBottomY);
+      // A zoomed page: a note scrolled out of the pane has no connector, and
+      // one scrolled partly out starts at the pane's edge, not above it.
+      const xs = g.xScore + rootRect.x;
+      if (xs < scoreRect.left - 2 || xs > scoreRect.right + 2) continue;
+      const yFrom = Math.max(
+        scoreRect.top - rootRect.y,
+        Math.min(contentBottomY ?? scoreBottomY, scoreBottomY),
+      );
       const line = document.createElementNS(
         "http://www.w3.org/2000/svg",
         "polyline",
@@ -2680,6 +3188,10 @@ function _select(ix, { seek = false } = {}) {
     if (el) el.classList.add("fix-note-sel");
   }
   _applyUnderlaySelection();
+  if (_scoreZoom.mode !== "fit") {
+    _scrollScoreToSelection();
+    _updateScoreX();
+  }
   _scheduleRedraw();
   if (seek) {
     const t = _groupRefTime(g);
@@ -2836,7 +3348,7 @@ function _onTickMouseMove(e) {
   let t = raw;
   d.snapT = null;
   if (_snapOnsets && !e.altKey) {
-    const p = _nearestOnsetPeak(raw, SNAP_RADIUS_PX / f.stripPps);
+    const p = _nearestOnsetPeak(raw, SNAP_RADIUS_PX / f.stripPps, d.groupIx);
     if (p !== null) {
       t = p;
       d.snapT = p;
@@ -3798,8 +4310,13 @@ async function _commitAnchor(groupIx, t, kind) {
     return;
   }
 
-  f.realignBusy = true;
-  _setChip("realign", "Realigning around the fix…");
+  _setRealignBusy(f, true);
+  _setChip(
+    "realign",
+    _batch
+      ? `Moving ${_batch.done + 1} of ${_batch.total} — realigning…`
+      : "Realigning around the fix…",
+  );
   applyAnchorValue(refOn, i, t);
   let linearFilled = 0;
   let realigned = 0;
@@ -3873,7 +4390,7 @@ async function _commitAnchor(groupIx, t, kind) {
       err,
     );
     if (_fix === f) {
-      f.realignBusy = false;
+      _setRealignBusy(f, false);
       _setChip(
         "error",
         `Realign failed (${err.message}) — the fix was rolled back`,
@@ -3913,7 +4430,7 @@ async function _commitAnchor(groupIx, t, kind) {
       { i, t, kind },
     );
   }
-  f.realignBusy = false;
+  _setRealignBusy(f, false);
   f.lastCommit = { kind, i, t, realigned, linear: linearFilled, degenerate };
   // The commit's console trail. Every "the note I fixed does not sound" report
   // so far has come down to one of three numbers: the note's duration (a
@@ -4009,36 +4526,66 @@ async function _snapSelectionToOnsets() {
     _announce("No detected onsets yet — the lanes are still computing.");
     return;
   }
+  f.lastBatch = null; // describes the last COMPLETED run only
   const ixs = f.multiSel.size ? [...f.multiSel].sort((a, b) => a - b) : [f.selGroupIx];
-  const plan = [];
-  const batch = { requested: ixs.length, moved: 0, noTarget: 0, blocked: 0, already: 0 };
+  const batch = {
+    requested: ixs.length,
+    moved: 0,
+    noTarget: 0,
+    shared: 0,
+    blocked: 0,
+    already: 0,
+  };
+  // One peak, one mark: targets already claimed by anchors OUTSIDE the
+  // selection are off the table; within it, the assignment below decides.
+  const occupied = _occupiedTimes(new Set(ixs));
+  const marks = [];
   for (const ix of ixs) {
     const g = f.groups[ix];
     if (!g) continue;
-    const t0 = _groupRefTime(g);
-    if (!Number.isFinite(t0)) continue;
-    const target = _nearestIn(targets, t0, SNAP_CMD_RADIUS_SEC);
-    if (target === null) {
-      batch.noTarget++;
-      continue;
-    }
-    if (Math.abs(target - t0) < ANCHOR_EPS_SEC) {
-      batch.already++;
-      continue;
-    }
-    plan.push({ ix, t: target });
+    const t = _groupRefTime(g);
+    if (!Number.isFinite(t)) continue;
+    marks.push({ ix, t, q: f.qOn[g.eventIxs[0]], i: g.eventIxs[0] });
   }
-  _batch = { entries: [], first: null, last: null };
+  marks.sort((a, b) => a.t - b.t);
+  const cands = marks.map((m) =>
+    _targetsWithin(targets, m.t, SNAP_CMD_RADIUS_SEC, occupied).map((t) => ({
+      t,
+      cost: Math.abs(t - m.t) / SNAP_CMD_RADIUS_SEC,
+    })),
+  );
+  const spq = marks.length
+    ? _localSecondsPerQuarter(marks[0].i, marks[marks.length - 1].i)
+    : 0.5;
+  batch.spq = spq; // the local tempo the dispersal measured against (diagnostics)
+  const chosen = _assignSnapTargets(marks, cands, spq);
+  const plan = [];
+  marks.forEach((m, k) => {
+    const target = chosen[k];
+    if (target === null) {
+      if (cands[k].length) batch.shared++;
+      else batch.noTarget++;
+      return;
+    }
+    if (Math.abs(target - m.t) < ANCHOR_EPS_SEC) {
+      batch.already++;
+      return;
+    }
+    plan.push({ ix: m.ix, t: target });
+  });
+  _batch = { entries: [], first: null, last: null, done: 0, total: plan.length };
   try {
     for (const p of plan) {
       const b = _dragBounds(p.ix);
       if (p.t <= b.lo || p.t >= b.hi) {
         batch.blocked++;
+        _batch.done++;
         continue;
       }
       const before = _batch.entries.length;
       await _commitAnchor(p.ix, p.t, "drag");
       if (_fix !== f) return;
+      _batch.done++;
       if (_batch.entries.length > before) batch.moved++;
     }
   } finally {
@@ -4067,6 +4614,11 @@ async function _snapSelectionToOnsets() {
   const parts = [];
   if (batch.noTarget) {
     parts.push(`${batch.noTarget} had no ${label} within ${Math.round(SNAP_CMD_RADIUS_SEC * 1000)} ms`);
+  }
+  if (batch.shared) {
+    parts.push(
+      `${batch.shared} shared a ${label} with a neighbour and ${batch.shared === 1 ? "was" : "were"} left to the realign`,
+    );
   }
   if (batch.blocked) parts.push(`${batch.blocked} blocked by a neighbouring anchor`);
   if (batch.already) parts.push(`${batch.already} already there`);
@@ -4534,6 +5086,22 @@ function _onFixKeydown(e) {
       _commitPendingNudge();
       _toggleSelectAllOnPage();
       break;
+    case "Equal":
+    case "NumpadAdd":
+      if (e.altKey) {
+        handled = false;
+        break;
+      }
+      _stepZoom(SCORE_ZOOM_STEP);
+      break;
+    case "Minus":
+    case "NumpadSubtract":
+      if (e.altKey) {
+        handled = false;
+        break;
+      }
+      _stepZoom(-SCORE_ZOOM_STEP);
+      break;
     case "KeyS":
       if (e.altKey || e.shiftKey) {
         handled = false;
@@ -4719,14 +5287,17 @@ async function _bootstrap() {
     if (!_fix || _fix !== f) return;
     if (d.type === "fix_lanes") {
       _installLanes(f, d);
-      if (f.timing.readyAt) {
+      // The arming trail closes on the FIRST, full reply; a spectrogram
+      // re-request (what: "mel") is not part of arming.
+      if (d.what !== "mel" && f.timing.readyAt && f.timing.lanesMs == null) {
         f.timing.lanesMs = Math.round(performance.now() - f.timing.readyAt);
+        _logArmingTrail(f);
       }
-      _logArmingTrail(f);
     } else if (d.type === "fix_lanes_error") {
       // The lanes are a comfort, not the engine: the session stays live.
       console.warn("fix mode: lanes unavailable:", d.message);
       f.lanesError = d.message;
+      f.lanesPending = false;
       _scheduleRedraw();
     } else if (d.type === "progress" && !f.engineReady) {
       // fix_begin's one progress message is the score synth. Shortened to
@@ -4846,6 +5417,8 @@ export function fixTestState() {
     lastAnnounce: _lastAnnounce,
     engineReady: f.engineReady,
     realignBusy: f.realignBusy,
+    stripBusy: !!f.els.strip?.classList.contains("fix-realigning"),
+    lanesPending: !!f.lanesPending,
     pendingNudge: f.drag?.keyboard
       ? { startT: f.drag.startT, curT: f.drag.curT }
       : null,
@@ -4869,13 +5442,38 @@ export function fixTestState() {
           peakCount: f.lanes.peaks?.length ?? 0,
           patCount: f.lanes.pat?.length ?? 0,
           peaks: Array.from((f.lanes.peaks || new Float64Array(0)).subarray(0, 64)),
+          scale: f.lanes.scale,
+          bandHz: f.lanes.bandHz ? Array.from(f.lanes.bandHz) : null,
+          labelsDrawn: f.lanes.labelsDrawn ?? 0,
+        }
+      : null,
+    scoreZoom: { ..._scoreZoom },
+    selXScore: sel ? sel.xScore : null,
+    scoreContent: (() => {
+      const box = _scoreContentBox();
+      return box ? { w: box.vbWidth * box.scale, h: box.vbHeight * box.scale } : null;
+    })(),
+    scoreScroll: f.els.scoreScroll
+      ? {
+          left: f.els.scoreScroll.scrollLeft,
+          top: f.els.scoreScroll.scrollTop,
+          width: f.els.scoreScroll.scrollWidth,
+          height: f.els.scoreScroll.scrollHeight,
+          clientW: f.els.scoreScroll.clientWidth,
+          clientH: f.els.scoreScroll.clientHeight,
         }
       : null,
     lanesError: f.lanesError,
     multiSel: [...f.multiSel].sort((a, b) => a - b),
     pageTicks: _groupsOnPage(f.page).map((g) => {
       const t = _groupRefTime(g);
-      return { ix: f.groups.indexOf(g), t, x: Number.isFinite(t) ? _timeToStripX(t) : null };
+      return {
+        ix: f.groups.indexOf(g),
+        eventIx: g.eventIxs[0],
+        q: g.q,
+        t,
+        x: Number.isFinite(t) ? _timeToStripX(t) : null,
+      };
     }),
     specCfg: { ..._specCfg },
     snapTarget: _snapTarget,

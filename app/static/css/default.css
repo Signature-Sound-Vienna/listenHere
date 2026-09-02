@@ -6985,6 +6985,21 @@ body.fix-mode-open .icon-fix-mode {
   overflow: hidden;
   background: #fbfaf6;
 }
+/* The zoom's scroller: inside the measured pane, so a zoomed page and its
+   scrollbars never change the box the prewarm fit was measured against. */
+.fix-score-scroll {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.fix-score-zoomed .fix-score-scroll {
+  overflow: auto;
+}
+/* A zoomed page narrower than the pane is centred; a wider one starts at the
+   left and scrolls (auto margins collapse to 0 on overflow). */
+.fix-score-zoomed .fix-score-svg {
+  margin: 0 auto;
+}
 .fix-score-svg,
 .fix-score-svg svg {
   width: 100%;
@@ -7116,8 +7131,118 @@ body.fix-mode-open .icon-fix-mode {
 .fix-spec-cfg[hidden] {
   display: none;
 }
+/* The Correction region's fieldsets (the listening interface's collapsible
+   shape): each body a column of rows, each row a flex line. */
+.fix-fs .fieldset-body > span,
+.fix-fs .fieldset-body > .fix-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+}
+.fix-fs .fieldset-body label {
+  cursor: pointer;
+}
+.fix-fs .fieldset-body > span > label {
+  white-space: nowrap;
+}
+/* The icon button must not take the fieldset's larger button font. */
+.fix-fs .fieldset-body .fix-icon-btn {
+  flex: 0 0 auto;
+  font-size: 0.95em;
+  padding: 0 0.2em;
+  line-height: 1.25;
+}
+.fix-fs .fieldset-body .fix-spec-cfg {
+  margin-left: 1.4em;
+}
+
+/* A pending spectrogram RECOMPUTE: the lane dims and a badge spins on it. */
+.fix-lane-spec.fix-lane-busy {
+  opacity: 0.35;
+  transition: opacity 0.2s;
+}
+.fix-lane-badge {
+  position: absolute;
+  right: 44px;
+  z-index: 5;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--color-waveform-border, #aaa);
+  background: var(--color-surface, rgba(255, 255, 255, 0.9));
+  color: var(--color-text, #222);
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+.fix-lane-badge[hidden] {
+  display: none;
+}
+.fix-spin {
+  display: inline-block;
+  animation: fix-spin 1s linear infinite;
+}
+@keyframes fix-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Realigning (a commit, or S over several marks): the ticks pulse, the strip's
+   cursor says so, and the magnet button stands down until it is over. */
+.fix-realigning .fix-ticks {
+  animation: fix-pulse 0.9s ease-in-out infinite alternate;
+  cursor: progress;
+}
+.fix-realigning .fix-onset-skip,
+.fix-realigning .fix-lane-handle {
+  cursor: progress;
+}
+@keyframes fix-pulse {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.4;
+  }
+}
+
+/* The snap target's radios, in the listening interface's own shape. */
 .fix-snap-target-row {
   margin-left: 1.4em;
+  font-size: var(--font-size-small, 0.85em);
+}
+.fix-snap-target-row input[type="radio"] {
+  margin: 0 0.25em 0 0;
+}
+.fix-snap-target-row label {
+  margin-right: 0.6em;
+  cursor: pointer;
+}
+/* The "move to nearest onset" icon at the end of the Snap row. */
+.fix-icon-btn {
+  margin-left: auto;
+  padding: 0 0.15em;
+  font-size: 0.95em;
+  line-height: 1.25;
+  letter-spacing: -0.05em;
+}
+.fix-toggles > span > label {
+  white-space: nowrap;
+}
+.fix-spec-labels-row {
+  flex: 0 0 auto;
+  gap: 0.25em;
+  font-size: var(--font-size-small, 0.85em);
+}
+.fix-page-ctl {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+#fix-score-zoom {
+  font-size: var(--font-size-small, 0.8em);
+  min-width: 0;
+  flex: 1;
 }
 .fix-strip-ws[data-placeholder]::after {
   content: attr(data-placeholder);

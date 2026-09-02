@@ -13,6 +13,10 @@ const PORT = new URL(BASE_URL).port || '80';
 
 export default defineConfig({
   testDir: './tests/e2e',
+  // One suite at a time on this machine: a second run (in any checkout) waits
+  // for the first — see tests/support/e2e-lock.ts. E2E_NO_LOCK=1 bypasses it.
+  globalSetup: require.resolve('./tests/support/e2e-lock'),
+  globalTeardown: require.resolve('./tests/support/e2e-unlock'),
   // Files run in parallel; tests WITHIN a file stay serial and in order, which is
   // what the audio/state tests actually depend on. The Flask dev server is
   // threaded and holds no per-request state, and each worker gets its own
@@ -65,7 +69,17 @@ export default defineConfig({
         ...devices['Desktop Firefox'],
         // media.volume_scale silences the output stage only — decoding, currentTime
         // and the play/pause events the tests assert on are unaffected.
-        launchOptions: { firefoxUserPrefs: { 'media.volume_scale': '0.0' } },
+        // The cache prefs keep each worker's throwaway profile small: with the
+        // defaults Firefox fills its disk cache and its 500 MB media cache with
+        // the fixture audio, and a run left 400–660 MB per profile in the temp
+        // folder (2026-09-02: 19 stale profiles, 6 GB, a full disk).
+        launchOptions: {
+          firefoxUserPrefs: {
+            'media.volume_scale': '0.0',
+            'browser.cache.disk.enable': false,
+            'media.cache_size': 16384,
+          },
+        },
       },
     },
     {

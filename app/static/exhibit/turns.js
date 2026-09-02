@@ -28,16 +28,43 @@
 // desire; the transport's activeFile is audible truth.
 //
 // WHAT IS DELIBERATELY EXEMPT: the middle band's shared play/pause. The band
-// is one surface read from both sides, so a tap on it cannot be attributed to
-// a viewport at all — it neither takes nor needs the turn, and a pause from it
-// dissolves contention naturally (a paused clock is free to take). Also
-// designed-for but not built here: playhead-driven focus (the next increment)
-// will drive annotation focus from this same clock, which is why holders and
-// selections are per-viewport state here and not DOM state in main.js.
+// is one surface read from both sides, so a tap on its shared control cannot
+// be attributed to a viewport — it neither takes nor needs the turn, and a
+// pause from it dissolves contention naturally (a paused clock is free to
+// take). That exemption is ORIENTATION-AWARE since 0.52.0 (plan §11(f)): the
+// MIRRORED band renders one copy of its facts per reader, so a tap on a fact
+// in cluster i is reader i's by construction — `bandTapViewport` below is the
+// one place that rule is written. An attributed fact tap still takes no turn:
+// it opens that reader's own view (by-year, by-conductor), which is
+// per-viewport state and never touches the clock. Under every other
+// orientation the band stays unattributable and its facts are not tappable.
+// Also designed-for but not built here: playhead-driven focus (the next
+// increment) will drive annotation focus from this same clock, which is why
+// holders and selections are per-viewport state here and not DOM state in
+// main.js.
 //
 // ZERO imports, by rule (see ENGINE-WANTS.md) — the transport is injected.
 
 export const TURN_POLICIES = ["hijack", "attribution", "request"];
+
+/**
+ * Which viewport a tap on the band's cluster `clusterIndex` belongs to, or
+ * null when the band cannot say. Only "mirrored" can: middle-band.js builds
+ * one cluster per facing reader in viewport order (the far copy rotated with
+ * the far viewport), so the cluster index IS the viewport index. Upright,
+ * rotated, and flip render a single cluster both readers share, and a tap on
+ * it is nobody's in particular — the same reasoning that exempts the play
+ * control, applied to the facts.
+ *
+ * @param {string} orientation   the RESOLVED band orientation (config.js)
+ * @param {number} clusterIndex
+ * @returns {number|null}
+ */
+export function bandTapViewport(orientation, clusterIndex) {
+  if (orientation !== "mirrored") return null;
+  const i = Number(clusterIndex);
+  return Number.isInteger(i) && i >= 0 ? i : null;
+}
 
 export class TurnTaking {
   /**

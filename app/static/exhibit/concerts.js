@@ -81,6 +81,43 @@ export function buildConcerts(json, { debug = false } = {}) {
   for (const c of byYear.values()) {
     for (const p of c.playable || []) playableYears.set(p.file, c.year);
   }
+  // The by-conductor pivot (conductors-view.js), derived here rather than by
+  // the tool because it is pure indexing of what the sidecar already says:
+  // one entry per conductor NAME as the archives spell it (the two archives
+  // agree on every conductor, so the name is a stable key), in the order of
+  // each conductor's first concert — the series' own history. A gap year has
+  // no conductor and joins nobody.
+  const byConductor = new Map();
+  for (const c of [...byYear.values()].sort((a, b) => a.year - b.year)) {
+    if (!c.date || !c.conductor) continue;
+    let e = byConductor.get(c.conductor);
+    if (!e) {
+      e = {
+        name: c.conductor,
+        years: [],
+        concerts: [],
+        first: c.year,
+        last: c.year,
+        // Every sitting the exhibit has a portrait of, by year — one conductor
+        // legitimately has several (the per-recording naming, plan §11(d)).
+        portraits: [],
+        // The payload recordings the exhibit can play, with their concert year.
+        playable: [],
+        // Any role the archives give beyond plain conducting (Boskovsky's
+        // "Dirigent und Violine"), as the archive wrote it.
+        roles: [],
+      };
+      byConductor.set(c.conductor, e);
+    }
+    e.years.push(c.year);
+    e.concerts.push(c);
+    e.last = c.year;
+    if (c.portrait) e.portraits.push({ year: c.year, path: c.portrait });
+    for (const p of c.playable || []) e.playable.push({ year: c.year, ...p });
+    for (const role of Object.values(c.conductorRole || {})) {
+      if (role && role !== "Dirigent" && !e.roles.includes(role)) e.roles.push(role);
+    }
+  }
   const data = {
     json,
     series,
@@ -90,6 +127,9 @@ export function buildConcerts(json, { debug = false } = {}) {
     lastInArchives: series.lastInArchives ?? null,
     byYear,
     playableYears,
+    byConductor,
+    /** Every conductor, in order of first concert. */
+    conductors: [...byConductor.values()],
     get: (year) => byYear.get(year) || null,
     /** The year a payload recording was played at, or null. */
     yearOf: (file) => playableYears.get(file) ?? null,
@@ -122,6 +162,20 @@ export function buildConcerts(json, { debug = false } = {}) {
  * @property {number|null} lastInArchives
  * @property {Map<number, object>} byYear
  * @property {Map<string, number>} playableYears  payload file -> concert year
+ * @property {Map<string, Conductor>} byConductor  conductor name -> their entry
+ * @property {Conductor[]} conductors             in order of first concert
  * @property {(year: number) => object|null} get
  * @property {(file: string) => number|null} yearOf
+ */
+
+/**
+ * @typedef {object} Conductor
+ * @property {string} name
+ * @property {number[]} years
+ * @property {object[]} concerts
+ * @property {number} first
+ * @property {number} last
+ * @property {{year: number, path: string}[]} portraits
+ * @property {{year: number, file: string, piece: string}[]} playable
+ * @property {string[]} roles
  */

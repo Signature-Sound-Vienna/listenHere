@@ -107,6 +107,16 @@ const CATALOGUE = {
   // settled by the Oct/Nov user testing.
   "view.listen": { en: "Listen" },
   "view.years": { en: "Year by year" },
+  "view.conductors": { en: "Conductors" },
+  // aria-label only: every explorer overlay's close control shows an × glyph
+  // (main.js) — the way back into the listening view, since the band is the
+  // way in (plan §11(f)) and the toolbar switch is only the fallback entry.
+  "view.close": { en: "Back to listening" },
+  // aria-labels only, for the band's tappable facts (?bandTap, mirrored
+  // band): the facts themselves are a proper name and a year, so the glass
+  // stays wordless per the band's no-labels rule.
+  "band.openYear": { en: "Open the New Year's Concert of {year}" },
+  "band.openConductor": { en: "Open {name}" },
   // The by-year explorer (years-view.js). The concert facts themselves —
   // titles, composers, conductors — arrive from the concerts sidecar as data
   // (German, as the archives wrote them; composers carry a language map), so
@@ -138,6 +148,15 @@ const CATALOGUE = {
   "years.onProgramme": { en: "{piece} was on the programme." },
   "years.unavailable": { en: "The concert history is temporarily unavailable." },
   "years.chooseYear": { en: "Choose a year" },
+  // The by-conductor explorer (conductors-view.js). Names, years, and the
+  // archives' role literals are data from the sidecar; only the chrome is here.
+  "conductors.heading": { en: "The conductors of the New Year's Concerts" },
+  "conductors.chooseConductor": { en: "Choose a conductor" },
+  "conductors.summary": { en: "{n} New Year's Concerts, {first} to {last}" },
+  "conductors.summaryOne": { en: "One New Year's Concert, in {year}" },
+  // The direct route from a conductor to their music: one button per recording
+  // of the current piece the exhibit holds from their concerts.
+  "conductors.listen": { en: "Listen to {piece} from {year}" },
   // THE ONE PLAIN SENTENCE that the AI mark on the portraits needs (plan §5.5,
   // §11(d)) — release-blocking for December, and this view is the first
   // surface allowed to carry text. The glyph itself is burned into every

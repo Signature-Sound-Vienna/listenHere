@@ -1,5 +1,15 @@
 # Listen Here! CHANGELOG.md
 
+### 0.52.0 -- The band is the interface: tap a fact to explore it; the by-conductor explorer
+* On the mirrored band (`?bandOrientation=mirrored`), `?bandTap=<cue>` makes the facts the way into the explorers: tap the year and the tapping reader's half opens the by-year explorer at that concert; tap the conductor's name or portrait and it opens the by-conductor explorer with them. Each reader's copy opens their own half; the clock is untouched (plan §11(f)). Off by default; the value is the wordless cue the tappable facts wear, for the user testing to compare: `plain` (none), `chip`, `underline`, `glyph`, `shimmer`.
+* Any other band orientation resolves `bandTap` to off with a warning, since only mirrored copies can attribute a tap to a reader. The toolbar switch (`?viewSwitch=1`) stays as the debug and fallback entry, now with a third position.
+* A fact is tappable only where the series can follow it: the year when the audible recording is that year's New Year's Concert, the conductor when the series knows them. Anything else stays a plain fact.
+* New by-conductor explorer (`views=conductors`): every conductor of the series in order of first concert, with their years and a count; the card shows the portrait large where the exhibit has one (the AI mark is in the asset, nothing is added), the years with the by-year grid's marks, the archives' role literal, and one Listen button per recording of the current piece from their concerts. The disclosure sentence is at its foot.
+* Every explorer overlay carries a close control — the way back lives inside the overlay.
+* `turns.js` states the attribution rule (`bandTapViewport`): the shared play control is exempt in every orientation; a fact tap on the mirrored band is the tapping reader's and never takes a turn.
+* Study panel: “Tappable facts” on the Band tab.
+* Testing: spec 46 (10 tests: the A/B rule, the entry from both copies, the close control, attribution without a turn, facts that lead nowhere, the roster and card, Listen, the kiosk fit, the missing sidecar, the five cues); 45.2 counts three switch positions.
+
 ### 0.50.0 -- The by-year explorer: every New Year's Concert, on one half of the table
 * First non-comparative view (plan §11): `?viewSwitch=1` puts a Listen / Year by year switch on each viewport's toolbar, and `?views=years,listen` starts a half in the explorer. The explorer draws over that half's strips and commentary while the other half keeps listening; nothing reloads, the band and the clock are untouched. Off by default, and the default kiosk fetches neither the view nor its data.
 * The explorer: a decade grid with one cell per year from the founding concert of 31 December 1939 to the present, gaps shown as gaps, and a card per concert — date, conductor (portrait where the exhibit has one), the programme in two columns, what the project's collection holds, and one button that switches the transport to that concert's recording of the current piece through the turn machine.

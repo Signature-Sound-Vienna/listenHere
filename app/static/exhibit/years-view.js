@@ -8,9 +8,11 @@
 // The first of the non-comparative views (plan §2.4, §11), and the FIRST
 // SURFACE ALLOWED TO CARRY TEXT: it lives on a viewport's own half, so it may
 // speak that reader's language — unlike the shared band (§6.3). That is also why
-// the AI-disclosure sentence for the portraits lives here (§11(d)): the mark is
-// burned into every portrait asset, so this view adds no label of its own; it
-// carries the one plain sentence that says what the spark means.
+// the AI-disclosure sentence for the portraits lives here (§11(d)) — and at the
+// foot of the by-conductor explorer (conductors-view.js), which shows a portrait
+// large: the mark is burned into every portrait asset, so neither view adds a
+// label of its own; each carries the one plain sentence that says what the
+// spark means.
 //
 // DRAWN OVER the viewport's strips and commentary rather than replacing them
 // (main.js mounts it as an absolutely positioned layer): the listening machinery

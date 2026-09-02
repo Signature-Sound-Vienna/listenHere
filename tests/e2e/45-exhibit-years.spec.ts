@@ -96,12 +96,14 @@ test.describe('45. The by-year explorer', () => {
     await boot(page, 'debug=1&viewSwitch=1');
     const switches = page.locator('.view-switch');
     await expect(switches).toHaveCount(2);
-    // Two positions each, the listening one pressed at rest.
+    // Three positions each (listen, years, conductors — 0.52.0 added the
+    // third), the listening one pressed at rest.
     for (let i = 0; i < 2; i++) {
       const s = switches.nth(i);
-      await expect(s.locator('.view-btn')).toHaveCount(2);
+      await expect(s.locator('.view-btn')).toHaveCount(3);
       await expect(s.locator('.view-btn[data-view="listen"]')).toHaveAttribute('aria-pressed', 'true');
       await expect(s.locator('.view-btn[data-view="years"]')).toHaveAttribute('aria-pressed', 'false');
+      await expect(s.locator('.view-btn[data-view="conductors"]')).toHaveAttribute('aria-pressed', 'false');
     }
     // Start the shared clock from the band, then take viewport 1 (the far half)
     // into the explorer through its own switch.
@@ -146,7 +148,7 @@ test.describe('45. The by-year explorer', () => {
     expect(state.playing).toBe(true);
     expect(state.overlayTop).toBeGreaterThanOrEqual(state.toolbarBottom);
     expect(state.audienceSwitchVisible).toBe('hidden');
-    expect(state.pressed).toEqual([['listen', 'false'], ['years', 'true']]);
+    expect(state.pressed).toEqual([['listen', 'false'], ['years', 'true'], ['conductors', 'false']]);
     // The clock is still advancing under the overlay.
     const t1 = await page.evaluate(() => (window as any)._exhibitTest.transport.time);
     await expect

@@ -57,7 +57,7 @@ const TABS = [
         label: "View switch",
         options: [false, true],
         hint:
-          "Offers each viewport a switch between the listening interface and the by-year explorer of the whole New Year's Concert series (plan §11). Off is the shipped exhibit; the explorer draws over this half's strips while the other half keeps listening.",
+          "Offers each viewport a toolbar switch between the listening interface and the explorers of the whole New Year's Concert series — year by year, and conductor by conductor (plan §11). Off is the shipped exhibit; an explorer draws over this half's strips while the other half keeps listening. Since 0.52.0 this is the debug and fallback entry: the ruled entry is the band (Band tab, “Tappable facts”), and every explorer carries its own close control.",
       },
       {
         key: "splitOrientation",
@@ -139,6 +139,13 @@ const TABS = [
         options: ["edge", "wash", "off"],
         hint:
           "Marks the side of the band whose tap the clock is answering. Under the request policy that means \u201cthis side may play back\u201d; under hijack and attribution nobody can withhold the audio, so it means \u201cthis side chose what you are hearing\u201d. Edge is a bar on the holder's side, wash a tint rising from it.",
+      },
+      {
+        key: "bandTap",
+        label: "Tappable facts",
+        options: ["off", "plain", "chip", "underline", "glyph", "shimmer"],
+        hint:
+          "The band as the interface (plan §11(f)): tap the year to open the by-year explorer at that concert, tap the conductor's name or portrait to open the by-conductor explorer with them — on the tapping reader's own half. Needs the mirrored orientation, because only a copy per reader can say who tapped; anywhere else it resolves to off. The value is the wordless cue the tappable facts wear, to be compared at the user testing rather than picked: plain shows nothing (the discoverability baseline), chip outlines each fact softly and rings the portrait, underline draws a hairline under the name and the year, glyph adds a small chevron after them, shimmer sends a slow sheen across them and a slow light round the portrait's rim (reduced motion gets the underline). A fact is tappable only where the series can follow it: the year when the audible recording is that year's concert, the conductor when the series knows them.",
       },
       {
         key: "bandFlipMotion",

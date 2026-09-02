@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.48.1 -- The test harness follows APP_BASE_URL everywhere
+* Every URL the e2e harness builds now derives from `APP_BASE_URL` (six files hardcoded `localhost:5001`), and the auto-started Flask listens on that URL's port, so a second checkout can run the suite on its own port beside a main checkout that owns :5001.
+* The debug-only fixture route rewrites the fixtures' `localhost:5001` origin to the requesting origin, and the file-picker helpers do the same in memory, so a tree under test never fetches its MEI from another tree's server.
+* `.gitignore`: `node_modules` and `ExhibitAnnots` lose their trailing slash, so a worktree may satisfy them with symlinks to the main checkout's copies (as the exhibit audio already could).
+
 ### 0.48.0 -- The Gen-AI portraits are marked as AI-generated
 * Every conductor portrait carries a small gold bubble with a four-point spark, straddling the medallion's rim at the upper right. It is burned into the image, so the band, the strap, and any surface added later all show it.
 * The portraits also carry the IPTC `DigitalSourceType` of `trainedAlgorithmicMedia` in their XMP, so the claim survives the file leaving the exhibit.

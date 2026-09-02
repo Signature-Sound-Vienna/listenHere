@@ -16,6 +16,7 @@
 // ground truth; here the contract under test is the JS loop around it.
 import { test, expect } from '../support/fixtures';
 import { stubExternalMei } from '../support/helpers';
+import { env } from '../support/env';
 import type { Page } from '@playwright/test';
 
 const REF_ROW = 'audio-b.mp3';
@@ -38,8 +39,8 @@ async function gotoFixMode(page: Page, patch?: (json: any) => void) {
     );
   }
   const params =
-    '?align=http://localhost:5001/static/test/alignment.json' +
-    '&useLocal=http://localhost:5001/static/test&fixMode';
+    `?align=${env.baseUrl}/static/test/alignment.json` +
+    `&useLocal=${env.baseUrl}/static/test&fixMode`;
   await page.goto(`/${params}`);
   await page.waitForFunction(
     () => ((window as any)._listenTest?.loadGeneration ?? 0) > 0,

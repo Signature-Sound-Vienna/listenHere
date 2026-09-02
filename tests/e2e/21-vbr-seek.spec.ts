@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { env } from '../support/env';
 
 // Tests for the accurate-seek path for frame-stream audio formats (VBR MP3 /
 // ADTS AAC), whose native <audio> seeking is inaccurate. Covered:
@@ -16,7 +17,7 @@ import { test, expect } from '@playwright/test';
 //   audio-a.aac,     audio-short.aac      - ADTS AAC  (-> windowed path)
 //   audio-short-cbr.mp3                   - CBR MP3   (-> native path / null)
 
-const BASE = 'http://localhost:5001/static/test';
+const BASE = `${env.baseUrl}/static/test`;
 
 test.describe('VBR / ADTS accurate seeking', () => {
   test.beforeEach(async ({ page }) => {

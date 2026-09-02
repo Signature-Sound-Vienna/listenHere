@@ -5,7 +5,7 @@ tools/__pycache__
 venv
 .DS_STORE
 tests/.env
-node_modules/
+node_modules
 tests/report/
 playwright-report/
 test-results/
@@ -32,7 +32,7 @@ test-results/
 /docs/chanda-responses-2026-09-01.md
 /docs/chanda-followup-2026-09-01.md
 # Authored exhibit annotation sets (kids/adults/expert) — text still in flux
-/ExhibitAnnots/
+/ExhibitAnnots
 # Unclear provenance — kept local pending review
 /app/static/DEMO.md
 /chanda/

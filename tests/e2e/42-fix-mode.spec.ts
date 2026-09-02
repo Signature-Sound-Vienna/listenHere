@@ -14,6 +14,7 @@
 // (Pyodide boot → fix_begin → fix_ready) during the increment's build.
 import { test, expect } from '../support/fixtures';
 import { stubExternalMei } from '../support/helpers';
+import { env } from '../support/env';
 import type { Page } from '@playwright/test';
 
 const SYNTH_ROW = 'Score (synthesised from MEI)';
@@ -41,8 +42,8 @@ async function gotoFixMode(
     );
   }
   const params =
-    '?align=http://localhost:5001/static/test/alignment.json' +
-    '&useLocal=http://localhost:5001/static/test' +
+    `?align=${env.baseUrl}/static/test/alignment.json` +
+    `&useLocal=${env.baseUrl}/static/test` +
     (fixMode ? '&fixMode' : '');
   await page.goto(`/${params}`);
   await page.waitForFunction(

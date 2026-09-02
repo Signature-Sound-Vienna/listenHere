@@ -185,6 +185,22 @@ const DEFAULTS = {
   // why this is a switch option and not a change to the filter's meaning.
   audienceAll: false,
 
+  // --- views (plan §11; years-view.js) ---
+  // Which VIEW each viewport starts in, per viewport like `audiences`:
+  //   "listen" — the listening interface, the shipped exhibit.
+  //   "years"  — the by-year explorer of the whole New Year's Concert series,
+  //              drawn OVER this viewport's strips and commentary while the
+  //              other half keeps listening; the band and the clock are
+  //              untouched. Views are switched in-session, per viewport, with
+  //              nothing reloaded (user ruling 2026-09-02).
+  views: ["listen", "listen"],
+  // Whether each viewport's toolbar offers the switch between them. OFF by
+  // default so the shipped exhibit stays byte-identical — on the wire too: the
+  // concerts sidecar (~0.5 MB) and the view's module are fetched only when a
+  // switch is configured. Forced on when `views` starts any viewport outside
+  // the listening view, because a view you cannot leave is a trap.
+  viewSwitch: false,
+
   // --- appearance ---
   // Palette preset (exhibit/themes.js): "dark" is the shipped look; the others
   // are study-panel discussion placeholders, not candidate finals.
@@ -421,6 +437,8 @@ export function readConfig(search = typeof location === "undefined" ? "" : locat
   // A viewport count the other per-viewport arrays cannot cover is a config bug
   // that would otherwise surface as an undefined rotation halfway through layout.
   out.viewports = Math.max(1, Math.round(out.viewports));
+  // A viewport that starts in another view needs the switch to get back.
+  if (out.views.some((v) => v !== "listen")) out.viewSwitch = true;
   return out;
 }
 

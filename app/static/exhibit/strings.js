@@ -100,6 +100,51 @@ const CATALOGUE = {
   // open. The message names no cause on purpose: the visitor cannot act on one and
   // the technician has the console.
   "state.dataError": { en: "This exhibit is temporarily unavailable." },
+  // The per-viewport VIEW SWITCH (?viewSwitch=1, ?views=…; main.js): the
+  // listening interface, or the by-year explorer of the whole New Year's
+  // Concert series (plan §11). These render on the viewport's own toolbar, so
+  // like the turn notices they may carry language. PROVISIONAL wording, to be
+  // settled by the Oct/Nov user testing.
+  "view.listen": { en: "Listen" },
+  "view.years": { en: "Year by year" },
+  // The by-year explorer (years-view.js). The concert facts themselves —
+  // titles, composers, conductors — arrive from the concerts sidecar as data
+  // (German, as the archives wrote them; composers carry a language map), so
+  // only the chrome is here.
+  "years.heading": { en: "The New Year's Concerts of the Wiener Philharmoniker" },
+  "years.founding": { en: "The founding concert, on New Year's Eve" },
+  "years.noConcert": { en: "No concert was given this year." },
+  "years.afterArchives": { en: "This concert is not yet in our archives." },
+  "years.missing": { en: "This concert is missing from our archives." },
+  "years.programme": { en: "Programme" },
+  // The author's own caveat (2026-09-02): the archives list the printed
+  // programme, and the encores — the Blue Danube, the Radetzky March — were
+  // often not written down.
+  "years.programmeCaveat": {
+    en: "As listed in the concert archives. Encores were often not recorded.",
+  },
+  "years.programmeUnknown": { en: "The programme is not in our archives." },
+  // Legend for the per-item source marks: an item one archive lists and the
+  // other does not is shown, and marked, rather than dropped or trusted.
+  "years.legendPhilharmoniker": { en: "listed by the orchestra's archive only" },
+  "years.legendMusikverein": { en: "listed by the Musikverein's archive only" },
+  "years.with": { en: "With" },
+  "years.inLibrary": { en: "On disc in the project's collection" },
+  // The direct route from a concert to its music: switches the transport to
+  // the recording of this piece from that concert (the aligned switch, like a
+  // strip tap) and returns to the listening view. `{piece}` is the payload's
+  // piece title, resolved per language.
+  "years.listen": { en: "Listen to {piece} from this concert" },
+  "years.onProgramme": { en: "{piece} was on the programme." },
+  "years.unavailable": { en: "The concert history is temporarily unavailable." },
+  "years.chooseYear": { en: "Choose a year" },
+  // THE ONE PLAIN SENTENCE that the AI mark on the portraits needs (plan §5.5,
+  // §11(d)) — release-blocking for December, and this view is the first
+  // surface allowed to carry text. The glyph itself is burned into every
+  // portrait asset, so no view adds a label; this sentence explains it once.
+  "about.portraitsAi": {
+    en: "The conductor portraits are AI-generated impressions, not photographs; the small gold spark marks each one.",
+  },
 };
 
 let _debug = false;

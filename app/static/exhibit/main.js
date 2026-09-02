@@ -38,6 +38,7 @@ import { createViewportZoom } from "./zoom.js";
 import { applyTheme, annotationSeries, recolorAnnotations } from "./themes.js";
 import { createMiddleBand } from "./middle-band.js";
 import { createAnnotationList, groupForFileIn, hasGroupStory } from "./annotation-list.js";
+import { loadConcerts } from "./concerts.js";
 
 const config = readConfig();
 setDebug(config.debug);
@@ -57,6 +58,9 @@ const data = {
   // the first (renderAnnotations). Same holder idiom as the payload above,
   // rather than threading the transport through every render signature.
   transport: null,
+  // The turn machine, for the same reason: the by-year explorer's "listen"
+  // tap is a bare recording switch made from a module-level view.
+  turns: null,
 };
 
 /** The recording the shared clock is on, or null before the first selection. */
@@ -339,9 +343,111 @@ function buildScreen(root) {
       focusPinned: false,
       followLast: null,
       panelOpen: false,
+      // ?views / ?viewSwitch (plan §11): which view this half shows, the
+      // toolbar switch that changes it, and the by-year explorer once built.
+      view: "listen",
+      viewSwitchEl: null,
+      yearsView: null,
     });
   }
   return { viewports, bands };
+}
+
+// ---------------------------------------------------------------------------
+// Views (plan §11). "listen" is the shipped interface; "years" draws the by-year
+// explorer OVER this viewport's strips and commentary (years-view.js says why
+// over rather than instead). Per viewport and in-session: one half explores
+// while the other keeps listening, and nothing reloads (user ruling
+// 2026-09-02). The module and the sidecar are fetched only when a switch is
+// configured, so the default kiosk stays byte-identical on the wire.
+// ---------------------------------------------------------------------------
+const VIEWS = ["listen", "years"];
+let yearsModule = null;   // Promise<module> once a switch is configured
+let concertsData;         // Concerts | null once loaded; undefined = never asked
+
+function positionView(vp) {
+  // The overlay starts where the toolbar ends. Layout values, not painted
+  // ones: the far half is rotated 180°, and offsetTop/offsetHeight do not
+  // know that, which is exactly what makes them right here.
+  const bar = vp.el.querySelector(".vp-toolbar");
+  if (!bar) return;
+  vp.el.style.setProperty("--vp-view-top", `${bar.offsetTop + bar.offsetHeight + 4}px`);
+}
+
+function paintViewSwitch(vp) {
+  if (!vp.viewSwitchEl) return;
+  for (const b of vp.viewSwitchEl.querySelectorAll(".view-btn")) {
+    const on = b.dataset.view === vp.view;
+    b.classList.toggle("is-on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
+function buildViewSwitch(vp) {
+  const bar = document.createElement("div");
+  bar.className = "view-switch";
+  bar.dataset.viewport = String(vp.index);
+  for (const name of VIEWS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "view-btn";
+    b.dataset.view = name;
+    b.textContent = t("view." + name, vp.language);
+    b.addEventListener("click", () => setView(vp, name));
+    bar.appendChild(b);
+  }
+  vp.viewSwitchEl = bar;
+  paintViewSwitch(vp);
+  return bar;
+}
+
+/**
+ * Switch one viewport's view. Async only because the explorer's module and
+ * data load lazily; the switch paints at once, the overlay lands when ready.
+ */
+async function setView(vp, name) {
+  if (!VIEWS.includes(name)) {
+    console.warn(`exhibit: unknown view "${name}" — ignored`);
+    return;
+  }
+  if (vp.view === name) return;
+  vp.view = name;
+  vp.el.dataset.view = name;
+  paintViewSwitch(vp);
+  if (name !== "years") {
+    vp.yearsView?.el.remove();
+    return;
+  }
+  if (!vp.yearsView) {
+    const [m, concerts] = await Promise.all([yearsModule, concertsData]);
+    if (vp.view !== "years") return; // switched back while loading
+    const exhibit = data.exhibit;
+    vp.yearsView = m.createYearsView({
+      viewport: vp.index,
+      language: vp.language,
+      concerts,
+      piece: exhibit.piece,
+      portraitUrl: (path) => portraitUrl({ portrait: path }),
+      initialYear: concerts?.yearOf(data.transport?.activeFile) ?? null,
+      // The way from a concert into its music: the BARE aligned switch a strip
+      // tap makes (turns.request with no time — a standing marker catches it,
+      // per the marker ruling), then back to the listening view so the reader
+      // sees the recording they asked for.
+      onListen: (file) => {
+        if (vp.bareSwitch) vp.bareSwitch(file);
+        else data.turns?.request(vp.index, file, undefined);
+        setView(vp, "listen");
+      },
+    });
+  } else if (concertsData) {
+    // Re-entering: follow the audible recording if it is a concert's.
+    const c = await concertsData;
+    const y = c?.yearOf(data.transport?.activeFile);
+    if (y != null) vp.yearsView.select(y);
+  }
+  positionView(vp);
+  vp.el.appendChild(vp.yearsView.el);
+  vp.yearsView.refit?.();
 }
 
 const root = document.getElementById("screen");
@@ -388,6 +494,12 @@ window._exhibitTest = {
   annotationPalette,
   projectPlayhead,
   positionsFor,
+  // Views (plan §11): which view each half shows, a programmatic switch (the
+  // readingClock.advance precedent — the semantic path without the tap), and
+  // the explorer's own state.
+  view: (i) => viewports[i]?.view ?? null,
+  setView: (i, name) => setView(viewports[i], name),
+  yearsView: (i) => viewports[i]?.yearsView?.state() ?? null,
   ready: new Promise((resolve) => {
     _signalReady = resolve;
   }),
@@ -418,6 +530,20 @@ async function boot() {
   data.alignment = exhibit.payload;
   data.grids = exhibit.grids;
   window._exhibitTest.exhibit = exhibit;
+
+  // The by-year explorer's module and sidecar, started now so the first tap
+  // is instant — but only when a switch is configured: the shipped kiosk never
+  // fetches either (config.viewSwitch).
+  if (config.viewSwitch) {
+    yearsModule = import("./years-view.js");
+    concertsData = loadConcerts({ debug: config.debug });
+    concertsData.then((c) => {
+      window._exhibitTest.concerts = c;
+    });
+    window.addEventListener("resize", () => {
+      for (const vp of viewports) if (vp.yearsView) positionView(vp);
+    });
+  }
 
   const store = new AudienceStore(
     Array.from({ length: config.viewports }, (_, i) =>
@@ -482,6 +608,7 @@ async function boot() {
     grantMs: config.turnGrantMs,
   });
   window._exhibitTest.turns = turns;
+  data.turns = turns;
   // The resolved configuration, so a spec can assert against the value in
   // force rather than restating it — the same discipline as reading the shown
   // set from the payload instead of hardcoding eight (the 34.13/38.4 lesson).
@@ -764,7 +891,17 @@ async function boot() {
     // The buttons are optional (config.zoomControls); the controller above is
     // not — scroll sync and the setLevel API work with or without them.
     if (config.zoomControls) toolbar.append(vp.zoom.el);
+    // The view switch (plan §11), first on the bar: it changes what the whole
+    // half shows, so it reads before the controls that belong to one view.
+    if (config.viewSwitch) toolbar.prepend(buildViewSwitch(vp));
     vp.el.insertBefore(toolbar, vp.stripsEl);
+    // The BARE recording switch, as one per-viewport function so a view built
+    // outside this scope (the by-year explorer) makes exactly the switch a
+    // strip tap or strap pick makes: a standing marker catches it
+    // (markerSnapSwitch, the marker ruling); otherwise the aligned carry
+    // through the turn machine, with no time.
+    vp.bareSwitch = (file) =>
+      vp.markerIx != null ? markerSnapSwitch(vp, file) : turns.request(vp.index, file, undefined);
 
     vp.annList = createAnnotationList({
       viewport: vp.index,
@@ -889,6 +1026,11 @@ async function boot() {
       vp.sideSlotEl.append(close, SIDE_TENANTS[config.sideSlot](vp));
     }
     vp.statusEl.textContent = "";
+    // ?views=years,listen — this half starts in the explorer. Not awaited: the
+    // overlay lands when its module and sidecar arrive; the strips beneath
+    // finish booting regardless.
+    const startView = config.views[vp.index] ?? config.views[0];
+    if (startView && startView !== "listen") setView(vp, startView);
   }
 
   // Every renderer has to know its own duration before a single region is added:

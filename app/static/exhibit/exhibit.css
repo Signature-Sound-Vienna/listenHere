@@ -1752,3 +1752,262 @@ html, body {
   font-size: 0.72rem;
   cursor: pointer;
 }
+
+/* ===========================================================================
+ * Views (plan §11; config.views / config.viewSwitch; years-view.js).
+ *
+ * The switch sits on the viewport's own toolbar beside the audience switch,
+ * same chip styling. A view other than "listen" is DRAWN OVER the strips and
+ * the commentary panel as an absolutely positioned layer: the listening
+ * machinery underneath keeps running (the other half of the table is still
+ * listening to it), no canvas is re-measured, no transition is frozen by a
+ * hidden pane. `--vp-view-top` is the toolbar's bottom edge, set by main.js
+ * from layout values (offsetTop/offsetHeight — untouched by the far half's
+ * 180° rotation). z-index 5: above the status line (3) and the turn prompt
+ * (4), which live inside the strips and would otherwise show through; below
+ * the staff panel (50). The toolbar's other controls stand down while the
+ * explorer is up — visibility, not display, so the toolbar keeps its height
+ * and the overlay's top edge does not move.
+ * =========================================================================== */
+.view-switch {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+.view-btn {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.view-btn.is-on {
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-on-accent);
+}
+.vp[data-view="years"] .audience-switch,
+.vp[data-view="years"] .zoom-ctl { visibility: hidden; }
+
+.vp-view {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 8px;
+  top: var(--vp-view-top, 68px);
+  z-index: 5;
+  background: var(--ex-bg);
+  color: var(--ex-text);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "heading heading"
+    "grid    detail"
+    "about   about";
+  column-gap: 22px;
+  row-gap: 6px;
+  overflow: hidden;   /* the kiosk rule: nothing scrolls; spec 45 measures the fit */
+}
+.yv-heading {
+  grid-area: heading;
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ex-text-soft);
+}
+.yv-unavailable {
+  grid-area: heading / heading / detail / detail;
+  align-self: center;
+  justify-self: center;
+  color: var(--ex-text-dim);
+}
+.yv-about {
+  grid-area: about;
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--ex-text-dim);
+}
+
+/* The grid: decade rows, last-digit columns. 40px cells at a 4px gap keep ten
+ * of them plus the decade label inside ~470px, and nine rows inside ~400px —
+ * the finger target is the whole cell. */
+.yv-grid {
+  grid-area: grid;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: start;
+}
+.yv-row { display: flex; gap: 4px; align-items: center; }
+.yv-decade {
+  width: 42px;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ex-text-dim);
+  text-align: right;
+  padding-right: 4px;
+}
+.yv-cell {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--ex-border);
+  border-radius: 8px;
+  background: var(--ex-surface);
+  color: var(--ex-text-body);
+  font: inherit;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  position: relative;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.yv-cell-blank { border-color: transparent; background: none; cursor: default; }
+.yv-cell[data-state="gap"] { color: var(--ex-text-faint); border-style: dashed; background: none; }
+/* The two cell marks — a filled dot for a concert the exhibit can PLAY, a
+ * hairline underline for a concert whose programme carried the current piece.
+ * Language-free, like everything on the band. */
+.yv-cell[data-programme="1"]::after {
+  content: "";
+  position: absolute;
+  left: 9px; right: 9px; bottom: 5px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ex-text-dim);
+}
+.yv-cell[data-playable="1"]::before {
+  content: "";
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--ex-mark);
+}
+.yv-cell.is-selected {
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-on-accent);
+}
+.yv-cell.is-selected::after { background: var(--ex-on-accent); }
+
+/* The card. */
+.yv-detail {
+  grid-area: detail;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+}
+.yv-head { display: flex; align-items: baseline; gap: 14px; }
+.yv-year { margin: 0; font-size: 1.6rem; font-weight: 600; line-height: 1.1; }
+.yv-date { color: var(--ex-text-soft); font-size: 0.9rem; }
+.yv-note { margin: 0; color: var(--ex-text-dim); font-size: 0.85rem; }
+.yv-conductor {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  align-items: center;
+}
+.yv-medallion {
+  grid-row: 1 / 3;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--ex-band-card, var(--ex-surface));
+  color: var(--ex-text-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.yv-portrait { width: 100%; height: 100%; object-fit: cover; display: block; }
+.yv-conductor-name { font-size: 1.1rem; font-weight: 600; }
+.yv-with { font-size: 0.78rem; color: var(--ex-text-soft); }
+.yv-programme-head {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ex-text-dim);
+}
+.yv-programme {
+  margin: 0;
+  padding: 0 0 0 1.6em;
+  columns: 2;
+  column-gap: 18px;
+  font-size: 0.78rem;
+  line-height: 1.3;
+  color: var(--ex-text-body);
+  min-height: 0;
+  overflow: hidden;
+}
+/* The two denser steps years-view.js's fitProgramme walks when the list would
+ * otherwise spill a third column off the right edge. */
+.yv-programme.is-dense  { font-size: 0.72rem; line-height: 1.22; }
+.yv-programme.is-denser { font-size: 0.66rem; line-height: 1.16; }
+.yv-item { break-inside: avoid; padding-right: 1em; position: relative; }
+.yv-item-composer { color: var(--ex-text-soft); }
+.yv-item-composer::after { content: ": "; }
+/* The source marks (years.legend*): one archive lists it, the other does not. */
+.yv-item[data-source="philharmoniker"]::after,
+.yv-item[data-source="musikverein"]::after {
+  position: absolute;
+  right: 0;
+  top: 0.1em;
+  font-size: 0.85em;
+  color: var(--ex-text-soft);
+}
+.yv-item[data-source="philharmoniker"]::after { content: "◆"; }
+.yv-item[data-source="musikverein"]::after { content: "◇"; }
+.yv-programme-empty, .yv-caveat, .yv-legend {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--ex-text-dim);
+}
+.yv-foot {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+/* One row: the collection line yields to the button and ellipsises, so the
+ * foot costs the programme a single line whatever the release title's length. */
+.yv-library, .yv-on-programme {
+  margin: 0;
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.78rem;
+  color: var(--ex-text-soft);
+}
+.yv-listen { flex: 0 0 auto; }
+.yv-listen {
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--ex-accent-border);
+  border-radius: 22px;
+  background: var(--ex-accent);
+  color: var(--ex-on-accent);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}

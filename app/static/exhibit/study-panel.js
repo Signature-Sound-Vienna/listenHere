@@ -53,6 +53,13 @@ const TABS = [
           "How many visitor stations the screen splits into. The table is two facing halves; 1 is a single-reader debug view.",
       },
       {
+        key: "viewSwitch",
+        label: "View switch",
+        options: [false, true],
+        hint:
+          "Offers each viewport a switch between the listening interface and the by-year explorer of the whole New Year's Concert series (plan §11). Off is the shipped exhibit; the explorer draws over this half's strips while the other half keeps listening.",
+      },
+      {
         key: "splitOrientation",
         label: "Split",
         options: ["horizontal", "vertical"],

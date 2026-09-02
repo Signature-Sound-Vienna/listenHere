@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.50.0 -- The by-year explorer: every New Year's Concert, on one half of the table
+* First non-comparative view (plan §11): `?viewSwitch=1` puts a Listen / Year by year switch on each viewport's toolbar, and `?views=years,listen` starts a half in the explorer. The explorer draws over that half's strips and commentary while the other half keeps listening; nothing reloads, the band and the clock are untouched. Off by default, and the default kiosk fetches neither the view nor its data.
+* The explorer: a decade grid with one cell per year from the founding concert of 31 December 1939 to the present, gaps shown as gaps, and a card per concert — date, conductor (portrait where the exhibit has one), the programme in two columns, what the project's collection holds, and one button that switches the transport to that concert's recording of the current piece through the turn machine.
+* New offline tool `tools/prep_exhibit_concerts.py` writes `data/concerts.json` (schema `lh-exhibit-concerts/1`) from the two programme archives scraped in 2022 (Wiener Philharmoniker and Musikverein), reconciled year by year: conductors agree everywhere, programmes are paired by opus and composer, then title, then slot; the union is kept with each item stamped by its source, and the eight genuine contradictions are reported, shown with the orchestra's reading and the other kept as `alt`, never chosen silently. Library records join from both graph dumps (New Year's Concert releases only); `concerts-overrides.json` takes page-cited rulings and post-2023 concerts, applied only when marked verified. `--report` writes the reconciliation report.
+* The one plain sentence explaining the AI mark on the portraits (plan §5.5, §11(d)) ships at the foot of the explorer. It is reachable only where the switch is configured, so the December kiosk URL must carry it.
+* Programme lists fit their card by stepping down through two denser type sizes instead of spilling a clipped third column; spec 45 measures the longest programme at the iPad geometry.
+* Spec 35.17 polls for the band's two time readouts advancing in step rather than for an exact second, which a loaded machine could skip.
+
 ### 0.48.1 -- The test harness follows APP_BASE_URL everywhere
 * Every URL the e2e harness builds now derives from `APP_BASE_URL` (six files hardcoded `localhost:5001`), and the auto-started Flask listens on that URL's port, so a second checkout can run the suite on its own port beside a main checkout that owns :5001.
 * The debug-only fixture route rewrites the fixtures' `localhost:5001` origin to the requesting origin, and the file-picker helpers do the same in memory, so a tree under test never fetches its MEI from another tree's server.

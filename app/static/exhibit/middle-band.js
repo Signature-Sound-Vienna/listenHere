@@ -60,8 +60,20 @@ import { resolveText, t } from "./strings.js";
  * @param {string} [opts.language]     for the piece title — see the caveat below
  * @param {string} [opts.orientation]  "upright" | "rotated" | "mirrored" (config.js)
  * @param {() => void} [opts.onToggle] the shared play/pause tap
- * @returns {{el: HTMLElement, update: (file: string|null) => void,
- *            tick: (state: {time: number, playing: boolean}) => void}}
+ * @param {string} [opts.tap]          the RESOLVED band-tap affordance (config.js
+ *   bandTapFor): "off", or one of the wordless cues the tappable facts wear.
+ *   Anything but "off" makes the year and the conductor (name and portrait)
+ *   tappable in every cluster — subject to `tappable` — and stamps the cue on
+ *   the band for the CSS. The caller has already established that the
+ *   orientation can attribute the tap (mirrored only); this module only draws.
+ * @param {(fact: "year"|"conductor", meta: object, file: string|null) => boolean} [opts.tappable]
+ *   whether a fact leads anywhere for the recording shown — the caller knows
+ *   the concert series, the band does not. Null means nothing is tappable.
+ * @param {(cluster: number, fact: "year"|"conductor", meta: object, file: string|null) => void} [opts.onFact]
+ *   a tap on a tappable fact in cluster `cluster` (0 = the near reader's copy,
+ *   1 = the far reader's — turns.js bandTapViewport maps it to a viewport).
+ * @returns {{el: HTMLElement, update: (file: string|null) => void, refresh: () => void,
+ *            setTurn: Function, tick: (state: {time: number, playing: boolean}) => void}}
  */
 export function createMiddleBand(
   data,
@@ -71,6 +83,9 @@ export function createMiddleBand(
     turnIndicator = "off",
     flipMotion = "fade",
     onToggle,
+    tap = "off",
+    tappable = null,
+    onFact = null,
   } = {},
 ) {
   const el = document.createElement("div");
@@ -81,12 +96,17 @@ export function createMiddleBand(
   // the clock. An attribute rather than a class so the CSS reads as a switch
   // over named variants, the same shape as data-orientation above.
   el.dataset.turnIndicator = turnIndicator;
+  // The tappable facts' cue (?bandTap, plan §11(f)). Absent when "off" so the
+  // shipped band's DOM is byte-identical, not merely styled identically.
+  if (tap !== "off") el.dataset.tap = tap;
+  const facts = tap === "off" ? null : { tappable, onFact, language };
 
   // Two copies for "mirrored", one for everything else. Same builder, same
   // update loop — the far reader's copy is a CSS rotation of an identical
-  // cluster, never a second implementation that could drift.
-  const clusters = [buildCluster(data, language)];
-  if (orientation === "mirrored") clusters.push(buildCluster(data, language));
+  // cluster, never a second implementation that could drift. The index is the
+  // reader's: cluster 0 faces the near viewport, cluster 1 the far one.
+  const clusters = [buildCluster(data, language, 0, facts)];
+  if (orientation === "mirrored") clusters.push(buildCluster(data, language, 1, facts));
   clusters.forEach((c, i) => {
     c.root.classList.toggle("mb-flipped", i === 1);
     el.appendChild(c.root);
@@ -130,7 +150,16 @@ export function createMiddleBand(
   function update(file) {
     const meta = file ? metadataFor(data, file) : {};
     el.dataset.file = file || "";
-    for (const c of clusters) c.update(meta);
+    for (const c of clusters) c.update(meta, file || null);
+  }
+
+  /**
+   * Re-run the current recording's update — for the caller whose `tappable`
+   * answer has changed without the recording changing (the concerts sidecar
+   * landing after the band was built is the case in hand).
+   */
+  function refresh() {
+    update(el.dataset.file || null);
   }
 
   /**
@@ -210,7 +239,7 @@ export function createMiddleBand(
 
   update(null);
   setTurn(null);
-  return { el, update, setTurn, tick: play.tick };
+  return { el, update, refresh, setTurn, tick: play.tick };
 }
 
 /** The play/pause button plus the mirrored pair of time readouts. */
@@ -259,12 +288,17 @@ function _formatTime(seconds) {
 
 /**
  * One full content cluster: portrait, conductor over ensemble, year, piece.
- * Returns the root plus its own `update(meta)` so the band can drive one or two
- * of these identically.
+ * Returns the root plus its own `update(meta, file)` so the band can drive one
+ * or two of these identically.
+ *
+ * @param {number} index  which reader's copy this is (mirrored: 0 near, 1 far)
+ * @param {{tappable: Function|null, onFact: Function|null, language: string}|null} facts
+ *   null when the band's facts are not tappable (the shipped band)
  */
-function buildCluster(data, language) {
+function buildCluster(data, language, index = 0, facts = null) {
   const root = document.createElement("div");
   root.className = "mb-cluster";
+  root.dataset.cluster = String(index);
 
   // The piece: title, composer, and the opus number when the payload carries one.
   // Shown ONCE PER CLUSTER — every strip is the same piece, so repeating the
@@ -316,7 +350,50 @@ function buildCluster(data, language) {
   // stays beside the people who made it rather than drifting to the title.
   root.append(portrait, who, year, piece);
 
-  function update(meta) {
+  // THE FACTS AS THE INTERFACE (?bandTap, plan §11(f)). The same three
+  // elements, not wrappers around them — the specs and the orientation CSS
+  // address `.mb-conductor` / `.mb-year` / `.mb-portrait` directly, and a
+  // wrapper would move them. When a fact is tappable it gets the button role,
+  // a tab stop, an aria-label (the one place words are allowed: they are not
+  // on the glass), and the `is-tappable` class the affordance CSS keys off;
+  // when it is not, all of that is removed again, so a recording the series
+  // cannot follow shows a plain fact — never a dead button.
+  let current = { meta: {}, file: null };
+  const factEls = facts
+    ? [
+        [portrait, "conductor"],
+        [conductor, "conductor"],
+        [year, "year"],
+      ]
+    : [];
+  for (const [elm, fact] of factEls) {
+    elm.dataset.fact = fact;
+    const fire = () => {
+      if (!elm.classList.contains("is-tappable")) return;
+      facts.onFact?.(index, fact, current.meta, current.file);
+    };
+    elm.addEventListener("click", fire);
+    elm.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      fire();
+    });
+  }
+  function setTappable(elm, on, label) {
+    elm.classList.toggle("is-tappable", on);
+    if (on) {
+      elm.setAttribute("role", "button");
+      elm.setAttribute("tabindex", "0");
+      elm.setAttribute("aria-label", label);
+    } else {
+      elm.removeAttribute("role");
+      elm.removeAttribute("tabindex");
+      elm.removeAttribute("aria-label");
+    }
+  }
+
+  function update(meta, file = null) {
+    current = { meta, file };
     // textContent throughout, never innerHTML: these values come from MusicBrainz
     // and an RDF dump by way of the prep script, so they are external data even
     // though they were fetched offline.
@@ -326,6 +403,19 @@ function buildCluster(data, language) {
       ? resolveText(meta.displayNote, { language })
       : "";
     year.textContent = meta.year != null ? String(meta.year) : "";
+
+    if (facts) {
+      const canYear = meta.year != null && facts.tappable?.("year", meta, file) === true;
+      const canConductor =
+        Boolean(meta.conductor) && facts.tappable?.("conductor", meta, file) === true;
+      setTappable(
+        year, canYear,
+        t("band.openYear", facts.language).replace("{year}", String(meta.year)),
+      );
+      const whoLabel = t("band.openConductor", facts.language).replace("{name}", meta.conductor || "");
+      setTappable(conductor, canConductor, whoLabel);
+      setTappable(portrait, canConductor, whoLabel);
+    }
 
     portrait.textContent = "";
     portrait.style.backgroundImage = "";

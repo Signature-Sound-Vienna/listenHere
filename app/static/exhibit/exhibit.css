@@ -1752,3 +1752,611 @@ html, body {
   font-size: 0.72rem;
   cursor: pointer;
 }
+
+/* ===========================================================================
+ * Views (plan §11; config.views / config.viewSwitch; years-view.js).
+ *
+ * The switch sits on the viewport's own toolbar beside the audience switch,
+ * same chip styling. A view other than "listen" is DRAWN OVER the strips and
+ * the commentary panel as an absolutely positioned layer: the listening
+ * machinery underneath keeps running (the other half of the table is still
+ * listening to it), no canvas is re-measured, no transition is frozen by a
+ * hidden pane. `--vp-view-top` is the toolbar's bottom edge, set by main.js
+ * from layout values (offsetTop/offsetHeight — untouched by the far half's
+ * 180° rotation). z-index 5: above the status line (3) and the turn prompt
+ * (4), which live inside the strips and would otherwise show through; below
+ * the staff panel (50). The toolbar's other controls stand down while the
+ * explorer is up — visibility, not display, so the toolbar keeps its height
+ * and the overlay's top edge does not move.
+ * =========================================================================== */
+.view-switch {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+.view-btn {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-body);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.view-btn.is-on {
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-on-accent);
+}
+.vp[data-view]:not([data-view="listen"]) .audience-switch,
+.vp[data-view]:not([data-view="listen"]) .zoom-ctl { visibility: hidden; }
+
+/* The way back, inside every explorer (plan §11(f)): the band is the way in
+ * and the toolbar switch only the fallback, so the overlay itself must be
+ * leavable. Top-right corner of the overlay, 44 px like every control here;
+ * the explorers' headings leave it room. */
+.view-close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 1;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-soft);
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.view-close:focus-visible { outline: 2px solid var(--ex-accent-border); outline-offset: 2px; }
+
+.vp-view {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 8px;
+  top: var(--vp-view-top, 68px);
+  z-index: 5;
+  background: var(--ex-bg);
+  color: var(--ex-text);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "heading heading"
+    "grid    detail"
+    "about   about";
+  column-gap: 22px;
+  row-gap: 6px;
+  overflow: hidden;   /* the kiosk rule: nothing scrolls; spec 45 measures the fit */
+}
+.yv-heading {
+  grid-area: heading;
+  margin: 0;
+  padding-right: 56px;   /* the close control's corner */
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ex-text-soft);
+}
+.yv-unavailable {
+  grid-area: heading / heading / detail / detail;
+  align-self: center;
+  justify-self: center;
+  color: var(--ex-text-dim);
+}
+.yv-about {
+  grid-area: about;
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--ex-text-dim);
+}
+
+/* The grid: decade rows, last-digit columns. 40px cells at a 4px gap keep ten
+ * of them plus the decade label inside ~470px, and nine rows inside ~400px —
+ * the finger target is the whole cell. */
+.yv-grid {
+  grid-area: grid;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: start;
+}
+.yv-row { display: flex; gap: 4px; align-items: center; }
+.yv-decade {
+  width: 42px;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ex-text-dim);
+  text-align: right;
+  padding-right: 4px;
+}
+.yv-cell {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--ex-border);
+  border-radius: 8px;
+  background: var(--ex-surface);
+  color: var(--ex-text-body);
+  font: inherit;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  position: relative;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.yv-cell-blank { border-color: transparent; background: none; cursor: default; }
+.yv-cell[data-state="gap"] { color: var(--ex-text-faint); border-style: dashed; background: none; }
+/* The two cell marks — a filled dot for a concert the exhibit can PLAY, a
+ * hairline underline for a concert whose programme carried the current piece.
+ * Language-free, like everything on the band. */
+.yv-cell[data-programme="1"]::after {
+  content: "";
+  position: absolute;
+  left: 9px; right: 9px; bottom: 5px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ex-text-dim);
+}
+.yv-cell[data-playable="1"]::before {
+  content: "";
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--ex-mark);
+}
+.yv-cell.is-selected {
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-on-accent);
+}
+.yv-cell.is-selected::after { background: var(--ex-on-accent); }
+
+/* The card. */
+.yv-detail {
+  grid-area: detail;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+}
+.yv-head { display: flex; align-items: baseline; gap: 14px; }
+.yv-year { margin: 0; font-size: 1.6rem; font-weight: 600; line-height: 1.1; }
+.yv-date { color: var(--ex-text-soft); font-size: 0.9rem; }
+.yv-note { margin: 0; color: var(--ex-text-dim); font-size: 0.85rem; }
+.yv-conductor {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+  align-items: center;
+}
+.yv-medallion {
+  grid-row: 1 / 3;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--ex-band-card, var(--ex-surface));
+  color: var(--ex-text-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.yv-portrait { width: 100%; height: 100%; object-fit: cover; display: block; }
+.yv-conductor-name { font-size: 1.1rem; font-weight: 600; }
+.yv-with { font-size: 0.78rem; color: var(--ex-text-soft); }
+.yv-programme-head {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ex-text-dim);
+}
+.yv-programme {
+  margin: 0;
+  padding: 0 0 0 1.6em;
+  columns: 2;
+  column-gap: 18px;
+  font-size: 0.78rem;
+  line-height: 1.3;
+  color: var(--ex-text-body);
+  min-height: 0;
+  overflow: hidden;
+}
+/* The two denser steps years-view.js's fitProgramme walks when the list would
+ * otherwise spill a third column off the right edge. */
+.yv-programme.is-dense  { font-size: 0.72rem; line-height: 1.22; }
+.yv-programme.is-denser { font-size: 0.66rem; line-height: 1.16; }
+.yv-item { break-inside: avoid; padding-right: 1em; position: relative; }
+.yv-item-composer { color: var(--ex-text-soft); }
+.yv-item-composer::after { content: ": "; }
+/* The source marks (years.legend*): one archive lists it, the other does not. */
+.yv-item[data-source="philharmoniker"]::after,
+.yv-item[data-source="musikverein"]::after {
+  position: absolute;
+  right: 0;
+  top: 0.1em;
+  font-size: 0.85em;
+  color: var(--ex-text-soft);
+}
+.yv-item[data-source="philharmoniker"]::after { content: "◆"; }
+.yv-item[data-source="musikverein"]::after { content: "◇"; }
+.yv-programme-empty, .yv-caveat, .yv-legend {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--ex-text-dim);
+}
+.yv-foot {
+  margin-top: auto;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+}
+/* One row: the collection line yields to the button and ellipsises, so the
+ * foot costs the programme a single line whatever the release title's length. */
+.yv-library, .yv-on-programme {
+  margin: 0;
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.78rem;
+  color: var(--ex-text-soft);
+}
+.yv-listen { flex: 0 0 auto; }
+.yv-listen, .cv-listen {
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--ex-accent-border);
+  border-radius: 22px;
+  background: var(--ex-accent);
+  color: var(--ex-on-accent);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* ===========================================================================
+ * The by-conductor explorer (conductors-view.js; plan §11(f)). Same overlay
+ * shell as the by-year view — heading, two panes, the disclosure sentence at
+ * the foot — with a roster where the year grid was.
+ * =========================================================================== */
+.vp-view[data-view="conductors"] {
+  grid-template-columns: minmax(0, 11fr) minmax(0, 9fr);
+  grid-template-areas:
+    "heading heading"
+    "roster  detail"
+    "about   about";
+}
+.cv-heading {
+  grid-area: heading;
+  margin: 0;
+  padding-right: 56px;   /* the close control's corner */
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--ex-text-soft);
+}
+.cv-unavailable {
+  grid-area: heading / heading / detail / detail;
+  align-self: center;
+  justify-self: center;
+  color: var(--ex-text-dim);
+}
+.cv-about {
+  grid-area: about;
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--ex-text-dim);
+}
+
+/* The roster: two columns filled down then across, so the series' history
+ * reads down the left and continues down the right. `--cv-rows` is ceil(n / 2),
+ * set by the view; the rows share the height equally, and the two dense steps
+ * are fitRoster's fallback for a series that has outgrown it. */
+.cv-roster {
+  grid-area: roster;
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(var(--cv-rows, 9), minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 12px;
+  row-gap: 2px;
+  min-height: 0;
+  overflow: hidden;
+}
+.cv-entry {
+  position: relative;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
+  column-gap: 10px;
+  align-items: center;
+  min-height: 40px;
+  padding: 2px 10px 2px 4px;
+  border: 1px solid transparent;
+  border-radius: 24px;
+  background: none;
+  color: var(--ex-text-body);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.cv-entry.is-selected {
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-on-accent);
+}
+.cv-entry:focus-visible { outline: 2px solid var(--ex-accent-border); outline-offset: 2px; }
+.cv-entry-medallion {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--ex-band-card, var(--ex-surface));
+  color: var(--ex-text-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.cv-entry-medallion[data-portrait="1"] { background: transparent; }
+.cv-entry-portrait, .cv-portrait { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* The year grid's dot: a conductor the exhibit can play, at the medallion's
+ * upper right. */
+.cv-entry[data-playable="1"]::after {
+  content: "";
+  position: absolute;
+  left: 32px;
+  top: 50%;
+  margin-top: -19px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ex-mark);
+}
+.cv-entry-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
+.cv-entry-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cv-entry-years {
+  font-size: 0.72rem;
+  color: var(--ex-text-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cv-entry.is-selected .cv-entry-years { color: inherit; }
+.cv-entry-count {
+  min-width: 26px;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid var(--ex-border);
+  border-radius: 11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ex-text-soft);
+}
+.cv-entry.is-selected .cv-entry-count { border-color: var(--ex-on-accent); color: inherit; }
+.cv-roster.is-dense .cv-entry { min-height: 34px; padding-top: 0; padding-bottom: 0; grid-template-columns: 30px minmax(0, 1fr) auto; }
+.cv-roster.is-dense .cv-entry-medallion { width: 30px; height: 30px; }
+.cv-roster.is-dense .cv-entry[data-playable="1"]::after { left: 26px; margin-top: -16px; }
+.cv-roster.is-denser .cv-entry-name { font-size: 0.8rem; }
+.cv-roster.is-denser .cv-entry-years { display: none; }
+
+/* The card. */
+.cv-detail {
+  grid-area: detail;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+.cv-head {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  column-gap: 16px;
+  align-items: center;
+}
+/* The portrait LARGE (plan §11(d)): the mark is in the asset, so the surface
+ * adds nothing. 150 px of a 340 px medallion. */
+.cv-medallion-large {
+  width: 150px;
+  height: 150px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--ex-band-card, var(--ex-surface));
+  color: var(--ex-text-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2rem;
+  font-weight: 600;
+}
+.cv-medallion-large[data-portrait="1"] { background: transparent; }
+.cv-name { margin: 0; font-size: 1.5rem; font-weight: 600; line-height: 1.1; }
+.cv-summary { margin: 4px 0 0; color: var(--ex-text-soft); font-size: 0.9rem; }
+.cv-role { margin: 2px 0 0; font-size: 0.78rem; font-style: italic; color: var(--ex-text-dim); }
+/* Their years, one small cell each, carrying the year grid's two marks (a dot:
+ * the exhibit plays that concert's recording; a hairline: the current piece
+ * was on the programme). Marks, NOT buttons — facets as navigation inside an
+ * explorer is the upright fallback (plan §11(f)); the band is the way in. */
+.cv-years { display: flex; flex-wrap: wrap; gap: 4px; }
+.cv-year {
+  position: relative;
+  width: 44px;
+  height: 30px;
+  border: 1px solid var(--ex-border);
+  border-radius: 6px;
+  background: var(--ex-surface);
+  color: var(--ex-text-body);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cv-year[data-programme="1"]::after {
+  content: "";
+  position: absolute;
+  left: 10px; right: 10px; bottom: 3px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--ex-text-dim);
+}
+.cv-year[data-playable="1"]::before {
+  content: "";
+  position: absolute;
+  top: 3px; right: 3px;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--ex-mark);
+}
+/* Every sitting the exhibit has a face for, when there is more than one — the
+ * per-recording naming showing (plan §11(d)), not a duplicate to tidy. */
+.cv-sittings { display: flex; flex-wrap: wrap; gap: 10px; }
+.cv-sitting {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  font-size: 0.72rem;
+  color: var(--ex-text-soft);
+}
+.cv-sitting img { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; display: block; }
+.cv-foot { margin-top: auto; display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* ===========================================================================
+ * The band's tappable facts (?bandTap; plan §11(f); middle-band.js).
+ *
+ * Mirrored only — config.js resolves every other orientation to "off", so
+ * these rules never fire on a band that cannot attribute a tap. The band's
+ * no-labels rule holds: every cue below is wordless. Five candidates for the
+ * user testing, none ruled; "plain" is the discoverability baseline (tappable
+ * and unmarked). The text facts share `--tap-base`, the colour a cue starts
+ * from, because the name and the year are set in different tones.
+ * =========================================================================== */
+.middle-band[data-tap] .is-tappable { cursor: pointer; }
+.middle-band[data-tap] .is-tappable:focus-visible {
+  outline: 2px solid var(--ex-accent-border);
+  outline-offset: 2px;
+}
+.middle-band .mb-conductor { --tap-base: var(--ex-band-text); }
+.middle-band .mb-year { --tap-base: var(--ex-band-text-soft); }
+
+/* chip: a soft outline hugging the fact, the portrait ringed — the toolbar
+ * chips' vocabulary, so "outlined = tappable" is one rule for the whole
+ * table. Negative horizontal margins keep the text exactly where it was. */
+.middle-band[data-tap="chip"] .mb-conductor.is-tappable,
+.middle-band[data-tap="chip"] .mb-year.is-tappable {
+  border: 1px solid var(--ex-band-border);
+  border-radius: 999px;
+  padding: 1px 10px;
+  margin: 0 -11px;
+}
+.middle-band[data-tap="chip"] .mb-portrait.is-tappable {
+  outline: 1px solid var(--ex-band-border);
+  outline-offset: 3px;
+}
+
+/* underline: a hairline, offset so it never reads as part of the type. */
+.middle-band[data-tap="underline"] .mb-conductor.is-tappable,
+.middle-band[data-tap="underline"] .mb-year.is-tappable {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.3em;
+  text-decoration-color: var(--ex-band-text-soft);
+}
+
+/* glyph: a small chevron after the fact — "this leads on". */
+.middle-band[data-tap="glyph"] .mb-conductor.is-tappable::after,
+.middle-band[data-tap="glyph"] .mb-year.is-tappable::after {
+  content: "\00a0\203A";
+  color: var(--ex-band-text-soft);
+  font-weight: 400;
+}
+
+/* shimmer: a slow sheen travelling across the name and the year, and a slow
+ * light round the portrait's rim. The text keeps its own colour outside the
+ * sheen — the gradient's ends ARE --tap-base — so only the highlight moves. */
+.middle-band[data-tap="shimmer"] .mb-conductor.is-tappable,
+.middle-band[data-tap="shimmer"] .mb-year.is-tappable {
+  background-image: linear-gradient(
+    100deg,
+    var(--tap-base) 42%,
+    color-mix(in srgb, var(--tap-base) 40%, white) 50%,
+    var(--tap-base) 58%
+  );
+  background-size: 300% 100%;
+  background-repeat: no-repeat;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: band-sheen 5s ease-in-out infinite;
+}
+@keyframes band-sheen {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+.middle-band[data-tap="shimmer"] .mb-portrait.is-tappable { position: relative; }
+.middle-band[data-tap="shimmer"] .mb-portrait.is-tappable::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0 68%,
+    color-mix(in srgb, var(--ex-band-text) 60%, white) 84%,
+    transparent 100%
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2px));
+  animation: band-sheen-ring 6s linear infinite;
+  pointer-events: none;
+}
+@keyframes band-sheen-ring { to { transform: rotate(360deg); } }
+/* Reduced motion gets the underline instead: the cue still exists, nothing moves. */
+@media (prefers-reduced-motion: reduce) {
+  .middle-band[data-tap="shimmer"] .mb-conductor.is-tappable,
+  .middle-band[data-tap="shimmer"] .mb-year.is-tappable {
+    animation: none;
+    background-image: none;
+    color: var(--tap-base);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.3em;
+    text-decoration-color: var(--ex-band-text-soft);
+  }
+  .middle-band[data-tap="shimmer"] .mb-portrait.is-tappable::after { content: none; }
+}

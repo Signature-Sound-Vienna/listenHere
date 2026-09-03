@@ -22,6 +22,14 @@ half met:
      to remember it — see **THE AI MARK** in that file for why it looks the way
      it does. It needs no text, so the band's no-labels rule (plan §6.3 — a
      caption would have to pick one of two readers' languages) survives.
+   - **UPDATE 0.50.0 (2026-09-02): the sentence ships at the foot of the by-year
+     explorer (`years-view.js`, string `about.portraitsAi`), which exists only where
+     `?viewSwitch` is configured — so the kiosk URL must carry it (plan §11(e)).**
+   - **UPDATE 0.52.0 (2026-09-02): the by-conductor explorer (`conductors-view.js`)
+     shows a portrait LARGE and carries the same sentence at its foot. The explorers
+     are now also reachable from the mirrored band (`?bandTap=…`, plan §11(f)), so the
+     kiosk URL may carry that instead of `?viewSwitch=1`.**
+     The earlier note, kept for the record:
    - **The prose is NOT done, and it is still release-blocking.** A spark is
      recognisable, not self-explanatory: a visitor who has never seen it cannot
      know what it claims. One plain sentence saying the portraits are

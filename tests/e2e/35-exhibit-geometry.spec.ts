@@ -775,12 +775,22 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       })
       .toBe(true);
     await expect(page.locator('.mb-play')).toHaveText('❚❚');
-    // Both readouts advance together off the shared clock.
+    // Both readouts advance together off the shared clock. Polled as a
+    // PROPERTY — advanced off 0:00, and equal to each other — rather than for
+    // the exact second: under a loaded machine (a full two-browser run beside
+    // another tree's suite, 2026-09-02) the clock had reached 0:05 before the
+    // first sample, so an `['0:01', '0:01']` expectation could never come
+    // true and the poll timed out with the readouts perfectly in step.
     await expect
-      .poll(() =>
-        page.evaluate(() => [...document.querySelectorAll('.mb-time')].map((t: any) => t.textContent)),
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const texts = [...document.querySelectorAll('.mb-time')].map((t: any) => t.textContent);
+            return { texts, advanced: texts[0] !== '0:00', inStep: texts[0] === texts[1] };
+          }),
+        { message: 'the two time readouts did not advance together off the shared clock' },
       )
-      .toEqual(['0:01', '0:01']);
+      .toMatchObject({ advanced: true, inStep: true });
 
     await page.click('.mb-play');
     await expect

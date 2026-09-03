@@ -18,7 +18,9 @@
 // tests/e2e/33-exhibit-boundary.spec.ts, ratcheted at zero. Anything the engine
 // will not give us gets copied WITH A ROW IN ENGINE-WANTS.md.
 
-import { readConfig, rotationFor, bandOrientationFor, DEFAULTS } from "./config.js";
+import {
+  readConfig, rotationFor, bandOrientationFor, bandTapFor, viewsEnabled, DEFAULTS,
+} from "./config.js";
 import { resolveText, setDebug, t } from "./strings.js";
 import {
   getClosestAlignmentIx,
@@ -31,13 +33,14 @@ import { createStrap } from "./strap.js";
 import { createMarkerLayer } from "./marker.js";
 import { syncRegions } from "./regions.js";
 import { Transport } from "./audio.js";
-import { TurnTaking } from "./turns.js";
+import { TurnTaking, bandTapViewport } from "./turns.js";
 import { createArbiter } from "./arbiter.js";
 import { AudienceStore, buildAudienceSwitch } from "./audience.js";
 import { createViewportZoom } from "./zoom.js";
 import { applyTheme, annotationSeries, recolorAnnotations } from "./themes.js";
 import { createMiddleBand } from "./middle-band.js";
 import { createAnnotationList, groupForFileIn, hasGroupStory } from "./annotation-list.js";
+import { loadConcerts } from "./concerts.js";
 
 const config = readConfig();
 setDebug(config.debug);
@@ -57,6 +60,9 @@ const data = {
   // the first (renderAnnotations). Same holder idiom as the payload above,
   // rather than threading the transport through every render signature.
   transport: null,
+  // The turn machine, for the same reason: the by-year explorer's "listen"
+  // tap is a bare recording switch made from a module-level view.
+  turns: null,
 };
 
 /** The recording the shared clock is on, or null before the first selection. */
@@ -339,9 +345,181 @@ function buildScreen(root) {
       focusPinned: false,
       followLast: null,
       panelOpen: false,
+      // ?views / ?viewSwitch / ?bandTap (plan §11): which view this half
+      // shows, the toolbar switch that changes it (the fallback entry), and
+      // the explorers once built, by name — kept across switches so a
+      // re-entry costs no rebuild.
+      view: "listen",
+      viewSwitchEl: null,
+      views: {},
     });
   }
   return { viewports, bands };
+}
+
+// ---------------------------------------------------------------------------
+// Views (plan §11). "listen" is the shipped interface; "years" and "conductors"
+// draw an explorer OVER this viewport's strips and commentary (years-view.js
+// says why over rather than instead). Per viewport and in-session: one half
+// explores while the other keeps listening, and nothing reloads (user ruling
+// 2026-09-02). The modules and the sidecar are fetched only when an entry is
+// configured — the toolbar switch, or the band's tappable facts — so the
+// default kiosk stays byte-identical on the wire.
+//
+// TWO WAYS IN, ONE WAY BACK (plan §11(f), ruled 2026-09-02). The ruled entry is
+// the MIRRORED BAND: tap the year, tap the conductor, and the tapping reader's
+// half opens the matching explorer on that fact — "current" is the audible
+// recording's, which is what the band shows. The toolbar switch of 0.50.0
+// stays as the debug and fallback entry (`?viewSwitch=1`). The way back is
+// INSIDE the overlay: a close control this file adds to every explorer (the
+// side panel's × precedent), so an explorer opened from the band can always be
+// left, switch or no switch.
+// ---------------------------------------------------------------------------
+const VIEWS = ["listen", "years", "conductors"];
+let viewModules = null;   // { years, conductors }: Promise<module> each, once an entry is configured
+let concertsData;         // Promise<Concerts|null> once asked; undefined = never asked
+let concertsResolved;     // the settled value of the above; undefined until it lands
+let bandHandle = null;    // the middle band, once built (its facts re-ask when the sidecar lands)
+
+/**
+ * The series' conductor of a payload recording, or null when the series does
+ * not know them — the payload's own name, checked against the sidecar's index
+ * (the two archives spell every conductor the way the payload does today; a
+ * spelling the series lacks simply makes the fact not tappable, never wrong).
+ */
+function concertConductorOf(file) {
+  const name = file && data.exhibit ? metadataFor(data.exhibit, file).conductor : "";
+  return name && concertsResolved?.byConductor.has(name) ? name : null;
+}
+
+function positionView(vp) {
+  // The overlay starts where the toolbar ends. Layout values, not painted
+  // ones: the far half is rotated 180°, and offsetTop/offsetHeight do not
+  // know that, which is exactly what makes them right here.
+  const bar = vp.el.querySelector(".vp-toolbar");
+  if (!bar) return;
+  vp.el.style.setProperty("--vp-view-top", `${bar.offsetTop + bar.offsetHeight + 4}px`);
+}
+
+function paintViewSwitch(vp) {
+  if (!vp.viewSwitchEl) return;
+  for (const b of vp.viewSwitchEl.querySelectorAll(".view-btn")) {
+    const on = b.dataset.view === vp.view;
+    b.classList.toggle("is-on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
+function buildViewSwitch(vp) {
+  const bar = document.createElement("div");
+  bar.className = "view-switch";
+  bar.dataset.viewport = String(vp.index);
+  for (const name of VIEWS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "view-btn";
+    b.dataset.view = name;
+    b.textContent = t("view." + name, vp.language);
+    b.addEventListener("click", () => setView(vp, name));
+    bar.appendChild(b);
+  }
+  vp.viewSwitchEl = bar;
+  paintViewSwitch(vp);
+  return bar;
+}
+
+/**
+ * Where an explorer opens: the fact the visitor tapped when there is one
+ * (`opening.year` / `opening.conductor`, from the band), else what the audible
+ * recording says — the band's own reading of "current" (§11(f)). Null leaves
+ * the view its own resting choice.
+ */
+function openingFor(name, opening) {
+  const file = data.transport?.activeFile;
+  if (name === "years") return opening.year ?? concertsResolved?.yearOf(file) ?? null;
+  if (name === "conductors") return opening.conductor ?? concertConductorOf(file);
+  return null;
+}
+
+/** Build an explorer for `vp`, with the close control that is its way back. */
+function buildView(name, m, vp, concerts, opening) {
+  const exhibit = data.exhibit;
+  const common = {
+    viewport: vp.index,
+    language: vp.language,
+    concerts,
+    piece: exhibit.piece,
+    portraitUrl: (path) => portraitUrl({ portrait: path }),
+    // The way from a concert into its music: the BARE aligned switch a strip
+    // tap makes (turns.request with no time — a standing marker catches it,
+    // per the marker ruling), then back to the listening view so the reader
+    // sees the recording they asked for.
+    onListen: (file) => {
+      if (vp.bareSwitch) vp.bareSwitch(file);
+      else data.turns?.request(vp.index, file, undefined);
+      setView(vp, "listen");
+    },
+  };
+  const at = openingFor(name, opening);
+  const handle =
+    name === "years"
+      ? m.createYearsView({ ...common, initialYear: at })
+      : m.createConductorsView({ ...common, initialConductor: at });
+  // The way back, inside the overlay (plan §11(f)): the band is the way in and
+  // the toolbar switch only the fallback, so the overlay itself must be
+  // leavable. An × like the side panel's, in the overlay's top-right corner.
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "view-close";
+  close.textContent = "×";
+  close.setAttribute("aria-label", t("view.close", vp.language));
+  close.addEventListener("click", () => setView(vp, "listen"));
+  handle.el.appendChild(close);
+  return handle;
+}
+
+/**
+ * Switch one viewport's view, optionally onto a fact (`opening.year` /
+ * `opening.conductor` — a band tap). Async only because the explorers' modules
+ * and data load lazily; the switch paints at once, the overlay lands when
+ * ready. Asking for the view already up is not a no-op when a fact comes with
+ * it: the explorer moves to that fact, which is what a second band tap means.
+ */
+async function setView(vp, name, opening = {}) {
+  if (!VIEWS.includes(name)) {
+    console.warn(`exhibit: unknown view "${name}" — ignored`);
+    return;
+  }
+  if (name !== "listen" && !viewModules) {
+    console.warn(`exhibit: view "${name}" asked for with no entry configured — ignored`);
+    return;
+  }
+  if (vp.view === name) {
+    if (name !== "listen" && vp.views[name]) {
+      const at = openingFor(name, opening);
+      if (at != null) vp.views[name].select(at);
+    }
+    return;
+  }
+  const leaving = vp.view;
+  vp.view = name;
+  vp.el.dataset.view = name;
+  paintViewSwitch(vp);
+  vp.views[leaving]?.el.remove();
+  if (name === "listen") return;
+  let handle = vp.views[name];
+  if (!handle) {
+    const [m, concerts] = await Promise.all([viewModules[name], concertsData]);
+    if (vp.view !== name) return; // switched away while loading
+    handle = vp.views[name] = buildView(name, m, vp, concerts, opening);
+  } else {
+    // Re-entering: onto the tapped fact, else the audible recording's.
+    const at = openingFor(name, opening);
+    if (at != null) handle.select(at);
+  }
+  positionView(vp);
+  vp.el.appendChild(handle.el);
+  handle.refit?.();
 }
 
 const root = document.getElementById("screen");
@@ -388,6 +566,13 @@ window._exhibitTest = {
   annotationPalette,
   projectPlayhead,
   positionsFor,
+  // Views (plan §11): which view each half shows, a programmatic switch (the
+  // readingClock.advance precedent — the semantic path without the tap), and
+  // the explorer's own state.
+  view: (i) => viewports[i]?.view ?? null,
+  setView: (i, name, opening) => setView(viewports[i], name, opening),
+  yearsView: (i) => viewports[i]?.views.years?.state() ?? null,
+  conductorsView: (i) => viewports[i]?.views.conductors?.state() ?? null,
   ready: new Promise((resolve) => {
     _signalReady = resolve;
   }),
@@ -418,6 +603,26 @@ async function boot() {
   data.alignment = exhibit.payload;
   data.grids = exhibit.grids;
   window._exhibitTest.exhibit = exhibit;
+
+  // The explorers' modules and the concerts sidecar, started now so the first
+  // tap is instant — but only when an entry is configured (the toolbar switch
+  // or the band's tappable facts): the shipped kiosk never fetches any of it.
+  if (viewsEnabled(config)) {
+    viewModules = {
+      years: import("./years-view.js"),
+      conductors: import("./conductors-view.js"),
+    };
+    concertsData = loadConcerts({ debug: config.debug });
+    concertsData.then((c) => {
+      concertsResolved = c;
+      window._exhibitTest.concerts = c;
+      // The band's facts could not lead anywhere until now.
+      bandHandle?.refresh();
+    });
+    window.addEventListener("resize", () => {
+      for (const vp of viewports) if (vp.view !== "listen") positionView(vp);
+    });
+  }
 
   const store = new AudienceStore(
     Array.from({ length: config.viewports }, (_, i) =>
@@ -482,6 +687,7 @@ async function boot() {
     grantMs: config.turnGrantMs,
   });
   window._exhibitTest.turns = turns;
+  data.turns = turns;
   // The resolved configuration, so a spec can assert against the value in
   // force rather than restating it — the same discipline as reading the shown
   // set from the payload instead of hardcoding eight (the 34.13/38.4 lesson).
@@ -506,11 +712,12 @@ async function boot() {
   // The middle band, once the sidecar is known. Shared per screen: there is one
   // audible recording, so there is one thing for it to say. The piece title's
   // language follows viewport 0 — see the documented tension in middle-band.js.
+  const bandOrientation = bandOrientationFor(config);
   const band = createMiddleBand(exhibit, {
     language: config.languages[0],
     // The RESOLVED orientation, the same one buildScreen reserved height for
     // (config.js bandOrientationFor) — a single viewport cannot mirror or flip.
-    orientation: bandOrientationFor(config),
+    orientation: bandOrientation,
     // A turn mark needs somebody to take a turn FROM: with one viewport the
     // holder is always the only reader, so the mark would be decoration that
     // never changes. Suppressed there rather than painted permanently.
@@ -520,8 +727,35 @@ async function boot() {
     // first tap of a session, before anything is active — the same resting
     // recording preselect names below.
     onToggle: () => transport.toggle(exhibit.piece.ref || exhibit.order[0]),
+    // THE BAND AS THE INTERFACE (?bandTap; plan §11(f)). Resolved by config.js
+    // to "off" unless the band is mirrored, because only mirrored copies can
+    // say who tapped (turns.js bandTapViewport). A fact is tappable only
+    // where the series can follow it: the year when the audible recording IS
+    // that year's concert (a 1950 studio session is not one; nor is another
+    // orchestra's 2010), the conductor when the series knows them — so a tap
+    // never opens a card about something the visitor is not hearing.
+    tap: bandTapFor(config),
+    tappable: (fact, meta, file) => {
+      const c = concertsResolved;
+      if (!c) return false;
+      if (fact === "year") return c.yearOf(file) != null;
+      if (fact === "conductor") return Boolean(meta.conductor) && c.byConductor.has(meta.conductor);
+      return false;
+    },
+    // Opens the TAPPING reader's half on the fact. The clock is untouched: a
+    // view is per-viewport state, so this is not a turn (turns.js).
+    onFact: (cluster, fact, meta, file) => {
+      const ix = bandTapViewport(bandOrientation, cluster);
+      const vp = ix == null ? null : viewports[ix];
+      if (!vp || !concertsResolved) return;
+      if (fact === "year") setView(vp, "years", { year: concertsResolved.yearOf(file) });
+      else if (fact === "conductor") setView(vp, "conductors", { conductor: meta.conductor });
+    },
   });
   for (const slot of bands) slot.replaceWith(band.el);
+  bandHandle = band;
+  // The sidecar may have landed before the band existed: ask its facts again.
+  if (concertsResolved !== undefined) band.refresh();
   window._exhibitTest.band = band;
   window._exhibitTest.marker = (i) => viewports[i]?.marker?.state() ?? null;
   // Programmatic placement for the specs (the readingClock.advance precedent):
@@ -764,7 +998,17 @@ async function boot() {
     // The buttons are optional (config.zoomControls); the controller above is
     // not — scroll sync and the setLevel API work with or without them.
     if (config.zoomControls) toolbar.append(vp.zoom.el);
+    // The view switch (plan §11), first on the bar: it changes what the whole
+    // half shows, so it reads before the controls that belong to one view.
+    if (config.viewSwitch) toolbar.prepend(buildViewSwitch(vp));
     vp.el.insertBefore(toolbar, vp.stripsEl);
+    // The BARE recording switch, as one per-viewport function so a view built
+    // outside this scope (the by-year explorer) makes exactly the switch a
+    // strip tap or strap pick makes: a standing marker catches it
+    // (markerSnapSwitch, the marker ruling); otherwise the aligned carry
+    // through the turn machine, with no time.
+    vp.bareSwitch = (file) =>
+      vp.markerIx != null ? markerSnapSwitch(vp, file) : turns.request(vp.index, file, undefined);
 
     vp.annList = createAnnotationList({
       viewport: vp.index,
@@ -889,6 +1133,11 @@ async function boot() {
       vp.sideSlotEl.append(close, SIDE_TENANTS[config.sideSlot](vp));
     }
     vp.statusEl.textContent = "";
+    // ?views=years,listen — this half starts in the explorer. Not awaited: the
+    // overlay lands when its module and sidecar arrive; the strips beneath
+    // finish booting regardless.
+    const startView = config.views[vp.index] ?? config.views[0];
+    if (startView && startView !== "listen") setView(vp, startView);
   }
 
   // Every renderer has to know its own duration before a single region is added:

@@ -1,0 +1,18 @@
+{
+  "_README": [
+    "Authored rulings for the New Year's Concert sidecar. AUTHORITY: applied LAST by",
+    "tools/prep_exhibit_concerts.py, never rewritten by it. COMMITTED, unlike the",
+    "generated concerts.json.",
+    "",
+    "Two uses: (1) rule on a programme-contradiction the tool reported (the two",
+    "archives disagree; see the report), (2) supply a concert the archives predate",
+    "(2024 onwards). Every entry needs `_disposition` ('editorial' — a ruling; or",
+    "'until-upstream-fixed' — an archive error), a `source` naming where the fact",
+    "was checked, and `\"verified\": true` once a person has checked it. UNVERIFIED",
+    "ENTRIES ARE NOT APPLIED: the tool names them on every run instead.",
+    "",
+    "Fields patch the year's entry as generated: `conductor`, `date`, `title`,",
+    "`programme` (the whole list), `note`."
+  ],
+  "years": {}
+}

@@ -185,6 +185,53 @@ const DEFAULTS = {
   // why this is a switch option and not a change to the filter's meaning.
   audienceAll: false,
 
+  // --- views (plan §11; years-view.js, conductors-view.js) ---
+  // Which VIEW each viewport starts in, per viewport like `audiences`:
+  //   "listen"     — the listening interface, the shipped exhibit.
+  //   "years"      — the by-year explorer of the whole New Year's Concert
+  //                  series, drawn OVER this viewport's strips and commentary
+  //                  while the other half keeps listening; the band and the
+  //                  clock are untouched. Views are switched in-session, per
+  //                  viewport, with nothing reloaded (user ruling 2026-09-02).
+  //   "conductors" — the by-conductor explorer of the same series: every
+  //                  conductor, their years, and the portrait large where the
+  //                  exhibit has one (the AI mark is in the asset).
+  views: ["listen", "listen"],
+  // Whether each viewport's toolbar offers the switch between them. OFF by
+  // default so the shipped exhibit stays byte-identical — on the wire too: the
+  // concerts sidecar (~0.5 MB) and the views' modules are fetched only when an
+  // entry is configured (this switch, or `bandTap` below). Forced on when
+  // `views` starts any viewport outside the listening view, because a view you
+  // cannot leave is a trap. Since 0.52.0 this is the DEBUG / FALLBACK entry:
+  // the ruled entry is the band (plan §11(f)), and every overlay carries its
+  // own close control, so the switch is no longer the only way back.
+  viewSwitch: false,
+  // THE BAND IS THE INTERFACE (plan §11(f), ruled 2026-09-02, conditional on
+  // the MIRRORED orientation): the facts the band shows are the way into the
+  // views — tap the year for the by-year explorer with that concert open, tap
+  // the conductor (name or portrait) for the by-conductor explorer with them
+  // open. Only mirrored copies can say WHICH reader tapped (each cluster is one
+  // viewport's copy, by construction — turns.js bandTapViewport), so under any
+  // other orientation this resolves to "off" with a warning and the toolbar
+  // switch stays the entry. A fact leads only where the series can follow: the
+  // year is tappable when the audible recording IS that year's concert, the
+  // conductor when the series knows them; the shared play control is never a
+  // fact and takes no turn in any orientation.
+  //
+  // The value is the WORDLESS AFFORDANCE the tappable facts wear — the band's
+  // no-labels rule (§6.3) holds, so tappability has to be seen, not read, and
+  // which cue works on a museum table is an A/B question, not a taste call:
+  //   "off"       — the shipped band; nothing tappable, nothing fetched.
+  //   "plain"     — tappable, no visual cue: the discoverability baseline.
+  //   "chip"      — each tappable fact softly outlined, the portrait ringed,
+  //                 like the other tappables on the table.
+  //   "underline" — a hairline under the name and the year.
+  //   "glyph"     — a small chevron after the name and the year.
+  //   "shimmer"   — a slow sheen across the name and the year, and a slow
+  //                 light travelling round the portrait's rim; reduced motion
+  //                 gets the underline instead.
+  bandTap: "off",
+
   // --- appearance ---
   // Palette preset (exhibit/themes.js): "dark" is the shipped look; the others
   // are study-panel discussion placeholders, not candidate finals.
@@ -421,6 +468,8 @@ export function readConfig(search = typeof location === "undefined" ? "" : locat
   // A viewport count the other per-viewport arrays cannot cover is a config bug
   // that would otherwise surface as an undefined rotation halfway through layout.
   out.viewports = Math.max(1, Math.round(out.viewports));
+  // A viewport that starts in another view needs the switch to get back.
+  if (out.views.some((v) => v !== "listen")) out.viewSwitch = true;
   return out;
 }
 
@@ -468,6 +517,51 @@ export function bandOrientationFor(config) {
     );
   }
   return "upright";
+}
+
+/** The affordance variants `bandTap` accepts; "off" is the shipped band. */
+export const BAND_TAPS = ["off", "plain", "chip", "underline", "glyph", "shimmer"];
+
+const _warnedTap = new WeakSet();
+
+/**
+ * The band-tap affordance actually in force, which is not always the
+ * configured one: the facts are tappable only where a tap can be attributed to
+ * a reader, and only the mirrored band can do that (each cluster is one
+ * viewport's copy). Anything else — upright, rotated, flip, or a single
+ * viewport that demoted mirrored to upright — resolves to "off" and says so
+ * once, so the toolbar switch (`viewSwitch`) stays the way in. An unknown value
+ * also resolves to "off" rather than leaving the facts tappable but unmarked.
+ */
+export function bandTapFor(config) {
+  const want = config.bandTap;
+  if (!want || want === "off") return "off";
+  const warn = (msg) => {
+    if (_warnedTap.has(config)) return;
+    _warnedTap.add(config);
+    console.warn(msg);
+  };
+  if (!BAND_TAPS.includes(want)) {
+    warn(`exhibit: unknown bandTap "${want}" — using "off"`);
+    return "off";
+  }
+  if (bandOrientationFor(config) !== "mirrored") {
+    warn(
+      `exhibit: bandTap "${want}" needs bandOrientation=mirrored (only mirrored copies ` +
+        `attribute a band tap to a reader) — using "off"; ?viewSwitch=1 is the way in`,
+    );
+    return "off";
+  }
+  return want;
+}
+
+/**
+ * Whether the views exist on this screen at all — i.e. whether the modules and
+ * the concerts sidecar are fetched. Either entry brings them in; neither means
+ * the shipped kiosk, byte-identical on the wire.
+ */
+export function viewsEnabled(config) {
+  return Boolean(config.viewSwitch) || bandTapFor(config) !== "off";
 }
 
 export { DEFAULTS };

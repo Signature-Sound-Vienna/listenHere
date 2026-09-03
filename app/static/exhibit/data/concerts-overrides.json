@@ -12,7 +12,100 @@
     "ENTRIES ARE NOT APPLIED: the tool names them on every run instead.",
     "",
     "Fields patch the year's entry as generated: `conductor`, `date`, `title`,",
-    "`programme` (the whole list), `note`."
+    "`programme` (the whole list), `note`. A contradiction is ruled PER ITEM instead:",
+    "`items` maps the report's item number to a ruling — `take` names the archive the",
+    "arbiter agrees with ('philharmoniker' = the reading shown, 'musikverein' = the",
+    "`alt`), and `credit`, `title`, `opus` override field by field, derived exactly as",
+    "an archive's own entry would be. Keys starting with `_` are notes, never applied."
   ],
-  "years": {}
+  "years": {
+    "1946": {
+      "_what": "item 7, Persischer Marsch, op. 289 — composer: orchestra 'Johann Strauß II.' vs Musikverein 'Josef Strauß'",
+      "_prior": "From memory, UNVERIFIED — the book rules. Op. 289 is Johann Strauss II's Persischer Marsch (1864); Josef Strauss wrote no Persian march. Lean: orchestra (as shown). Confidence: high.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "7": {
+          "take": "philharmoniker"
+        }
+      }
+    },
+    "1949": {
+      "_what": "item 9 — orchestra 'Neue Pizzicato-Polka. op. 449' (Johann Strauß II.) vs Musikverein 'Pizzicato-Polka' (Johann Strauß Sohn / Josef Strauß)",
+      "_prior": "No prior. Two DIFFERENT works: the Neue Pizzicato-Polka op. 449 (Johann II alone, from Fürstin Ninetta, 1893) and the joint Pizzicato-Polka of 1869 (Johann II and Josef, no opus). Only the book, or the 1949 programme leaflet, can say which was played. Set take to philharmoniker if the book agrees with the orchestra, musikverein if it names the joint polka.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "9": {
+          "_decide": "take: philharmoniker or musikverein"
+        }
+      }
+    },
+    "1950": {
+      "_what": "item 6 — orchestra 'Aurora-Polka, op. 165' vs Musikverein 'Auroraball. Polka française, op. 219' (both Johann Strauß II.)",
+      "_prior": "From memory, UNVERIFIED — the book rules. Op. 165 is the Aurora-Polka (1855); op. 219 is the Auroraball-Tänze, a WALTZ (1859) — the Musikverein's 'Polka française, op. 219' pairs one work's genre with the other's opus, which reads as a conflation. Lean: orchestra (as shown). Confidence: low.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "6": {
+          "take": "philharmoniker"
+        }
+      }
+    },
+    "1993": {
+      "_what": "item 9 — Lanner, Hans-Jörgel-Polka: orchestra op. 141 vs Musikverein op. 194",
+      "_prior": "From memory, UNVERIFIED — the book rules. Lanner's Hans-Jörgel-Polka is op. 194 (1842); an op. 141 would date from about 1839, before the polka was written. The orchestra's 141 looks like a digit slip. Lean: Musikverein. Confidence: medium.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "9": {
+          "take": "musikverein"
+        }
+      }
+    },
+    "1997": {
+      "_what": "item 4 — Patronessen-Polka (française): orchestra op. 286 vs Musikverein op. 186 (both Johann Strauß II.)",
+      "_prior": "From memory, UNVERIFIED — the book rules. 'Patronessen' is Johann Strauss II's op. 286 (1864); an op. 186 would fall in 1856. The Musikverein's 186 looks like a digit slip. Lean: orchestra (as shown). Confidence: medium.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "4": {
+          "take": "philharmoniker"
+        }
+      }
+    },
+    "2004": {
+      "_what": "item 12 — Eislauf-Polka, op. 261: orchestra 'Johann Strauß I.' vs Musikverein 'Josef Strauß'",
+      "_prior": "From memory, UNVERIFIED — the book rules. Eislauf, Polka schnell op. 261 is Josef Strauss's (1869); Johann Strauss I's numbered works end at op. 251, so an op. 261 of his cannot exist. Lean: Musikverein. Confidence: high.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "12": {
+          "take": "musikverein"
+        }
+      }
+    },
+    "2016": {
+      "_what": "item 11 — Auf Ferienreisen, op. 133: orchestra 'Josef Strauß' vs Musikverein 'Johann Strauß Sohn'; item 14 — Ball-Szene: orchestra 'Josef Hellmesberger (Vater)' vs Musikverein 'Josef Hellmesberger d.J.'",
+      "_prior_11": "From memory, UNVERIFIED — the book rules. Auf Ferienreisen, Polka schnell op. 133 is Josef Strauss's (1863). The Musikverein's fuller title ('bearbeitet von Gerald Wirth', the boys' choir arrangement) is right; set title if the arranger should show. Lean: orchestra (as shown). Confidence: high.",
+      "_prior_14": "From memory, UNVERIFIED — the book rules. The Ballszene is programmed as Josef Hellmesberger Jr.'s, and the 2016 printed programme, as recalled, credited the younger Hellmesberger. take=musikverein also brings its fuller title ('nach einer Etude von Joseph Mayseder; arrangiert von Wolfgang Dörner'); set title for the short form. Lean: Musikverein. Confidence: medium.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "11": {
+          "take": "philharmoniker"
+        },
+        "14": {
+          "take": "musikverein"
+        }
+      }
+    }
+  }
 }

@@ -498,8 +498,8 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     await expect(page.locator('.study-panel')).toBeHidden();
     await cog.click();
     await expect(page.locator('.study-panel')).toBeVisible();
-    // 5 tabs since week 3 added Turns (spec 36's subject) to the panel.
-    await expect(page.locator('.study-tab')).toHaveCount(5);
+    // 6 tabs: week 3 added Turns (spec 36's subject); 0.54.0 added Views (35.29).
+    await expect(page.locator('.study-tab')).toHaveCount(6);
 
     // Change the band orientation from the Band tab: the page reloads with the
     // parameter in the URL — and the panel REOPENS ITSELF ON THE SAME TAB,
@@ -847,12 +847,53 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       'marker=glass',
       'audienceAll=true',
       'pinExpiry=auto',
+      // The band as the interface (user, 2026-09-03): the staff reach the
+      // explorers, and the disclosure sentence at their foot, through the
+      // tappable facts wearing the shimmer cue (plan §10 note of that date).
+      'bandTap=shimmer',
     ]) {
       expect(search).toContain(pair);
     }
+    expect(await page.evaluate(() => (window as any)._exhibitTest.config.bandTap)).toBe('shimmer');
     expect(search).not.toContain('stripHeight'); // a reset, not a merge
     const ok = await page.evaluate(() => (window as any)._exhibitTest.ready);
     expect(ok, 'the exhibit boots under the preset').toBe(true);
+  });
+
+  // 35.29 The Views tab (user, 2026-09-03): each half's starting view is a
+  // row of its own, writing one slot of the per-viewport `views` parameter;
+  // the toolbar switch lives here too, moved from Layout. Choosing an explorer
+  // for the far half boots that half in it with the switch forced on (config.js);
+  // choosing Listen again removes the parameter, since it is the default.
+  test('35.29 the Views tab starts one half in an explorer, and back', async ({ page }) => {
+    await boot(page, 'debug=1&studyPanel=true');
+    await page.click('.study-cog');
+    await page.click('.study-tab[data-tab="views"]');
+    const rows = page.locator('.study-row');
+    await expect(rows).toHaveCount(3);
+    await expect(rows.nth(0).locator('.study-label')).toHaveText(/Near half/);
+    await expect(rows.nth(1).locator('.study-label')).toHaveText(/Far half/);
+    await expect(rows.nth(2).locator('.study-label')).toHaveText(/View switch/);
+    // Listen is the default in both halves, and marked as such.
+    await expect(rows.nth(1).locator('.study-option.is-on')).toHaveText(/Listen •/);
+
+    await rows.nth(1).locator('.study-option', { hasText: 'Conductors' }).click();
+    await page.waitForURL(/views=listen(%2C|,)conductors/);
+    expect(await page.evaluate(() => (window as any)._exhibitTest.ready)).toBe(true);
+    expect(await page.evaluate(() => (window as any)._exhibitTest.view(1))).toBe('conductors');
+    expect(await page.evaluate(() => (window as any)._exhibitTest.view(0))).toBe('listen');
+    // Forced on so the half can come back — resolved, not written to the URL.
+    expect(await page.evaluate(() => (window as any)._exhibitTest.config.viewSwitch)).toBe(true);
+    expect(page.url()).not.toContain('viewSwitch');
+    // The panel reopened itself on the same tab, with the choice marked.
+    await expect(page.locator('.study-tab[data-tab="views"]')).toHaveClass(/is-on/);
+    await expect(page.locator('.study-row').nth(1).locator('.study-option.is-on')).toHaveText('Conductors');
+
+    // Back to Listen: the default, so the parameter goes away.
+    await page.locator('.study-row').nth(1).locator('.study-option', { hasText: 'Listen' }).click();
+    await page.waitForURL((u) => !u.toString().includes('views='));
+    expect(await page.evaluate(() => (window as any)._exhibitTest.view(1))).toBe('listen');
+    expect(page.url()).toContain('studyPanel=true');
   });
 
   // 35.26 The parchment preset (user, 2026-08-25): an aged-paper canvas via

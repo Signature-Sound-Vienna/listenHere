@@ -18,7 +18,8 @@
 // stays a minimal diff against the shipped exhibit.
 //
 // Parameters are declared in TABS below — adding a config field to the panel is
-// one entry there, nothing else.
+// one entry there, nothing else (a per-viewport field: one entry per slot, with
+// `index`).
 
 import { DEFAULTS } from "./config.js";
 import { PALETTES, CATEGORY_KEYS, categoryOptions } from "./themes.js";
@@ -34,6 +35,9 @@ const CATEGORY_LABELS = {
   accent: "Accent",
   band: "Middle band",
 };
+
+/** Panel labels for the views, the toolbar switch's own wording (strings.js `view.*`). */
+const VIEW_LABELS = { listen: "Listen", years: "Year by year", conductors: "Conductors" };
 
 // Every param carries a `hint` — the 1–2-sentence explanation behind its
 // header (user, 2026-08-27). Rendered as a title tooltip for a desktop hover
@@ -51,13 +55,6 @@ const TABS = [
         options: [1, 2],
         hint:
           "How many visitor stations the screen splits into. The table is two facing halves; 1 is a single-reader debug view.",
-      },
-      {
-        key: "viewSwitch",
-        label: "View switch",
-        options: [false, true],
-        hint:
-          "Offers each viewport a toolbar switch between the listening interface and the explorers of the whole New Year's Concert series — year by year, and conductor by conductor (plan §11). Off is the shipped exhibit; an explorer draws over this half's strips while the other half keeps listening. Since 0.52.0 this is the debug and fallback entry: the ruled entry is the band (Band tab, “Tappable facts”), and every explorer carries its own close control.",
       },
       {
         key: "splitOrientation",
@@ -160,6 +157,37 @@ const TABS = [
         options: [72, 96, 120, 176],
         hint:
           "Height of the shared band. Rotated text pays for its length vertically, so that orientation defaults taller (176).",
+      },
+    ],
+  },
+  {
+    id: "views",
+    label: "Views",
+    hint: "The explorers of the New Year's Concert series (plan §11): which view each half starts in, and the toolbar switch between them. The band's tappable-facts entry is on the Band tab. The explorers' own styling knobs live here as they arrive.",
+    params: [
+      {
+        key: "views",
+        index: 0,
+        label: "Near half starts in",
+        options: ["listen", "years", "conductors"],
+        display: (o) => VIEW_LABELS[o] || String(o),
+        hint:
+          "Which view viewport 0 — the near, unrotated half — shows at boot: the listening interface, the by-year explorer, or the by-conductor explorer. An explorer draws over that half's strips and commentary while the other half keeps listening; the view switch below is forced on so the half can come back. One URL parameter for both halves: ?views=<near>,<far>.",
+      },
+      {
+        key: "views",
+        index: 1,
+        label: "Far half starts in",
+        options: ["listen", "years", "conductors"],
+        display: (o) => VIEW_LABELS[o] || String(o),
+        hint: "Which view viewport 1 — the far, rotated half — shows at boot. Ignored with one viewport.",
+      },
+      {
+        key: "viewSwitch",
+        label: "View switch",
+        options: [false, true],
+        hint:
+          "Offers each viewport a toolbar switch between the listening interface and the explorers of the whole New Year's Concert series — year by year, and conductor by conductor (plan §11). Off is the shipped exhibit; an explorer draws over this half's strips while the other half keeps listening. Since 0.52.0 this is the debug and fallback entry: the ruled entry is the band (Band tab, “Tappable facts”), and every explorer carries its own close control.",
       },
     ],
   },
@@ -402,6 +430,10 @@ const STUDY_PRESET = {
   stageRotation: 90,
   zoomControls: false,
   bandOrientation: "mirrored",
+  // The band as the interface (plan §11(f); user, 2026-09-03): the staff see the
+  // explorers — and the AI-disclosure sentence at their foot — through the
+  // tappable facts, wearing the shimmer cue. Needs the mirrored band above.
+  bandTap: "shimmer",
   annotationColors: "theme",
   // WHAT ALPHA TESTING HAS SETTLED ON (user, 2026-09-01). These four are no
   // longer "convenient to debug with" — they are the variants that keep
@@ -432,6 +464,18 @@ const STUDY_PRESET = {
 // panel reopens itself on the same tab.
 const TAB_KEY = "exhibitStudyTab";
 const OPEN_KEY = "exhibitStudyOpen";
+
+/**
+ * A param's value in a config object. Per-viewport fields (`views`, like
+ * `rotations` and `audiences`) are arrays in the config and one comma-separated
+ * value in the URL; a param with an `index` reads one slot, falling back to the
+ * default's slot when the URL named fewer viewports than the screen has.
+ */
+function valueOf(source, param) {
+  const v = source[param.key];
+  if (param.index === undefined) return v;
+  return v?.[param.index] ?? DEFAULTS[param.key][param.index];
+}
 
 /** Mount the cog and the panel. Call once, only when config.studyPanel is on. */
 export function mountStudyPanel(config) {
@@ -566,17 +610,17 @@ export function mountStudyPanel(config) {
       label.textContent = param.label;
       const opts = document.createElement("span");
       opts.className = "study-options";
-      const current = String(config[param.key]);
+      const current = String(valueOf(config, param));
       for (const option of param.options) {
         const chip = document.createElement("button");
         chip.type = "button";
         chip.className = "study-option";
-        const isDefault = String(option) === String(DEFAULTS[param.key]);
+        const isDefault = String(option) === String(valueOf(DEFAULTS, param));
         chip.textContent = (param.display ? param.display(option) : String(option)) +
           (isDefault ? " •" : "");
         chip.title = isDefault ? "default" : "";
         chip.classList.toggle("is-on", String(option) === current);
-        chip.addEventListener("click", () => applyParam(param.key, option));
+        chip.addEventListener("click", () => applyParam(param, option));
         opts.appendChild(chip);
       }
       row.append(label, opts);
@@ -606,10 +650,18 @@ export function mountStudyPanel(config) {
    * than written, so the URL stays a minimal, readable diff — and studyPanel
    * itself survives because true is not its default.
    */
-  function applyParam(key, value) {
+  function applyParam(param, value) {
+    const { key } = param;
     const params = new URLSearchParams(location.search);
-    if (String(value) === String(DEFAULTS[key])) params.delete(key);
-    else params.set(key, String(value));
+    let next = value;
+    if (param.index !== undefined) {
+      // One slot of a per-viewport field: the whole comma-separated value is
+      // rewritten, the other slots kept as they are, so the URL stays one
+      // parameter (an array stringifies comma-joined, as the URL wants it).
+      next = DEFAULTS[key].map((d, i) => (i === param.index ? value : (config[key]?.[i] ?? d)));
+    }
+    if (String(next) === String(DEFAULTS[key])) params.delete(key);
+    else params.set(key, String(next));
     // Choosing a PRESET clears every per-category pin back to "follow": a
     // preset click means "show me that theme", and stale pins silently
     // corrupting it is the confusing outcome. Pins are re-applied after, if

@@ -52,7 +52,10 @@ and on the year set. They disagree on the programmes in most years, in three way
      orchestra's own record and it carries the founding concerts), the other reading
      is kept beside it as `alt`, a warning names both, and the markdown report
      (`--report`) lists them for a human ruling. `concerts-overrides.json` is where
-     rulings land; it is applied LAST and never rewritten.
+     rulings land; it is applied LAST and never rewritten. A ruling is PER ITEM
+     (`items`, keyed by the report's item number; `take` names the archive the
+     arbiter agrees with, or `credit` / `title` / `opus` set the reading outright),
+     so one corrected composer never freezes a whole programme against the tool.
 
 ## The library join: VPO New Year's Concert records ONLY
 
@@ -755,11 +758,64 @@ def apply_overrides(concerts: list, overrides: dict, include_unverified: bool, w
         for k, v in patch.items():
             if k.startswith("_") or k in ("verified", "source"):
                 continue
+            if k == "items":
+                _apply_item_rulings(c, v, disp, patch.get("source"), warnings)
+                continue
             c[k] = v
             c["provenance"][k] = f"override:{disp}"
         if c.get("note") in ("after-archives", "missing") and c.get("conductor"):
             c["note"] = None
         c["provenance"]["source"] = patch.get("source")
+
+
+def _apply_item_rulings(c: dict, rulings: dict, disp: str, source, warnings: list):
+    """Rule on single programme items — the shape a contradiction ruling takes, so
+    one corrected composer does not freeze a whole programme against the tool.
+    Keyed by the item's `n` as the report names it. `take` copies one archive's
+    reading ("philharmoniker" = the one shown, "musikverein" = the `alt`); then
+    `credit`, `title`, `opus` override field by field and are derived exactly as
+    an archive's own entry would be (composer ids from the credit, opus from the
+    title). The disagreement stays on the item as `alt`, the ruling sits beside it
+    as `ruling`, and the warning it answers is marked `ruled` so the report moves
+    it out of the open list. Keys starting with `_` are the author's notes and are
+    never applied."""
+    by_n = {it["n"]: it for it in c.get("programme") or []}
+    for ns, r in rulings.items():
+        if ns.startswith("_"):
+            continue
+        n = int(ns)
+        it = by_n.get(n)
+        if not it:
+            warnings.append({"kind": "override-item-invalid", "year": c["year"],
+                             "detail": f"ruling names item {n}; the programme has {len(by_n)} item(s)"})
+            continue
+        take = r.get("take")
+        title, credit = r.get("title"), r.get("credit")
+        if take == "musikverein":
+            if not it.get("alt"):
+                warnings.append({"kind": "override-item-invalid", "year": c["year"],
+                                 "detail": f"item {n}: take=musikverein, but the item has no alt reading"})
+                continue
+            title = title if title is not None else it["alt"]["title"]
+            credit = credit if credit is not None else it["alt"]["credit"]
+        elif take not in (None, "philharmoniker"):
+            warnings.append({"kind": "override-item-invalid", "year": c["year"],
+                             "detail": f"item {n}: unknown take {take!r} (philharmoniker or musikverein)"})
+            continue
+        if title is not None:
+            it["title"] = title
+            it["opus"] = opus_of(title)
+        if credit is not None:
+            it["composers"] = [composer_entry(cid, part) for cid, part in
+                               zip(composer_ids(credit), _credit_parts(credit))]
+        if "opus" in r:
+            it["opus"] = r["opus"]
+        it["ruling"] = {"disposition": disp, "source": source, "take": take}
+        c["provenance"].setdefault("items", {})[str(n)] = f"override:{disp}"
+        for w in warnings:
+            if (w["kind"] == "programme-contradiction" and w["year"] == c["year"]
+                    and w["detail"].startswith(f"item {n}:")):
+                w["ruled"] = source or disp
 
 
 def seed_overrides(path: str):
@@ -779,7 +835,11 @@ def seed_overrides(path: str):
             "ENTRIES ARE NOT APPLIED: the tool names them on every run instead.",
             "",
             "Fields patch the year's entry as generated: `conductor`, `date`, `title`,",
-            "`programme` (the whole list), `note`.",
+            "`programme` (the whole list), `note`. A contradiction is ruled PER ITEM instead:",
+            "`items` maps the report's item number to a ruling — `take` names the archive the",
+            "arbiter agrees with ('philharmoniker' = the reading shown, 'musikverein' = the",
+            "`alt`), and `credit`, `title`, `opus` override field by field, derived exactly as",
+            "an archive's own entry would be. Keys starting with `_` are notes, never applied.",
         ],
         "years": {},
     }
@@ -825,14 +885,27 @@ def write_report(path: str, concerts: list, warnings: list, sources: dict):
               f"- Single-archive years: " + ", ".join(f"{w['year']} ({w['detail'].split()[0]})"
                                                     for w in by_kind.get("single-source", [])),
               ""]
+    contradictions = by_kind.get("programme-contradiction", [])
+    open_rows = [w for w in contradictions if not w.get("ruled")]
+    ruled_rows = [w for w in contradictions if w.get("ruled")]
     lines += ["## Programme contradictions — need a ruling", "",
               "The orchestra's archive is shown; the Musikverein's reading is kept beside it as `alt`. "
-              "Rule on each in `concerts-overrides.json` (or accept the default by deleting nothing — "
-              "the list is the record).", "",
+              "Rule on each in `concerts-overrides.json` (`items`, keyed by the item number below; "
+              "`take` names the archive the arbiter agrees with). A verified ruling moves its row to "
+              "the next table; the list is the record.", "",
               "| year | item | disagreement |", "|---|---|---|"]
-    for w in by_kind.get("programme-contradiction", []):
+    for w in open_rows:
         item, _, rest = w["detail"].partition(": ")
         lines.append(f"| {w['year']} | {item} | {rest.replace('|', '/')} |")
+    if not open_rows:
+        lines.append("| — | — | none open |")
+    if ruled_rows:
+        lines += ["", "## Programme contradictions — ruled", "",
+                  "| year | item | disagreement | ruled by |", "|---|---|---|---|"]
+        for w in ruled_rows:
+            item, _, rest = w["detail"].partition(": ")
+            rest = rest.split(" — ")[0]
+            lines.append(f"| {w['year']} | {item} | {rest.replace('|', '/')} | {w['ruled']} |")
     lines += ["", "## Everything else the tool flagged", ""]
     for kind, ws in sorted(by_kind.items()):
         if kind == "programme-contradiction":
@@ -908,6 +981,30 @@ def self_test():
     w = []
     merged = merge_programmes(2014, [P[0], P[2]], [M[0], M[3], M[2]], w)
     assert [m["source"] for m in merged] == ["both", "musikverein", "both"], merged
+    # Item rulings (apply_overrides `items`): take=musikverein copies the alt reading
+    # and re-derives composer and opus; a bare credit re-derives the composer ids;
+    # the contradiction warning is marked ruled; nothing else on the programme moves.
+    w = []
+    c = {"year": 1970, "programme": merge_programmes(1970, P, M, w)}
+    ov = {"years": {"1970": {"_disposition": "editorial", "source": "test, p. 1", "verified": True,
+                             "items": {"2": {"take": "musikverein"}, "3": {"credit": "Johann Strauß I."},
+                                       "_note": "ignored"}}}}
+    apply_overrides([c], ov, False, w)
+    i2, i3 = c["programme"][1], c["programme"][2]
+    assert i2["title"].startswith("Heiterer") and i2["composers"][0]["id"] == "josef-strauss" and i2["opus"] == 281, i2
+    assert i2["ruling"] == {"disposition": "editorial", "source": "test, p. 1", "take": "musikverein"}, i2["ruling"]
+    assert i2["alt"]["title"].startswith("Heiterer") and i2["source"] == "both", i2
+    assert i3["composers"][0]["id"] == "johann-strauss-i" and i3["title"].startswith("Eislauf"), i3
+    assert w[0]["kind"] == "programme-contradiction" and w[0]["ruled"] == "test, p. 1", w
+    assert c["provenance"]["items"] == {"2": "override:editorial", "3": "override:editorial"}, c["provenance"]
+    assert "ruling" not in c["programme"][0]
+    # An unverified entry is named, not applied; a take with no alt is refused.
+    w = []
+    c = {"year": 1970, "programme": merge_programmes(1970, P, M, w)}
+    apply_overrides([c], {"years": {"1970": {"items": {"2": {"take": "musikverein"}}}}}, False, w)
+    assert c["programme"][1]["composers"][0]["id"] == "johann-strauss-ii" and w[-1]["kind"] == "override-unverified", w
+    apply_overrides([c], {"years": {"1970": {"verified": True, "items": {"1": {"take": "musikverein"}}}}}, False, w)
+    assert w[-1]["kind"] == "override-item-invalid" and "ruling" not in c["programme"][0], w
     print("self-test ok")
 
 
@@ -963,7 +1060,8 @@ def main():
         print(f"\n{len(warnings)} warning(s): " + ", ".join(f"{k} {n}" for k, n in sorted(counts.items())))
         for w in warnings:
             if w["kind"] in ("programme-contradiction", "conductor-contradiction", "year-missing",
-                             "override-unverified", "duplicate-entry", "library-parenthetical"):
+                             "override-unverified", "override-item-invalid", "duplicate-entry",
+                             "library-parenthetical"):
                 print(f"  - {w['kind']} {w['year'] or ''}: {w['detail']}")
 
     sources = {"philharmoniker": args.philharmoniker, "musikverein": args.musikverein,

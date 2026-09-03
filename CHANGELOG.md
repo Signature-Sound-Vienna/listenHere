@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.54.0 -- Programme rulings per item; the eight contradictions seeded for the book
+* `concerts-overrides.json` rules on single programme items: `items`, keyed by the report's item number, with `take` naming the archive the arbiter agrees with (or `credit`, `title`, `opus` setting the reading outright, derived as an archive's own entry would be). The disagreement stays on the item as `alt`, the ruling sits beside it, and the report moves ruled rows to their own table. One corrected composer no longer means retyping the whole programme.
+* The eight contradictions of the 2026-09-02 reconciliation report are seeded in the overrides as unverified proposals, each with a stated prior and confidence; none is applied until a person checks the book and sets `verified: true` with the page. `--self-test` covers the item rulings, the unverified gate, and a ruling that names no `alt`.
+* The staff debug preset (the study panel's Defaults button) carries `bandTap: shimmer` on its mirrored band, so the staff reach the explorers, and the disclosure sentence at their foot, through the tappable facts.
+* Study panel: a Views tab — which explorer each half starts in (one row per viewport, writing that slot of `?views=`), and the toolbar view switch, moved there from Layout; the explorers' styling knobs will live on the same tab. Spec 35 counts six tabs, and 35.29 drives the new one.
+
 ### 0.53.0 -- Fix mode: score zoom-and-scroll, one peak per mark, spectrogram scales and labels
 * The score pane zooms: fit the page (as before), fill the width, or a percentage of the fit, chosen in the Score fieldset or stepped with `+` and `-`. A page narrower than the pane is centred; a wider one scrolls, the connectors follow the scroll, and the selected onset is scrolled into view, during playback too. Sticky; the Verovio layout and the prewarm fit are untouched.
 * The Correction region's controls sit in collapsible fieldsets like the listening interface's: Score, Playback, Snap to onsets, Lanes, and Edits.

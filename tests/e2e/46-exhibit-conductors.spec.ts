@@ -602,4 +602,75 @@ test.describe('46. The band is the interface — the wordless affordances', () =
     expect(seen.shimmer.ringAnimation).toBe('band-sheen-ring');
     expect(seen.shimmer.border).toBe('none');
   });
+
+  // 46.11 A working fact answers the tap at once (user, 2026-09-03): the
+  // `is-acknowledged` class runs a 400 ms bloom of a hairline frame (::before)
+  // and is cleared soon after, on every cue alike — the cue says "tappable",
+  // the acknowledgement "tapped". Read in the same evaluate as the click, so
+  // the 400 ms window cannot slip past the assertion.
+  test('46.11 a tap on a working fact is acknowledged for a moment, on every cue', async ({ page }) => {
+    for (const v of ['plain', 'shimmer']) {
+      await boot(page, `debug=1&bandOrientation=mirrored&bandTap=${v}`);
+      await awaitConcerts(page);
+      const r = await page.evaluate(() => {
+        const q = (sel: string) => document.querySelector(`.mb-cluster[data-cluster="0"] ${sel}`) as HTMLElement;
+        const year = q('.mb-year.is-tappable');
+        const face = q('.mb-portrait.is-tappable');
+        year.click();
+        const yb = getComputedStyle(year, '::before');
+        face.click();
+        const fb = getComputedStyle(face, '::before');
+        return {
+          yearOn: year.classList.contains('is-acknowledged'), yearFrame: yb.animationName, yearRadius: yb.borderRadius,
+          faceOn: face.classList.contains('is-acknowledged'), faceFrame: fb.animationName, faceRadius: fb.borderRadius,
+          // Read on the OTHER reader's copy: this reader's stands down for the explorer it opened (46.12).
+          sheen: getComputedStyle(document.querySelector('.mb-cluster[data-cluster="1"] .mb-conductor.is-tappable') as HTMLElement).animationName,
+        };
+      });
+      expect(r.yearOn, v).toBe(true);
+      expect(r.yearFrame, v).toBe('band-ack-frame');
+      expect(r.yearRadius, v).toBe('999px');
+      expect(r.faceOn, v).toBe(true);
+      expect(r.faceFrame, v).toBe('band-ack-frame');
+      expect(r.faceRadius, v).toBe('50%');
+      // The acknowledgement leaves the cue's own animation alone.
+      expect(r.sheen, v).toBe(v === 'shimmer' ? 'band-sheen' : 'none');
+      // Cleared by time, both of them.
+      await expect(page.locator('.mb-cluster[data-cluster="0"] .is-acknowledged')).toHaveCount(0);
+      // And the taps did their work: the last one opened the by-conductor explorer.
+      expect(await page.evaluate(() => (window as any)._exhibitTest.view(0))).toBe('conductors');
+    }
+  });
+
+  // 46.12 The fact whose explorer this reader's half is showing stands its
+  // shimmer down (user, 2026-09-03), on that reader's copy only; the other
+  // reader's copy and the other fact keep shimmering, and back in the
+  // listening view everything shimmers again. Mirrored only, by construction
+  // (cluster = viewport), which is the only orientation shimmer exists in.
+  test("46.12 under shimmer the fact that opened this half's explorer stops shimmering until the half returns", async ({ page }) => {
+    await boot(page, 'debug=1&bandOrientation=mirrored&bandTap=shimmer');
+    await awaitConcerts(page);
+    const anims = () => page.evaluate(() => {
+      const a = (c: number, sel: string, p?: string) =>
+        getComputedStyle(document.querySelector(`.mb-cluster[data-cluster="${c}"] ${sel}`) as HTMLElement, p).animationName;
+      return {
+        year0: a(0, '.mb-year.is-tappable'), name0: a(0, '.mb-conductor.is-tappable'), ring0: a(0, '.mb-portrait.is-tappable', '::after'),
+        year1: a(1, '.mb-year.is-tappable'), name1: a(1, '.mb-conductor.is-tappable'), ring1: a(1, '.mb-portrait.is-tappable', '::after'),
+        current0: (document.querySelector('.mb-cluster[data-cluster="0"]') as HTMLElement).dataset.currentView ?? null,
+      };
+    });
+    const all = { year0: 'band-sheen', name0: 'band-sheen', ring0: 'band-sheen-ring', year1: 'band-sheen', name1: 'band-sheen', ring1: 'band-sheen-ring' };
+    expect(await anims()).toEqual({ ...all, current0: null });
+
+    await page.evaluate(() => (window as any)._exhibitTest.setView(0, 'years'));
+    await expect(page.locator('.vp[data-viewport="0"] .vp-view[data-view="years"]')).toBeAttached();
+    expect(await anims()).toEqual({ ...all, year0: 'none', current0: 'years' });
+
+    await page.evaluate(() => (window as any)._exhibitTest.setView(0, 'conductors'));
+    await expect(page.locator('.vp[data-viewport="0"] .vp-view[data-view="conductors"]')).toBeAttached();
+    expect(await anims()).toEqual({ ...all, name0: 'none', ring0: 'none', current0: 'conductors' });
+
+    await page.evaluate(() => (window as any)._exhibitTest.setView(0, 'listen'));
+    expect(await anims()).toEqual({ ...all, current0: null });
+  });
 });

@@ -851,6 +851,7 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       // explorers, and the disclosure sentence at their foot, through the
       // tappable facts wearing the shimmer cue (plan §10 note of that date).
       'bandTap=shimmer',
+      'theme=parchment', // the staff ground (user, 2026-09-03)
     ]) {
       expect(search).toContain(pair);
     }

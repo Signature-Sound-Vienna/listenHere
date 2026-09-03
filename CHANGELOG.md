@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.54.1 -- Staff preset on parchment; the shimmer rests between passes; taps on the band's facts acknowledged
+* The staff debug preset (Defaults) sets the parchment theme.
+* Shimmer cue: the light round the portrait's rim now travels 220° and rests, in step with the sheen on the name and the year, instead of circling without pause; both run on a 6 s rhythm (the sheen was on 5 s). On a half whose explorer is open, the fact that opened it stands its shimmer down: the year beside the by-year explorer, the name and portrait beside the by-conductor explorer.
+* A tap on a working band fact (year, conductor's name, portrait) is acknowledged at once, whatever the cue: a hairline frame blooms round the fact and fades over 400 ms while the fact dips a hair, like a key going down. A fact the series cannot follow is not a button and stays still. Reduced motion shows the frame without movement.
+* Testing: 35.25 pins the parchment preset; 46.11 pins the acknowledgement's class, frame, and clearance on the plain and shimmer cues; 46.12 the shimmer standing down for the open explorer, on that reader's copy only.
+
 ### 0.54.0 -- Programme rulings per item; the eight contradictions seeded for the book
 * `concerts-overrides.json` rules on single programme items: `items`, keyed by the report's item number, with `take` naming the archive the arbiter agrees with (or `credit`, `title`, `opus` setting the reading outright, derived as an archive's own entry would be). The disagreement stays on the item as `alt`, the ruling sits beside it, and the report moves ruled rows to their own table. One corrected composer no longer means retyping the whole programme.
 * The eight contradictions of the 2026-09-02 reconciliation report are seeded in the overrides as unverified proposals, each with a stated prior and confidence; none is applied until a person checks the book and sets `verified: true` with the page. `--self-test` covers the item rulings, the unverified gate, and a ruling that names no `alt`.

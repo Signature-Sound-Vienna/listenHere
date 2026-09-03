@@ -227,9 +227,10 @@ const DEFAULTS = {
   //                 like the other tappables on the table.
   //   "underline" — a hairline under the name and the year.
   //   "glyph"     — a small chevron after the name and the year.
-  //   "shimmer"   — a slow sheen across the name and the year, and a slow
-  //                 light travelling round the portrait's rim; reduced motion
-  //                 gets the underline instead.
+  //   "shimmer"   — a sheen passing across the name and the year, and a light
+  //                 travelling once round the portrait's rim, both resting
+  //                 between passes on one rhythm; reduced motion gets the
+  //                 underline instead.
   bandTap: "off",
 
   // --- appearance ---

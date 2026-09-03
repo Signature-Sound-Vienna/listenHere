@@ -142,7 +142,7 @@ const TABS = [
         label: "Tappable facts",
         options: ["off", "plain", "chip", "underline", "glyph", "shimmer"],
         hint:
-          "The band as the interface (plan §11(f)): tap the year to open the by-year explorer at that concert, tap the conductor's name or portrait to open the by-conductor explorer with them — on the tapping reader's own half. Needs the mirrored orientation, because only a copy per reader can say who tapped; anywhere else it resolves to off. The value is the wordless cue the tappable facts wear, to be compared at the user testing rather than picked: plain shows nothing (the discoverability baseline), chip outlines each fact softly and rings the portrait, underline draws a hairline under the name and the year, glyph adds a small chevron after them, shimmer sends a slow sheen across them and a slow light round the portrait's rim (reduced motion gets the underline). A fact is tappable only where the series can follow it: the year when the audible recording is that year's concert, the conductor when the series knows them.",
+          "The band as the interface (plan §11(f)): tap the year to open the by-year explorer at that concert, tap the conductor's name or portrait to open the by-conductor explorer with them — on the tapping reader's own half. Needs the mirrored orientation, because only a copy per reader can say who tapped; anywhere else it resolves to off. The value is the wordless cue the tappable facts wear, to be compared at the user testing rather than picked: plain shows nothing (the discoverability baseline), chip outlines each fact softly and rings the portrait, underline draws a hairline under the name and the year, glyph adds a small chevron after them, shimmer sends a sheen across them and a light once round the portrait's rim, resting between passes on one rhythm (reduced motion gets the underline). A fact is tappable only where the series can follow it: the year when the audible recording is that year's concert, the conductor when the series knows them.",
       },
       {
         key: "bandFlipMotion",
@@ -434,6 +434,9 @@ const STUDY_PRESET = {
   // explorers — and the AI-disclosure sentence at their foot — through the
   // tappable facts, wearing the shimmer cue. Needs the mirrored band above.
   bandTap: "shimmer",
+  // The parchment ground (user, 2026-09-03): the staff table reads like the
+  // hand-written concert diaries the palette was drawn from.
+  theme: "parchment",
   annotationColors: "theme",
   // WHAT ALPHA TESTING HAS SETTLED ON (user, 2026-09-01). These four are no
   // longer "convenient to debug with" — they are the variants that keep

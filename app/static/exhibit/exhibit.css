@@ -2306,9 +2306,12 @@ html, body {
   font-weight: 400;
 }
 
-/* shimmer: a slow sheen travelling across the name and the year, and a slow
- * light round the portrait's rim. The text keeps its own colour outside the
- * sheen — the gradient's ends ARE --tap-base — so only the highlight moves. */
+/* shimmer: a sheen passing across the name and the year, and a light travelling
+ * 220° round the portrait's rim — both on ONE 6 s rhythm with a rest between
+ * passes (user, 2026-09-03: 5 s at first, then 3.85 s, 4.5 s, settled at 6 s;
+ * the rim used to circle without pause). The text keeps its own
+ * colour outside the sheen — the gradient's ends ARE --tap-base — so only the
+ * highlight moves. */
 .middle-band[data-tap="shimmer"] .mb-conductor.is-tappable,
 .middle-band[data-tap="shimmer"] .mb-year.is-tappable {
   background-image: linear-gradient(
@@ -2322,7 +2325,7 @@ html, body {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: band-sheen 5s ease-in-out infinite;
+  animation: band-sheen 6s ease-in-out infinite;
 }
 @keyframes band-sheen {
   from { background-position: 100% 0; }
@@ -2345,7 +2348,29 @@ html, body {
   animation: band-sheen-ring 6s linear infinite;
   pointer-events: none;
 }
-@keyframes band-sheen-ring { to { transform: rotate(360deg); } }
+/* 220° of a turn in the first 70% of the cycle, then the light fades and rests
+ * where it stopped until the next pass — intermittent, like the sheen. */
+@keyframes band-sheen-ring {
+  0% { transform: rotate(0deg); opacity: 0; }
+  10% { opacity: 1; }
+  60% { opacity: 1; }
+  70% { transform: rotate(220deg); opacity: 0; }
+  100% { transform: rotate(220deg); opacity: 0; }
+}
+/* The fact whose explorer this reader's half is showing stands its shimmer
+ * down (user, 2026-09-03): a shimmering year beside the open by-year explorer
+ * would be asking again. Still tappable, just quiet. Mirrored only, by
+ * construction (middle-band.js setCurrentView). */
+.middle-band[data-tap="shimmer"] .mb-cluster[data-current-view="years"] .mb-year.is-tappable,
+.middle-band[data-tap="shimmer"] .mb-cluster[data-current-view="conductors"] .mb-conductor.is-tappable {
+  animation: none;
+  background-image: none;
+  color: var(--tap-base);
+}
+.middle-band[data-tap="shimmer"] .mb-cluster[data-current-view="conductors"] .mb-portrait.is-tappable::after {
+  content: none;
+  animation: none;
+}
 /* Reduced motion gets the underline instead: the cue still exists, nothing moves. */
 @media (prefers-reduced-motion: reduce) {
   .middle-band[data-tap="shimmer"] .mb-conductor.is-tappable,
@@ -2359,4 +2384,47 @@ html, body {
     text-decoration-color: var(--ex-band-text-soft);
   }
   .middle-band[data-tap="shimmer"] .mb-portrait.is-tappable::after { content: none; }
+}
+
+/* THE TAP ACKNOWLEDGED (user, 2026-09-03). A working fact answers the finger
+ * at once, before the explorer has drawn: a hairline frame blooms round it and
+ * fades over 400 ms while the fact dips a hair, like a key going down. The same
+ * on every cue — the cue says "tappable", this says "tapped" — and only on a
+ * working fact, since a plain fact is not a button (middle-band.js sets the
+ * class and clears it by time). Drawn by ::before (::after belongs to the glyph
+ * and the rim light), behind the text; `scale` rather than `transform`, so it
+ * composes with any orientation transform and leaves the sheen's animation
+ * alone. */
+.middle-band[data-tap] .is-tappable {
+  position: relative;
+  isolation: isolate;
+  transition: scale 160ms ease-out;
+}
+.middle-band[data-tap] .is-tappable.is-acknowledged { scale: 0.97; }
+.middle-band[data-tap] .is-tappable.is-acknowledged::before {
+  content: "";
+  position: absolute;
+  inset: -3px -9px;
+  border-radius: 999px;
+  border: 1px solid var(--ex-band-border);
+  background: color-mix(in srgb, var(--ex-band-text) 10%, transparent);
+  z-index: -1;
+  pointer-events: none;
+  animation: band-ack-frame 400ms ease-out forwards;
+}
+.middle-band[data-tap] .mb-portrait.is-tappable.is-acknowledged::before {
+  inset: -6px;
+  border-radius: 50%;
+  background: none;
+}
+@keyframes band-ack-frame {
+  0% { opacity: 0; scale: 0.94; }
+  30% { opacity: 1; }
+  100% { opacity: 0; scale: 1.04; }
+}
+/* Reduced motion: the frame appears and goes, nothing moves. */
+@media (prefers-reduced-motion: reduce) {
+  .middle-band[data-tap] .is-tappable { transition: none; }
+  .middle-band[data-tap] .is-tappable.is-acknowledged { scale: none; }
+  .middle-band[data-tap] .is-tappable.is-acknowledged::before { animation: none; opacity: 1; }
 }

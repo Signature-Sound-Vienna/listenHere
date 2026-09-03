@@ -505,6 +505,9 @@ async function setView(vp, name, opening = {}) {
   vp.view = name;
   vp.el.dataset.view = name;
   paintViewSwitch(vp);
+  // This reader's band copy stands its cue down on the fact that opened the
+  // view (mirrored only; the band decides). Also pushed when the band is built.
+  bandHandle?.setCurrentView(vp.index, name);
   vp.views[leaving]?.el.remove();
   if (name === "listen") return;
   let handle = vp.views[name];
@@ -754,6 +757,8 @@ async function boot() {
   });
   for (const slot of bands) slot.replaceWith(band.el);
   bandHandle = band;
+  // A half may already be in a view (?views=…) before the band exists.
+  for (const vp of viewports) band.setCurrentView(vp.index, vp.view);
   // The sidecar may have landed before the band existed: ask its facts again.
   if (concertsResolved !== undefined) band.refresh();
   window._exhibitTest.band = band;

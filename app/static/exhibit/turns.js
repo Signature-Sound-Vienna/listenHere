@@ -76,8 +76,12 @@ export class TurnTaking {
    *   and fall back to "hijack" rather than leaving the exhibit tap-dead.
    * @param {number} [opts.grantMs]  request policy: auto-grant a pending request
    *   after this many ms; 0 means explicit grant only.
+   * @param {number} [opts.denyCooldownMs] request policy: after a denial, the
+   *   denied side's taps are not put to the holder again for this many ms —
+   *   they are answered with the "still listening" notice instead (user,
+   *   2026-09-03: minimise request-spamming); 0 = ask again at once.
    */
-  constructor({ transport, policy = "hijack", grantMs = 8000 }) {
+  constructor({ transport, policy = "hijack", grantMs = 8000, denyCooldownMs = 0 }) {
     this._transport = transport;
     if (!TURN_POLICIES.includes(policy)) {
       console.warn(`exhibit turns: unknown policy "${policy}" — using "hijack"`);
@@ -85,6 +89,7 @@ export class TurnTaking {
     }
     this.policy = policy;
     this._grantMs = Math.max(0, Number(grantMs) || 0);
+    this._cooldownMs = Math.max(0, Number(denyCooldownMs) || 0);
 
     /** Viewport index that last took the clock; null until the first tap. */
     this.holder = null;
@@ -92,6 +97,8 @@ export class TurnTaking {
     this.pending = null; // { viewport, file, seekTime, expiresAt }
     /** Per-viewport last-chosen recording (sparse; index = viewport). */
     this.selected = [];
+    /** Per-viewport end of a denial's cooldown (ms epoch), while one runs. */
+    this.cooldownUntil = {};
 
     this._timer = 0;
     this._listeners = new Set();
@@ -164,6 +171,16 @@ export class TurnTaking {
       return;
     }
 
+    // A denied side waits out the cooldown: its taps are not put to the holder
+    // again — no prompt, so a denial cannot be spammed — the requester is just
+    // told once more that the other side is still listening. The tap has
+    // still marked their choice on their own half (selected, above).
+    const until = this.cooldownUntil[viewport] || 0;
+    if (until > Date.now()) {
+      this._emit({ type: "cooldown", to: viewport, until });
+      return;
+    }
+
     // Contended: queue the tap. One pending at a time and the LATEST tap wins,
     // the same last-tap-counts rule the transport applies to racing fetches.
     this._clearTimer();
@@ -183,6 +200,7 @@ export class TurnTaking {
     const { viewport, file, seekTime } = this.pending;
     this.pending = null;
     this._clearTimer();
+    delete this.cooldownUntil[viewport];
     this.holder = viewport;
     this._transport.select(file, seekTime);
     this._emit({ type: "granted", to: viewport });
@@ -194,6 +212,7 @@ export class TurnTaking {
     const requester = this.pending.viewport;
     this.pending = null;
     this._clearTimer();
+    this._startCooldown(requester);
     this._emit({ type: "denied", to: requester });
   }
 
@@ -204,6 +223,7 @@ export class TurnTaking {
       holder: this.holder,
       pending: this.pending ? { ...this.pending } : null,
       selected: this.selected.slice(),
+      cooldownUntil: { ...this.cooldownUntil },
     };
   }
 
@@ -219,13 +239,20 @@ export class TurnTaking {
       const stale = this.pending.viewport;
       this.pending = null;
       this._clearTimer();
+      this._startCooldown(stale);
       this._emit({ type: "denied", to: stale });
     } else if (this.pending) {
       this.pending = null;
       this._clearTimer();
     }
+    delete this.cooldownUntil[viewport];
     this.holder = viewport;
     this._transport.select(file, seekTime);
+  }
+
+  /** A denial starts the denied side's cooldown, when one is configured. */
+  _startCooldown(viewport) {
+    if (this._cooldownMs) this.cooldownUntil[viewport] = Date.now() + this._cooldownMs;
   }
 
   _clearTimer() {

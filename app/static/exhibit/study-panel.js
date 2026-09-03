@@ -248,6 +248,13 @@ const TABS = [
           "Under the request policy, a pending request grants itself after this long, so an absent visitor can never lock the table. 0 means only an explicit grant executes it.",
       },
       {
+        key: "turnDenyCooldownMs",
+        label: "After “Not yet” (ms; 0 = ask again at once)",
+        options: [0, 5000, 10000, 20000],
+        hint:
+          "Under the request policy, how long a denied side waits before a tap of theirs is put to the listener again. Meanwhile a repeated tap only tells the requester that the other side is still listening — nobody is prompted, so a denial cannot be spammed. 0 asks again at once (shipped).",
+      },
+      {
         key: "turnNoticeMs",
         label: "Notice duration (ms)",
         options: [2000, 4000, 8000],

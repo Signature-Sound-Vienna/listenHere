@@ -688,6 +688,7 @@ async function boot() {
     transport,
     policy: config.turnPolicy,
     grantMs: config.turnGrantMs,
+    denyCooldownMs: config.turnDenyCooldownMs,
   });
   window._exhibitTest.turns = turns;
   data.turns = turns;
@@ -1763,7 +1764,7 @@ function setPanelOpen(vp, open) {
 /**
  * One viewport's turn surface (turns.js). Three shapes share the element: the
  * holder's prompt with the grant and deny buttons, the requester's waiting
- * note, and the transient notices ("taken", "denied") that outlive the state
+ * note, and the transient notices ("taken", "denied", "cooldown") that outlive the state
  * that raised them by config.turnNoticeMs. The transients are addressed to ONE
  * side — the events carry the viewport they are for — while the pending shapes
  * are derived from state, so a repaint mid-notice must not clear a notice the
@@ -1775,6 +1776,11 @@ function paintTurn(vp, state, event, turns) {
     return;
   }
   if (event?.type === "denied" && event.to === vp.index) {
+    flashTurnNotice(vp, t("turn.denied", vp.language));
+    return;
+  }
+  // A tap inside the denial's cooldown: the same words, nobody prompted.
+  if (event?.type === "cooldown" && event.to === vp.index) {
     flashTurnNotice(vp, t("turn.denied", vp.language));
     return;
   }

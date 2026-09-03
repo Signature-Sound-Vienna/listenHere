@@ -1,5 +1,9 @@
 # Listen Here! CHANGELOG.md
 
+### 0.54.2 -- Request policy: a cooldown after "Not yet"
+* Under `?turnPolicy=request`, `?turnDenyCooldownMs=` (study panel, Turns: 0, 5, 10, or 20 s; 0 is the shipped behaviour) makes a denied side wait before a tap of theirs is put to the listener again. Meanwhile a repeated tap only shows the requester "The other side is still listening." and prompts nobody, so a denial cannot be spammed. The holder's implicit denial, tapping their own strips while a request stands, counts as a denial too; the cooldown ends early if the denied side gets the clock some other way.
+* Testing: 36.20 pins the cooldown (no prompt, the notice, the choice still marked, the prompt back once the period is over), 36.21 that the default re-prompts at once.
+
 ### 0.54.1 -- Staff preset on parchment; the shimmer rests between passes; taps on the band's facts acknowledged
 * The staff debug preset (Defaults) sets the parchment theme.
 * Shimmer cue: the light round the portrait's rim now travels 220° and rests, in step with the sheen on the name and the year, instead of circling without pause; both run on a 6 s rhythm (the sheen was on 5 s). On a half whose explorer is open, the fact that opened it stands its shimmer down: the year beside the by-year explorer, the name and portrait beside the by-conductor explorer.

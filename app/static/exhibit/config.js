@@ -404,6 +404,13 @@ const DEFAULTS = {
   // request policy: a pending request is granted by itself after this many ms,
   // so an absent visitor can never lock the table. 0 = explicit grant only.
   turnGrantMs: 8000,
+  // request policy: after "Not yet", the denied side waits this long before a
+  // tap of theirs is put to the holder again — repeated taps meanwhile show
+  // the requester "the other side is still listening" and prompt nobody
+  // (user, 2026-09-03: minimise request-spamming). The holder's implicit
+  // denial (tapping their own strips while a request stands) counts too.
+  // 0 = ask again at once, the shipped behaviour.
+  turnDenyCooldownMs: 0,
   // How long the transient notices stay ("the other side changed the
   // recording", "…is still listening") before fading. UI only.
   turnNoticeMs: 4000,

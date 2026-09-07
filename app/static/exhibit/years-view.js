@@ -267,7 +267,10 @@ function renderDetail(root, c, { year, language, pieceId, pieceTitle, portraitUr
       const li = document.createElement("li");
       li.className = "yv-item";
       li.dataset.source = item.source;
-      if (item.source !== "both") marked.add(item.source);
+      // Only the two archives get a mark and a legend line; an authored
+      // programme (source "override", a year the archives predate) is one
+      // source for the whole list, cited on the concert, not per item.
+      if (item.source === "philharmoniker" || item.source === "musikverein") marked.add(item.source);
       const comp = document.createElement("span");
       comp.className = "yv-item-composer";
       comp.textContent = (item.composers || []).map((x) => resolveText(x.name, { language })).join(" / ");

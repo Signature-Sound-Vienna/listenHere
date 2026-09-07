@@ -761,11 +761,42 @@ def apply_overrides(concerts: list, overrides: dict, include_unverified: bool, w
             if k == "items":
                 _apply_item_rulings(c, v, disp, patch.get("source"), warnings)
                 continue
+            if k == "programme":
+                v = _authored_programme(v)
+                on = [pid for pid in PIECES if any(piece_matches(pid, it["title"]) for it in v)]
+                if on:
+                    c["onProgramme"] = on
+                else:
+                    c.pop("onProgramme", None)
             c[k] = v
             c["provenance"][k] = f"override:{disp}"
         if c.get("note") in ("after-archives", "missing") and c.get("conductor"):
             c["note"] = None
         c["provenance"]["source"] = patch.get("source")
+
+
+def _authored_programme(items: list) -> list:
+    """An override's whole programme (a concert the archives predate), written in
+    the archives' own shape — `{credit, title}` per item, `encore: true` where the
+    source marks one — and derived exactly as an archive entry is (composer ids
+    from the credit, opus from the title), numbered in order and stamped
+    `source: "override"` so the view never claims an archive vouches for it.
+    Items already in the generated shape (with `composers`) pass through,
+    renumbered."""
+    out = []
+    for n, it in enumerate(items, 1):
+        if "composers" in it:
+            e = {"n": n, **{k: v for k, v in it.items() if k != "n"}}
+        else:
+            credit = it.get("credit", "")
+            e = {"n": n, "title": it["title"],
+                 "composers": [composer_entry(cid, part) for cid, part in
+                               zip(composer_ids(credit), _credit_parts(credit))],
+                 "opus": opus_of(it["title"]), "source": "override"}
+            if it.get("encore"):
+                e["encore"] = True
+        out.append(e)
+    return out
 
 
 def _apply_item_rulings(c: dict, rulings: dict, disp: str, source, warnings: list):
@@ -840,6 +871,9 @@ def seed_overrides(path: str):
             "arbiter agrees with ('philharmoniker' = the reading shown, 'musikverein' = the",
             "`alt`), and `credit`, `title`, `opus` override field by field, derived exactly as",
             "an archive's own entry would be. Keys starting with `_` are notes, never applied.",
+            "A whole `programme` (a concert the archives predate) is written the same way:",
+            "`{credit, title}` per item in order, `encore: true` where the source marks one;",
+            "composer ids and opus numbers are derived. Give `date` and `conductor` with it.",
         ],
         "years": {},
     }
@@ -1005,6 +1039,17 @@ def self_test():
     assert c["programme"][1]["composers"][0]["id"] == "johann-strauss-ii" and w[-1]["kind"] == "override-unverified", w
     apply_overrides([c], {"years": {"1970": {"verified": True, "items": {"1": {"take": "musikverein"}}}}}, False, w)
     assert w[-1]["kind"] == "override-item-invalid" and "ruling" not in c["programme"][0], w
+    # An authored whole programme (a year after the archives): derived like an archive's,
+    # numbered, stamped override, encores kept, onProgramme recomputed, the gap note cleared.
+    c = {"year": 2024, "programme": [], "note": "after-archives", "conductor": None, "date": None}
+    apply_overrides([c], {"years": {"2024": {"verified": True, "source": "t", "conductor": "X",
+                                          "date": "2024-01-01", "programme": [
+        {"credit": "Johann Strauß Sohn", "title": "Ouvertüre zur Operette „Die Fledermaus“"},
+        {"credit": "Johann Strauß Vater", "title": "Radetzky-Marsch, op. 228", "encore": True}]}}}, False, [])
+    p0, p1 = c["programme"]
+    assert p0["n"] == 1 and p0["composers"][0]["id"] == "johann-strauss-ii" and p0["source"] == "override", p0
+    assert p1["n"] == 2 and p1["opus"] == 228 and p1["encore"] is True and "encore" not in p0, p1
+    assert c["onProgramme"] == ["fledermaus"] and c["note"] is None and c["conductor"] == "X", c
     print("self-test ok")
 
 

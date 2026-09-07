@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.54.3 -- The 2024–2026 New Year's Concerts, authored for verification
+* `concerts-overrides.json` carries the 2024, 2025, and 2026 concerts (conductor, date, programme with the encores marked) transcribed from the orchestra's own programme pages, URL-cited, as unverified entries: the kiosk shows those years empty until a person has checked each against the printed programme and set `verified: true`. Two spellings the sources disagree on are noted in the entries.
+* A whole authored programme is written in the archives' own shape, one `{credit, title}` per item (`encore: true` where the source marks one); composer ids and opus numbers are derived exactly as for an archive entry, the items are stamped `source: "override"`, and the pieces the exhibit can play are re-detected. The by-year card gives such a programme no per-item archive mark; its source is the concert's.
+* Testing: the tool's `--self-test` covers the authored programme; specs 45 and 46 re-run.
+
 ### 0.54.2 -- Request policy: a cooldown after "Not yet"
 * Under `?turnPolicy=request`, `?turnDenyCooldownMs=` (study panel, Turns: 0, 5, 10, or 20 s; 0 is the shipped behaviour) makes a denied side wait before a tap of theirs is put to the listener again. Meanwhile a repeated tap only shows the requester "The other side is still listening." and prompts nobody, so a denial cannot be spammed. The holder's implicit denial, tapping their own strips while a request stands, counts as a denial too; the cooldown ends early if the denied side gets the clock some other way.
 * Testing: 36.20 pins the cooldown (no prompt, the notice, the choice still marked, the prompt back once the period is over), 36.21 that the default re-prompts at once.

@@ -106,6 +106,269 @@
           "take": "musikverein"
         }
       }
+    },
+    "2024": {
+      "_what": "Concert after the 2022 archive scrapes — the grid shows the year empty until this entry is verified.",
+      "_note": "Authored by Claude on 2026-09-03 from the orchestra's own programme page (URL in source/sources); the three encores are from the German Wikipedia article for the year (ORF-cited) — the official page lists none. UNVERIFIED until a person checks programme and encores against the printed programme or the recording.",
+      "_disposition": "editorial",
+      "source": "Wiener Philharmoniker, Programm Neujahrskonzert 2024, https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10466/ (read 2026-09-03); encores: https://de.wikipedia.org/wiki/Neujahrskonzert_der_Wiener_Philharmoniker_2024",
+      "verified": false,
+      "date": "2024-01-01",
+      "conductor": "Christian Thielemann",
+      "sources": {
+        "philharmoniker": "https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10466/"
+      },
+      "programme": [
+        {
+          "credit": "Karl Komzák",
+          "title": "Erzherzog Albrecht-Marsch, op. 136"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Wiener Bonbons. Walzer, op. 307"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Figaro-Polka. Polka française, op. 320"
+        },
+        {
+          "credit": "Josef Hellmesberger (Sohn)",
+          "title": "Für die ganze Welt. Walzer"
+        },
+        {
+          "credit": "Eduard Strauß",
+          "title": "Ohne Bremse. Polka schnell, op. 238"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Ouvertüre zur Operette „Waldmeister“"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Ischler Walzer. Nachgelassener Walzer Nr. 2"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Nachtigall-Polka, op. 222"
+        },
+        {
+          "credit": "Eduard Strauß",
+          "title": "Die Hochquelle. Polka mazur, op. 114"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Neue Pizzicato-Polka. op. 449"
+        },
+        {
+          "credit": "Josef Hellmesberger (Sohn)",
+          "title": "Estudiantina-Polka aus dem Ballett „Die Perle von Iberien“"
+        },
+        {
+          "credit": "Carl Michael Ziehrer",
+          "title": "Wiener Bürger. Walzer, op. 419"
+        },
+        {
+          "credit": "Anton Bruckner",
+          "title": "Quadrille, WAB 121 (Orchestr. W. Dörner)"
+        },
+        {
+          "credit": "Hans Christian Lumbye",
+          "title": "Glædeligt Nytaar! Galopp"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Delirien. Walzer, op. 212"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Jokey-Polka. Polka schnell, op. 278",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "An der schönen blauen Donau. Walzer, op. 314",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß I.",
+          "title": "Radetzky-Marsch, op. 228",
+          "encore": true
+        }
+      ]
+    },
+    "2025": {
+      "_what": "Concert after the 2022 archive scrapes — the grid shows the year empty until this entry is verified.",
+      "_note": "Authored by Claude on 2026-09-03 from the orchestra's own programme page (URL in source/sources); the three encores are from the German Wikipedia article for the year (ORF-cited) — the official page lists none. UNVERIFIED until a person checks programme and encores against the printed programme or the recording. Spellings kept as the official page writes them ('Polka francaise', 'Entweder - oder!'); the Wikipedia article writes 'Ferdinandus-Walzer' without the op. 10 and credits 'Fidele Brüder' to 'Joseph Hellmesberger' without the generation.",
+      "_disposition": "editorial",
+      "source": "Wiener Philharmoniker, Programm Neujahrskonzert 2025, https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10645/ (read 2026-09-03); encores: https://de.wikipedia.org/wiki/Neujahrskonzert_der_Wiener_Philharmoniker_2025",
+      "verified": false,
+      "date": "2025-01-01",
+      "conductor": "Riccardo Muti",
+      "sources": {
+        "philharmoniker": "https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10645/"
+      },
+      "programme": [
+        {
+          "credit": "Johann Strauß I.",
+          "title": "Freiheits-Marsch, op. 226"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Dorfschwalben aus Österreich. Walzer, op. 164"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Demolirer-Polka. Polka francaise, op. 269"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Lagunen-Walzer, op. 411"
+        },
+        {
+          "credit": "Eduard Strauß",
+          "title": "Luftig und duftig. Polka schnell, op. 206"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Ouvertüre zur Operette „Der Zigeunerbaron“"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Accelerationen. Walzer, op. 234"
+        },
+        {
+          "credit": "Josef Hellmesberger (Sohn)",
+          "title": "Fidele Brüder. Marsch aus der Operette „Das Veilchenmädl“"
+        },
+        {
+          "credit": "Constanze Geiger",
+          "title": "Ferdinandus-Walzer, op. 10 [Arr. W. Dörner]"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Entweder - oder! Polka schnell, op. 403"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Transactionen. Walzer, op. 184"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Annen-Polka, op. 117"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Tritsch-Tratsch. Polka schnell, op. 214"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Wein, Weib und Gesang. Walzer, op. 333"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Die Bajadere. Polka schnell, op. 351",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "An der schönen blauen Donau. Walzer, op. 314",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß I.",
+          "title": "Radetzky-Marsch, op. 228",
+          "encore": true
+        }
+      ]
+    },
+    "2026": {
+      "_what": "Concert after the 2022 archive scrapes — the grid shows the year empty until this entry is verified.",
+      "_note": "Authored by Claude on 2026-09-03 from the orchestra's own programme page (URL in source/sources); the three encores are from the German Wikipedia article for the year (ORF-cited) — the official page lists none. UNVERIFIED until a person checks programme and encores against the printed programme or the recording. Discrepancy to check: the official page gives the Diplomaten-Polka as op. 448, the Wikipedia article as op. 488 (448 is taken here). Wikipedia also writes 'Malapou-Galoppe, op. 148 Nr. 1' and credits the Cirkus encore to 'Philipp Fahrbach der Jüngere'.",
+      "_disposition": "editorial",
+      "source": "Wiener Philharmoniker, Programm Neujahrskonzert 2026, https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10738/ (read 2026-09-03); encores: https://de.wikipedia.org/wiki/Neujahrskonzert_der_Wiener_Philharmoniker_2026",
+      "verified": false,
+      "date": "2026-01-01",
+      "conductor": "Yannick Nézet-Séguin",
+      "sources": {
+        "philharmoniker": "https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10738/"
+      },
+      "programme": [
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Ouvertüre zur Operette „Indigo und die vierzig Räuber“"
+        },
+        {
+          "credit": "Carl Michael Ziehrer",
+          "title": "Donausagen. Walzer, op. 446"
+        },
+        {
+          "credit": "Joseph Lanner",
+          "title": "Malapou-Galoppe, op. 148"
+        },
+        {
+          "credit": "Eduard Strauß",
+          "title": "Brausteufelchen. Polka schnell, op. 154"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Fledermaus-Quadrille, op. 363"
+        },
+        {
+          "credit": "Johann Strauß I.",
+          "title": "Der Karneval in Paris. Galopp, op. 100"
+        },
+        {
+          "credit": "Franz von Suppè",
+          "title": "Ouvertüre zur Operette „Die schöne Galathée“"
+        },
+        {
+          "credit": "Josephine Weinlich",
+          "title": "Sirenen Lieder. Polka mazur, op. 13 [Arr. W. Dörner]"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Frauenwürde. Walzer, op. 277"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Diplomaten-Polka. Polka française, op. 448"
+        },
+        {
+          "credit": "Florence Price",
+          "title": "Rainbow Waltz [Arr. W. Dörner]"
+        },
+        {
+          "credit": "Hans Christian Lumbye",
+          "title": "Københavns Jernbane-Damp-Galop"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Rosen aus dem Süden. Walzer, op. 388"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Egyptischer Marsch, op. 335"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Friedenspalmen. Walzer, op. 207"
+        },
+        {
+          "credit": "Philipp Fahrbach d.J.",
+          "title": "Cirkus. Polka schnell, op. 110",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "An der schönen blauen Donau. Walzer, op. 314",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß I.",
+          "title": "Radetzky-Marsch, op. 228",
+          "encore": true
+        }
+      ]
     }
   }
 }

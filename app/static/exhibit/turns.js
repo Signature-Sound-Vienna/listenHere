@@ -216,6 +216,20 @@ export class TurnTaking {
     this._emit({ type: "denied", to: requester });
   }
 
+  /**
+   * The attract loop's sweep (attract.js): nobody holds the clock, nothing is
+   * pending, no cooldown runs, no side has a choice marked. Emits, so the
+   * prompts and the selection marks repaint from the empty state.
+   */
+  reset() {
+    this._clearTimer();
+    this.pending = null;
+    this.holder = null;
+    this.selected = [];
+    this.cooldownUntil = {};
+    this._emit({ type: "reset" });
+  }
+
   /** A snapshot for renderers and tests; arrays copied so nobody edits ours. */
   state() {
     return {

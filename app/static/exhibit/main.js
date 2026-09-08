@@ -41,6 +41,7 @@ import { applyTheme, annotationSeries, recolorAnnotations } from "./themes.js";
 import { createMiddleBand } from "./middle-band.js";
 import { createAnnotationList, groupForFileIn, hasGroupStory } from "./annotation-list.js";
 import { loadConcerts } from "./concerts.js";
+import { createAttractLoop } from "./attract.js";
 
 const config = readConfig();
 setDebug(config.debug);
@@ -1674,6 +1675,42 @@ async function boot() {
   if (config.debug) {
     console.log("exhibit: config", config);
     installFrameProbe(transport);
+  }
+  // THE ATTRACT LOOP (attract.js; plan §4.4, ruled 2026-09-07). Created only
+  // when ?attractAfterIdleMs is set — the shipped default is off — so the
+  // kiosk without it neither listens for idleness nor opens a channel. The
+  // sweep is the loop's "tidy the table": every viewport back to the listening
+  // view with nothing shown, pinned, marked, or zoomed, the glasses on their
+  // hooks, and nobody holding the clock.
+  if (config.attractAfterIdleMs > 0 || config.attractDuringPlaybackMs > 0) {
+    const sweepTable = () => {
+      for (const vp of viewports) {
+        setView(vp, "listen");
+        vp.marker?.reset();
+        vp.zoom?.setLevel(config.zoomLevels[0] ?? 1);
+        clearWash(vp);
+        vp.shownId = null;
+        vp.focusPinned = false;
+        cancelPinExpiry(vp);
+        cancelDetailFade(vp);
+        setPanelOpen(vp, false);
+        renderAnnotations(vp, store);
+      }
+      turns.reset();
+    };
+    const attract = createAttractLoop({
+      config,
+      exhibit,
+      transport,
+      viewports,
+      store,
+      host: root,
+      bandEl: band.el,
+      ixFor: (file, time) => getClosestAlignmentIx(data.grids, time, file),
+      timeFor: (file, ix) => getCorrespondingTime(data.grids, file, ix),
+      sweep: sweepTable,
+    });
+    window._exhibitTest.attract = attract;
   }
   return true;
 }

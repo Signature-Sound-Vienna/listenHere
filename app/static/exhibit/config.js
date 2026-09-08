@@ -438,7 +438,34 @@ const DEFAULTS = {
   // seamless switches reads as a glitch (user, 2026-08-26); with a grace it
   // appears only when there is a genuine wait to explain.
   loadingGrace: 0,
-  attractAfterIdleMs: 0, // 0 disables the attract loop; week 4 turns it on
+  // --- the attract loop (attract.js; plan §4.4, design ruled 2026-09-07) ---
+  // Idle for this long on EVERY viewport of the room (the screens agree over a
+  // BroadcastChannel) and the table tidies itself, raises the attract band, and
+  // plays the piece through by itself, switching recordings at the
+  // annotations. 0 = off, the shipped default until release (the staff preset
+  // carries 90 s); a visitor's touch ends the loop and finds a live table.
+  attractAfterIdleMs: 0,
+  // The second timer (user, 2026-09-07): the room untouched this long WHILE
+  // music plays, and the loop takes over from the current playhead — band up,
+  // table tidied, the pass continuing from here with the audience as it is —
+  // rather than starting the piece again. 0 = off.
+  attractDuringPlaybackMs: 0,
+  // Silence between passes of the piece, so the room breathes (user, 2026-09-07).
+  attractGapMs: 25000,
+  // Reload the page in the middle of that silence: invisible, it flushes any
+  // leak (plan §7.4) and is how the pieces will cycle (`?piece=`). Needs the
+  // kiosk browser's autoplay policy opened, or the loop resumes as "tap to
+  // start" — which it also does after any refused playback.
+  attractReload: true,
+  // Which audience's annotations each pass shows: "cycle" walks the three, or
+  // one of them by name.
+  attractAudience: "cycle",
+  // Which language's institutional logos the attract band shows ("de" | "en");
+  // the FWF line is bilingual regardless. Undecided (user, 2026-09-07), so a knob.
+  attractLogos: "de",
+  // The pieces the loop cycles through, comma-separated payload ids; empty =
+  // the one piece loaded. Each reload in the silence moves to the next.
+  attractPieces: "",
   // ?studyPanel=true mounts the staff-facing cog + tabbed parameter panel
   // (study-panel.js) for in-situ design discussion. Never on for visitors.
   studyPanel: false,

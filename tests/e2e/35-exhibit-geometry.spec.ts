@@ -498,8 +498,8 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     await expect(page.locator('.study-panel')).toBeHidden();
     await cog.click();
     await expect(page.locator('.study-panel')).toBeVisible();
-    // 6 tabs: week 3 added Turns (spec 36's subject); 0.54.0 added Views (35.29).
-    await expect(page.locator('.study-tab')).toHaveCount(6);
+    // 7 tabs: week 3 added Turns (spec 36's subject); 0.54.0 Views (35.29); 0.56.0 Attract (spec 47).
+    await expect(page.locator('.study-tab')).toHaveCount(7);
 
     // Change the band orientation from the Band tab: the page reloads with the
     // parameter in the URL — and the panel REOPENS ITSELF ON THE SAME TAB,
@@ -852,6 +852,8 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       // tappable facts wearing the shimmer cue (plan §10 note of that date).
       'bandTap=shimmer',
       'theme=parchment', // the staff ground (user, 2026-09-03)
+      'attractAfterIdleMs=90000', // the attract loop after 90 s of room-wide idle (user, 2026-09-07)
+      'attractDuringPlaybackMs=180000', // and taking over a playing, untouched table after 3 min
     ]) {
       expect(search).toContain(pair);
     }

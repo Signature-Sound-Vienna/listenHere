@@ -57,6 +57,22 @@ const TABS = [
           "How many visitor stations the screen splits into. The table is two facing halves; 1 is a single-reader debug view.",
       },
       {
+        key: "languages",
+        index: 0,
+        label: "Near half language",
+        options: ["en", "de"],
+        display: (v) => (v === "de" ? "Deutsch" : "English"),
+        hint: "The language viewport 0 reads: the explorers, the attract band, and every catalogue string. German strings arrive from the in-house translation; a string without one falls back to English.",
+      },
+      {
+        key: "languages",
+        index: 1,
+        label: "Far half language",
+        options: ["en", "de"],
+        display: (v) => (v === "de" ? "Deutsch" : "English"),
+        hint: "The language viewport 1 reads. One URL parameter for both halves: ?languages=<near>,<far>.",
+      },
+      {
         key: "splitOrientation",
         label: "Split",
         options: ["horizontal", "vertical"],
@@ -188,6 +204,53 @@ const TABS = [
         options: [false, true],
         hint:
           "Offers each viewport a toolbar switch between the listening interface and the explorers of the whole New Year's Concert series — year by year, and conductor by conductor (plan §11). Off is the shipped exhibit; an explorer draws over this half's strips while the other half keeps listening. Since 0.52.0 this is the debug and fallback entry: the ruled entry is the band (Band tab, “Tappable facts”), and every explorer carries its own close control.",
+      },
+    ],
+  },
+  {
+    id: "attract",
+    label: "Attract",
+    hint: "The unattended loop (plan §4.4): when the whole room has been idle, the table tidies itself, raises the attract band over the middle band, and plays the piece through by itself, switching recordings at the annotations. A touch ends the loop and finds a live table.",
+    params: [
+      {
+        key: "attractAfterIdleMs",
+        label: "Start after idle (ms; 0 = off)",
+        options: [0, 30000, 60000, 90000, 120000],
+        hint:
+          "How long every viewport of the room must have gone untouched, with nothing playing, before the loop starts. Both screens agree over a channel. 0 is the shipped default until release; the staff preset carries 90 s.",
+      },
+      {
+        key: "attractDuringPlaybackMs",
+        label: "Take over during playback after (ms; 0 = off)",
+        options: [0, 15000, 120000, 180000, 300000], // 15 s is for testing and demos
+        hint:
+          "The second timer: the room untouched this long while music is playing, and the loop takes over from the current playhead — band up, table tidied, the pass carrying on from here with the audience as it is — instead of starting the piece again.",
+      },
+      {
+        key: "attractGapMs",
+        label: "Silence between passes (ms)",
+        options: [10000, 25000, 40000],
+        hint: "The pause after a piece ends before the next pass starts, so the room breathes and a piece starts out of silence.",
+      },
+      {
+        key: "attractReload",
+        label: "Reload in the silence",
+        options: [true, false],
+        hint:
+          "Reload the page halfway through the silence: invisible, it flushes anything an eight-hour day accumulates, and it is how the pieces cycle. Needs the kiosk browser's autoplay policy opened, or the loop resumes as “tap to start”.",
+      },
+      {
+        key: "attractAudience",
+        label: "Annotations shown",
+        options: ["cycle", "kids", "adults", "expert"],
+        display: (v) => (v === "expert" ? "scholars" : v),
+        hint: "Whose annotations a pass shows and switches at: cycle walks the three audiences pass by pass, or hold one.",
+      },
+      {
+        key: "attractLogos",
+        label: "Logo language",
+        options: ["de", "en"],
+        hint: "Which language's institutional marks the band shows (mdw, IWK, FWF). The funder's line is bilingual regardless. Undecided (2026-09-07).",
       },
     ],
   },
@@ -444,6 +507,10 @@ const STUDY_PRESET = {
   // The parchment ground (user, 2026-09-03): the staff table reads like the
   // hand-written concert diaries the palette was drawn from.
   theme: "parchment",
+  // The attract loop (user, 2026-09-07): 90 s of room-wide idle; the shipped
+  // default stays 0 until release.
+  attractAfterIdleMs: 90000,
+  attractDuringPlaybackMs: 180000,
   annotationColors: "theme",
   // WHAT ALPHA TESTING HAS SETTLED ON (user, 2026-09-01). These four are no
   // longer "convenient to debug with" — they are the variants that keep

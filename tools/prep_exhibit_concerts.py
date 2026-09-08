@@ -136,20 +136,21 @@ PIECES = {
 }
 
 # --- composers -----------------------------------------------------------------
-# One id per person, however the two archives spell them. `de` follows German
-# orthography (the exhibit is German-primary), `en` the international form. Anyone
+# One id per person, however the two archives spell them. `de` is the German
+# display form, `en` the international one — and STRAUSS IS STRAUSS in both
+# (user ruling 2026-09-08: no ß), whatever the archives write. Anyone
 # not listed passes through as the archive wrote them, with an id slugged from the
 # name — this table exists for the handful of names the two archives spell
 # DIFFERENTLY from each other, so that one work is never counted twice.
 COMPOSERS = {
     "johann-strauss-ii": {
         "match": ["johann strauss ii", "johann strauss sohn", "johann strauss jr", "johann strauss"],
-        "de": "Johann Strauß (Sohn)", "en": "Johann Strauss II"},
+        "de": "Johann Strauss (Sohn)", "en": "Johann Strauss II"},
     "johann-strauss-i": {
         "match": ["johann strauss i", "johann strauss vater", "johann strauss sr"],
-        "de": "Johann Strauß (Vater)", "en": "Johann Strauss I"},
-    "josef-strauss": {"match": ["josef strauss", "joseph strauss"], "de": "Josef Strauß", "en": "Josef Strauss"},
-    "eduard-strauss": {"match": ["eduard strauss"], "de": "Eduard Strauß", "en": "Eduard Strauss"},
+        "de": "Johann Strauss (Vater)", "en": "Johann Strauss I"},
+    "josef-strauss": {"match": ["josef strauss", "joseph strauss"], "de": "Josef Strauss", "en": "Josef Strauss"},
+    "eduard-strauss": {"match": ["eduard strauss"], "de": "Eduard Strauss", "en": "Eduard Strauss"},
     "josef-hellmesberger-ii": {
         "match": ["josef hellmesberger sohn", "josef hellmesberger d j", "josef d j hellmesberger",
                   "josef hellmesberger jr", "joseph hellmesberger sohn"],

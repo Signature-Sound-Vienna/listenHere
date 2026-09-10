@@ -12,7 +12,363 @@
     "ENTRIES ARE NOT APPLIED: the tool names them on every run instead.",
     "",
     "Fields patch the year's entry as generated: `conductor`, `date`, `title`,",
-    "`programme` (the whole list), `note`."
+    "`programme` (the whole list), `note`. A contradiction is ruled PER ITEM instead:",
+    "`items` maps the report's item number to a ruling — `take` names the archive the",
+    "arbiter agrees with ('philharmoniker' = the reading shown, 'musikverein' = the",
+    "`alt`), and `credit`, `title`, `opus` override field by field, derived exactly as",
+    "an archive's own entry would be. Keys starting with `_` are notes, never applied."
   ],
-  "years": {}
+  "years": {
+    "1946": {
+      "_what": "item 7, Persischer Marsch, op. 289 — composer: orchestra 'Johann Strauß II.' vs Musikverein 'Josef Strauß'",
+      "_prior": "From memory, UNVERIFIED — the book rules. Op. 289 is Johann Strauss II's Persischer Marsch (1864); Josef Strauss wrote no Persian march. Lean: orchestra (as shown). Confidence: high.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "7": {
+          "take": "philharmoniker"
+        }
+      }
+    },
+    "1949": {
+      "_what": "item 9 — orchestra 'Neue Pizzicato-Polka. op. 449' (Johann Strauß II.) vs Musikverein 'Pizzicato-Polka' (Johann Strauß Sohn / Josef Strauß)",
+      "_prior": "No prior. Two DIFFERENT works: the Neue Pizzicato-Polka op. 449 (Johann II alone, from Fürstin Ninetta, 1893) and the joint Pizzicato-Polka of 1869 (Johann II and Josef, no opus). Only the book, or the 1949 programme leaflet, can say which was played. Set take to philharmoniker if the book agrees with the orchestra, musikverein if it names the joint polka.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "9": {
+          "_decide": "take: philharmoniker or musikverein"
+        }
+      }
+    },
+    "1950": {
+      "_what": "item 6 — orchestra 'Aurora-Polka, op. 165' vs Musikverein 'Auroraball. Polka française, op. 219' (both Johann Strauß II.)",
+      "_prior": "From memory, UNVERIFIED — the book rules. Op. 165 is the Aurora-Polka (1855); op. 219 is the Auroraball-Tänze, a WALTZ (1859) — the Musikverein's 'Polka française, op. 219' pairs one work's genre with the other's opus, which reads as a conflation. Lean: orchestra (as shown). Confidence: low.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "6": {
+          "take": "philharmoniker"
+        }
+      }
+    },
+    "1993": {
+      "_what": "item 9 — Lanner, Hans-Jörgel-Polka: orchestra op. 141 vs Musikverein op. 194",
+      "_prior": "From memory, UNVERIFIED — the book rules. Lanner's Hans-Jörgel-Polka is op. 194 (1842); an op. 141 would date from about 1839, before the polka was written. The orchestra's 141 looks like a digit slip. Lean: Musikverein. Confidence: medium.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "9": {
+          "take": "musikverein"
+        }
+      }
+    },
+    "1997": {
+      "_what": "item 4 — Patronessen-Polka (française): orchestra op. 286 vs Musikverein op. 186 (both Johann Strauß II.)",
+      "_prior": "From memory, UNVERIFIED — the book rules. 'Patronessen' is Johann Strauss II's op. 286 (1864); an op. 186 would fall in 1856. The Musikverein's 186 looks like a digit slip. Lean: orchestra (as shown). Confidence: medium.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "4": {
+          "take": "philharmoniker"
+        }
+      }
+    },
+    "2004": {
+      "_what": "item 12 — Eislauf-Polka, op. 261: orchestra 'Johann Strauß I.' vs Musikverein 'Josef Strauß'",
+      "_prior": "From memory, UNVERIFIED — the book rules. Eislauf, Polka schnell op. 261 is Josef Strauss's (1869); Johann Strauss I's numbered works end at op. 251, so an op. 261 of his cannot exist. Lean: Musikverein. Confidence: high.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "12": {
+          "take": "musikverein"
+        }
+      }
+    },
+    "2016": {
+      "_what": "item 11 — Auf Ferienreisen, op. 133: orchestra 'Josef Strauß' vs Musikverein 'Johann Strauß Sohn'; item 14 — Ball-Szene: orchestra 'Josef Hellmesberger (Vater)' vs Musikverein 'Josef Hellmesberger d.J.'",
+      "_prior_11": "From memory, UNVERIFIED — the book rules. Auf Ferienreisen, Polka schnell op. 133 is Josef Strauss's (1863). The Musikverein's fuller title ('bearbeitet von Gerald Wirth', the boys' choir arrangement) is right; set title if the arranger should show. Lean: orchestra (as shown). Confidence: high.",
+      "_prior_14": "From memory, UNVERIFIED — the book rules. The Ballszene is programmed as Josef Hellmesberger Jr.'s, and the 2016 printed programme, as recalled, credited the younger Hellmesberger. take=musikverein also brings its fuller title ('nach einer Etude von Joseph Mayseder; arrangiert von Wolfgang Dörner'); set title for the short form. Lean: Musikverein. Confidence: medium.",
+      "_disposition": "editorial",
+      "source": "Kurt Dieman-Dichtl, Wiens goldener Klang, p. ? (page to fill)",
+      "verified": false,
+      "items": {
+        "11": {
+          "take": "philharmoniker"
+        },
+        "14": {
+          "take": "musikverein"
+        }
+      }
+    },
+    "2024": {
+      "_what": "Concert after the 2022 archive scrapes — the grid shows the year empty until this entry is verified.",
+      "_note": "Authored by Claude on 2026-09-03 from the orchestra's own programme page (URL in source/sources); the three encores are from the German Wikipedia article for the year (ORF-cited) — the official page lists none. UNVERIFIED until a person checks programme and encores against the printed programme or the recording.",
+      "_disposition": "editorial",
+      "source": "Wiener Philharmoniker, Programm Neujahrskonzert 2024, https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10466/ (read 2026-09-03); encores: https://de.wikipedia.org/wiki/Neujahrskonzert_der_Wiener_Philharmoniker_2024",
+      "verified": false,
+      "date": "2024-01-01",
+      "conductor": "Christian Thielemann",
+      "sources": {
+        "philharmoniker": "https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10466/"
+      },
+      "programme": [
+        {
+          "credit": "Karl Komzák",
+          "title": "Erzherzog Albrecht-Marsch, op. 136"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Wiener Bonbons. Walzer, op. 307"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Figaro-Polka. Polka française, op. 320"
+        },
+        {
+          "credit": "Josef Hellmesberger (Sohn)",
+          "title": "Für die ganze Welt. Walzer"
+        },
+        {
+          "credit": "Eduard Strauß",
+          "title": "Ohne Bremse. Polka schnell, op. 238"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Ouvertüre zur Operette „Waldmeister“"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Ischler Walzer. Nachgelassener Walzer Nr. 2"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Nachtigall-Polka, op. 222"
+        },
+        {
+          "credit": "Eduard Strauß",
+          "title": "Die Hochquelle. Polka mazur, op. 114"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Neue Pizzicato-Polka. op. 449"
+        },
+        {
+          "credit": "Josef Hellmesberger (Sohn)",
+          "title": "Estudiantina-Polka aus dem Ballett „Die Perle von Iberien“"
+        },
+        {
+          "credit": "Carl Michael Ziehrer",
+          "title": "Wiener Bürger. Walzer, op. 419"
+        },
+        {
+          "credit": "Anton Bruckner",
+          "title": "Quadrille, WAB 121 (Orchestr. W. Dörner)"
+        },
+        {
+          "credit": "Hans Christian Lumbye",
+          "title": "Glædeligt Nytaar! Galopp"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Delirien. Walzer, op. 212"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Jokey-Polka. Polka schnell, op. 278",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "An der schönen blauen Donau. Walzer, op. 314",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß I.",
+          "title": "Radetzky-Marsch, op. 228",
+          "encore": true
+        }
+      ]
+    },
+    "2025": {
+      "_what": "Concert after the 2022 archive scrapes — the grid shows the year empty until this entry is verified.",
+      "_note": "Authored by Claude on 2026-09-03 from the orchestra's own programme page (URL in source/sources); the three encores are from the German Wikipedia article for the year (ORF-cited) — the official page lists none. UNVERIFIED until a person checks programme and encores against the printed programme or the recording. Spellings kept as the official page writes them ('Polka francaise', 'Entweder - oder!'); the Wikipedia article writes 'Ferdinandus-Walzer' without the op. 10 and credits 'Fidele Brüder' to 'Joseph Hellmesberger' without the generation.",
+      "_disposition": "editorial",
+      "source": "Wiener Philharmoniker, Programm Neujahrskonzert 2025, https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10645/ (read 2026-09-03); encores: https://de.wikipedia.org/wiki/Neujahrskonzert_der_Wiener_Philharmoniker_2025",
+      "verified": false,
+      "date": "2025-01-01",
+      "conductor": "Riccardo Muti",
+      "sources": {
+        "philharmoniker": "https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10645/"
+      },
+      "programme": [
+        {
+          "credit": "Johann Strauß I.",
+          "title": "Freiheits-Marsch, op. 226"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Dorfschwalben aus Österreich. Walzer, op. 164"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Demolirer-Polka. Polka francaise, op. 269"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Lagunen-Walzer, op. 411"
+        },
+        {
+          "credit": "Eduard Strauß",
+          "title": "Luftig und duftig. Polka schnell, op. 206"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Ouvertüre zur Operette „Der Zigeunerbaron“"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Accelerationen. Walzer, op. 234"
+        },
+        {
+          "credit": "Josef Hellmesberger (Sohn)",
+          "title": "Fidele Brüder. Marsch aus der Operette „Das Veilchenmädl“"
+        },
+        {
+          "credit": "Constanze Geiger",
+          "title": "Ferdinandus-Walzer, op. 10 [Arr. W. Dörner]"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Entweder - oder! Polka schnell, op. 403"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Transactionen. Walzer, op. 184"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Annen-Polka, op. 117"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Tritsch-Tratsch. Polka schnell, op. 214"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Wein, Weib und Gesang. Walzer, op. 333"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Die Bajadere. Polka schnell, op. 351",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "An der schönen blauen Donau. Walzer, op. 314",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß I.",
+          "title": "Radetzky-Marsch, op. 228",
+          "encore": true
+        }
+      ]
+    },
+    "2026": {
+      "_what": "Concert after the 2022 archive scrapes — the grid shows the year empty until this entry is verified.",
+      "_note": "Authored by Claude on 2026-09-03 from the orchestra's own programme page (URL in source/sources); the three encores are from the German Wikipedia article for the year (ORF-cited) — the official page lists none. UNVERIFIED until a person checks programme and encores against the printed programme or the recording. Discrepancy to check: the official page gives the Diplomaten-Polka as op. 448, the Wikipedia article as op. 488 (448 is taken here). Wikipedia also writes 'Malapou-Galoppe, op. 148 Nr. 1' and credits the Cirkus encore to 'Philipp Fahrbach der Jüngere'.",
+      "_disposition": "editorial",
+      "source": "Wiener Philharmoniker, Programm Neujahrskonzert 2026, https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10738/ (read 2026-09-03); encores: https://de.wikipedia.org/wiki/Neujahrskonzert_der_Wiener_Philharmoniker_2026",
+      "verified": false,
+      "date": "2026-01-01",
+      "conductor": "Yannick Nézet-Séguin",
+      "sources": {
+        "philharmoniker": "https://www.wienerphilharmoniker.at/de/konzerte/neujahrskonzert/10738/"
+      },
+      "programme": [
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Ouvertüre zur Operette „Indigo und die vierzig Räuber“"
+        },
+        {
+          "credit": "Carl Michael Ziehrer",
+          "title": "Donausagen. Walzer, op. 446"
+        },
+        {
+          "credit": "Joseph Lanner",
+          "title": "Malapou-Galoppe, op. 148"
+        },
+        {
+          "credit": "Eduard Strauß",
+          "title": "Brausteufelchen. Polka schnell, op. 154"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Fledermaus-Quadrille, op. 363"
+        },
+        {
+          "credit": "Johann Strauß I.",
+          "title": "Der Karneval in Paris. Galopp, op. 100"
+        },
+        {
+          "credit": "Franz von Suppè",
+          "title": "Ouvertüre zur Operette „Die schöne Galathée“"
+        },
+        {
+          "credit": "Josephine Weinlich",
+          "title": "Sirenen Lieder. Polka mazur, op. 13 [Arr. W. Dörner]"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Frauenwürde. Walzer, op. 277"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Diplomaten-Polka. Polka française, op. 448"
+        },
+        {
+          "credit": "Florence Price",
+          "title": "Rainbow Waltz [Arr. W. Dörner]"
+        },
+        {
+          "credit": "Hans Christian Lumbye",
+          "title": "Københavns Jernbane-Damp-Galop"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Rosen aus dem Süden. Walzer, op. 388"
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "Egyptischer Marsch, op. 335"
+        },
+        {
+          "credit": "Josef Strauß",
+          "title": "Friedenspalmen. Walzer, op. 207"
+        },
+        {
+          "credit": "Philipp Fahrbach d.J.",
+          "title": "Cirkus. Polka schnell, op. 110",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß II.",
+          "title": "An der schönen blauen Donau. Walzer, op. 314",
+          "encore": true
+        },
+        {
+          "credit": "Johann Strauß I.",
+          "title": "Radetzky-Marsch, op. 228",
+          "encore": true
+        }
+      ]
+    }
+  }
 }

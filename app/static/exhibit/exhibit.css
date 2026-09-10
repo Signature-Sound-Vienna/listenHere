@@ -87,6 +87,7 @@ html, body {
 }
 
 #screen {
+  position: relative; /* the attract band is positioned inside it */
   display: flex;
   height: 100%;
   padding: env(safe-area-inset-top) env(safe-area-inset-right)
@@ -148,7 +149,17 @@ html, body {
   transform-origin: 50% 50%;
 }
 
-.strips { display: flex; flex-direction: column; gap: 2px; position: relative; }
+/* THE HALF-PIXEL TIE (alpha tester, 2026-09-10). The stack is centred in its
+ * half, so its top lands on x.5 whenever the residual is odd — 119.5 px in the
+ * far half with the shipped band height, measured. Composited content on an
+ * exact half-pixel is rounded afresh on every repaint, and the far half,
+ * rotated 180°, keeps the tie the near half's rounding happens to settle:
+ * the whole waveform shimmied a pixel several times a second whenever an
+ * overlay (the switch cue) or will-change had made it a layer. A hundredth of
+ * a pixel breaks the tie both ways (.51 rounds up, its rotated .49 down) and
+ * is invisible. NEVER promote .vp or the band to a compositor layer for
+ * performance — that is what surfaced this. */
+.strips { display: flex; flex-direction: column; gap: 2px; position: relative; transform: translateY(0.01px); }
 
 .strip {
   height: var(--strip-height, 54px);
@@ -2306,9 +2317,12 @@ html, body {
   font-weight: 400;
 }
 
-/* shimmer: a slow sheen travelling across the name and the year, and a slow
- * light round the portrait's rim. The text keeps its own colour outside the
- * sheen — the gradient's ends ARE --tap-base — so only the highlight moves. */
+/* shimmer: a sheen passing across the name and the year, and a light travelling
+ * 220° round the portrait's rim — both on ONE 6 s rhythm with a rest between
+ * passes (user, 2026-09-03: 5 s at first, then 3.85 s, 4.5 s, settled at 6 s;
+ * the rim used to circle without pause). The text keeps its own
+ * colour outside the sheen — the gradient's ends ARE --tap-base — so only the
+ * highlight moves. */
 .middle-band[data-tap="shimmer"] .mb-conductor.is-tappable,
 .middle-band[data-tap="shimmer"] .mb-year.is-tappable {
   background-image: linear-gradient(
@@ -2322,7 +2336,7 @@ html, body {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: band-sheen 5s ease-in-out infinite;
+  animation: band-sheen 6s ease-in-out infinite;
 }
 @keyframes band-sheen {
   from { background-position: 100% 0; }
@@ -2345,7 +2359,29 @@ html, body {
   animation: band-sheen-ring 6s linear infinite;
   pointer-events: none;
 }
-@keyframes band-sheen-ring { to { transform: rotate(360deg); } }
+/* 220° of a turn in the first 70% of the cycle, then the light fades and rests
+ * where it stopped until the next pass — intermittent, like the sheen. */
+@keyframes band-sheen-ring {
+  0% { transform: rotate(0deg); opacity: 0; }
+  10% { opacity: 1; }
+  60% { opacity: 1; }
+  70% { transform: rotate(220deg); opacity: 0; }
+  100% { transform: rotate(220deg); opacity: 0; }
+}
+/* The fact whose explorer this reader's half is showing stands its shimmer
+ * down (user, 2026-09-03): a shimmering year beside the open by-year explorer
+ * would be asking again. Still tappable, just quiet. Mirrored only, by
+ * construction (middle-band.js setCurrentView). */
+.middle-band[data-tap="shimmer"] .mb-cluster[data-current-view="years"] .mb-year.is-tappable,
+.middle-band[data-tap="shimmer"] .mb-cluster[data-current-view="conductors"] .mb-conductor.is-tappable {
+  animation: none;
+  background-image: none;
+  color: var(--tap-base);
+}
+.middle-band[data-tap="shimmer"] .mb-cluster[data-current-view="conductors"] .mb-portrait.is-tappable::after {
+  content: none;
+  animation: none;
+}
 /* Reduced motion gets the underline instead: the cue still exists, nothing moves. */
 @media (prefers-reduced-motion: reduce) {
   .middle-band[data-tap="shimmer"] .mb-conductor.is-tappable,
@@ -2359,4 +2395,276 @@ html, body {
     text-decoration-color: var(--ex-band-text-soft);
   }
   .middle-band[data-tap="shimmer"] .mb-portrait.is-tappable::after { content: none; }
+}
+
+/* THE TAP ACKNOWLEDGED (user, 2026-09-03). A working fact answers the finger
+ * at once, before the explorer has drawn: a hairline frame blooms round it and
+ * fades over 400 ms while the fact dips a hair, like a key going down. The same
+ * on every cue — the cue says "tappable", this says "tapped" — and only on a
+ * working fact, since a plain fact is not a button (middle-band.js sets the
+ * class and clears it by time). Drawn by ::before (::after belongs to the glyph
+ * and the rim light), behind the text; `scale` rather than `transform`, so it
+ * composes with any orientation transform and leaves the sheen's animation
+ * alone. */
+.middle-band[data-tap] .is-tappable {
+  position: relative;
+  isolation: isolate;
+  transition: scale 160ms ease-out;
+}
+.middle-band[data-tap] .is-tappable.is-acknowledged { scale: 0.97; }
+.middle-band[data-tap] .is-tappable.is-acknowledged::before {
+  content: "";
+  position: absolute;
+  inset: -3px -9px;
+  border-radius: 999px;
+  border: 1px solid var(--ex-band-border);
+  background: color-mix(in srgb, var(--ex-band-text) 10%, transparent);
+  z-index: -1;
+  pointer-events: none;
+  animation: band-ack-frame 400ms ease-out forwards;
+}
+.middle-band[data-tap] .mb-portrait.is-tappable.is-acknowledged::before {
+  inset: -6px;
+  border-radius: 50%;
+  background: none;
+}
+@keyframes band-ack-frame {
+  0% { opacity: 0; scale: 0.94; }
+  30% { opacity: 1; }
+  100% { opacity: 0; scale: 1.04; }
+}
+/* Reduced motion: the frame appears and goes, nothing moves. */
+@media (prefers-reduced-motion: reduce) {
+  .middle-band[data-tap] .is-tappable { transition: none; }
+  .middle-band[data-tap] .is-tappable.is-acknowledged { scale: none; }
+  .middle-band[data-tap] .is-tappable.is-acknowledged::before { animation: none; opacity: 1; }
+}
+
+/* ===========================================================================
+ * The attract band (attract.js; plan §4.4, ruled 2026-09-07). Drawn over the
+ * middle band while nobody is at the table: the station's name, a sentence of
+ * intent, the institutions' logos, the funder's line, and "tap to start" —
+ * once per reader, each copy turned to its reader — between two wavy edges
+ * that drift. Lowered on the first touch. Above the strips and the explorers
+ * (z 5), below the staff panel (50).
+ *
+ * THE WAVES ARE THE BAND'S OWN COLOUR (user, 2026-09-07): the sheet carries the
+ * background and a MASK cuts its wavy edges, so a gradient or a leather texture
+ * runs unbroken into the waves — an SVG edge filled separately could never
+ * match a gradient. The mask drifts (mask-position), the wrapper throws the
+ * drop shadow, which follows the masked shape. The parchment theme lifts the
+ * sheet off the interface on the strap's saddle leather (--ex-attract-bg, with
+ * paper text); other palettes fall back to the band's own tokens.
+ * =========================================================================== */
+.attract-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 6;
+  filter: drop-shadow(0 10px 16px rgba(20, 10, 0, 0.42)) drop-shadow(0 -10px 16px rgba(20, 10, 0, 0.3));
+  opacity: 0;
+  transition: opacity 400ms ease;
+}
+.attract-band.is-up { opacity: 1; }
+.attract-band[hidden] { display: none; }
+.ab-body { position: relative; animation: ab-breathe 9s ease-in-out infinite alternate; }
+@keyframes ab-breathe {
+  from { transform: translateY(-4px); }
+  to { transform: translateY(4px); }
+}
+.ab-sheet {
+  position: relative;
+  background: var(--ex-attract-bg, var(--ex-band-drape, var(--ex-band-bg)));
+  color: var(--ex-attract-text, var(--ex-band-text));
+  padding: 30px 0;
+}
+/* The stitched seam, the medallions' ring in ribbon form (user, 2026-09-08): a
+ * 1 px dashed thread set INSIDE the edge with band on both sides, dashes the size
+ * of a 1 px dashed border's. Two inset layers under the copies share the sheet's
+ * wave mask: the stitch (thread dashes, 4 px in) and the fill (the band's own
+ * surface again, 5 px in, its textures shifted back into register), leaving the
+ * 1 px between them as the seam that follows the wave. */
+.ab-stitch, .ab-stitch-fill { position: absolute; left: 0; right: 0; pointer-events: none; }
+.ab-stitch {
+  top: 4px;
+  bottom: 4px;
+  background: repeating-linear-gradient(90deg,
+    var(--ex-thread-accent, var(--ex-band-border)) 0 3px, transparent 3px 6px);
+}
+.ab-stitch-fill {
+  top: 5px;
+  bottom: 5px;
+  background: var(--ex-attract-bg, var(--ex-band-drape, var(--ex-band-bg)));
+  background-position: 0 -5px;
+}
+.ab-copies { position: relative; z-index: 1; }
+/* THE RIBBON. Both edges carry the SAME two waves (periods 320 and 210 px),
+ * moving together at the same speeds, so the band keeps its width and undulates
+ * as one ribbon; the two periods interfere so the outline stays organic. The
+ * bottom edge's path is the top's, not its mirror — mirrored, crest met crest
+ * and the band pulsed instead of waving (user, 2026-09-08). Layer five is the
+ * solid body between the edges. */
+.ab-waved {
+  --ab-wave-a-top: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 28' preserveAspectRatio='none'%3E%3Cpath d='M0 14Q80 0 160 14T320 14V28H0Z'/%3E%3C/svg%3E");
+  --ab-wave-b-top: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 210 28' preserveAspectRatio='none'%3E%3Cpath d='M0 14Q52 4 105 14T210 14V28H0Z'/%3E%3C/svg%3E");
+  --ab-wave-a-bottom: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 320 28' preserveAspectRatio='none'%3E%3Cpath d='M0 14Q80 0 160 14T320 14V0H0Z'/%3E%3C/svg%3E");
+  --ab-wave-b-bottom: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 210 28' preserveAspectRatio='none'%3E%3Cpath d='M0 14Q52 4 105 14T210 14V0H0Z'/%3E%3C/svg%3E");
+  -webkit-mask-image: var(--ab-wave-a-top), var(--ab-wave-b-top), var(--ab-wave-a-bottom), var(--ab-wave-b-bottom), linear-gradient(#000, #000);
+  -webkit-mask-size: 320px 28px, 210px 28px, 320px 28px, 210px 28px, 100% calc(100% - 54px);
+  -webkit-mask-position: 0 0, 0 0, 0 100%, 0 100%, 0 27px;
+  -webkit-mask-repeat: repeat-x, repeat-x, repeat-x, repeat-x, no-repeat;
+  mask-image: var(--ab-wave-a-top), var(--ab-wave-b-top), var(--ab-wave-a-bottom), var(--ab-wave-b-bottom), linear-gradient(#000, #000);
+  mask-size: 320px 28px, 210px 28px, 320px 28px, 210px 28px, 100% calc(100% - 54px);
+  mask-position: 0 0, 0 0, 0 100%, 0 100%, 0 27px;
+  mask-repeat: repeat-x, repeat-x, repeat-x, repeat-x, no-repeat;
+  /* Ponderous, like the breathing, but not sleepy (user, 2026-09-08: halfway
+   * between 24 s and 80 s): 52 s per pass, 6 and 8 px a second. */
+  animation: ab-drift 52s linear infinite;
+}
+@keyframes ab-drift {
+  to {
+    -webkit-mask-position: 320px 0, -420px 0, 320px 100%, -420px 100%, 0 27px;
+    mask-position: 320px 0, -420px 0, 320px 100%, -420px 100%, 0 27px;
+  }
+}
+/* The two readers' copies side by side, like the mirrored band's clusters —
+ * stacked they came to 700 px and swallowed the strips (measured 2026-09-07). */
+.ab-copies { display: flex; flex-direction: row; align-items: stretch; }
+.ab-copy {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 30px 4px;
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 8px;
+}
+.ab-copy + .ab-copy { border-left: 1px solid rgba(255, 255, 255, 0.18); }
+.ab-eyebrow {
+  margin: 0 0 -4px;
+  font-size: 0.74rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+/* One line, whatever the copy's width (user, 2026-09-08): the size follows the
+ * copy (container units) between two bounds, and the line never wraps. */
+.ab-title {
+  margin: 0;
+  font-size: clamp(1.05rem, 4.3cqi, 1.65rem);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+.ab-intro p, .ab-fwf p { margin: 0; }
+.ab-intro { font-size: 0.9rem; line-height: 1.3; }
+/* The marks, MONOCHROME in the band's paper colour (user, 2026-09-08): each SVG
+ * is a mask over the text colour, so nothing sits behind them — the coloured
+ * marks vanished bare on the leather and read as foreign on a white card. */
+.ab-logos {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(12px, 4%, 30px);
+  /* A definite width, so the marks' sizes resolve against it — inside a
+   * shrink-to-fit pill they collapsed to a few pixels. */
+  width: min(100%, 600px);
+  box-sizing: border-box;
+  padding: 6px 14px;
+}
+/* Each mark scales with the copy's width (the pill overflowed into the other
+ * reader's copy on a narrow screen, user 2026-09-07): capped in height, and in
+ * width to a share of the pill, so the three always fit inside with room. */
+/* 52 px tall at full size (× a per-mark scale, the IWK wordmark at 0.85); the flex
+ * BASIS is each mark's natural width, so when a narrow copy cannot hold all
+ * three they shrink in proportion and stay level (user, 2026-09-08). */
+.ab-mark {
+  display: block;
+  flex: 1 1 calc(52px * var(--ab-mark-ratio, 3) * var(--ab-mark-scale, 1));
+  max-width: calc(52px * var(--ab-mark-ratio, 3) * var(--ab-mark-scale, 1));
+  min-width: 0;
+  aspect-ratio: var(--ab-mark-ratio, 3);
+  background: var(--ex-attract-text, var(--ex-band-text));
+  -webkit-mask: var(--ab-mark-src) center / contain no-repeat;
+  mask: var(--ab-mark-src) center / contain no-repeat;
+}
+.ab-fwf { font-size: 0.7rem; line-height: 1.3; color: var(--ex-attract-text-soft, var(--ex-band-text-soft)); }
+.ab-tap { margin: 2px 0 0; display: flex; align-items: center; gap: 10px; font-size: 0.95rem; }
+.ab-tap-glyph {
+  width: 26px;
+  height: 26px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.ab-tap-ring {
+  stroke-dasharray: 2 3;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ab-ring 2.4s ease-in-out infinite;
+}
+@keyframes ab-ring {
+  0%, 100% { transform: scale(0.85); opacity: 0.35; }
+  50% { transform: scale(1.15); opacity: 0.8; }
+}
+/* Playback refused (no activation yet): the invitation is the whole point. */
+.attract-band.is-locked .ab-tap { font-weight: 600; }
+.attract-band.is-locked .ab-tap-glyph { stroke: var(--ex-accent-border); }
+@media (prefers-reduced-motion: reduce) {
+  .ab-waved, .ab-body, .ab-tap-ring { animation: none; }
+  .attract-band { transition: none; }
+}
+
+/* ===========================================================================
+ * ALPHA-TESTER FEEDBACK, 2026-09-10 — the audible strip more salient
+ * (?activeStrip), and a cue for switches a side did not make (?switchCue).
+ * =========================================================================== */
+/* edge: an accent line along the audible strip's top. Combined with the
+ * selection's right-edge inset where both apply, since box-shadow is one list. */
+.vp[data-active-strip="edge"] .strip.is-active { box-shadow: inset 0 3px 0 var(--ex-accent-border); }
+.vp[data-active-strip="edge"] .strip.is-active.is-selected {
+  box-shadow: inset 0 3px 0 var(--ex-accent-border), inset -4px 0 0 var(--ex-accent);
+}
+/* glow: a ring in the two-pixel gap between strips and a soft halo, the strip
+ * lifted a level so the halo paints over its neighbours. */
+.vp[data-active-strip="glow"] .strip.is-active {
+  z-index: 1;
+  box-shadow: 0 0 0 2px var(--ex-accent-border), 0 0 14px color-mix(in srgb, var(--ex-accent-border) 55%, transparent);
+}
+.vp[data-active-strip="glow"] .strip.is-active.is-selected {
+  box-shadow: 0 0 0 2px var(--ex-accent-border), 0 0 14px color-mix(in srgb, var(--ex-accent-border) 55%, transparent),
+    inset -4px 0 0 var(--ex-accent);
+}
+/* bars: the three-bar "now playing" glyph after the caption (strips.js), on the
+ * audible strip only, moving only while the clock runs. */
+.strip-live { display: none; margin-left: 8px; align-items: flex-end; gap: 2px; height: 10px; vertical-align: -1px; }
+.vp[data-active-strip="bars"] .strip.is-active .strip-live { display: inline-flex; }
+.strip-live i { display: block; width: 3px; height: 6px; border-radius: 1px; background: var(--ex-accent-border); box-shadow: var(--ex-glow); }
+#screen[data-playing="true"] .vp[data-active-strip="bars"] .strip.is-active .strip-live i {
+  animation: strip-live 700ms ease-in-out infinite alternate;
+}
+#screen[data-playing="true"] .vp[data-active-strip="bars"] .strip.is-active .strip-live i:nth-child(2) { animation-delay: -250ms; }
+#screen[data-playing="true"] .vp[data-active-strip="bars"] .strip.is-active .strip-live i:nth-child(3) { animation-delay: -500ms; }
+@keyframes strip-live { from { height: 3px; } to { height: 10px; } }
+
+/* The switch cue: an SVG over the strip stack, above the captions (z 2) and
+ * below the turn prompt (4). DELIBERATELY FOREIGN (user, 2026-09-10): a
+ * pumpkin-orange marker line over a pale halo, in no palette's colour, so it reads
+ * as drawn on the interface over any waveform and theme. */
+.switch-cue { --cue: #f07f1a; --cue-halo: rgba(255, 252, 245, 0.9); position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 3; }
+.switch-cue path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.switch-cue .cue-under { stroke: var(--cue-halo); stroke-width: 4.5; } /* a hairline of halo each side of the 3.5 px line */
+.switch-cue .cue-line { stroke: var(--cue); stroke-width: 3.5; }
+.switch-cue .cue-ghost { stroke: var(--cue); stroke-width: 3.5; opacity: 0.4; }
+.switch-cue .cue-head { fill: var(--cue); stroke: var(--cue-halo); stroke-width: 1; paint-order: stroke; }
+.switch-cue .cue-dot { fill: var(--cue-halo); stroke: var(--cue); stroke-width: 2; }
+@media (prefers-reduced-motion: reduce) {
+  .strip-live i { animation: none !important; height: 7px; }
 }

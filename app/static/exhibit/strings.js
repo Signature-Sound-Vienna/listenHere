@@ -37,6 +37,26 @@ export const FALLBACK_LANGUAGE = "en";
  */
 const CATALOGUE = {
   "app.title": { en: "Same Procedure…?" },
+  // The attract band (attract.js): the first SHARED surface allowed to carry
+  // text — it exists only while nobody is at the table, so the two-readers
+  // tension of the middle band (plan §6.3) does not arise; each copy shows every
+  // language the string has, German first. The title stays English by design
+  // (user, 2026-09-07). German for intro and tap line: in-house translation.
+  "attract.eyebrow": { de: "Die Wiener Neujahrskonzerte", en: "Vienna's New Year's Concerts" },
+  "attract.title": { en: "Same Procedure as Every Year?" },
+  "attract.intro": {
+    de: "Jedes Jahr am Neujahrstag spielen die Wiener Philharmoniker Stücke aus dem Strauss-Repertoire für ein Millionenpublikum in aller Welt – und nie zweimal gleich. Hören Sie sich an dieser Station durch die Aufnahmen, Note für Note aneinander ausgerichtet. Wechseln Sie mitten in der Phrase zwischen ihnen und entdecken Sie die Unterschiede!",
+    en: "Every New Year's Day the Wiener Philharmoniker perform pieces from the Strauss repertoire to an audience of millions around the world, and never the same way twice. Use this exhibit to listen your way through the recordings, lined up note-for-note. Switch between them mid-phrase to explore the differences!",
+  },
+  // The room is already listening — the loop plays — so the tap BEGINS, it does not
+  // start the listening (user, 2026-09-08).
+  // Not "a recording": under the strap the intended tap is a medallion, and the
+  // band itself takes the first tap anyway — any tap begins (user, 2026-09-08).
+  "attract.tap": { de: "Tippen Sie, um loszulegen", en: "Tap to get started" },
+  "attract.fwf": {
+    de: "Dieses Wissenschaftskommunikationsprojekt wurde durch den Wissenschaftsfond FWF finanziert: https://doi.org/10.55776/SCP1556025",
+    en: "A science communication project funded by the Austrian Science Fund (FWF): https://doi.org/10.55776/SCP1556025",
+  },
   "listen.nowPlaying": { en: "Now playing" },
   "listen.tapToListen": { en: "Tap a recording to hear it" },
   // PROVISIONAL wording, to be settled by the user testing in Oct/Nov 2026.

@@ -18,7 +18,8 @@
 // stays a minimal diff against the shipped exhibit.
 //
 // Parameters are declared in TABS below — adding a config field to the panel is
-// one entry there, nothing else.
+// one entry there, nothing else (a per-viewport field: one entry per slot, with
+// `index`).
 
 import { DEFAULTS } from "./config.js";
 import { PALETTES, CATEGORY_KEYS, categoryOptions } from "./themes.js";
@@ -34,6 +35,9 @@ const CATEGORY_LABELS = {
   accent: "Accent",
   band: "Middle band",
 };
+
+/** Panel labels for the views, the toolbar switch's own wording (strings.js `view.*`). */
+const VIEW_LABELS = { listen: "Listen", years: "Year by year", conductors: "Conductors" };
 
 // Every param carries a `hint` — the 1–2-sentence explanation behind its
 // header (user, 2026-08-27). Rendered as a title tooltip for a desktop hover
@@ -53,11 +57,20 @@ const TABS = [
           "How many visitor stations the screen splits into. The table is two facing halves; 1 is a single-reader debug view.",
       },
       {
-        key: "viewSwitch",
-        label: "View switch",
-        options: [false, true],
-        hint:
-          "Offers each viewport a toolbar switch between the listening interface and the explorers of the whole New Year's Concert series — year by year, and conductor by conductor (plan §11). Off is the shipped exhibit; an explorer draws over this half's strips while the other half keeps listening. Since 0.52.0 this is the debug and fallback entry: the ruled entry is the band (Band tab, “Tappable facts”), and every explorer carries its own close control.",
+        key: "languages",
+        index: 0,
+        label: "Near half language",
+        options: ["en", "de"],
+        display: (v) => (v === "de" ? "Deutsch" : "English"),
+        hint: "The language viewport 0 reads: the explorers, the attract band, and every catalogue string. German strings arrive from the in-house translation; a string without one falls back to English.",
+      },
+      {
+        key: "languages",
+        index: 1,
+        label: "Far half language",
+        options: ["en", "de"],
+        display: (v) => (v === "de" ? "Deutsch" : "English"),
+        hint: "The language viewport 1 reads. One URL parameter for both halves: ?languages=<near>,<far>.",
       },
       {
         key: "splitOrientation",
@@ -85,6 +98,12 @@ const TABS = [
         options: [32, 38, 44, 48, 54],
         hint:
           "Height of each waveform strip. The commentary panel is the RESIDUAL — it gets whatever the strips leave — so a taller strip is paid for out of the text. 38 is shipped; watch the fit line in the footer.",
+      },
+      {
+        key: "activeStrip",
+        label: "Audible strip",
+        options: ["surface", "edge", "glow", "bars"],
+        hint: "How loudly the strip the clock runs on says so (alpha-tester feedback, 2026-09-10: too subtle). surface is the shipped look — a brighter surface and waveform; edge adds an accent line along its top; glow an accent ring and soft glow round it; bars a small three-bar glyph after the caption that moves while the music plays.",
       },
       {
         key: "stackedRecordings",
@@ -145,7 +164,7 @@ const TABS = [
         label: "Tappable facts",
         options: ["off", "plain", "chip", "underline", "glyph", "shimmer"],
         hint:
-          "The band as the interface (plan §11(f)): tap the year to open the by-year explorer at that concert, tap the conductor's name or portrait to open the by-conductor explorer with them — on the tapping reader's own half. Needs the mirrored orientation, because only a copy per reader can say who tapped; anywhere else it resolves to off. The value is the wordless cue the tappable facts wear, to be compared at the user testing rather than picked: plain shows nothing (the discoverability baseline), chip outlines each fact softly and rings the portrait, underline draws a hairline under the name and the year, glyph adds a small chevron after them, shimmer sends a slow sheen across them and a slow light round the portrait's rim (reduced motion gets the underline). A fact is tappable only where the series can follow it: the year when the audible recording is that year's concert, the conductor when the series knows them.",
+          "The band as the interface (plan §11(f)): tap the year to open the by-year explorer at that concert, tap the conductor's name or portrait to open the by-conductor explorer with them — on the tapping reader's own half. Needs the mirrored orientation, because only a copy per reader can say who tapped; anywhere else it resolves to off. The value is the wordless cue the tappable facts wear, to be compared at the user testing rather than picked: plain shows nothing (the discoverability baseline), chip outlines each fact softly and rings the portrait, underline draws a hairline under the name and the year, glyph adds a small chevron after them, shimmer sends a sheen across them and a light once round the portrait's rim, resting between passes on one rhythm (reduced motion gets the underline). A fact is tappable only where the series can follow it: the year when the audible recording is that year's concert, the conductor when the series knows them.",
       },
       {
         key: "bandFlipMotion",
@@ -160,6 +179,91 @@ const TABS = [
         options: [72, 96, 120, 176],
         hint:
           "Height of the shared band. Rotated text pays for its length vertically, so that orientation defaults taller (176).",
+      },
+    ],
+  },
+  {
+    id: "views",
+    label: "Views",
+    hint: "The explorers of the New Year's Concert series (plan §11): which view each half starts in, and the toolbar switch between them. The band's tappable-facts entry is on the Band tab. The explorers' own styling knobs live here as they arrive.",
+    params: [
+      {
+        key: "views",
+        index: 0,
+        label: "Near half starts in",
+        options: ["listen", "years", "conductors"],
+        display: (o) => VIEW_LABELS[o] || String(o),
+        hint:
+          "Which view viewport 0 — the near, unrotated half — shows at boot: the listening interface, the by-year explorer, or the by-conductor explorer. An explorer draws over that half's strips and commentary while the other half keeps listening; the view switch below is forced on so the half can come back. One URL parameter for both halves: ?views=<near>,<far>.",
+      },
+      {
+        key: "views",
+        index: 1,
+        label: "Far half starts in",
+        options: ["listen", "years", "conductors"],
+        display: (o) => VIEW_LABELS[o] || String(o),
+        hint: "Which view viewport 1 — the far, rotated half — shows at boot. Ignored with one viewport.",
+      },
+      {
+        key: "viewSwitch",
+        label: "View switch",
+        options: [false, true],
+        hint:
+          "Offers each viewport a toolbar switch between the listening interface and the explorers of the whole New Year's Concert series — year by year, and conductor by conductor (plan §11). Off is the shipped exhibit; an explorer draws over this half's strips while the other half keeps listening. Since 0.52.0 this is the debug and fallback entry: the ruled entry is the band (Band tab, “Tappable facts”), and every explorer carries its own close control.",
+      },
+    ],
+  },
+  {
+    id: "attract",
+    label: "Attract",
+    hint: "The unattended loop (plan §4.4): when the whole room has been idle, the table tidies itself, raises the attract band over the middle band, and plays the piece through by itself, switching recordings at the annotations. A touch ends the loop and finds a live table.",
+    params: [
+      {
+        action: "attractNow",
+        label: "Demo",
+        button: "Start the attract loop now",
+        unavailable: "Loop is off — set a timer first",
+        hint: "Raises the band and starts a pass at once, whatever the idle clock says (user, 2026-09-10). Needs the loop enabled: one of the two timers above 0. Taps on this panel never count as a visitor's, so the panel can stay open while the loop runs.",
+      },
+      {
+        key: "attractAfterIdleMs",
+        label: "Start after idle (ms; 0 = off)",
+        options: [0, 30000, 60000, 90000, 120000],
+        hint:
+          "How long every viewport of the room must have gone untouched, with nothing playing, before the loop starts. Both screens agree over a channel. 0 is the shipped default until release; the staff preset carries 90 s.",
+      },
+      {
+        key: "attractDuringPlaybackMs",
+        label: "Take over during playback after (ms; 0 = off)",
+        options: [0, 15000, 120000, 180000, 300000], // 15 s is for testing and demos
+        hint:
+          "The second timer: the room untouched this long while music is playing, and the loop takes over from the current playhead — band up, table tidied, the pass carrying on from here with the audience as it is — instead of starting the piece again.",
+      },
+      {
+        key: "attractGapMs",
+        label: "Silence between passes (ms)",
+        options: [10000, 25000, 40000],
+        hint: "The pause after a piece ends before the next pass starts, so the room breathes and a piece starts out of silence.",
+      },
+      {
+        key: "attractReload",
+        label: "Reload in the silence",
+        options: [true, false],
+        hint:
+          "Reload the page halfway through the silence: invisible, it flushes anything an eight-hour day accumulates, and it is how the pieces cycle. Needs the kiosk browser's autoplay policy opened, or the loop resumes as “tap to start”.",
+      },
+      {
+        key: "attractAudience",
+        label: "Annotations shown",
+        options: ["cycle", "kids", "adults", "expert"],
+        display: (v) => (v === "expert" ? "scholars" : v),
+        hint: "Whose annotations a pass shows and switches at: cycle walks the three audiences pass by pass, or hold one.",
+      },
+      {
+        key: "attractLogos",
+        label: "Logo language",
+        options: ["de", "en"],
+        hint: "Which language's institutional marks the band shows (mdw, IWK, FWF). The funder's line is bilingual regardless. Undecided (2026-09-07).",
       },
     ],
   },
@@ -220,11 +324,24 @@ const TABS = [
           "Under the request policy, a pending request grants itself after this long, so an absent visitor can never lock the table. 0 means only an explicit grant executes it.",
       },
       {
+        key: "turnDenyCooldownMs",
+        label: "After “Not yet” (ms; 0 = ask again at once)",
+        options: [0, 5000, 10000, 20000],
+        hint:
+          "Under the request policy, how long a denied side waits before a tap of theirs is put to the listener again. Meanwhile a repeated tap only tells the requester that the other side is still listening — nobody is prompted, so a denial cannot be spammed. 0 asks again at once (shipped).",
+      },
+      {
         key: "turnNoticeMs",
         label: "Notice duration (ms)",
         options: [2000, 4000, 8000],
         hint:
           "How long the transient notices — “the other side changed the recording”, a denial — stay on screen before fading.",
+      },
+      {
+        key: "switchCue",
+        label: "Switch cue",
+        options: ["off", "arrow"],
+        hint: "A switch this side did not make — the other side's, or the attract loop's — drawn as a looping arrow from the old strip to the new one at the moment it happens, on every viewport but the taker's (alpha-tester feedback, 2026-09-10).",
       },
       {
         key: "arbiter",
@@ -402,6 +519,19 @@ const STUDY_PRESET = {
   stageRotation: 90,
   zoomControls: false,
   bandOrientation: "mirrored",
+  // The band as the interface (plan §11(f); user, 2026-09-03): the staff see the
+  // explorers — and the AI-disclosure sentence at their foot — through the
+  // tappable facts, wearing the shimmer cue. Needs the mirrored band above.
+  bandTap: "shimmer",
+  // The parchment ground (user, 2026-09-03): the staff table reads like the
+  // hand-written concert diaries the palette was drawn from.
+  theme: "parchment",
+  // The attract loop (user, 2026-09-07): 90 s of room-wide idle; the shipped
+  // default stays 0 until release.
+  attractAfterIdleMs: 90000,
+  attractDuringPlaybackMs: 180000,
+  // The switch cue (alpha-tester feedback, 2026-09-10).
+  switchCue: "arrow",
   annotationColors: "theme",
   // WHAT ALPHA TESTING HAS SETTLED ON (user, 2026-09-01). These four are no
   // longer "convenient to debug with" — they are the variants that keep
@@ -433,8 +563,24 @@ const STUDY_PRESET = {
 const TAB_KEY = "exhibitStudyTab";
 const OPEN_KEY = "exhibitStudyOpen";
 
-/** Mount the cog and the panel. Call once, only when config.studyPanel is on. */
-export function mountStudyPanel(config) {
+/**
+ * A param's value in a config object. Per-viewport fields (`views`, like
+ * `rotations` and `audiences`) are arrays in the config and one comma-separated
+ * value in the URL; a param with an `index` reads one slot, falling back to the
+ * default's slot when the URL named fewer viewports than the screen has.
+ */
+function valueOf(source, param) {
+  const v = source[param.key];
+  if (param.index === undefined) return v;
+  return v?.[param.index] ?? DEFAULTS[param.key][param.index];
+}
+
+/**
+ * Mount the cog and the panel. Call once, only when config.studyPanel is on.
+ * `actions` are the staff shortcuts a param of type `action` can call; each
+ * returns false when it could not act, and the button says so for a moment.
+ */
+export function mountStudyPanel(config, actions = {}) {
   const cog = document.createElement("button");
   cog.type = "button";
   cog.className = "study-cog";
@@ -566,17 +712,48 @@ export function mountStudyPanel(config) {
       label.textContent = param.label;
       const opts = document.createElement("span");
       opts.className = "study-options";
-      const current = String(config[param.key]);
+      if (param.action) {
+        // A staff shortcut rather than a parameter: one button, no URL change.
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "study-option study-action";
+        btn.dataset.action = param.action;
+        btn.textContent = param.button;
+        btn.addEventListener("click", () => {
+          const ok = actions[param.action]?.();
+          if (ok === false) {
+            btn.textContent = param.unavailable || "Not available";
+            setTimeout(() => (btn.textContent = param.button), 1800);
+          }
+        });
+        opts.appendChild(btn);
+        row.append(label, opts);
+        if (param.hint) {
+          label.title = param.hint;
+          label.classList.add("has-hint");
+          const hint = document.createElement("span");
+          hint.className = "study-hint";
+          hint.textContent = param.hint;
+          hint.hidden = true;
+          label.addEventListener("click", () => {
+            hint.hidden = !hint.hidden;
+          });
+          label.after(hint);
+        }
+        body.appendChild(row);
+        continue;
+      }
+      const current = String(valueOf(config, param));
       for (const option of param.options) {
         const chip = document.createElement("button");
         chip.type = "button";
         chip.className = "study-option";
-        const isDefault = String(option) === String(DEFAULTS[param.key]);
+        const isDefault = String(option) === String(valueOf(DEFAULTS, param));
         chip.textContent = (param.display ? param.display(option) : String(option)) +
           (isDefault ? " •" : "");
         chip.title = isDefault ? "default" : "";
         chip.classList.toggle("is-on", String(option) === current);
-        chip.addEventListener("click", () => applyParam(param.key, option));
+        chip.addEventListener("click", () => applyParam(param, option));
         opts.appendChild(chip);
       }
       row.append(label, opts);
@@ -606,10 +783,18 @@ export function mountStudyPanel(config) {
    * than written, so the URL stays a minimal, readable diff — and studyPanel
    * itself survives because true is not its default.
    */
-  function applyParam(key, value) {
+  function applyParam(param, value) {
+    const { key } = param;
     const params = new URLSearchParams(location.search);
-    if (String(value) === String(DEFAULTS[key])) params.delete(key);
-    else params.set(key, String(value));
+    let next = value;
+    if (param.index !== undefined) {
+      // One slot of a per-viewport field: the whole comma-separated value is
+      // rewritten, the other slots kept as they are, so the URL stays one
+      // parameter (an array stringifies comma-joined, as the URL wants it).
+      next = DEFAULTS[key].map((d, i) => (i === param.index ? value : (config[key]?.[i] ?? d)));
+    }
+    if (String(next) === String(DEFAULTS[key])) params.delete(key);
+    else params.set(key, String(next));
     // Choosing a PRESET clears every per-category pin back to "follow": a
     // preset click means "show me that theme", and stale pins silently
     // corrupting it is the confusing outcome. Pins are re-applied after, if

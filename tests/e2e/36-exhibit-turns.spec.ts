@@ -468,6 +468,67 @@ test.describe('36. Turn-taking policies', () => {
     expect(s.holder).toBe(1);
     expect(s.activeFile).toBe(order[1]);
   });
+
+  // 36.20 After "Not yet", a cooldown (user, 2026-09-03; ?turnDenyCooldownMs,
+  // 0 = off, the shipped behaviour): a repeated tap from the denied side is
+  // not put to the holder again — no prompt — the requester just sees "the
+  // other side is still listening" once more, until the period is over. The
+  // tap still marks their choice on their own half.
+  test('36.20 after a denial the requester waits out the cooldown: no new prompt, the notice instead, then the prompt again', async ({
+    page,
+  }) => {
+    const { order, ref } = await boot(page, 'turnPolicy=request&turnDenyCooldownMs=1500&turnNoticeMs=600');
+    await armQuietTransport(page);
+    const [a, b] = order.filter((f) => f !== ref);
+    await tap(page, 0, a);
+    await setPlaying(page, true);
+    await tap(page, 1, b);
+    await page.click('.vp[data-viewport="0"] .turn-deny');
+    expect((await turnEl(page, 1)).role).toBe('notice');
+    // Let the denial's notice fade, so the next notice is provably the cooldown's.
+    await expect.poll(async () => (await turnEl(page, 1)).hidden).toBe(true);
+
+    await tap(page, 1, b);
+    let s = await turnState(page);
+    expect(s.pending, 'no request is put to the holder during the cooldown').toBeNull();
+    expect(s.holder).toBe(0);
+    expect(s.activeFile).toBe(a);
+    expect((await turnEl(page, 0)).hidden, 'the holder is not prompted again').toBe(true);
+    const note = await turnEl(page, 1);
+    expect(note.role).toBe('notice');
+    expect(note.text).toContain('still listening');
+    expect(note.buttons).toBe(0);
+    expect(await selectedIn(page, 1), 'the tap still marks the choice on its own half').toEqual([b]);
+    expect(
+      await page.evaluate(() => (window as any)._exhibitTest.turns.state().cooldownUntil[1] > Date.now()),
+    ).toBe(true);
+
+    // The period over, a tap is a request again.
+    await page.waitForTimeout(1600);
+    await tap(page, 1, b);
+    s = await turnState(page);
+    expect(s.pending).toEqual({ viewport: 1, file: b });
+    expect((await turnEl(page, 0)).buttons).toBe(2);
+    expect(await page.evaluate(() => (window as any)._taps.length)).toBe(1);
+  });
+
+  // 36.21 The default is 0: a re-tap after a denial prompts again at once —
+  // the shipped behaviour, kept for the A/B.
+  test('36.21 with no cooldown configured a re-tap after a denial prompts the holder again at once', async ({
+    page,
+  }) => {
+    const { order, ref } = await boot(page, 'turnPolicy=request');
+    await armQuietTransport(page);
+    const [a, b] = order.filter((f) => f !== ref);
+    await tap(page, 0, a);
+    await setPlaying(page, true);
+    await tap(page, 1, b);
+    await page.click('.vp[data-viewport="0"] .turn-deny');
+    await tap(page, 1, b);
+    expect((await turnState(page)).pending).toEqual({ viewport: 1, file: b });
+    expect((await turnEl(page, 0)).buttons).toBe(2);
+    expect(await page.evaluate(() => (window as any)._exhibitTest.config.turnDenyCooldownMs)).toBe(0);
+  });
 });
 
 test.describe('36b. The AudioArbiter', () => {

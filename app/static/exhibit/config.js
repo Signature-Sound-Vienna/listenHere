@@ -227,9 +227,10 @@ const DEFAULTS = {
   //                 like the other tappables on the table.
   //   "underline" — a hairline under the name and the year.
   //   "glyph"     — a small chevron after the name and the year.
-  //   "shimmer"   — a slow sheen across the name and the year, and a slow
-  //                 light travelling round the portrait's rim; reduced motion
-  //                 gets the underline instead.
+  //   "shimmer"   — a sheen passing across the name and the year, and a light
+  //                 travelling once round the portrait's rim, both resting
+  //                 between passes on one rhythm; reduced motion gets the
+  //                 underline instead.
   bandTap: "off",
 
   // --- appearance ---
@@ -403,6 +404,13 @@ const DEFAULTS = {
   // request policy: a pending request is granted by itself after this many ms,
   // so an absent visitor can never lock the table. 0 = explicit grant only.
   turnGrantMs: 8000,
+  // request policy: after "Not yet", the denied side waits this long before a
+  // tap of theirs is put to the holder again — repeated taps meanwhile show
+  // the requester "the other side is still listening" and prompt nobody
+  // (user, 2026-09-03: minimise request-spamming). The holder's implicit
+  // denial (tapping their own strips while a request stands) counts too.
+  // 0 = ask again at once, the shipped behaviour.
+  turnDenyCooldownMs: 0,
   // How long the transient notices stay ("the other side changed the
   // recording", "…is still listening") before fading. UI only.
   turnNoticeMs: 4000,
@@ -430,7 +438,49 @@ const DEFAULTS = {
   // seamless switches reads as a glitch (user, 2026-08-26); with a grace it
   // appears only when there is a genuine wait to explain.
   loadingGrace: 0,
-  attractAfterIdleMs: 0, // 0 disables the attract loop; week 4 turns it on
+  // --- alpha-tester feedback, 2026-09-10 ---
+  // How loudly the AUDIBLE strip says so ("quite subtle"). A/B variants; the
+  // shipped look stays the default:
+  //   "surface" — the brighter surface and waveform (as built).
+  //   "edge"    — plus an accent line along the strip's top edge.
+  //   "glow"    — plus an accent ring and soft glow round the strip.
+  //   "bars"    — plus a small three-bar "now playing" glyph after the caption,
+  //               moving while the clock runs.
+  activeStrip: "surface",
+  // A switch the reader did NOT make themselves — the other side's, or the
+  // attract loop's — is shown as a looping arrow from the old strip to the new
+  // one at the moment of the switch, on every viewport but the taker's. A
+  // reader who chose the jump needs no telling. "off" | "arrow".
+  switchCue: "off",
+
+  // --- the attract loop (attract.js; plan §4.4, design ruled 2026-09-07) ---
+  // Idle for this long on EVERY viewport of the room (the screens agree over a
+  // BroadcastChannel) and the table tidies itself, raises the attract band, and
+  // plays the piece through by itself, switching recordings at the
+  // annotations. 0 = off, the shipped default until release (the staff preset
+  // carries 90 s); a visitor's touch ends the loop and finds a live table.
+  attractAfterIdleMs: 0,
+  // The second timer (user, 2026-09-07): the room untouched this long WHILE
+  // music plays, and the loop takes over from the current playhead — band up,
+  // table tidied, the pass continuing from here with the audience as it is —
+  // rather than starting the piece again. 0 = off.
+  attractDuringPlaybackMs: 0,
+  // Silence between passes of the piece, so the room breathes (user, 2026-09-07).
+  attractGapMs: 25000,
+  // Reload the page in the middle of that silence: invisible, it flushes any
+  // leak (plan §7.4) and is how the pieces will cycle (`?piece=`). Needs the
+  // kiosk browser's autoplay policy opened, or the loop resumes as "tap to
+  // start" — which it also does after any refused playback.
+  attractReload: true,
+  // Which audience's annotations each pass shows: "cycle" walks the three, or
+  // one of them by name.
+  attractAudience: "cycle",
+  // Which language's institutional logos the attract band shows ("de" | "en");
+  // the FWF line is bilingual regardless. Undecided (user, 2026-09-07), so a knob.
+  attractLogos: "de",
+  // The pieces the loop cycles through, comma-separated payload ids; empty =
+  // the one piece loaded. Each reload in the silence moves to the next.
+  attractPieces: "",
   // ?studyPanel=true mounts the staff-facing cog + tabbed parameter panel
   // (study-panel.js) for in-situ design discussion. Never on for visitors.
   studyPanel: false,

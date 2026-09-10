@@ -495,6 +495,17 @@ export const PALETTES = {
       // long edges onto the straps it physically crosses.
       "--ex-band-drape": "linear-gradient(180deg, #ead9b4, #e0cfa8 30%, #d5c090)",
       "--ex-band-shadow": "0 5px 12px rgba(46,33,16,0.35), 0 -5px 12px rgba(46,33,16,0.35)",
+      // The attract band (attract.js; user, 2026-09-07): lifted off the interface
+      // on the STRAP's saddle leather rather than the band's parchment, with the
+      // strap buttons' aged paper for its text. Grain tile + base gradient; the
+      // blotch layer is left out — it is stretched to the strap's height.
+      "--ex-attract-bg":
+        "linear-gradient(90deg, rgba(26,14,4,0.45), rgba(26,14,4,0) 18%, rgba(26,14,4,0) 82%, rgba(26,14,4,0.45)), " +
+        // Lighter than the strap itself (#6a4423 → #553318 read too dark, user 2026-09-08):
+        // a saddle tan, still leather next to the parchment.
+        `url("${PARCHMENT_LEATHER}"), linear-gradient(180deg, #9a6b3d, #7d5329)`,
+      "--ex-attract-text": "rgba(246,236,214,0.97)",
+      "--ex-attract-text-soft": "rgba(246,236,214,0.78)",
     },
     // Iron-gall ink: aged-but-legible strokes on the resting strips (the
     // within-pane contrast ruling, eyeballed 2026-08-25), near-black ink on
@@ -653,6 +664,9 @@ const CATEGORY_SLICES = {
     "--ex-marker-handle",
     "--ex-band-drape",
     "--ex-band-shadow",
+    "--ex-attract-bg",
+    "--ex-attract-text",
+    "--ex-attract-text-soft",
   ],
   accent: ["--ex-accent", "--ex-accent-border", "--ex-on-accent"],
 };

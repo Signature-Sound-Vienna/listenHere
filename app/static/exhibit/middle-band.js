@@ -239,7 +239,24 @@ export function createMiddleBand(
 
   update(null);
   setTurn(null);
-  return { el, update, refresh, setTurn, tick: play.tick };
+  /**
+   * The view a reader's half is showing, so that half's copy can stand its cue
+   * down on the fact that opened it (user, 2026-09-03): a shimmering year beside
+   * the by-year explorer it already opened would be asking again. Mirrored only
+   * — the one orientation where cluster = viewport (turns.js bandTapViewport);
+   * elsewhere the copy is shared and says nothing. `view` is "listen" | "years"
+   * | "conductors"; the CSS keys off the cluster's data-current-view. The fact
+   * stays tappable — a second tap re-selects — it is just quiet.
+   */
+  function setCurrentView(index, view) {
+    if (orientation !== "mirrored") return;
+    const c = clusters[index];
+    if (!c) return;
+    if (view && view !== "listen") c.root.dataset.currentView = view;
+    else delete c.root.dataset.currentView;
+  }
+
+  return { el, update, refresh, setTurn, setCurrentView, tick: play.tick };
 }
 
 /** The play/pause button plus the mirrored pair of time readouts. */
@@ -366,10 +383,24 @@ function buildCluster(data, language, index = 0, facts = null) {
         [year, "year"],
       ]
     : [];
+  // THE TAP ACKNOWLEDGED (user, 2026-09-03): the class runs the CSS bloom and
+  // dip (exhibit.css) and is cleared by TIME rather than animationend, so
+  // reduced motion — where nothing animates — clears it too; the reflow between
+  // remove and add restarts the animation on a quick second tap.
+  const ACK_MS = 450;
+  const ackTimers = new Map();
+  const acknowledge = (elm) => {
+    clearTimeout(ackTimers.get(elm));
+    elm.classList.remove("is-acknowledged");
+    void elm.offsetWidth;
+    elm.classList.add("is-acknowledged");
+    ackTimers.set(elm, setTimeout(() => elm.classList.remove("is-acknowledged"), ACK_MS));
+  };
   for (const [elm, fact] of factEls) {
     elm.dataset.fact = fact;
     const fire = () => {
       if (!elm.classList.contains("is-tappable")) return;
+      acknowledge(elm);
       facts.onFact?.(index, fact, current.meta, current.file);
     };
     elm.addEventListener("click", fire);

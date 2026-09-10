@@ -99,6 +99,9 @@ export class TurnTaking {
     this.selected = [];
     /** Per-viewport end of a denial's cooldown (ms epoch), while one runs. */
     this.cooldownUntil = {};
+    /** The last take that reached the transport: {viewport, file, at} — so a
+     *  switch cue can tell a side's own switch from one it only witnessed. */
+    this.lastTake = null;
 
     this._timer = 0;
     this._listeners = new Set();
@@ -202,6 +205,7 @@ export class TurnTaking {
     this._clearTimer();
     delete this.cooldownUntil[viewport];
     this.holder = viewport;
+    this.lastTake = { viewport, file, at: Date.now() };
     this._transport.select(file, seekTime);
     this._emit({ type: "granted", to: viewport });
   }
@@ -238,6 +242,7 @@ export class TurnTaking {
       pending: this.pending ? { ...this.pending } : null,
       selected: this.selected.slice(),
       cooldownUntil: { ...this.cooldownUntil },
+      lastTake: this.lastTake ? { ...this.lastTake } : null,
     };
   }
 
@@ -261,6 +266,7 @@ export class TurnTaking {
     }
     delete this.cooldownUntil[viewport];
     this.holder = viewport;
+    this.lastTake = { viewport, file, at: Date.now() };
     this._transport.select(file, seekTime);
   }
 

@@ -100,6 +100,12 @@ const TABS = [
           "Height of each waveform strip. The commentary panel is the RESIDUAL — it gets whatever the strips leave — so a taller strip is paid for out of the text. 38 is shipped; watch the fit line in the footer.",
       },
       {
+        key: "activeStrip",
+        label: "Audible strip",
+        options: ["surface", "edge", "glow", "bars"],
+        hint: "How loudly the strip the clock runs on says so (alpha-tester feedback, 2026-09-10: too subtle). surface is the shipped look — a brighter surface and waveform; edge adds an accent line along its top; glow an accent ring and soft glow round it; bars a small three-bar glyph after the caption that moves while the music plays.",
+      },
+      {
         key: "stackedRecordings",
         label: "Recordings",
         // 10 since 2026-09-01, when the author raised the cap and named
@@ -213,6 +219,13 @@ const TABS = [
     hint: "The unattended loop (plan §4.4): when the whole room has been idle, the table tidies itself, raises the attract band over the middle band, and plays the piece through by itself, switching recordings at the annotations. A touch ends the loop and finds a live table.",
     params: [
       {
+        action: "attractNow",
+        label: "Demo",
+        button: "Start the attract loop now",
+        unavailable: "Loop is off — set a timer first",
+        hint: "Raises the band and starts a pass at once, whatever the idle clock says (user, 2026-09-10). Needs the loop enabled: one of the two timers above 0. Taps on this panel never count as a visitor's, so the panel can stay open while the loop runs.",
+      },
+      {
         key: "attractAfterIdleMs",
         label: "Start after idle (ms; 0 = off)",
         options: [0, 30000, 60000, 90000, 120000],
@@ -323,6 +336,12 @@ const TABS = [
         options: [2000, 4000, 8000],
         hint:
           "How long the transient notices — “the other side changed the recording”, a denial — stay on screen before fading.",
+      },
+      {
+        key: "switchCue",
+        label: "Switch cue",
+        options: ["off", "arrow"],
+        hint: "A switch this side did not make — the other side's, or the attract loop's — drawn as a looping arrow from the old strip to the new one at the moment it happens, on every viewport but the taker's (alpha-tester feedback, 2026-09-10).",
       },
       {
         key: "arbiter",
@@ -511,6 +530,8 @@ const STUDY_PRESET = {
   // default stays 0 until release.
   attractAfterIdleMs: 90000,
   attractDuringPlaybackMs: 180000,
+  // The switch cue (alpha-tester feedback, 2026-09-10).
+  switchCue: "arrow",
   annotationColors: "theme",
   // WHAT ALPHA TESTING HAS SETTLED ON (user, 2026-09-01). These four are no
   // longer "convenient to debug with" — they are the variants that keep
@@ -554,8 +575,12 @@ function valueOf(source, param) {
   return v?.[param.index] ?? DEFAULTS[param.key][param.index];
 }
 
-/** Mount the cog and the panel. Call once, only when config.studyPanel is on. */
-export function mountStudyPanel(config) {
+/**
+ * Mount the cog and the panel. Call once, only when config.studyPanel is on.
+ * `actions` are the staff shortcuts a param of type `action` can call; each
+ * returns false when it could not act, and the button says so for a moment.
+ */
+export function mountStudyPanel(config, actions = {}) {
   const cog = document.createElement("button");
   cog.type = "button";
   cog.className = "study-cog";
@@ -687,6 +712,37 @@ export function mountStudyPanel(config) {
       label.textContent = param.label;
       const opts = document.createElement("span");
       opts.className = "study-options";
+      if (param.action) {
+        // A staff shortcut rather than a parameter: one button, no URL change.
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "study-option study-action";
+        btn.dataset.action = param.action;
+        btn.textContent = param.button;
+        btn.addEventListener("click", () => {
+          const ok = actions[param.action]?.();
+          if (ok === false) {
+            btn.textContent = param.unavailable || "Not available";
+            setTimeout(() => (btn.textContent = param.button), 1800);
+          }
+        });
+        opts.appendChild(btn);
+        row.append(label, opts);
+        if (param.hint) {
+          label.title = param.hint;
+          label.classList.add("has-hint");
+          const hint = document.createElement("span");
+          hint.className = "study-hint";
+          hint.textContent = param.hint;
+          hint.hidden = true;
+          label.addEventListener("click", () => {
+            hint.hidden = !hint.hidden;
+          });
+          label.after(hint);
+        }
+        body.appendChild(row);
+        continue;
+      }
       const current = String(valueOf(config, param));
       for (const option of param.options) {
         const chip = document.createElement("button");

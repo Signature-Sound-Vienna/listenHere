@@ -206,6 +206,7 @@ function buildScreen(root) {
     // Per-viewport, because the two halves resolve audience and language
     // independently and may differ at the same moment.
     vp.dataset.audience = config.audiences[i] ?? config.audiences[0];
+    vp.dataset.activeStrip = config.activeStrip;
     vp.dataset.language = config.languages[i] ?? config.languages[0];
     // Set BEFORE any strip mounts, like the side slot below: the strap's
     // reserved padding narrows the strips column, and WaveSurfer sizes its
@@ -381,6 +382,7 @@ let viewModules = null;   // { years, conductors }: Promise<module> each, once a
 let concertsData;         // Promise<Concerts|null> once asked; undefined = never asked
 let concertsResolved;     // the settled value of the above; undefined until it lands
 let bandHandle = null;    // the middle band, once built (its facts re-ask when the sidecar lands)
+let attractLoop = null;   // the attract loop, once created (the study panel's demo button drives it)
 
 /**
  * The series' conductor of a payload recording, or null when the series does
@@ -543,7 +545,12 @@ document.title = t("app.title", config.languages[0]);
 // never even fetch the module.
 if (config.studyPanel) {
   import("./study-panel.js")
-    .then((m) => m.mountStudyPanel(config))
+    .then((m) =>
+      m.mountStudyPanel(config, {
+        // Staff shortcut: start the loop now, whatever the idle clock says.
+        attractNow: () => (attractLoop ? (attractLoop.force(), true) : false),
+      }),
+    )
     .catch((e) => console.warn("exhibit: study panel failed to load", e));
 }
 
@@ -1698,7 +1705,7 @@ async function boot() {
       }
       turns.reset();
     };
-    const attract = createAttractLoop({
+    attractLoop = createAttractLoop({
       config,
       exhibit,
       transport,
@@ -1710,7 +1717,7 @@ async function boot() {
       timeFor: (file, ix) => getCorrespondingTime(data.grids, file, ix),
       sweep: sweepTable,
     });
-    window._exhibitTest.attract = attract;
+    window._exhibitTest.attract = attractLoop;
   }
   return true;
 }
@@ -2118,6 +2125,139 @@ function paintDim(vp, annotations, paintIds) {
 }
 
 /**
+ * THE SWITCH CUE (?switchCue=arrow; alpha-tester feedback 2026-09-10). A switch
+ * of the audible recording, or a jump of more than a second within it, that a
+ * viewport did not make itself — the other side's take, or the attract loop's —
+ * is drawn on that viewport as an arrow FROM THE POSITION THAT WAS PLAYING to
+ * the one now playing (user, 2026-09-10: time jumps as much as switches), then
+ * gone. The taker's own viewport gets nothing: they chose the jump. Attribution
+ * is turns.js's `lastTake` — a take within the last moments for this file names
+ * its viewport; anything else (the loop calls the transport directly) is
+ * nobody's, and every viewport is shown.
+ *
+ * Geometry in the strip stack's own coordinates (offsets, never client rects:
+ * the far half is rotated), x from the same formula marker.js uses.
+ */
+function cueJump(fromFile, fromTime, toFile, toTime) {
+  const take = data.turns?.lastTake;
+  const taker = take && take.file === toFile && Date.now() - take.at < 2500 ? take.viewport : null;
+  for (const vp of viewports) {
+    if (vp.index === taker) continue;
+    const a = vp.strips.get(fromFile);
+    const b = vp.strips.get(toFile);
+    if (!a || !b) continue;
+    drawSwitchArrow(vp, a, fromTime, b, toTime);
+  }
+}
+
+function stripPoint(strip, time) {
+  const wrapper = strip.ws.getWrapper?.();
+  const full = wrapper?.clientWidth || strip.host.clientWidth;
+  const inner = Number.isFinite(time) && full
+    ? Math.max(0, Math.min(strip.host.clientWidth, (time / strip.duration) * full - (strip.ws.getScroll?.() || 0)))
+    : strip.host.clientWidth / 2;
+  return {
+    x: strip.el.offsetLeft + strip.host.offsetLeft + inner,
+    y: strip.el.offsetTop + strip.el.offsetHeight / 2,
+  };
+}
+
+function drawSwitchArrow(vp, fromStrip, fromTime, toStrip, toTime) {
+  const NS = "http://www.w3.org/2000/svg";
+  // The overlay exists ONLY while an arrow is on screen. Left in place it sat
+  // over ten canvases repainting sixty times a second, and the far half — a
+  // rotated layer — paid for it as visible jitter (alpha tester, 2026-09-10).
+  if (!vp.cueEl) {
+    vp.cueEl = document.createElementNS(NS, "svg");
+    vp.cueEl.classList.add("switch-cue");
+    vp.cueEl.setAttribute("aria-hidden", "true");
+    vp.stripsEl.appendChild(vp.cueEl);
+  }
+  const p1 = stripPoint(fromStrip, fromTime);
+  const p2 = stripPoint(toStrip, toTime);
+  // Between rows: a loop out to the right and back, so the eye reads "left this
+  // row, landed on that one" rather than a straight line through the strips
+  // between. Within a row (a time jump): an arch over the strip from the old
+  // position to the new. The head follows the curve's final tangent either way.
+  let c1, c2;
+  if (fromStrip === toStrip) {
+    const lift = 34;
+    const third = (p2.x - p1.x) / 3;
+    c1 = { x: p1.x + third, y: p1.y - lift };
+    c2 = { x: p2.x - third, y: p2.y - lift };
+  } else {
+    const bulge = 64;
+    c1 = { x: p1.x + bulge, y: p1.y };
+    c2 = { x: p2.x + bulge, y: p2.y };
+  }
+  const d = `M${p1.x},${p1.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${p2.x},${p2.y}`;
+  const g = document.createElementNS(NS, "g");
+  g.classList.add("cue");
+  // Two strokes on one curve: a pale halo under a vermilion line, so the arrow
+  // reads as drawn ON the interface, in no palette's colour, over any waveform
+  // (user, 2026-09-10: offset it clearly; "foreign" is fine).
+  const under = document.createElementNS(NS, "path");
+  under.classList.add("cue-under");
+  under.setAttribute("d", d);
+  // A fainter copy that retreats a beat behind the line, so the retreating
+  // edge fades over that beat instead of cutting off (a stroke cannot fade
+  // along its own length).
+  const ghost = document.createElementNS(NS, "path");
+  ghost.classList.add("cue-ghost");
+  ghost.setAttribute("d", d);
+  const path = document.createElementNS(NS, "path");
+  path.classList.add("cue-line");
+  path.setAttribute("d", d);
+  const dot = document.createElementNS(NS, "circle");
+  dot.classList.add("cue-dot");
+  dot.setAttribute("cx", p1.x);
+  dot.setAttribute("cy", p1.y);
+  dot.setAttribute("r", 5);
+  // The head points along the curve's final tangent (towards p2 from the last control point).
+  const ang = Math.atan2(p2.y - c2.y, p2.x - c2.x) * (180 / Math.PI);
+  const head = document.createElementNS(NS, "path");
+  head.classList.add("cue-head");
+  head.setAttribute("d", "M0,0 L-11,-6 L-8,0 L-11,6 Z");
+  head.setAttribute("transform", `translate(${p2.x},${p2.y}) rotate(${ang})`);
+  g.append(under, ghost, dot, path, head);
+  vp.cueEl.appendChild(g);
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const len = path.getTotalLength?.() || 200;
+  if (!reduced && path.animate) {
+    for (const p of [under, ghost, path]) {
+      p.style.strokeDasharray = String(len);
+      p.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { duration: 480, easing: "ease-out", fill: "forwards" });
+    }
+    head.animate([{ opacity: 0 }, { opacity: 0, offset: 0.7 }, { opacity: 1 }], { duration: 520, fill: "forwards" });
+  }
+  // The arrow leaves the way it came: the line retreats from A towards B (the
+  // dash slides forward along the path), the dot going first and the head last
+  // (user, 2026-09-10). Reduced motion fades it as one instead.
+  const linger = reduced ? 1600 : 1100;
+  const wipe = 240; // twice the speed it appeared at (user, 2026-09-10: 160 felt aggressive)
+  const tail = 40; // the ghost lags this much: the fading edge
+  setTimeout(() => {
+    if (g.animate && !reduced) {
+      for (const p of [under, path]) {
+        p.animate([{ strokeDashoffset: 0 }, { strokeDashoffset: -len }], { duration: wipe, easing: "ease-in", fill: "forwards" });
+      }
+      ghost.animate([{ strokeDashoffset: 0 }, { strokeDashoffset: -len }], { duration: wipe, delay: tail, easing: "ease-in", fill: "forwards" });
+      dot.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 60, fill: "forwards" });
+      head.animate([{ opacity: 1 }, { opacity: 1, offset: 0.75 }, { opacity: 0 }], { duration: wipe, fill: "forwards" });
+    } else if (g.animate) {
+      g.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 400, fill: "forwards" });
+    }
+    setTimeout(() => {
+      g.remove();
+      if (vp.cueEl && vp.cueEl.childElementCount === 0) {
+        vp.cueEl.remove();
+        vp.cueEl = null;
+      }
+    }, reduced ? 420 : wipe + tail + 20);
+  }, linger);
+}
+
+/**
  * The per-frame handler. Positions every cursor, and touches the band and the
  * active-strip styling only when the audible recording actually changes — those
  * are DOM writes and a re-render, and doing them sixty times a second for a value
@@ -2133,8 +2273,15 @@ function onTransport(band, store) {
       vp.statusEl.dataset.state = show ? "loading" : "";
     }
   };
+  let lastPlaying = null;
+  let lastTime = null;
   return (state) => {
     const positions = positionsFor(state.time, state.file);
+    // For the "now playing" bars (?activeStrip=bars): one attribute, on change.
+    if (state.playing !== lastPlaying) {
+      lastPlaying = state.playing;
+      root.dataset.playing = String(Boolean(state.playing));
+    }
     for (const vp of viewports) {
       for (const [file, strip] of vp.strips) {
         const at = positions[file];
@@ -2145,11 +2292,13 @@ function onTransport(band, store) {
     // inside tick(), like everything else this handler drives per frame.
     band.tick(state);
     if (state.file !== lastFile) {
+      const from = lastFile;
       lastFile = state.file;
       for (const vp of viewports) {
         for (const [file, strip] of vp.strips) strip.setActive(file === state.file);
         vp.strap?.setActive(state.file);
       }
+      if (from && config.switchCue === "arrow") cueJump(from, lastTime, state.file, state.time);
       band.update(state.file);
       // The per-recording note is about the AUDIBLE recording, so a switch
       // changes which note (if any) the panel should be showing — the same
@@ -2159,6 +2308,15 @@ function onTransport(band, store) {
         for (const vp of viewports) renderAnnotations(vp, store);
       }
     }
+    else if (
+      config.switchCue === "arrow" && lastTime != null && Number.isFinite(state.time) &&
+      Math.abs(state.time - lastTime) > 1
+    ) {
+      // A jump within the same recording — a seek, not playback (the same one-
+      // second rule the playhead focus uses for a discontinuity).
+      cueJump(state.file, lastTime, state.file, state.time);
+    }
+    lastTime = state.time;
     // Guarded like the band above, and for the same reason: this runs per frame
     // while playing, and the loading flag changes on a tap, not sixty times a
     // second. ?loadingGrace delays the text: a warm switch that completes

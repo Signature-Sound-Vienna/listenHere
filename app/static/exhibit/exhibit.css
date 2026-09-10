@@ -149,7 +149,17 @@ html, body {
   transform-origin: 50% 50%;
 }
 
-.strips { display: flex; flex-direction: column; gap: 2px; position: relative; }
+/* THE HALF-PIXEL TIE (alpha tester, 2026-09-10). The stack is centred in its
+ * half, so its top lands on x.5 whenever the residual is odd — 119.5 px in the
+ * far half with the shipped band height, measured. Composited content on an
+ * exact half-pixel is rounded afresh on every repaint, and the far half,
+ * rotated 180°, keeps the tie the near half's rounding happens to settle:
+ * the whole waveform shimmied a pixel several times a second whenever an
+ * overlay (the switch cue) or will-change had made it a layer. A hundredth of
+ * a pixel breaks the tie both ways (.51 rounds up, its rotated .49 down) and
+ * is invisible. NEVER promote .vp or the band to a compositor layer for
+ * performance — that is what surfaced this. */
+.strips { display: flex; flex-direction: column; gap: 2px; position: relative; transform: translateY(0.01px); }
 
 .strip {
   height: var(--strip-height, 54px);
@@ -2610,4 +2620,51 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   .ab-waved, .ab-body, .ab-tap-ring { animation: none; }
   .attract-band { transition: none; }
+}
+
+/* ===========================================================================
+ * ALPHA-TESTER FEEDBACK, 2026-09-10 — the audible strip more salient
+ * (?activeStrip), and a cue for switches a side did not make (?switchCue).
+ * =========================================================================== */
+/* edge: an accent line along the audible strip's top. Combined with the
+ * selection's right-edge inset where both apply, since box-shadow is one list. */
+.vp[data-active-strip="edge"] .strip.is-active { box-shadow: inset 0 3px 0 var(--ex-accent-border); }
+.vp[data-active-strip="edge"] .strip.is-active.is-selected {
+  box-shadow: inset 0 3px 0 var(--ex-accent-border), inset -4px 0 0 var(--ex-accent);
+}
+/* glow: a ring in the two-pixel gap between strips and a soft halo, the strip
+ * lifted a level so the halo paints over its neighbours. */
+.vp[data-active-strip="glow"] .strip.is-active {
+  z-index: 1;
+  box-shadow: 0 0 0 2px var(--ex-accent-border), 0 0 14px color-mix(in srgb, var(--ex-accent-border) 55%, transparent);
+}
+.vp[data-active-strip="glow"] .strip.is-active.is-selected {
+  box-shadow: 0 0 0 2px var(--ex-accent-border), 0 0 14px color-mix(in srgb, var(--ex-accent-border) 55%, transparent),
+    inset -4px 0 0 var(--ex-accent);
+}
+/* bars: the three-bar "now playing" glyph after the caption (strips.js), on the
+ * audible strip only, moving only while the clock runs. */
+.strip-live { display: none; margin-left: 8px; align-items: flex-end; gap: 2px; height: 10px; vertical-align: -1px; }
+.vp[data-active-strip="bars"] .strip.is-active .strip-live { display: inline-flex; }
+.strip-live i { display: block; width: 3px; height: 6px; border-radius: 1px; background: var(--ex-accent-border); box-shadow: var(--ex-glow); }
+#screen[data-playing="true"] .vp[data-active-strip="bars"] .strip.is-active .strip-live i {
+  animation: strip-live 700ms ease-in-out infinite alternate;
+}
+#screen[data-playing="true"] .vp[data-active-strip="bars"] .strip.is-active .strip-live i:nth-child(2) { animation-delay: -250ms; }
+#screen[data-playing="true"] .vp[data-active-strip="bars"] .strip.is-active .strip-live i:nth-child(3) { animation-delay: -500ms; }
+@keyframes strip-live { from { height: 3px; } to { height: 10px; } }
+
+/* The switch cue: an SVG over the strip stack, above the captions (z 2) and
+ * below the turn prompt (4). DELIBERATELY FOREIGN (user, 2026-09-10): a
+ * pumpkin-orange marker line over a pale halo, in no palette's colour, so it reads
+ * as drawn on the interface over any waveform and theme. */
+.switch-cue { --cue: #f07f1a; --cue-halo: rgba(255, 252, 245, 0.9); position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; z-index: 3; }
+.switch-cue path { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.switch-cue .cue-under { stroke: var(--cue-halo); stroke-width: 4.5; } /* a hairline of halo each side of the 3.5 px line */
+.switch-cue .cue-line { stroke: var(--cue); stroke-width: 3.5; }
+.switch-cue .cue-ghost { stroke: var(--cue); stroke-width: 3.5; opacity: 0.4; }
+.switch-cue .cue-head { fill: var(--cue); stroke: var(--cue-halo); stroke-width: 1; paint-order: stroke; }
+.switch-cue .cue-dot { fill: var(--cue-halo); stroke: var(--cue); stroke-width: 2; }
+@media (prefers-reduced-motion: reduce) {
+  .strip-live i { animation: none !important; height: 7px; }
 }

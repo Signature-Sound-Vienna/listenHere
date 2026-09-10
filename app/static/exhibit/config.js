@@ -438,6 +438,21 @@ const DEFAULTS = {
   // seamless switches reads as a glitch (user, 2026-08-26); with a grace it
   // appears only when there is a genuine wait to explain.
   loadingGrace: 0,
+  // --- alpha-tester feedback, 2026-09-10 ---
+  // How loudly the AUDIBLE strip says so ("quite subtle"). A/B variants; the
+  // shipped look stays the default:
+  //   "surface" — the brighter surface and waveform (as built).
+  //   "edge"    — plus an accent line along the strip's top edge.
+  //   "glow"    — plus an accent ring and soft glow round the strip.
+  //   "bars"    — plus a small three-bar "now playing" glyph after the caption,
+  //               moving while the clock runs.
+  activeStrip: "surface",
+  // A switch the reader did NOT make themselves — the other side's, or the
+  // attract loop's — is shown as a looping arrow from the old strip to the new
+  // one at the moment of the switch, on every viewport but the taker's. A
+  // reader who chose the jump needs no telling. "off" | "arrow".
+  switchCue: "off",
+
   // --- the attract loop (attract.js; plan §4.4, design ruled 2026-09-07) ---
   // Idle for this long on EVERY viewport of the room (the screens agree over a
   // BroadcastChannel) and the table tidies itself, raises the attract band, and

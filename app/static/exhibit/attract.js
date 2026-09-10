@@ -180,6 +180,9 @@ export function createAttractLoop({
   };
   const onInteract = (e) => {
     if (e.isTrusted === false && !e.detail?.attractTest) return;
+    // The study panel is staff tooling, not a visitor: its taps neither count as
+    // room activity nor lower the band, so the loop can be driven from it.
+    if (e.target?.closest?.(".study-panel, .study-cog")) return;
     touch();
   };
   window.addEventListener("pointerdown", onInteract, true);

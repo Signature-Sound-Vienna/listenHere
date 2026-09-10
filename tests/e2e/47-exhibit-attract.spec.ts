@@ -281,12 +281,13 @@ test.describe('47. The attract loop', () => {
 
   // 47.9 The study panel offers the loop on its own tab, and the staff preset
   // carries the 90 s (35.25 pins the pair too).
-  test('47.9 the study panel has an Attract tab with the six parameters', async ({ page }) => {
+  test('47.9 the study panel has an Attract tab with the demo button and six parameters', async ({ page }) => {
     await boot(page, 'debug=1&studyPanel=true');
     await page.click('.study-cog');
     await page.click('.study-tab[data-tab="attract"]');
     const labels = await page.locator('.study-row .study-label').allTextContents();
     expect(labels).toEqual([
+      'Demo',
       'Start after idle (ms; 0 = off)',
       'Take over during playback after (ms; 0 = off)',
       'Silence between passes (ms)',
@@ -294,7 +295,7 @@ test.describe('47. The attract loop', () => {
       'Annotations shown',
       'Logo language',
     ]);
-    await expect(page.locator('.study-row').first().locator('.study-option.is-on')).toHaveText(/^0 •$/);
+    await expect(page.locator('.study-row').nth(1).locator('.study-option.is-on')).toHaveText(/^0 •$/);
   });
 
   // 47.10 The second timer (user, 2026-09-07): music playing and the room

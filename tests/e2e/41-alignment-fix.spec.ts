@@ -15,6 +15,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { pathToFileURL } from 'url';
 
 const MODULE_URL = '/static/js/engine/correction-model.js';
 
@@ -880,5 +881,150 @@ test.describe('41. alignment correction — worker segment realign', () => {
     expect(spread(ratios(out.log.centres))).toBeLessThan(1.001);
     expect(spread(steps(out.mel.centres))).toBeGreaterThan(3);
     expect(spread(ratios(out.mel.centres))).toBeGreaterThan(1.5);
+  });
+
+  // --- Increment 4 (2026-09-03): gaps keep their label under an endpoint drag ---
+
+  test('41.14 a gap endpoint re-pinned AS gap moves that boundary and keeps the label; re-pinned as a plain anchor it dissolves; syncGapTimes follows spliced anchors', async ({ page }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const ctx = { nEvents: 10, refDuration: 100 };
+      const st = m.createCorrections();
+      m.setGap(st, { i: 4, tEnd: 42, tResume: 58, ts: 1 }, ctx);
+      const moveLeft = m.setAnchor(st, { i: 4, q: null, t: 40, kind: 'gap', ts: 2 }, ctx);
+      const afterLeft = { ...st.gaps[0] };
+      m.setAnchor(st, { i: 5, q: null, t: 60, kind: 'gap', ts: 3 }, ctx);
+      const afterRight = { ...st.gaps[0] };
+      const kinds = st.anchors.map((a: any) => a.kind);
+      // A direct splice — what snapshot undo/redo does — followed by the sync.
+      st.anchors.find((a: any) => a.i === 4).t = 41;
+      m.syncGapTimes(st);
+      const afterSync = { ...st.gaps[0] };
+      // Re-pinned as a plain drag anchor, the label dissolves (the model's
+      // rule is unchanged; fix-mode never takes this path on an endpoint).
+      m.setAnchor(st, { i: 4, q: 4, t: 39, kind: 'drag', ts: 4 }, ctx);
+      return {
+        moveLeft: moveLeft.segments,
+        afterLeft,
+        afterRight,
+        kinds,
+        afterSync,
+        gapsAfterDrag: st.gaps.length,
+      };
+    });
+    expect(r.afterLeft).toMatchObject({ i: 4, tEnd: 40, tResume: 58 });
+    expect(r.afterRight).toMatchObject({ i: 4, tEnd: 40, tResume: 60 });
+    expect(r.kinds).toEqual(['gap', 'gap']);
+    // The gap span itself: zero interior, bounded by the two endpoints.
+    expect(r.moveLeft[1]).toEqual({ iA: 4, tA: 40, iB: 5, tB: 58, interiorCount: 0 });
+    expect(r.afterSync).toMatchObject({ tEnd: 41, tResume: 60 });
+    expect(r.gapsAfterDrag).toBe(0);
+  });
+
+  test('41.15 the stand-in tool renders a labelled gap as inserted silence at the local tempo — the span no longer one stretched quarter — and holds the shifted file to the same ideal times; unlabelled, it stretches as before', async () => {
+    test.setTimeout(180_000);
+    const root = path.resolve(__dirname, '..', '..');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-standins-'));
+    const fixturePath = path.join(root, 'tests/fixtures/alignment.json');
+    const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+    const mei = path.join(root, 'tests/fixtures/Schumann-Clara_Romanze-ohne-Opuszahl_a-Moll.mei');
+    const run = (alignPath: string, out: string) =>
+      execFileSync(
+        'node',
+        ['tools/make_standins.mjs', '--alignment', alignPath, '--mei', mei, '--out', out, '--recordings', 'audio-b', '--no-dynamics'],
+        { cwd: root, encoding: 'utf8', timeout: 120_000 },
+      );
+    // The engine's own MIDI reader, run under node (the specs are CJS-transpiled).
+    const parseWithEngine = (file: string) =>
+      JSON.parse(
+        execFileSync(
+          'node',
+          [
+            '--input-type=module',
+            '-e',
+            `import fs from 'node:fs';
+             import { parseMidi, tickToSec } from '${pathToFileURL(path.join(root, 'app/static/js/engine/mei-synth.js')).href}';
+             const m = parseMidi(new Uint8Array(fs.readFileSync(process.argv[process.argv.length - 1])));
+             const notes = m.notes.map((n) => ({ s: n.s, e: n.e, t: tickToSec(n.s, m.tpq, m.tempoChanges) }));
+             console.log(JSON.stringify({ tpq: m.tpq, tempoChanges: m.tempoChanges, notes }));`,
+            '--',
+            file,
+          ],
+          { cwd: root, encoding: 'utf8' },
+        ),
+      );
+    const tempoAt = (m: any, tick: number) => {
+      let t = m.tempoChanges[0]?.tempo ?? 500000;
+      for (const c of m.tempoChanges) if (c.tick <= tick) t = c.tempo;
+      return t / 1e6; // seconds per quarter
+    };
+    const s = fixture.body.score;
+    // Control: the fixture as it is. The aligner left 5.6 s on the half-quarter
+    // between events 2 and 3 (q 1 → 1.5); the tool can only stretch it — one
+    // ~11 s-per-quarter tempo knot, under the ceiling, so not even clamped.
+    const ctlOut = path.join(tmp, 'ctl');
+    run(fixturePath, ctlOut);
+    const ctlMan = JSON.parse(fs.readFileSync(path.join(ctlOut, 'standins-manifest.json'), 'utf8'));
+    expect(ctlMan.gaps).toBe(0);
+    const ctl = ctlMan.recordings['audio-b.mp3'];
+    expect(ctl.gaps).toBeUndefined();
+    const ctlMidi = parseWithEngine(path.join(ctlOut, 'audio-b.mp3.standin.mid'));
+    const tpq = ctlMidi.tpq;
+    const tickA = Math.round(s.score_onset[2] * tpq);
+    const tickB = Math.round(s.score_onset[3] * tpq);
+    expect(tempoAt(ctlMidi, tickA)).toBeGreaterThan(8);
+    // Labelled: the same alignment carrying the gap in header.corrections.
+    const gapAnchor = (i: number) => ({ i, q: s.score_onset[i], t: s.ref_onset[i], kind: 'gap', ts: 1 });
+    fixture.header.corrections = {
+      version: 1,
+      base: null,
+      anchors: [gapAnchor(2), gapAnchor(3)],
+      gaps: [{ i: 2, tEnd: s.ref_onset[2], tResume: s.ref_onset[3], ts: 1 }],
+    };
+    const gapAlign = path.join(tmp, 'alignment-gap.json');
+    fs.writeFileSync(gapAlign, JSON.stringify(fixture));
+    const gapOut = path.join(tmp, 'gap');
+    const log = run(gapAlign, gapOut);
+    expect(log).toMatch(/1 unscored-audio gap\(s\) → rendered as silence/);
+    const man = JSON.parse(fs.readFileSync(path.join(gapOut, 'standins-manifest.json'), 'utf8'));
+    expect(man.gaps).toBe(1);
+    const rec = man.recordings['audio-b.mp3'];
+    expect(rec.gaps).toHaveLength(1);
+    const g = rec.gaps[0];
+    expect(g.eventIx).toBe(2);
+    expect(g.spanS).toBeCloseTo(s.ref_onset[3] - s.ref_onset[2], 3);
+    expect(g.silenceTicks).toBeGreaterThan(0);
+    expect(g.localSecondsPerQuarter).toBeLessThan(3); // the neighbours run at ~0.75–1.2 s/q
+    expect(Math.abs(g.spanSecondsPerQuarter - g.localSecondsPerQuarter)).toBeLessThan(g.localSecondsPerQuarter * 0.1);
+    expect(rec.silenceTicks).toBe(g.silenceTicks);
+    expect(rec.clampedSegments).toBe(0);
+    expect(rec.maxOnsetErrorMs).toBeLessThan(1); // verification ran on the shifted file, and passed
+    // The written file: the span runs at the local tempo; nothing before the
+    // gap moved; the resume onset sits `silenceTicks` later and still lands at
+    // its ideal time; no note rings through the silence.
+    const gapMidi = parseWithEngine(path.join(gapOut, 'audio-b.mp3.standin.mid'));
+    expect(tempoAt(gapMidi, tickA)).toBeLessThan(3);
+    expect(gapMidi.notes.length).toBe(ctlMidi.notes.length);
+    const before = (m: any) => m.notes.filter((n: any) => n.s < tickB).map((n: any) => n.s).sort((a: number, b: number) => a - b);
+    expect(before(gapMidi)).toEqual(before(ctlMidi));
+    const firstAfter = (m: any) => Math.min(...m.notes.filter((n: any) => n.s >= tickB).map((n: any) => n.s));
+    expect(firstAfter(ctlMidi)).toBe(tickB);
+    expect(firstAfter(gapMidi)).toBe(tickB + g.silenceTicks);
+    const timeOfFirstAfter = (m: any) => m.notes.find((n: any) => n.s === firstAfter(m)).t;
+    expect(timeOfFirstAfter(ctlMidi)).toBeCloseTo(s.ref_onset[3], 2);
+    expect(timeOfFirstAfter(gapMidi)).toBeCloseTo(s.ref_onset[3], 2);
+    expect(gapMidi.notes.filter((n: any) => n.s < tickB && n.e > tickB)).toEqual([]);
+    // --no-gap-silence restores the stretch for comparison.
+    const offOut = path.join(tmp, 'off');
+    execFileSync(
+      'node',
+      ['tools/make_standins.mjs', '--alignment', gapAlign, '--mei', mei, '--out', offOut, '--recordings', 'audio-b', '--no-dynamics', '--no-gap-silence'],
+      { cwd: root, encoding: 'utf8', timeout: 120_000 },
+    );
+    const offMidi = parseWithEngine(path.join(offOut, 'audio-b.mp3.standin.mid'));
+    expect(firstAfter(offMidi)).toBe(tickB);
+    expect(tempoAt(offMidi, tickA)).toBeGreaterThan(8);
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

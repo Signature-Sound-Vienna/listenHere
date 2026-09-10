@@ -1783,4 +1783,320 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(st.corrections.anchors).toHaveLength(1);
     expect(st.lastBatch).toMatchObject({ requested: 2, moved: 1, shared: 1 });
   });
+
+  // --- Increment 4 (2026-09-03): unscored-audio gaps, the exit recompute, the tempo break ---
+
+  /** Step the selection with the nav arrows until event `eventIx` is selected; returns its group index. */
+  async function selectEvent(page: Page, eventIx: number) {
+    for (let k = 0; k < 60; k++) {
+      const st = await fixState(page);
+      if (st.selEventIx === eventIx) return st.selGroup as number;
+      await page.click(st.selEventIx < eventIx ? '.fix-onset-next' : '.fix-onset-prev');
+    }
+    throw new Error(`could not select event ${eventIx}`);
+  }
+
+  /** The first eight events' live ref tables. */
+  const tables = (page: Page) =>
+    page.evaluate(() => {
+      const sc = (window as any)._listenTest.session.scoreAlignment;
+      return { on: sc.ref_onset.slice(0, 8) as number[], off: sc.ref_offset.slice(0, 8) as number[] };
+    });
+
+  const realignsPosted = (page: Page) =>
+    page.evaluate(() =>
+      (window as any).__fixStub.posted.filter((p: any) => p.type === 'fix_realign'),
+    );
+
+  test('43.35 G lays an unscored-audio gap from the selected onset to the next — a label, data-neutral but for the last note\'s tail — and G on an endpoint removes it; each is one fix-gap undo entry; the band and brackets are drawn', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    // Event 2 (q = 1): the fixture's aligner left 5.6 s on the half-quarter to
+    // event 3 — a ready-made stretch of unscored audio.
+    const gLeft = await selectEvent(page, 2);
+    const before = await tables(page);
+    const sumBefore = await refChecksum(page);
+    await page.keyboard.press('g');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lastGap?.op === 'lay');
+    // The redraw is a scheduled frame: wait for the band, not just the record.
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gapBands === 1);
+    let st = await fixState(page);
+    expect(st.corrections.gaps).toHaveLength(1);
+    expect(st.corrections.gaps[0].i).toBe(2);
+    expect(st.corrections.gaps[0].tEnd).toBeCloseTo(before.on[2], 6);
+    expect(st.corrections.gaps[0].tResume).toBeCloseTo(before.on[3], 6);
+    expect(st.corrections.anchors.map((a: any) => [a.i, a.kind])).toEqual([
+      [2, 'gap'],
+      [3, 'gap'],
+    ]);
+    // Data-neutral: no onset moved. The one offset that changed is event 2's
+    // tail, clamped to its notated length at the local tempo so the last note
+    // before the gap no longer rings across it in the right ear.
+    const after = await tables(page);
+    expect(after.on).toEqual(before.on);
+    expect(after.off[2]).toBeLessThan(before.off[2]);
+    expect(after.off[2]).toBeGreaterThan(before.on[2]);
+    expect(after.off[2]).toBeLessThan(before.on[3]);
+    for (const k of [0, 1, 3, 4, 5, 6, 7]) expect(after.off[k]).toBe(before.off[k]);
+    // Laying is a label: nothing was asked of the worker.
+    expect(await realignsPosted(page)).toHaveLength(0);
+    // The durable record carries it.
+    const rec = await page.evaluate(
+      () => (window as any)._listenTest.session.loadedAlignmentJSON.header.corrections,
+    );
+    expect(rec.gaps).toHaveLength(1);
+    expect(rec.anchors).toHaveLength(2);
+    // Drawn: one hatched band between the endpoint ticks, painted over the lanes.
+    expect(st.gapBands).toBe(1);
+    const gRight = st.pageTicks.find((t: any) => t.ix === gLeft + 1);
+    expect(gRight).toBeTruthy();
+    const painted = await page.evaluate(
+      ([xa, xb]) => {
+        const c = document.querySelector('.fix-ticks') as HTMLCanvasElement;
+        const ctx = c.getContext('2d')!;
+        const x = Math.round((xa + xb) / 2);
+        const d = ctx.getImageData(x - 4, 4, 9, Math.floor(c.height * 0.5)).data;
+        let n = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+        return n;
+      },
+      [st.pageTicks.find((t: any) => t.ix === gLeft).x, gRight.x] as [number, number],
+    );
+    expect(painted).toBeGreaterThan(0);
+    // Undo takes the gap and both anchors off and restores the tail; redo brings all back.
+    await expect(page.locator('#undo-btn')).toContainText('unscored-audio gap');
+    await page.click('#undo-btn');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gapBands === 0);
+    st = await fixState(page);
+    expect(st.corrections.gaps).toEqual([]);
+    expect(st.corrections.anchors).toEqual([]);
+    expect((await tables(page)).off[2]).toBe(before.off[2]);
+    expect(await refChecksum(page)).toEqual(sumBefore);
+    await page.click('#redo-btn');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gapBands === 1);
+    st = await fixState(page);
+    expect(st.corrections.gaps).toHaveLength(1);
+    expect((await tables(page)).off[2]).toBe(after.off[2]);
+    // G on an endpoint — the right one — removes the gap. The tail stays
+    // where the label put it (removing a label restores no 5 s ring).
+    await selectEvent(page, 3);
+    await page.keyboard.press('g');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lastGap?.op === 'remove');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gapBands === 0);
+    st = await fixState(page);
+    expect(st.corrections.gaps).toEqual([]);
+    expect(st.corrections.anchors).toEqual([]);
+    expect(
+      await page.evaluate(
+        () => (window as any)._listenTest.session.loadedAlignmentJSON.header.corrections ?? null,
+      ),
+    ).toBeNull();
+    // Undo the removal: the gap is back with the same boundaries.
+    await page.click('#undo-btn');
+    st = await fixState(page);
+    expect(st.corrections.gaps).toHaveLength(1);
+    expect(st.corrections.gaps[0].tEnd).toBeCloseTo(before.on[2], 6);
+    expect(st.corrections.anchors.map((a: any) => a.kind)).toEqual(['gap', 'gap']);
+  });
+
+  test('43.36 dragging a gap endpoint keeps the gap and moves that boundary: the outer flank realigns, the gap span is never refilled, the last note keeps its length; Approve and S on an endpoint keep it too', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await selectEvent(page, 2);
+    await page.keyboard.press('g');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lastGap?.op === 'lay');
+    const t0 = await tables(page);
+    const dur2 = t0.off[2] - t0.on[2];
+    // The LEFT endpoint, 20 px earlier. (Each drag auto-replays, and the
+    // playback follower moves the selection with the sounding onset — pause,
+    // so the next gesture lands on the endpoint and not on whatever sounds.)
+    await dragSelectedTick(page, -20);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    let st = await fixState(page);
+    expect(st.lastCommit.kind).toBe('gap');
+    expect(st.corrections.gaps).toHaveLength(1);
+    expect(st.corrections.anchors.map((a: any) => a.kind)).toEqual(['gap', 'gap']);
+    const t1 = await tables(page);
+    expect(t1.on[2]).toBeLessThan(t0.on[2]);
+    expect(st.corrections.gaps[0].tEnd).toBeCloseTo(t1.on[2], 9);
+    expect(st.corrections.gaps[0].tResume).toBeCloseTo(t0.on[3], 9);
+    // The last note before the gap keeps its length rather than being
+    // stretched across the gap by the zero-interior fill.
+    expect(t1.off[2] - t1.on[2]).toBeCloseTo(dur2, 6);
+    // Exactly one realign — the left flank (the piece start to event 2). The
+    // gap span (2 → 3) was not sent anywhere.
+    let posted = await realignsPosted(page);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ iA: -1, iB: 2 });
+    // The RIGHT endpoint, 20 px later.
+    await selectEvent(page, 3);
+    await dragSelectedTick(page, 20);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await selectEvent(page, 3);
+    st = await fixState(page);
+    expect(st.lastCommit.kind).toBe('gap');
+    const t2 = await tables(page);
+    expect(t2.on[3]).toBeGreaterThan(t0.on[3]);
+    expect(st.corrections.gaps[0].tResume).toBeCloseTo(t2.on[3], 9);
+    expect(st.corrections.gaps[0].tEnd).toBeCloseTo(t1.on[2], 9);
+    expect(t2.off[2] - t2.on[2]).toBeCloseTo(dur2, 6);
+    posted = await realignsPosted(page);
+    expect(posted).toHaveLength(2);
+    expect(posted[1].iA).toBe(3); // the right flank only
+    // Approve (Enter) on an endpoint keeps the gap.
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lastCommit?.realigned === 0);
+    st = await fixState(page);
+    expect(st.corrections.gaps).toHaveLength(1);
+    expect(st.corrections.anchors.map((a: any) => a.kind)).toEqual(['gap', 'gap']);
+    // S with a detected onset just after the right endpoint moves it and keeps the gap.
+    const tr = t2.on[3];
+    await page.evaluate((peaks) => (window as any).__fixStub.sendLanes(peaks), [tr + 0.12]);
+    await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 1);
+    await page.keyboard.press('s');
+    await waitBatch(page);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    st = await fixState(page);
+    expect(st.lastBatch, JSON.stringify(st.lastBatch)).toMatchObject({ requested: 1, moved: 1 });
+    expect(st.corrections.gaps).toHaveLength(1);
+    expect(st.corrections.gaps[0].tResume).toBeCloseTo(tr + 0.12, 3);
+    expect(st.corrections.anchors.map((a: any) => a.kind)).toEqual(['gap', 'gap']);
+  });
+
+  test('43.37 leaving fix mode recomputes the main view\'s synth grid from the corrected tables; an undo landing outside a session recomputes it again', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    const SYNTH = 'Score (synthesised from MEI)';
+    const synthGrid = () =>
+      page.evaluate((k) => {
+        const g = (window as any)._listenTest.alignmentGrids[k];
+        return g ? (Array.from(g) as number[]) : null;
+      }, SYNTH);
+    await page.waitForFunction(
+      (k) => Array.isArray((window as any)._listenTest.alignmentGrids[k]),
+      SYNTH,
+    );
+    const g0 = (await synthGrid())!;
+    expect(g0.length).toBeGreaterThan(100);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await selectEvent(page, 6);
+    await dragSelectedTick(page, 30);
+    // The main view is hidden and untouched while the session is open…
+    expect(await synthGrid()).toEqual(g0);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    // …and recomputed ONCE at exit: the grid is the interpolation of the live tables.
+    const g1 = (await synthGrid())!;
+    expect(g1).not.toEqual(g0);
+    const expected = await page.evaluate(async () => {
+      const m: any = await import('/static/js/listen.js');
+      const ms: any = await import('/static/js/engine/mei-synth.js');
+      const ref = m.alignmentGrids[m.getReferenceAudioIx()];
+      return ms.interpAlignmentGrid(
+        ref,
+        m.scoreAlignment.ref_onset,
+        m.correctedSynthOnsets || m.scoreAlignment.synth_onset,
+      ) as number[];
+    });
+    expect(g1).toEqual(expected);
+    // A history hop outside the session: undo from the main view restores the tables AND the grid.
+    await page.click('#undo-btn');
+    await page.waitForFunction(() =>
+      ((window as any)._listenTest.fix.lastAnnounce || '').startsWith('Undid'),
+    );
+    expect(await synthGrid()).toEqual(g0);
+  });
+
+  test('43.38 a gap in header.corrections breaks the tempo curve instead of plunging it: the run before the unscored span ends with a break, no sample crosses it', async ({
+    page,
+  }) => {
+    const model = () =>
+      page.evaluate(() => (window as any)._listenTest.tempoModel('audio-a.mp3'));
+    const showCurve = async () => {
+      await page.locator('#show-tempo-curve').check({ force: true });
+      await page.waitForFunction(
+        () => !!(window as any)._listenTest.tempoModel?.('audio-a.mp3'),
+      );
+    };
+    // The control first (the route patch below would otherwise stay registered):
+    // unlabelled, the fixture's 5.6 s on half a quarter reads as a ~10 QPM plunge.
+    await gotoFixMode(page);
+    await showCurve();
+    const ctl = (await model()).smoothed as any[];
+    expect(ctl.some((p) => p.breakAfter)).toBe(false);
+    expect(ctl.some((p) => Math.abs(p.scoreTime - 1.5) < 1e-9)).toBe(true);
+    expect(Math.min(...ctl.filter((p) => p.scoreTime < 6).map((p) => p.tempo))).toBeLessThan(20);
+    expect(ctl.some((p) => Math.abs(p.scoreTime - 5.5) < 1e-9)).toBe(true);
+    // Labelled as gaps — between events 2 and 3 (the plunge, inside the curve's
+    // FIRST interval, so no earlier point can carry its break) and between
+    // events 12 and 13 (q 5.208 → 5.25, an interior one) — the curve drops the
+    // interval crossing each span and the run before an interior gap ends with
+    // a break.
+    await gotoFixMode(page, (json) => {
+      const s = json.body.score;
+      const gapAnchor = (i: number) => ({ i, q: s.score_onset[i], t: s.ref_onset[i], kind: 'gap', ts: 1 });
+      json.header.corrections = {
+        version: 1,
+        base: null,
+        anchors: [gapAnchor(2), gapAnchor(3), gapAnchor(12), gapAnchor(13)],
+        gaps: [
+          { i: 2, tEnd: s.ref_onset[2], tResume: s.ref_onset[3], ts: 1 },
+          { i: 12, tEnd: s.ref_onset[12], tResume: s.ref_onset[13], ts: 1 },
+        ],
+      };
+    });
+    await showCurve();
+    const pts = (await model()).smoothed as any[];
+    expect(pts.some((p) => Math.abs(p.scoreTime - 1.5) < 1e-9)).toBe(false);
+    expect(pts.some((p) => Math.abs(p.scoreTime - 5.5) < 1e-9)).toBe(false);
+    expect(Math.min(...pts.filter((p) => p.scoreTime < 8).map((p) => p.tempo))).toBeGreaterThan(20);
+    // The break sits on the last point before the interior span.
+    const brk = pts.filter((p) => p.breakAfter);
+    expect(brk).toHaveLength(1);
+    expect(brk[0].scoreTime).toBeCloseTo(4.5, 9);
+  });
+
+  test('43.39 the synth ear is level-matched to the recording: its typical frame level sits a little under the recording\'s instead of at a normalised peak, and never clips', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    const st = await fixState(page);
+    const lv = st.aud.levels;
+    expect(lv).toBeTruthy();
+    expect(lv.rec).toBeGreaterThan(0.001);
+    expect(lv.syn).toBeGreaterThan(0.001);
+    // The gain is the level match (0.7 × recording / synth), not the peak clamp,
+    // on this fixture — and never above the peak clamp anywhere.
+    expect(lv.gain).toBeCloseTo((0.7 * lv.rec) / lv.syn, 6);
+    expect(lv.gain).toBeLessThanOrEqual(lv.peakGain + 1e-9);
+    // Measured on the buffer the ear hears: over the piece's first minute of
+    // music the synth's RMS is below the recording's and within a factor of
+    // three of it (the old 0.9-peak law put it several times ABOVE).
+    const rms = await page.evaluate(() => {
+      const ctl = (window as any)._listenTest.fixCtl;
+      return { left: ctl.channelRms(0, 3, 63), right: ctl.channelRms(1, 3, 63) };
+    });
+    expect(rms.right).toBeLessThan(rms.left);
+    expect(rms.right).toBeGreaterThan(rms.left / 3);
+    // Nothing in the synth ear clips.
+    const peak = await page.evaluate(() => {
+      const a = (window as any)._listenTest.fixCtl;
+      return a.channelPeak ? a.channelPeak(1, 0, 300) : null;
+    });
+    if (peak !== null) expect(peak).toBeLessThanOrEqual(0.9 + 1e-6);
+  });
 });

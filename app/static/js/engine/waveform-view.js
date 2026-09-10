@@ -417,27 +417,37 @@ function _drawTempoCurve(view) {
 
   if (startIdx >= endIdx) return;
 
-  // Draw shaded area under curve
+  // Draw the shaded area and the curve line per RUN: a point whose breakAfter
+  // is set ends one (an unscored-audio gap follows it), and nothing is drawn
+  // across the break — neither fill nor stroke.
   const zeroY = mode === "relative" ? valToY(0) : yBot;
-  ctx.beginPath();
-  ctx.moveTo(pts[startIdx].x, zeroY);
-  for (let i = startIdx; i <= endIdx; i++) ctx.lineTo(pts[i].x, pts[i].y);
-  ctx.lineTo(pts[endIdx].x, zeroY);
-  ctx.closePath();
-  ctx.fillStyle =
-    mode === "relative"
-      ? `rgba(${_tcRgb},0.22)`
-      : `rgba(${_tcRgb},0.25)`;
-  ctx.fill();
-
-  // Draw the curve line
-  ctx.beginPath();
-  ctx.moveTo(pts[startIdx].x, pts[startIdx].y);
-  for (let i = startIdx + 1; i <= endIdx; i++)
-    ctx.lineTo(pts[i].x, pts[i].y);
-  ctx.strokeStyle = `rgba(${_tcRgb},0.9)`;
-  ctx.lineWidth = 1.75;
-  ctx.stroke();
+  const runs = [];
+  for (let i = startIdx, r0 = startIdx; i <= endIdx; i++) {
+    if (smoothed[i].breakAfter || i === endIdx) {
+      runs.push([r0, i]);
+      r0 = i + 1;
+    }
+  }
+  for (const [a, b] of runs) {
+    if (b < a) continue;
+    ctx.beginPath();
+    ctx.moveTo(pts[a].x, zeroY);
+    for (let i = a; i <= b; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.lineTo(pts[b].x, zeroY);
+    ctx.closePath();
+    ctx.fillStyle =
+      mode === "relative"
+        ? `rgba(${_tcRgb},0.22)`
+        : `rgba(${_tcRgb},0.25)`;
+    ctx.fill();
+    if (b === a) continue;
+    ctx.beginPath();
+    ctx.moveTo(pts[a].x, pts[a].y);
+    for (let i = a + 1; i <= b; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.strokeStyle = `rgba(${_tcRgb},0.9)`;
+    ctx.lineWidth = 1.75;
+    ctx.stroke();
+  }
 
   // In relative mode, draw zero line
   if (mode === "relative") {

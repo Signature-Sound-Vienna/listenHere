@@ -182,6 +182,10 @@ export let scoreAlignment = session.scoreAlignment; // score tstamp to ref tstam
 // (no synth waveform prepared yet, or qstamp matching failed).
 export let correctedSynthOnsets = null;
 export let correctedSynthOffsets = null;
+/** The synth-onset table the synth row's grid was interpolated FROM (the
+ *  corrected table, the stored one, or the MIDI reconstruction) — so the grid
+ *  can be rebuilt from changed ref tables with the very same other half. */
+let _synthGridOnsets = null;
 let mei = session.mei; // MEI XML
 let meiDOM = session.meiDOM; // MEI DOM
 let referenceAudioIx = session.referenceAudioIx;
@@ -197,7 +201,31 @@ function setScoreAlignment(v) {
   // New score alignment → any previously derived corrected tables are stale.
   correctedSynthOnsets = null;
   correctedSynthOffsets = null;
+  _synthGridOnsets = null;
   return (scoreAlignment = session.scoreAlignment = v);
+}
+
+/**
+ * Rebuild the score synth row's alignment grid from the CURRENT score↔ref
+ * tables — the corrected-tables path, run ONCE per fix-mode session at exit
+ * (plan §14 cluster C) and after a correction hop that lands outside one.
+ * The synth audio is score-time and does not change; only the ref→synth
+ * mapping does, and with it the tempo curves and the synth row's overlays.
+ * Returns false when no synth row was ever built.
+ */
+export function refreshSynthAlignmentGrid() {
+  const refGrid = alignmentGrids[referenceAudioIx];
+  const refOnsets = scoreAlignment?.ref_onset;
+  if (!(SYNTH_MEI_KEY in alignmentGrids) || !_synthGridOnsets) return false;
+  if (!Array.isArray(refGrid) || !Array.isArray(refOnsets) || !refOnsets.length) {
+    return false;
+  }
+  alignmentGrids[SYNTH_MEI_KEY] = interpAlignmentGrid(refGrid, refOnsets, _synthGridOnsets);
+  for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
+  _tempoYRange = null;
+  for (const fn of Object.keys(waveformViews)) drawAlignmentGrid(fn);
+  redrawAllMarkers();
+  return true;
 }
 function setMei(v) {
   return (mei = session.mei = v);
@@ -780,17 +808,42 @@ function _computeRawTempo(filename) {
     samples.push({ s: sq, t: tInterp });
   }
 
-  // 3. Compute instantaneous tempo between consecutive samples.
+  // 3. Compute instantaneous tempo between consecutive samples. An interval
+  //    that crosses an UNSCORED-AUDIO GAP (header.corrections.gaps, laid in fix
+  //    mode) is dropped and the run before it ends with a break: the jump is a
+  //    discontinuity, not an extreme ritardando, so the curve must not plunge
+  //    there — nor be smoothed or drawn across it.
+  const gapSpans = _unscoredGapSpans();
   const points = [];
   for (let i = 0; i < samples.length - 1; i++) {
-    const ds = samples[i + 1].s - samples[i].s; // quarter notes (= step)
+    const s0 = samples[i].s;
+    const s1 = samples[i + 1].s;
+    if (gapSpans.some((g) => s0 < g.qB && s1 > g.qA)) {
+      if (points.length) points[points.length - 1].breakAfter = true;
+      continue;
+    }
+    const ds = s1 - s0; // quarter notes (= step)
     const dt = samples[i + 1].t - samples[i].t; // seconds
     if (dt <= 0) continue;
     const tempo = (ds / dt) * 60; // QPM
     const time = (samples[i].t + samples[i + 1].t) / 2; // mid-point in audio time
-    points.push({ time, scoreTime: samples[i].s + ds / 2, tempo });
+    points.push({ time, scoreTime: s0 + ds / 2, tempo });
   }
   return points;
+}
+
+/** The loaded alignment's unscored-audio gaps as score-time spans [qA, qB]. */
+function _unscoredGapSpans() {
+  const gaps = loadedAlignmentJSON?.header?.corrections?.gaps;
+  const q = scoreAlignment?.score_onset;
+  if (!Array.isArray(gaps) || !Array.isArray(q)) return [];
+  const spans = [];
+  for (const g of gaps) {
+    const qA = q[g.i];
+    const qB = q[g.i + 1];
+    if (Number.isFinite(qA) && Number.isFinite(qB) && qB > qA) spans.push({ qA, qB });
+  }
+  return spans;
 }
 
 /**
@@ -809,6 +862,13 @@ function _getRawTempo(filename) {
  */
 function _smoothTempo(points, windowSize) {
   if (windowSize <= 0 || points.length <= 1) return points;
+  // Runs: a point flagged breakAfter (an unscored-audio gap follows it) ends
+  // one, and smoothing never reaches across a break.
+  const run = new Array(points.length);
+  for (let i = 0, r = 0; i < points.length; i++) {
+    run[i] = r;
+    if (points[i].breakAfter) r++;
+  }
   const out = [];
   for (let i = 0; i < points.length; i++) {
     let wSum = 0,
@@ -818,16 +878,19 @@ function _smoothTempo(points, windowSize) {
       j <= Math.min(points.length - 1, i + windowSize);
       j++
     ) {
+      if (run[j] !== run[i]) continue;
       const d = (j - i) / windowSize;
       const w = Math.exp(-2 * d * d);
       wSum += points[j].tempo * w;
       wCount += w;
     }
-    out.push({
+    const p = {
       time: points[i].time,
       scoreTime: points[i].scoreTime,
       tempo: wSum / wCount,
-    });
+    };
+    if (points[i].breakAfter) p.breakAfter = true;
+    out.push(p);
   }
   return out;
 }
@@ -2475,6 +2538,7 @@ async function _buildAndPrepareSynthWaveform(
     (scoreData.synth_onset && scoreData.synth_onset.length === refOnsets.length
       ? scoreData.synth_onset
       : _reconstructEventOnsetSecs(refOnsets.length, notes, tpq, tempoChanges));
+  _synthGridOnsets = synthOnsets;
   alignmentGrids[synthKey] = interpAlignmentGrid(
     alignmentGrids[refKey] || [],
     refOnsets,
@@ -5698,6 +5762,8 @@ window._listenTest = {
   get wavesurfers() { return wavesurfers; },
   get currentAudioIx() { return currentAudioIx; },
   get alignmentGrids() { return alignmentGrids; },
+  /** The tempo curve's draw model for a file (the gap break's test surface). */
+  tempoModel(filename) { return getTempoDrawModel(filename); },
   get loaded() { return [...loaded]; },
   get markers() { return [...markers]; },
   /** The DataSession itself — state ownership is migrating into it (item 13). */

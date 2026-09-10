@@ -47,13 +47,18 @@ import {
   getMeiXml,
   resolveAudioUrl,
   pushFixUndoEntry,
+  refreshSynthAlignmentGrid,
 } from "./listen.js";
 import {
   verifyQuarters,
   createCorrections,
   findAnchor,
+  findGap,
   neighbourAnchors,
   setAnchor,
+  setGap,
+  removeGap,
+  syncGapTimes,
   applySegment,
   applyAnchorValue,
   serialize as serializeCorrections,
@@ -237,6 +242,12 @@ let _correctionsBase = null;
 let _loadedCorrectionsJson = JSON.stringify({ a: [], g: [] });
 /** The one in-flight fix_realign request, or null (the worker is serial). */
 let _pendingRealign = null;
+/** Bumped on every change to the correction record or the tables it governs;
+ *  exit compares it with the entry value to decide the main-view recompute
+ *  (plan §14 cluster C: once, via the corrected-tables path). */
+let _correctionsEpoch = 0;
+/** The gap band's diagonal hatch, cached per tick colour. */
+let _hatch = null;
 /** The last off-screen undo/redo announcement (test surface). */
 let _lastAnnounce = null;
 let _announceTimer = null;
@@ -463,8 +474,12 @@ function _paintFrame() {
 function _derivedFitsPane(w, h) {
   if (!_derived || !_derived.dims) return false;
   const dw = Math.abs(_derived.dims.w - w);
-  const dh = Math.abs(_derived.dims.h - h);
-  return dw <= Math.max(8, w * 0.02) && dh <= Math.max(8, h * 0.02);
+  // Height is deliberately NOT compared: with one system per page and the page
+  // box tracking content, the pane's height never enters the page model — the
+  // CSS fit absorbs it as scale — so a sticky strip height (or a lane drag)
+  // must not cost a cold entry. Width does break systems, so it is compared.
+  void h;
+  return dw <= Math.max(8, w * 0.02);
 }
 
 /** Enter score↔ref fix mode from a row's entry button. */
@@ -519,6 +534,12 @@ export async function enterFixMode(entryFile) {
     marquee: null, // an in-progress marquee drag on the strip
     resizing: null, // an in-progress strip or lane resize drag
     lastBatch: null, // test surface: the last "move to nearest onset" run
+    lastGap: null, // test surface: the last G (lay / remove)
+    gapBands: 0, // test surface: gap bands painted on the last redraw
+    epochAtEntry: _correctionsEpoch, // the exit recompute's baseline
+    relayouts: 0, // test surface: Verovio relayouts since entry (pane resizes)
+    refits: 0, // test surface: light re-fits since entry (strip / lane drags)
+    lastLoading: null, // test surface: { text, corner } of the last overlay
   };
   const f = _fix;
 
@@ -597,10 +618,18 @@ export async function enterFixMode(entryFile) {
     // A hidden (zero-sized) pane must not re-lay-out to the fallback page
     // dimensions; the relayout runs when it comes back.
     if (size === f.lastPaneSize || size.startsWith("0x0")) return;
+    const prevW = f.lastPaneSize ? parseInt(f.lastPaneSize, 10) : null;
     f.lastPaneSize = size;
+    const widthChanged = prevW === null || prevW !== parseInt(size, 10);
     clearTimeout(f.resizeDebounce);
     f.resizeDebounce = setTimeout(() => {
-      if (_fix === f) _onResize();
+      if (_fix !== f) return;
+      // One system per page with the page box tracking content: the pane's
+      // HEIGHT never changes the page model, only the on-screen scale (the
+      // CSS fit) — so a height-only change takes the light re-fit, and only
+      // a width change pays for a relayout.
+      if (widthChanged) _onResize();
+      else _refitScorePane();
     }, 150);
   });
   f.resizeObserver.observe(f.els.scoreEl);
@@ -686,6 +715,9 @@ export function exitFixMode() {
   // mean anything. The suppression MODE is deliberately sticky, unlike this.
   _lastReplay = null;
   _teardownFixDom(f);
+  // The main view recomputes via the corrected-tables path ONCE, here, when
+  // anything about the corrections changed during the session (cluster C).
+  if (_correctionsEpoch !== f.epochAtEntry) _refreshMainView();
   // The worker keeps its Pyodide runtime for a cheap re-entry, but drops the
   // session's resident audio.
   if (_worker && _workerHasSession) {
@@ -1064,10 +1096,19 @@ function _buildDom(contentEl, waveformsEl) {
   navCard.append(navHead, navBody);
   navRegion.appendChild(navCard);
 
+  // The exit is a round × at the score pane's top-right corner (user,
+  // 2026-09-03: in a short window the nav's last button fell off screen), not
+  // a nav button; Escape is its keyboard twin. Absolutely positioned inside
+  // the root, so the pane's layout — and the prewarm fit — never move for it.
   const exitBtn = document.createElement("button");
   exitBtn.type = "button";
   exitBtn.id = "fix-exit";
-  exitBtn.textContent = "✕ Exit correction mode";
+  exitBtn.className = "fix-exit-corner";
+  exitBtn.textContent = "✕";
+  exitBtn.setAttribute("aria-label", "Exit correction mode");
+  exitBtn.title =
+    "Exit correction mode (Escape): closes the correction screen and returns " +
+    "to the listening mode. Edits stay in the loaded alignment until you save.";
   exitBtn.addEventListener("click", () => exitFixMode());
 
   // The audition has no play button of its own: the main transport's is it
@@ -1429,10 +1470,23 @@ function _buildDom(contentEl, waveformsEl) {
   const fsEdits = fieldset("fix-fs-edits", "Edits", "Collapse / expand undo, revert, and save");
   const undoRow = document.createElement("div");
   undoRow.className = "fix-nav-row";
-  fsEdits.body.append(undoRow);
+  // Unscored-audio gaps (increment 4): the button twin of G.
+  const gapRow = document.createElement("div");
+  gapRow.className = "fix-nav-row";
+  const gapBtn = document.createElement("button");
+  gapBtn.type = "button";
+  gapBtn.id = "fix-gap-btn";
+  gapBtn.textContent = "Gap (G)";
+  gapBtn.title =
+    "Unscored audio (G): lay a gap from the selected onset to the next — applause, a " +
+    "pause, an unwritten repeat — or remove the gap the selected onset bounds. Drag " +
+    "either endpoint to place its boundary.";
+  gapBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  gapBtn.addEventListener("click", () => _toggleGap());
+  gapRow.appendChild(gapBtn);
+  fsEdits.body.append(undoRow, gapRow);
   navBody.append(title, chip, fsScore.fs, fsPlayback.fs, fsSnap.fs, fsLanes.fs, fsEdits.fs);
   _borrowNavActions({ "undo-btn": undoRow, "redo-btn": undoRow }, fsEdits.body);
-  navBody.appendChild(exitBtn);
 
   const score = document.createElement("div");
   score.className = "fix-score";
@@ -1531,7 +1585,7 @@ function _buildDom(contentEl, waveformsEl) {
   loadingText.className = "fix-loading-text";
   loading.append(loadingSpin, loadingText);
 
-  root.append(score, gap, strip, conn, loading);
+  root.append(score, gap, strip, conn, loading, exitBtn);
   contentEl.appendChild(root);
   // The region goes where Controls and Waveforms were, above the footer.
   const navFooter = document.getElementById("nav-footer");
@@ -1671,15 +1725,26 @@ export function fixTransport(action) {
   return true;
 }
 
-function _showFixLoading(text) {
+/**
+ * The loading overlay. Default: the full blanking overlay (entry, where there
+ * is nothing to show yet). `corner`: a small spinner in the pane's top-right
+ * with the stale page kept visible and dimmed beneath it — for a relayout
+ * mid-session, where a stale page beats a blank one (user, 2026-09-03).
+ */
+function _showFixLoading(text, { corner = false } = {}) {
   if (!_fix) return;
   _fix.els.loadingText.textContent = text;
+  _fix.els.loading.classList.toggle("fix-loading-corner", corner);
+  _fix.els.root.classList.toggle("fix-relayout", corner);
   _fix.els.loading.hidden = false;
+  _fix.lastLoading = { text, corner };
 }
 
 function _hideFixLoading() {
   if (!_fix) return;
   _fix.els.loading.hidden = true;
+  _fix.els.loading.classList.remove("fix-loading-corner");
+  _fix.els.root.classList.remove("fix-relayout");
 }
 
 function _setChip(state, text, full) {
@@ -2419,6 +2484,7 @@ function _onGapPointerDown(e) {
     startH: f.els.strip.clientHeight,
     minH,
     maxH: Math.max(minH, paneH - f.els.gap.clientHeight - SCORE_MIN_PX),
+    ..._wsHostAtDragStart(f),
     moved: false,
     onMove: (ev) => _onResizeMove(ev),
     onUp: (ev) => _onResizeUp(ev),
@@ -2440,6 +2506,7 @@ function _onLaneHandlePointerDown(e, h) {
     upper: h.dataset.upper,
     lower: h.dataset.lower,
     heights,
+    ..._wsHostAtDragStart(f),
     moved: false,
     onMove: (ev) => _onResizeMove(ev),
     onUp: (ev) => _onResizeUp(ev),
@@ -2471,7 +2538,25 @@ function _onResizeMove(e) {
     _laneWeights = w;
     _applyLaneWeights(f.els);
   }
+  // The lanes are canvases repainted per frame; the WaveSurfer is sized at
+  // creation and rebuilt on release. Until then, scale its host to the
+  // waveform lane's live height so the strip follows the drag as one piece
+  // (user, 2026-09-03); the rebuild replaces the scaled host.
+  if (r.wsHost && r.wsH0) {
+    const h = f.els.stripWs.clientHeight;
+    r.wsHost.style.transformOrigin = "top left";
+    r.wsHost.style.transform =
+      h > 0 && Math.abs(h - r.wsH0) >= 1 ? `scaleY(${(h / r.wsH0).toFixed(4)})` : "";
+  }
   _scheduleRedraw();
+}
+
+/** The WaveSurfer's host element and the waveform lane's height at a drag's start. */
+function _wsHostAtDragStart(f) {
+  return {
+    wsHost: f.stripWS ? f.els.stripWs.firstElementChild : null,
+    wsH0: f.els.stripWs.clientHeight,
+  };
 }
 
 function _onResizeUp() {
@@ -2481,8 +2566,9 @@ function _onResizeUp() {
   _endResize(f);
   if (!r.moved) return;
   _buildStrip(f.stripSource); // a WaveSurfer sizes itself at creation
-  // The score pane moved: re-fit it (the observer stood down during the drag).
-  if (r.kind === "strip") _onResize().catch(() => {});
+  // The score pane moved: the LIGHT re-fit (the observer stood down during
+  // the drag, and the CSS fit has already sized the page — no relayout).
+  if (r.kind === "strip") _refitScorePane();
   _scheduleRedraw();
 }
 
@@ -2500,7 +2586,7 @@ function _resetStripHeight() {
   if (!f) return;
   _applyStripSizing(f.els.strip);
   _buildStrip(f.stripSource);
-  _onResize().catch(() => {});
+  _refitScorePane();
 }
 
 function _resetLaneWeights() {
@@ -2820,11 +2906,11 @@ function _occupiedTimes(groupIxOrSet) {
   if (groupIxOrSet instanceof Set) {
     for (const ix of groupIxOrSet) {
       const g = f.groups[ix];
-      if (g) own.add(g.eventIxs[0]);
+      if (g) own.add(_anchorEventOf(g));
     }
   } else if (groupIxOrSet != null) {
     const g = f.groups[groupIxOrSet];
-    if (g) own.add(g.eventIxs[0]);
+    if (g) own.add(_anchorEventOf(g));
   }
   return _corrections.anchors.filter((a) => !own.has(a.i)).map((a) => a.t);
 }
@@ -3023,6 +3109,35 @@ function _redrawOverlays() {
       : null;
   let ticksDrawn = 0;
 
+  // Unscored-audio gaps: a hatched band across the lanes between the two
+  // endpoint ticks — a SPAN, so none of the point glyphs — labelled when there
+  // is room. Painted first, so ticks and glyphs sit on top of it.
+  let gapBands = 0;
+  for (const gp of _corrections.gaps) {
+    const xa = _timeToStripX(gp.tEnd);
+    const xb = _timeToStripX(gp.tResume);
+    if (xa === null || xb === null) continue;
+    const a = Math.max(0, Math.min(xa, xb));
+    const b = Math.min(w, Math.max(xa, xb));
+    if (b - a < 1) continue;
+    ctx.globalAlpha = 0.32;
+    ctx.fillStyle = _hatchPattern(ctx, tickColor);
+    ctx.fillRect(a, 0, b - a, wb);
+    if (b - a > 72) {
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = tickColor;
+      ctx.font = "10px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText("unscored", (a + b) / 2, 5);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
+    }
+    gapBands++;
+  }
+  f.gapBands = gapBands;
+  ctx.globalAlpha = 1;
+
   for (const g of pageGroups) {
     const dragging = g === dragGroup;
     const t = dragging ? f.drag.curT : _groupRefTime(g);
@@ -3031,7 +3146,7 @@ function _redrawOverlays() {
     if (x === null) continue;
     const selected = g === selGroup;
     const multi = f.multiSel.size > 0 && f.multiSel.has(f.groups.indexOf(g));
-    const anchor = findAnchor(_corrections, g.eventIxs[0]);
+    const anchor = findAnchor(_corrections, _anchorEventOf(g));
     // Tick: the vertical line on the strip — the loop's drag handle.
     if (x >= -1 && x <= w + 1) {
       ctx.beginPath();
@@ -3057,16 +3172,27 @@ function _redrawOverlays() {
       }
       if (anchor) {
         // Anchored onsets carry a base glyph: solid square for a drag anchor,
-        // open square for an approve (zero-drag) anchor.
+        // open square for an approve (zero-drag) anchor, and a bracket facing
+        // the unscored audio for a gap endpoint.
         ctx.globalAlpha = 0.95;
         ctx.beginPath();
-        ctx.rect(x - 3.5, wb - 9, 7, 7);
-        if (anchor.kind === "approve") {
+        if (anchor.kind === "gap") {
+          const dir = _corrections.gaps.some((gp) => gp.i === anchor.i) ? 1 : -1;
           ctx.lineWidth = 1.6;
+          ctx.moveTo(x + dir * 4, wb - 9);
+          ctx.lineTo(x - dir * 1, wb - 9);
+          ctx.lineTo(x - dir * 1, wb - 2);
+          ctx.lineTo(x + dir * 4, wb - 2);
           ctx.stroke();
         } else {
-          ctx.fillStyle = tickColor;
-          ctx.fill();
+          ctx.rect(x - 3.5, wb - 9, 7, 7);
+          if (anchor.kind === "approve") {
+            ctx.lineWidth = 1.6;
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = tickColor;
+            ctx.fill();
+          }
         }
       }
       ticksDrawn++;
@@ -3262,7 +3388,7 @@ function _tickHit(x) {
  */
 function _dragBounds(groupIx) {
   const f = _fix;
-  const i = f.groups[groupIx].eventIxs[0];
+  const i = _anchorEventOf(f.groups[groupIx]);
   const { prev, next } = neighbourAnchors(_corrections, i);
   const own = findAnchor(_corrections, i);
   const dur = _refDuration();
@@ -3541,16 +3667,37 @@ function _cancelPendingNudge() {
   }
 }
 
+/**
+ * The LIGHT re-fit, after a strip or lane drag (user, 2026-09-03: "everything
+ * disappears on mouse-up"): the CSS fit has already sized the page to the new
+ * pane (fit mode fills the box; the zoom modes size themselves), so nothing
+ * about the resident layout changes — only the geometry that was measured in
+ * screen pixels is stale, the connectors' score-side x's. No relayout, no
+ * overlay; ticks and connectors redraw on the next frame.
+ */
+function _refitScorePane() {
+  const f = _fix;
+  if (!f) return;
+  _applyScoreZoom();
+  _buildPageGeometry(f.page);
+  f.refits = (f.refits || 0) + 1;
+  _updateStripWindow();
+  _scheduleRedraw();
+  _schedulePlayheadFrame();
+}
+
 async function _onResize() {
   const f = _fix;
   if (!f) return;
-  // A resize changes the page geometry wholesale: re-lay-out, re-derive the
-  // page model, and re-render around the current selection. On a large score
-  // that is seconds of synchronous wasm, so the loading overlay goes up (and
-  // paints) first.
-  _showFixLoading("Re-fitting the score…");
+  // A pane resize (window, nav collapse, drawer) changes the page geometry
+  // wholesale: re-lay-out, re-derive the page model, and re-render around the
+  // current selection. On a large score that is seconds of synchronous wasm,
+  // so the corner spinner goes up (and paints) first — over the stale page,
+  // which stays visible and dimmed rather than blanked.
+  _showFixLoading("Re-fitting the score…", { corner: true });
   await _paintFrame();
   if (_fix !== f) return;
+  f.relayouts = (f.relayouts || 0) + 1;
   const w = f.els.scoreEl.clientWidth;
   const h = f.els.scoreEl.clientHeight;
   _applyFixLayoutAt(w, h);
@@ -3663,6 +3810,29 @@ function _buildAudition(f, refSamples) {
   return _finishAuditionRender(f);
 }
 
+/** The synth ear's typical level relative to the recording's (median frame
+ *  RMS over non-silent frames): a little UNDER it, so the recording leads
+ *  and the balance slider's middle is a real middle. */
+const AUD_SYNTH_LEVEL = 0.7;
+/** ~93 ms frames at FIX_SR; frames below this RMS count as silence. */
+const AUD_LEVEL_FRAME = 2048;
+const AUD_SILENCE_RMS = 1e-4;
+
+/** Median RMS over the non-silent ~93 ms frames of a channel (0 if none). */
+function _medianFrameRms(ch) {
+  const vals = [];
+  for (let i = 0; i + AUD_LEVEL_FRAME <= ch.length; i += AUD_LEVEL_FRAME) {
+    let s = 0;
+    for (let k = i; k < i + AUD_LEVEL_FRAME; k++) s += ch[k] * ch[k];
+    const r = Math.sqrt(s / AUD_LEVEL_FRAME);
+    if (r > AUD_SILENCE_RMS) vals.push(r);
+  }
+  if (!vals.length) return 0;
+  vals.sort((x, y) => x - y);
+  const mid = vals.length >> 1;
+  return vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
+}
+
 /** Constant-sum pan: the boosted ear stays at 1, the other attenuates. */
 function _applyAudBalance(a) {
   a.gainL.gain.value = _audBalance > 0 ? 1 - _audBalance : 1;
@@ -3679,13 +3849,31 @@ async function _finishAuditionRender(f) {
   }
   if (_fix !== f || f.aud !== a) return;
   // Master gain from the full render, kept for every later window re-render
-  // so amplitude never steps at a re-render boundary.
+  // so amplitude never steps at a re-render boundary. LEVEL-MATCHED to the
+  // recording (user, 2026-09-03: "the sawtooth overwhelms the audio"): a
+  // sawtooth peak-normalised to 0.9 has an RMS near 0.5, some 10 dB above a
+  // classical recording's decoded samples, so the synth drowned the ear it
+  // was meant to be compared with at every slider position. The synth's
+  // typical frame level is set to AUD_SYNTH_LEVEL × the recording's — median
+  // frame RMS over the non-silent frames of each, robust to lead-in silence
+  // and to dynamics — and never past the peak clamp.
+  const recLevel = _medianFrameRms(a.buffer.getChannelData(0));
+  const synLevel = _medianFrameRms(a.synthCh);
   let peak = 0;
   for (let i = 0; i < a.synthCh.length; i++) {
     const v = Math.abs(a.synthCh[i]);
     if (v > peak) peak = v;
   }
-  a.gain = peak > 1e-6 ? 0.9 / peak : 1;
+  const peakGain = peak > 1e-6 ? 0.9 / peak : 1;
+  a.gain =
+    recLevel > 1e-5 && synLevel > 1e-6
+      ? Math.min(peakGain, (AUD_SYNTH_LEVEL * recLevel) / synLevel)
+      : peakGain;
+  a.levels = { rec: recLevel, syn: synLevel, gain: a.gain, peakGain };
+  console.log(
+    `fix mode: audition levels — recording ${recLevel.toFixed(4)} RMS, synth ` +
+      `${synLevel.toFixed(4)} raw → gain ${a.gain.toFixed(4)} (peak clamp ${peakGain.toFixed(3)})`,
+  );
   _copySynthToBuffer(f, 0, a.duration);
   await _attachStretch(f, a);
   if (_fix !== f || f.aud !== a) return;
@@ -4259,7 +4447,7 @@ async function _commitAnchor(groupIx, t, kind) {
   if (!f || f.realignBusy || !Number.isFinite(t)) return;
   const g = f.groups[groupIx];
   if (!g) return;
-  const i = g.eventIxs[0];
+  const i = _anchorEventOf(g);
   const refOn = scoreAlignment.ref_onset;
   const refOff = scoreAlignment.ref_offset;
   if (!Array.isArray(refOff)) {
@@ -4272,6 +4460,12 @@ async function _commitAnchor(groupIx, t, kind) {
   if (!_pristine) _pristine = { on: refOn.slice(), off: refOff.slice() };
 
   const prevRecord = findAnchor(_corrections, i);
+  // A gap endpoint STAYS a gap endpoint (increment 4's ruling): a drag, an
+  // approve, or S on it moves that boundary and keeps the label, so the
+  // commit's kind becomes 'gap' — the zero-data branch below still keys on
+  // what the gesture was.
+  const approve = kind === "approve";
+  if (prevRecord?.kind === "gap") kind = "gap";
   const entry = {
     type: "fix-anchor",
     i,
@@ -4301,7 +4495,7 @@ async function _commitAnchor(groupIx, t, kind) {
     return;
   }
 
-  if (kind === "approve") {
+  if (approve) {
     entry.selfAfter = { ...entry.selfBefore };
     f.lastCommit = { kind, i, t, realigned: 0, linear: 0, degenerate: 0 };
     _pushCommitEntry(entry);
@@ -4328,9 +4522,10 @@ async function _commitAnchor(groupIx, t, kind) {
         // still lives inside this span and must follow it: skipping here
         // left the offset stale, so a rightward drag beside an existing
         // anchor could leave offset ≤ onset and the synth rendered the
-        // note as a 20 ms blip (the first-note stutter).
+        // note as a 20 ms blip (the first-note stutter). A GAP span keeps
+        // the note's length instead of stretching it across the applause.
         if (seg.iA < 0) continue;
-        res = _linearFill(seg);
+        res = findGap(_corrections, seg.iA) ? _gapSpanFill(seg, entry) : _linearFill(seg);
       } else {
         const priorRef = refOn.slice(seg.iA + 1, seg.iB);
         try {
@@ -4505,6 +4700,263 @@ async function _commitAnchor(groupIx, t, kind) {
 function _pushCommitEntry(entry) {
   if (_batch) _batch.entries.push(entry);
   else pushFixUndoEntry(entry);
+}
+
+// ---------------------------------------------------------------------------
+// Unscored-audio gaps (increment 4, plan §14 cluster B1): G lays a gap from
+// the selected onset to the next, or removes the gap the selected onset bounds.
+// ---------------------------------------------------------------------------
+
+/**
+ * The event index a group's anchor lives on. Anchors sit on a group's FIRST
+ * event, except a gap's left endpoint, which sits on the group's LAST event
+ * (the gap runs between events i and i+1, and i+1 is the next group's first
+ * event). Chord groups make the two differ; every anchor lookup goes here.
+ */
+function _anchorEventOf(g) {
+  const first = g.eventIxs[0];
+  const last = g.eventIxs[g.eventIxs.length - 1];
+  if (last !== first) {
+    const a = findAnchor(_corrections, last);
+    if (a && a.kind === "gap" && !findAnchor(_corrections, first)) return last;
+  }
+  return first;
+}
+
+/** The gap the group bounds (as either endpoint), or null. */
+function _gapAtGroup(g) {
+  const first = g.eventIxs[0];
+  const last = g.eventIxs[g.eventIxs.length - 1];
+  return _corrections.gaps.find((gp) => gp.i === last || gp.i + 1 === first) || null;
+}
+
+/**
+ * G: lay an unscored-audio gap from the selected onset to the next one, or
+ * remove the gap the selected onset bounds. Laying follows the Approve
+ * precedent — a LABEL, no realign: the endpoints take the two events'
+ * current times (the table already encodes the jump), and the endpoint drags
+ * that follow realign with the right boundaries. The one data change: the
+ * last note before the gap has its tail clamped to its notated length at the
+ * local tempo, so it no longer rings across the applause in the right ear —
+ * a silent right ear across the span is the check by ear that the gap sits
+ * right. Removing a gap restores no tail; it only takes the label off.
+ */
+function _toggleGap() {
+  const f = _fix;
+  if (!f) return;
+  if (!f.engineReady || f.realignBusy || _batch) {
+    _announce(_notEditableWhy());
+    return;
+  }
+  const ix = f.selGroupIx;
+  const g = f.groups[ix];
+  if (!g) return;
+  const refOn = scoreAlignment.ref_onset;
+  const refOff = scoreAlignment.ref_offset;
+  if (!Array.isArray(refOff)) {
+    _announce("This alignment has no ref_offset table; corrections need one.");
+    return;
+  }
+  const dur = _refDuration();
+  if (!(dur > 0)) return;
+  const ctx = { nEvents: f.nEvents, refDuration: dur };
+  if (!_pristine) _pristine = { on: refOn.slice(), off: refOff.slice() };
+
+  const existing = _gapAtGroup(g);
+  if (existing) {
+    const entry = {
+      type: "fix-gap",
+      op: "remove",
+      i: existing.i,
+      barHint: _barOfQuarter(f.qOn[existing.i]),
+      gap: { ...existing },
+      gapAnchors: _corrections.anchors
+        .filter((a) => (a.i === existing.i || a.i === existing.i + 1) && a.kind === "gap")
+        .map((a) => ({ ...a })),
+      replaced: [],
+      tails: [],
+      window: null,
+    };
+    try {
+      removeGap(_corrections, existing.i, ctx);
+    } catch (err) {
+      _announce(`Cannot remove the gap: ${err.message}`);
+      return;
+    }
+    f.lastGap = { op: "remove", i: existing.i, tEnd: existing.tEnd, tResume: existing.tResume };
+    _pushCommitEntry(entry);
+    _syncCorrectionsHeader();
+    _announce(`Gap removed after bar ${entry.barHint ?? "?"}: both onsets are plain again.`);
+    _scheduleRedraw();
+    return;
+  }
+
+  const next = f.groups[ix + 1];
+  const iA = g.eventIxs[g.eventIxs.length - 1];
+  const iB = iA + 1;
+  if (!next || next.eventIxs[0] !== iB) {
+    _announce("No onset follows this one — a gap needs an onset on each side.");
+    return;
+  }
+  const tEnd = refOn[iA];
+  const tResume = refOn[iB];
+  if (!(Number.isFinite(tEnd) && Number.isFinite(tResume) && tEnd < tResume)) {
+    _announce("These two onsets share a time — drag one apart before laying a gap.");
+    return;
+  }
+  const entry = {
+    type: "fix-gap",
+    op: "lay",
+    i: iA,
+    q: f.qOn[iA],
+    barHint: _barOfQuarter(f.qOn[iA]),
+    gap: null,
+    gapAnchors: [],
+    replaced: _corrections.anchors.filter((a) => a.i === iA || a.i === iB).map((a) => ({ ...a })),
+    tails: [],
+    window: null,
+  };
+  try {
+    setGap(_corrections, { i: iA, tEnd, tResume, ts: Date.now() }, ctx);
+  } catch (err) {
+    _announce(`Cannot lay a gap here: ${err.message}`);
+    return;
+  }
+  entry.gap = { ..._corrections.gaps.find((gp) => gp.i === iA) };
+  entry.gapAnchors = _corrections.anchors
+    .filter((a) => (a.i === iA || a.i === iB) && a.kind === "gap")
+    .map((a) => ({ ...a }));
+  // The tail clamp, for every member of the last group (a chord's voices too).
+  const spq = _localSecondsPerQuarter(iA, iA);
+  let tailMax = -Infinity;
+  for (const e of g.eventIxs) {
+    const before = refOff[e];
+    if (!Number.isFinite(before)) continue;
+    const notated = Math.max((f.qOff[e] - f.qOn[e]) * spq, MIN_SOUND_SEC);
+    const after = Math.min(before, refOn[e] + notated, tResume - ANCHOR_EPS_SEC);
+    if (after < before) {
+      entry.tails.push({ i: e, before, after });
+      refOff[e] = after;
+      tailMax = Math.max(tailMax, before);
+    }
+  }
+  if (entry.tails.length) entry.window = { t0: tEnd, t1: tailMax };
+  f.lastGap = { op: "lay", i: iA, tEnd, tResume, tails: entry.tails.length };
+  _pushCommitEntry(entry);
+  _syncCorrectionsHeader();
+  if (entry.window) _auditionRerender(entry.window.t0, entry.window.t1);
+  _announce(
+    `Gap laid after bar ${entry.barHint ?? "?"}: ${(tResume - tEnd).toFixed(1)} s of ` +
+      "unscored audio. Drag either endpoint to place its boundary.",
+  );
+  _scheduleRedraw();
+}
+
+/** Insert (or replace) an anchor record, keeping the list sorted by event. */
+function _insertAnchorRecord(a) {
+  const at = _corrections.anchors.findIndex((x) => x.i === a.i);
+  if (at !== -1) _corrections.anchors.splice(at, 1);
+  const ins = _corrections.anchors.findIndex((x) => x.i > a.i);
+  if (ins === -1) _corrections.anchors.push(a);
+  else _corrections.anchors.splice(ins, 0, a);
+}
+
+/** Undo a fix-gap entry by direct state edits (snapshot semantics, no worker). */
+function _undoGapEntry(entry) {
+  const refOff = scoreAlignment?.ref_offset;
+  const gi = entry.gap.i;
+  if (entry.op === "lay") {
+    _corrections.gaps = _corrections.gaps.filter((gp) => gp.i !== gi);
+    _corrections.anchors = _corrections.anchors.filter(
+      (a) => !((a.i === gi || a.i === gi + 1) && a.kind === "gap"),
+    );
+    for (const a of entry.replaced) _insertAnchorRecord({ ...a });
+    if (Array.isArray(refOff)) for (const t of entry.tails) refOff[t.i] = t.before;
+  } else {
+    for (const a of entry.gapAnchors) _insertAnchorRecord({ ...a });
+    _corrections.gaps.push({ ...entry.gap });
+    _corrections.gaps.sort((a, b) => a.i - b.i);
+  }
+  syncGapTimes(_corrections);
+  _syncCorrectionsHeader();
+}
+
+/** Redo a fix-gap entry: the mirror of _undoGapEntry. */
+function _redoGapEntry(entry) {
+  const refOff = scoreAlignment?.ref_offset;
+  const gi = entry.gap.i;
+  if (entry.op === "lay") {
+    _corrections.anchors = _corrections.anchors.filter((a) => !(a.i === gi || a.i === gi + 1));
+    for (const a of entry.gapAnchors) _insertAnchorRecord({ ...a });
+    _corrections.gaps.push({ ...entry.gap });
+    _corrections.gaps.sort((a, b) => a.i - b.i);
+    if (Array.isArray(refOff)) for (const t of entry.tails) refOff[t.i] = t.after;
+  } else {
+    _corrections.gaps = _corrections.gaps.filter((gp) => gp.i !== gi);
+    _corrections.anchors = _corrections.anchors.filter(
+      (a) => !((a.i === gi || a.i === gi + 1) && a.kind === "gap"),
+    );
+  }
+  syncGapTimes(_corrections);
+  _syncCorrectionsHeader();
+}
+
+/**
+ * The zero-interior fill for a segment that IS a gap span (its left boundary
+ * a gap's left endpoint): the linear fill would stretch the last note's
+ * offset across the unscored audio at the span's absurd seconds-per-quarter.
+ * The note keeps the length it had instead, ending before the resume.
+ */
+function _gapSpanFill(seg, entry) {
+  const refOn = scoreAlignment.ref_onset;
+  const refOff = scoreAlignment.ref_offset;
+  const iA = seg.iA;
+  const onNow = refOn[iA];
+  const dur =
+    iA === entry.i ? entry.selfBefore.off - entry.selfBefore.on : refOff[iA] - onNow;
+  const off = Math.min(onNow + Math.max(dur, MIN_SOUND_SEC), seg.tB - ANCHOR_EPS_SEC);
+  return {
+    ref_onset: [],
+    ref_offset: [],
+    anchor_a_offset: Math.max(off, onNow + MIN_SOUND_SEC),
+    hop: 0,
+  };
+}
+
+/** The gap band's diagonal hatch as a canvas pattern (cached per colour). */
+function _hatchPattern(ctx, color) {
+  if (_hatch && _hatch.color === color) return _hatch.pattern;
+  const c = document.createElement("canvas");
+  c.width = 8;
+  c.height = 8;
+  const g = c.getContext("2d");
+  g.strokeStyle = color;
+  g.lineWidth = 1.5;
+  g.beginPath();
+  g.moveTo(-1, 9);
+  g.lineTo(9, -1);
+  g.moveTo(-1, 1);
+  g.lineTo(1, -1);
+  g.moveTo(7, 9);
+  g.lineTo(9, 7);
+  g.stroke();
+  _hatch = { color, pattern: ctx.createPattern(c, "repeat") };
+  return _hatch.pattern;
+}
+
+/**
+ * The main view recomputes via the corrected-tables path (plan §14 cluster
+ * C): ONCE at exit when anything changed, and after a history hop or Revert
+ * that lands while no session is open.
+ */
+function _refreshMainView() {
+  try {
+    if (refreshSynthAlignmentGrid()) {
+      console.log("fix mode: main view's synth grid recomputed from the corrected tables");
+    }
+  } catch (err) {
+    console.error("fix mode: main-view recompute failed:", err);
+  }
 }
 
 /**
@@ -4723,11 +5175,13 @@ function _restoreAnchorState(entry) {
       _corrections.gaps.sort((a, b) => a.i - b.i);
     }
   }
+  syncGapTimes(_corrections);
   _syncCorrectionsHeader();
 }
 
 /** Keep header.corrections — the durable hand-correction record — in step. */
 function _syncCorrectionsHeader() {
+  _correctionsEpoch++;
   const header = loadedAlignmentJSON?.header;
   if (!header) return;
   if (!_corrections.anchors.length && !_corrections.gaps.length) {
@@ -4767,6 +5221,11 @@ function _barOfQuarter(q) {
  * off-screen (the cluster-B nicety).
  */
 export function applyFixCorrectionUndo(entry) {
+  if (entry.type === "fix-gap") {
+    _undoGapEntry(entry);
+    _afterHistoryHop(entry, "Undid");
+    return;
+  }
   if (entry.type === "fix-anchor-batch") {
     // A "move to nearest onset" batch: its anchors come off in reverse, then
     // one hop covering the whole span.
@@ -4798,6 +5257,11 @@ function _undoEntryData(entry) {
 
 /** Apply the REDO of a fix-anchor entry: the after-values and the anchor. */
 export function applyFixCorrectionRedo(entry) {
+  if (entry.type === "fix-gap") {
+    _redoGapEntry(entry);
+    _afterHistoryHop(entry, "Redid");
+    return;
+  }
   if (entry.type === "fix-anchor-batch") {
     for (const e of entry.entries) _redoEntryData(e);
     _afterHistoryHop(entry.entries[0], "Redid", entry.entries.length, _batchWindow(entry));
@@ -4832,6 +5296,7 @@ function _redoEntryData(entry) {
   const ins = _corrections.anchors.findIndex((x) => x.i > a.i);
   if (ins === -1) _corrections.anchors.push(a);
   else _corrections.anchors.splice(ins, 0, a);
+  syncGapTimes(_corrections);
   _syncCorrectionsHeader();
 }
 
@@ -4858,8 +5323,15 @@ function _afterHistoryHop(entry, verb, count = 1, win = null) {
     _scheduleRedraw();
   } else {
     const where = entry.barHint ? `near bar ${entry.barHint}` : `at event ${entry.i}`;
-    const what = count > 1 ? `${count} alignment corrections` : "alignment correction";
+    const what =
+      entry.type === "fix-gap"
+        ? "unscored-audio gap"
+        : count > 1
+          ? `${count} alignment corrections`
+          : "alignment correction";
     _announce(`${verb} ${what} ${where}.`);
+    // The hop changed the tables with no session open to defer the recompute to.
+    _refreshMainView();
   }
 }
 
@@ -4923,6 +5395,8 @@ export function fixRevertCorrections() {
   if (f) {
     if (f.aud?.ready) _auditionRerender(0, f.aud.duration);
     _scheduleRedraw();
+  } else {
+    _refreshMainView();
   }
 }
 
@@ -5111,6 +5585,14 @@ function _onFixKeydown(e) {
       _snapSelectionToOnsets().catch((err) =>
         console.error("fix mode: move to onset failed:", err),
       );
+      break;
+    case "KeyG":
+      if (e.altKey || e.shiftKey) {
+        handled = false;
+        break;
+      }
+      _commitPendingNudge();
+      _toggleGap();
       break;
     case "KeyM":
       if (e.altKey) {
@@ -5354,6 +5836,7 @@ async function _bootstrap() {
 export function fixTestState() {
   const corrections = {
     anchors: _corrections.anchors.map((a) => ({ ...a })),
+    gaps: _corrections.gaps.map((g) => ({ ...g })),
     gapCount: _corrections.gaps.length,
     headerPresent: !!loadedAlignmentJSON?.header?.corrections,
   };
@@ -5423,6 +5906,11 @@ export function fixTestState() {
       ? { startT: f.drag.startT, curT: f.drag.curT }
       : null,
     lastCommit: f.lastCommit ? { ...f.lastCommit } : null,
+    lastGap: f.lastGap ? { ...f.lastGap } : null,
+    gapBands: f.gapBands ?? 0,
+    relayouts: f.relayouts ?? 0,
+    refits: f.refits ?? 0,
+    lastLoading: f.lastLoading ? { ...f.lastLoading } : null,
     soundingGroup: f.soundingGroupIx,
     pageOnly: _pageOnly,
     laneSpec: _laneSpec,
@@ -5508,6 +5996,7 @@ export function fixTestState() {
           workletPos: f.aud.workletPos,
           gainL: f.aud.gainL.gain.value,
           gainR: f.aud.gainR.gain.value,
+          levels: f.aud.levels ? { ...f.aud.levels } : null,
           renderWindow: f.aud.lastRenderWindow ? { ...f.aud.lastRenderWindow } : null,
         }
       : null,

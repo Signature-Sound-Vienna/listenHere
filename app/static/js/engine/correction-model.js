@@ -108,8 +108,10 @@ function insertSorted(state, anchor) {
  * Pin (or re-pin) event i at reference time t. Returns the two refill
  * segments flanking the anchor (left may have interiorCount 0). Replacing
  * an existing anchor at i updates it in place — including a gap anchor,
- * which stays owned by its gap only if the kind stays 'gap'; re-pinning it
- * with another kind detaches it from the gap (the gap record is removed).
+ * which stays owned by its gap only if the kind stays 'gap': re-pinning it
+ * AS 'gap' moves that gap's boundary with it (increment 4's ruling — the
+ * boundary is what the user places by ear), while re-pinning it with another
+ * kind detaches it from the gap (the gap record is removed).
  */
 export function setAnchor(state, { i, q, t, kind, ts }, ctx) {
   assertCtx(ctx);
@@ -136,6 +138,7 @@ export function setAnchor(state, { i, q, t, kind, ts }, ctx) {
   } else {
     insertSorted(state, { i, q, t, kind, ts });
   }
+  if (kind === 'gap') syncGapTimes(state);
   const { prev, next } = neighbourAnchors(state, i);
   const self = findAnchor(state, i);
   return {
@@ -211,6 +214,21 @@ export function removeGap(state, i, ctx) {
   );
   const { prev, next } = neighbourAnchors(state, i);
   return { segment: segmentBetween(prev, next, ctx) };
+}
+
+/**
+ * Make every gap record's boundary times follow its two 'gap' anchors. The
+ * anchors are the values the correction loop edits (drags, undo, redo);
+ * the record is the label consumers read — this keeps them one truth.
+ * Callers that splice anchors directly (snapshot undo/redo) call it after.
+ */
+export function syncGapTimes(state) {
+  for (const g of state.gaps) {
+    const a = findAnchor(state, g.i);
+    const b = findAnchor(state, g.i + 1);
+    if (a && a.kind === 'gap') g.tEnd = a.t;
+    if (b && b.kind === 'gap') g.tResume = b.t;
+  }
 }
 
 /**

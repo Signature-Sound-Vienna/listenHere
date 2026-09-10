@@ -706,9 +706,13 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     expect(await shown()).toEqual(['none', 'none']);
     await expect(page.locator('#region-fix')).toBeVisible();
     // Everything the header used to carry is in the region — and IN it, not
-    // merely present somewhere on the page.
+    // merely present somewhere on the page. The exit alone is not: it is the
+    // round × at the score pane's top-right (a nav button fell off screen in
+    // a short window), inside the fix root, with Escape as its keyboard twin.
+    await expect(page.locator('#region-fix #fix-exit')).toHaveCount(0);
+    await expect(page.locator('#fix-mode > #fix-exit.fix-exit-corner')).toHaveCount(1);
+    await expect(page.locator('#fix-exit')).toHaveAttribute('title', /returns to the listening mode/);
     for (const sel of [
-      '#fix-exit',
       '#fix-page-only',
       '#fix-replay-off',
       '.fix-speed',
@@ -1340,5 +1344,140 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await page.waitForFunction(() => (window as any)._listenTest.fix.lanes?.peakCount === 2);
     reqs = await lanesReqs();
     expect(reqs[reqs.length - 1]).toMatchObject({ what: 'all', scale: 'linear' });
+  });
+
+  // --- Resize polish (2026-09-03, with increment 4) ---
+
+  test('42.31 a strip drag re-fits the score without a relayout or the blanking overlay and the waveform follows the drag live; a pane resize still relayouts, under a corner spinner with the page kept visible', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page, REF_ROW);
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.chipState === 'ready',
+      undefined,
+      { timeout: 30_000 },
+    );
+    await page.waitForTimeout(300); // any entry-time observer callback has fired by now
+    let st = await fixState(page);
+    const base = { relayouts: st.relayouts as number, refits: st.refits as number };
+    const pageCount = st.pageCount;
+    const wsTransform = () =>
+      page.evaluate(
+        () => (document.querySelector('.fix-strip-ws > div') as HTMLElement | null)?.style.transform ?? null,
+      );
+    expect(await wsTransform()).toBe('');
+    // Drag the gap UP by 40 px and HOLD: the waveform's host is scaled to the
+    // lane's live height (the lanes are canvases and already follow), and the
+    // blanking overlay never shows.
+    const gap = (await page.locator('.fix-gap').boundingBox())!;
+    const gx = gap.x + gap.width / 2;
+    const gy = gap.y + gap.height / 2;
+    await page.mouse.move(gx, gy);
+    await page.mouse.down();
+    await page.mouse.move(gx, gy - 20, { steps: 3 });
+    await page.mouse.move(gx, gy - 40, { steps: 3 });
+    const held = await wsTransform();
+    expect(held).toMatch(/^scaleY\(1\.\d+\)$/);
+    await expect(page.locator('.fix-loading')).toBeHidden();
+    await page.mouse.up();
+    await page.waitForFunction(
+      (b) => (window as any)._listenTest.fix.refits === b + 1,
+      base.refits,
+    );
+    await page.waitForFunction(() => (window as any)._listenTest.fix.ticksOnPage > 0);
+    st = await fixState(page);
+    // No Verovio relayout, the same page model, the connectors re-measured,
+    // and the rebuilt WaveSurfer carries no transform.
+    expect(st.relayouts).toBe(base.relayouts);
+    expect(st.pageCount).toBe(pageCount);
+    expect(st.connectorCount).toBeGreaterThan(0);
+    expect(await wsTransform()).toBe('');
+    await expect(page.locator('.fix-loading')).toBeHidden();
+    // A real pane resize (the viewport) still relayouts — under the corner
+    // spinner, with the page dimmed rather than blanked, and cleaned up after.
+    const vp = page.viewportSize()!;
+    await page.setViewportSize({ width: vp.width - 160, height: vp.height + 80 });
+    await page.waitForFunction(
+      (b) => (window as any)._listenTest.fix.relayouts === b + 1,
+      base.relayouts,
+      { timeout: 20_000 },
+    );
+    await page.waitForFunction(() => (document.querySelector('.fix-loading') as HTMLElement).hidden);
+    st = await fixState(page);
+    expect(st.lastLoading).toEqual({ text: 'Re-fitting the score…', corner: true });
+    expect(await page.evaluate(() => document.querySelector('#fix-mode')!.classList.contains('fix-relayout'))).toBe(false);
+    expect(await page.evaluate(() => document.querySelector('.fix-loading')!.classList.contains('fix-loading-corner'))).toBe(false);
+    await page.setViewportSize(vp);
+  });
+
+  test('42.32 in a short window the Correction region scrolls as one: no fieldset body scrolls on its own, no row overflows sideways, and the magnet is an icon-sized button', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await page.setViewportSize({ width: 1280, height: 640 });
+    await enterFix(page, REF_ROW);
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.chipState === 'ready',
+      undefined,
+      { timeout: 30_000 },
+    );
+    const fit = await page.evaluate(() => {
+      const bodies = Array.from(document.querySelectorAll('#region-fix .fix-fs .fieldset-body')) as HTMLElement[];
+      const navBody = document.querySelector('#region-fix .nav-section-body') as HTMLElement;
+      const btn = document.getElementById('fix-snap-sel')!.getBoundingClientRect();
+      // A scrollbar needs an overflow mode that allows one; with `visible`
+      // Firefox still reports a scrollHeight a few px over clientHeight for an
+      // overhanging glyph, which is not a scrollbar and hides nothing.
+      const canScroll = (b: HTMLElement, axis: 'overflowY' | 'overflowX') =>
+        getComputedStyle(b)[axis] !== 'visible';
+      return {
+        fieldsets: bodies.length,
+        vScrolling: bodies.filter((b) => canScroll(b, 'overflowY') && b.scrollHeight > b.clientHeight + 1).length,
+        hScrolling: bodies.filter((b) => canScroll(b, 'overflowX') && b.scrollWidth > b.clientWidth + 1).length,
+        overhang: Math.max(...bodies.map((b) => b.scrollHeight - b.clientHeight)),
+        bodyOverflow: bodies.map((b) => getComputedStyle(b).overflowY),
+        regionOverflowY: getComputedStyle(navBody).overflowY,
+        regionNeedsScroll: navBody.scrollHeight > navBody.clientHeight + 1,
+        magnetW: Math.round(btn.width),
+        // "detected / perceived" on ONE line: both labels share a top edge.
+        radioTops: new Set(
+          Array.from(document.querySelectorAll('.fix-snap-target-row label')).map((l) =>
+            Math.round(l.getBoundingClientRect().top),
+          ),
+        ).size,
+        // The exit is a round button in the score pane's top-right corner, on screen.
+        exit: (() => {
+          const e = document.getElementById('fix-exit')!;
+          const r = e.getBoundingClientRect();
+          const root = document.getElementById('fix-mode')!.getBoundingClientRect();
+          return {
+            round: getComputedStyle(e).borderRadius,
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+            nearTop: r.top - root.top < 20,
+            nearRight: root.right - r.right < 20,
+            onScreen: r.bottom <= innerHeight && r.top >= 0,
+          };
+        })(),
+      };
+    });
+    expect(fit.radioTops).toBe(1);
+    expect(fit.exit.round).toBe('50%');
+    expect(fit.exit.w).toBe(fit.exit.h);
+    expect(fit.exit.nearTop).toBe(true);
+    expect(fit.exit.nearRight).toBe(true);
+    expect(fit.exit.onScreen).toBe(true);
+    expect(fit.fieldsets).toBe(5);
+    expect(fit.vScrolling).toBe(0);
+    expect(fit.hScrolling).toBe(0);
+    expect(fit.overhang, `overhang ${fit.overhang} px`).toBeLessThanOrEqual(8); // a glyph, never a hidden row
+    expect(fit.bodyOverflow.every((o) => o === 'visible')).toBe(true);
+    expect(fit.regionOverflowY).toBe('auto');
+    // 640 px is too short for the whole column, so the region itself scrolls.
+    expect(fit.regionNeedsScroll).toBe(true);
+    expect(fit.magnetW).toBeLessThan(60);
   });
 });

@@ -26,6 +26,16 @@ docs/exhibit-prototype-plan.md, not a preference:
   score-determined (§5.2c). Only ONE time per region was ever authored — the rest
   were mirrored through the grid — so re-deriving *improves* 15–18 times per
   region rather than damaging hand-work.
+* **Hand corrections travel INSIDE the HQ alignment, never beside it.** Fix mode
+  (plan §14, `?fixMode`) writes corrected `ref_onset`/`ref_offset` values in place
+  and the anchor/gap record under `header.corrections`; this script copies that
+  record's counts and base into `source.corrections`, so a payload says whether it
+  was built from a corrected alignment. The flow after a correcting session:
+  Save data → `alignment.json`; replace `ExhibitAnnots/Alignment_Fledermaus_HQ.json`
+  with it (keep the dated predecessor); re-run `--steps payload`. Note what that
+  moves: score↔ref corrections change `body.score` only — every region time here
+  re-derives through the audio-to-audio grids, which such corrections never touch —
+  so nothing on the wall moves until the exhibit's score view reads `body.score`.
 * **The 13 canonical pairs are ASSERTED, not trusted.** CANONICAL_PAIRS below is
   the plan's table; the script re-derives each pair from the source set's own grid
   and fails loudly on any disagreement. If a future re-align changes grid length,
@@ -561,6 +571,27 @@ def seed_overrides(path):
     return True
 
 
+def summarise_corrections(record):
+    """The HQ alignment's hand-correction record (header.corrections, written by
+    fix mode) as provenance: the counts plus the base the anchors were laid on.
+    None for an uncorrected alignment — the normal state before hand-correction."""
+    if not isinstance(record, dict):
+        return None
+    return {
+        "version": record.get("version"),
+        "anchors": len(record.get("anchors") or []),
+        "gaps": len(record.get("gaps") or []),
+        "base": record.get("base"),
+    }
+
+
+def describe_corrections(summary):
+    if summary is None:
+        return "none (an uncorrected alignment)"
+    return (f"{summary['anchors']} anchors, {summary['gaps']} unscored-audio gaps "
+            "(a hand-corrected alignment)")
+
+
 def step_payload(args, sets, warnings):
     log("payload:")
     verify_pairs(sets, warnings)
@@ -577,6 +608,8 @@ def step_payload(args, sets, warnings):
     pending_hand_placement(annotations, warnings)
 
     hq_header = sets["hq"]["header"]
+    corrections = summarise_corrections(hq_header.get("corrections"))
+    log(f"  corrections: {describe_corrections(corrections)}")
     payload = {
         "schema": SCHEMA,
         "piece": {
@@ -601,6 +634,7 @@ def step_payload(args, sets, warnings):
             "alignment": SOURCES["hq"],
             "alignmentCreatedBy": hq_header.get("createdBy"),
             "alignmentParams": hq_header.get("alignmentParams"),
+            "corrections": corrections,
             "audienceSets": {a: SOURCES[a] for a in AUDIENCES},
         },
         "recordings": recordings,

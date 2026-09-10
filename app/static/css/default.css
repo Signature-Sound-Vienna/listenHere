@@ -6888,9 +6888,21 @@ body.fix-mode-open #region-waveforms {
   cursor: default;
 }
 #region-fix .nav-section-body {
-  gap: 0.45em;
+  gap: 0.35em;
   padding-bottom: 0.5em;
   font-size: var(--font-size-small, 0.9em);
+  /* When the column is shorter than the content, the REGION scrolls as one —
+     never its fieldsets one by one (user, 2026-09-03: five scrollbars). */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+}
+#region-fix .fix-fs.collapsible-fieldset,
+#region-fix .fix-fs.collapsible-fieldset:not(.collapsed) {
+  flex: 0 0 auto; /* keep the natural height; the nav's fieldsets may shrink, these do not */
+}
+#region-fix .fix-fs .fieldset-body {
+  overflow: visible;
 }
 /* Buttons pair on a row and split it; everything else takes a full row. */
 .fix-nav-row {
@@ -6911,10 +6923,21 @@ body.fix-mode-open #region-waveforms {
   font-family: inherit;
   font-size: var(--font-size-medium);
   border-radius: 4px;
-  padding: 0.35em 0.7em;
+  padding: 0.3em 0.6em;
   width: 100%;
   cursor: pointer;
   transition: all 0.2s ease;
+}
+/* The magnet is an ICON at the end of its row, not a full-width nav button:
+   it was taking the row's whole width under the rule above (165 px of box
+   around two glyphs) and pushing the row into a horizontal scrollbar. */
+#region-fix .fix-icon-btn {
+  width: auto;
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 0.3em;
+  font-size: 1.1em;
+  line-height: 1.3;
 }
 /* The % readout is a compact inline control, not a full-width nav button. */
 #region-fix .fix-speed button {
@@ -6922,8 +6945,29 @@ body.fix-mode-open #region-waveforms {
   padding: 0.15em 0.35em;
   font-size: 0.95em;
 }
-#fix-exit {
-  margin-top: 0.15em;
+/* The exit: a round × at the score pane's top-right, above the page and the
+   corner spinner's row; the blanket themed button rule owns its colours. */
+#fix-exit.fix-exit-corner {
+  position: absolute;
+  top: 0.45em;
+  right: 0.6em;
+  z-index: 9;
+  width: 2em;
+  height: 2em;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1.1em;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  opacity: 0.85;
+  cursor: pointer;
+}
+#fix-exit.fix-exit-corner:hover,
+#fix-exit.fix-exit-corner:focus-visible {
+  opacity: 1;
 }
 /* Wraps rather than ellipsising: the nowrap was a HEADER constraint (one
    stable line, whose height fed the prewarm fit) and in a nav column it only
@@ -7139,6 +7183,11 @@ body.fix-mode-open .icon-fix-mode {
   align-items: center;
   gap: 0.3em;
 }
+/* A row of labels and small controls wraps in a narrow column rather than
+   overflowing it; the button pairs (Undo | Redo) stay on one line. */
+.fix-fs .fieldset-body > span {
+  flex-wrap: wrap;
+}
 .fix-fs .fieldset-body label {
   cursor: pointer;
 }
@@ -7208,14 +7257,17 @@ body.fix-mode-open .icon-fix-mode {
 
 /* The snap target's radios, in the listening interface's own shape. */
 .fix-snap-target-row {
-  margin-left: 1.4em;
+  margin-left: 1em;
   font-size: var(--font-size-small, 0.85em);
+  flex-wrap: nowrap; /* "detected / perceived" is one line (user, 2026-09-03) */
+  white-space: nowrap;
 }
 .fix-snap-target-row input[type="radio"] {
   margin: 0 0.25em 0 0;
+  flex: 0 0 auto;
 }
 .fix-snap-target-row label {
-  margin-right: 0.6em;
+  margin-right: 0.45em;
   cursor: pointer;
 }
 /* The "move to nearest onset" icon at the end of the Snap row. */
@@ -7341,6 +7393,25 @@ body.fix-mode-open .icon-fix-mode {
 }
 .fix-loading[hidden] {
   display: none; /* the author display:flex would otherwise beat [hidden] */
+}
+/* A relayout mid-session: a small spinner in the pane's top-right, the stale
+   page kept visible and dimmed beneath it (nothing blanks). */
+.fix-loading.fix-loading-corner {
+  inset: 0.5em 3.4em auto auto; /* left of the round exit button */
+  flex-direction: row;
+  gap: 0.4em;
+  padding: 0.25em 0.6em;
+  border-radius: 0.4em;
+  background: var(--color-bg-secondary, var(--color-bg, #fff));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+.fix-loading.fix-loading-corner .fix-loading-spin {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+#fix-mode.fix-relayout .fix-score {
+  opacity: 0.45;
 }
 .fix-loading-spin {
   width: 26px;

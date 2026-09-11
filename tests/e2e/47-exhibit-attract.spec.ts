@@ -15,6 +15,10 @@ import { test, expect, type Page } from '@playwright/test';
 //      and stops the SCHEDULING, never the music; the loop re-arms on quiet.
 //   4. THE ROOM: two screens agree on idleness; one leader plays, the other
 //      raises its band and rests; a touch on either ends the loop for both.
+//   5. THE MIRROR (v2, 0.60.0): the idle screen plays what the room hears,
+//      muted and in step; a tap there hands the speakers over with the other
+//      screen mirroring on; the loop's claim never outranks a person's; the
+//      silence between passes is the room's (47.13–47.16, 36b's ranking test).
 //
 // The transport is the quiet stand-in of spec 36 (select records, never
 // plays; `playing` is a flag the test flips), and idle windows are seconds.
@@ -354,5 +358,213 @@ test.describe('47. The attract loop', () => {
     await page.waitForTimeout(2600);
     expect((await attract(page)).phase).toBe('idle-wait');
     expect(await bandUp(page)).toBe(false);
+  });
+
+  // 47.13 THE MIRROR (ruling R7 in full; v2, 0.60.0). The idle screen plays what
+  // the room hears — the same file, muted, within a second of the audible one —
+  // and a tap there is the hand-off: this copy unmutes and claims the speakers,
+  // the other screen mutes and keeps mirroring the new audible table. Nothing
+  // goes silent on touch. Both pages run the quiet stand-in, so "playing" is a
+  // flag and the sync is what carries the moment.
+  test('47.13 the idle screen mirrors the leader muted and in step; a tap hands the speakers over and the other screen mirrors on', async ({
+    context,
+  }) => {
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    const { order } = await boot(pageA, `${IDLE}&arbiter=broadcast`);
+    await boot(pageB, `${IDLE}&arbiter=broadcast`);
+    await armQuietTransport(pageA);
+    await armQuietTransport(pageB);
+    await expect.poll(async () => (await attract(pageA))?.peers).toBe(1);
+    await expect.poll(async () => (await attract(pageB))?.peers).toBe(1);
+    await expect.poll(async () => (await attract(pageA))?.phase, { timeout: 8_000 }).toBe('attract');
+    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 8_000 }).toBe('attract');
+    await expect
+      .poll(async () => (await attract(pageA)).started || (await attract(pageB)).started, { timeout: 15_000 })
+      .toBe(true);
+    const [leader, follower] = (await attract(pageA)).leader ? [pageA, pageB] : [pageB, pageA];
+    const fileOf = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.transport.activeFile as string);
+    const timeOf = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.transport.time as number);
+    const mutedOf = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.transport.muted as boolean);
+    const holding = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.arbiter.holding as boolean);
+
+    // The leader's music "plays" from 40 s (the flag, then a seek so the transport
+    // emits and the arbiter hears the audible edge): once a second it says where it is.
+    await leader.evaluate(() => ((window as any)._playing = true));
+    await leader.evaluate(() => (window as any)._exhibitTest.transport.seek(40));
+    await expect.poll(() => holding(leader)).toBe(true);
+    // The follower follows: same file, muted, within a second, driving nothing itself.
+    await expect.poll(async () => (await attract(follower)).mirroring, { timeout: 5_000 }).toBe(true);
+    expect(await mutedOf(follower)).toBe(true);
+    await expect.poll(() => fileOf(follower), { timeout: 10_000 }).toBe(order[0]);
+    await expect.poll(() => timeOf(follower), { timeout: 5_000 }).toBeGreaterThan(39);
+    expect(await timeOf(follower)).toBeLessThan(45);
+    expect((await attract(follower)).started).toBe(false);
+    expect(await holding(follower), 'a muted mirror claims nothing').toBe(false);
+    // A seek on the leader is followed.
+    await leader.evaluate(() => (window as any)._exhibitTest.transport.seek(120));
+    await expect.poll(() => timeOf(follower), { timeout: 5_000 }).toBeGreaterThan(119);
+
+    // The hand-off: the follower's muted copy is running; a visitor taps it.
+    await follower.evaluate(() => ((window as any)._playing = true));
+    await follower.mouse.click(512, 683);
+    await expect.poll(async () => (await attract(follower)).phase).toBe('idle-wait');
+    await expect.poll(() => bandUp(follower)).toBe(false);
+    expect(await mutedOf(follower)).toBe(false);
+    expect((await attract(follower)).mirroring).toBe(false);
+    await expect.poll(() => holding(follower)).toBe(true);
+    // The leader yielded — muted, not paused — with its band up, mirroring the new audible table.
+    await expect.poll(() => mutedOf(leader), { timeout: 5_000 }).toBe(true);
+    const l = await attract(leader);
+    expect(l.mirroring).toBe(true);
+    expect(l.bandUp).toBe(true);
+    expect(l.phase).toBe('idle-wait');
+    expect(await leader.evaluate(() => (window as any)._exhibitTest.transport.playing), 'nothing goes silent on touch').toBe(true);
+    expect(await holding(leader)).toBe(false);
+    // The visitor switches recordings: the mirroring screen switches with them.
+    await follower.evaluate((f) => (window as any)._exhibitTest.turns.request(0, f), order[2]);
+    await expect.poll(() => fileOf(follower)).toBe(order[2]);
+    await expect.poll(() => fileOf(leader), { timeout: 10_000 }).toBe(order[2]);
+    expect(await mutedOf(leader)).toBe(true);
+
+    await pageA.close();
+    await pageB.close();
+  });
+
+  // 47.14 The silence is the room's: when the audible pass ends, the mirroring
+  // screen falls into the same gap (and would reload in it), then waits for
+  // the leader's next pass rather than starting one of its own.
+  test("47.14 the leader's pass ending puts the mirroring screen into the same silence", async ({ context }) => {
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    const qs = `${IDLE}&arbiter=broadcast&attractGapMs=1500&attractReload=0`;
+    const { order, durations } = await boot(pageA, qs);
+    await boot(pageB, qs);
+    await armQuietTransport(pageA);
+    await armQuietTransport(pageB);
+    await expect.poll(async () => (await attract(pageA))?.peers).toBe(1);
+    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 8_000 }).toBe('attract');
+    await expect.poll(async () => (await attract(pageA))?.phase, { timeout: 8_000 }).toBe('attract');
+    await expect
+      .poll(async () => (await attract(pageA)).started || (await attract(pageB)).started, { timeout: 15_000 })
+      .toBe(true);
+    const [leader, follower] = (await attract(pageA)).leader ? [pageA, pageB] : [pageB, pageA];
+    await leader.evaluate(() => ((window as any)._playing = true));
+    await leader.evaluate(() => (window as any)._exhibitTest.transport.seek(5));
+    await expect.poll(async () => (await attract(follower)).mirroring, { timeout: 5_000 }).toBe(true);
+    // The end of the recording, not playing: the leader's pass is over.
+    await leader.evaluate(() => ((window as any)._playing = false));
+    await leader.evaluate((t) => (window as any)._exhibitTest.transport.seek(t), durations[order[0]] - 0.1);
+    await expect.poll(async () => (await attract(leader)).phase).toBe('gap');
+    await expect.poll(async () => (await attract(follower)).phase, { timeout: 3_000 }).toBe('gap');
+    const [l, f] = [await attract(leader), await attract(follower)];
+    expect(Math.abs(l.gapEndsAt - f.gapEndsAt)).toBeLessThan(300);
+    expect(f.mirroring).toBe(false);
+    // After the gap the leader plays again from the top; the follower only waits.
+    const before = (await taps(leader)).length;
+    await expect.poll(async () => (await attract(leader)).phase, { timeout: 5_000 }).toBe('attract');
+    await expect.poll(async () => (await taps(leader)).length).toBeGreaterThan(before);
+    await expect.poll(async () => (await attract(follower)).phase, { timeout: 5_000 }).toBe('attract');
+    expect((await attract(follower)).started).toBe(false);
+    await pageA.close();
+    await pageB.close();
+  });
+
+  // 47.15 A leader that stood back because the other screen was audible when
+  // its band went up runs the pass once the room falls silent — nobody plays
+  // over a person, and the two screens never wait for each other for ever.
+  test('47.15 the loop never plays over an audible table, and takes the room once it falls silent', async ({ context }) => {
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    const { order } = await boot(pageA, `${IDLE}&arbiter=broadcast`);
+    await armQuietTransport(pageA);
+    // A visitor's table on A, playing (the flag, then a seek so the room hears the audible edge).
+    await pageA.evaluate((f) => (window as any)._exhibitTest.turns.request(0, f), order[1]);
+    await pageA.evaluate(() => ((window as any)._playing = true));
+    await pageA.evaluate(() => (window as any)._exhibitTest.transport.seek(10));
+    await boot(pageB, `${IDLE}&arbiter=broadcast`);
+    await armQuietTransport(pageB);
+    await expect.poll(async () => (await attract(pageB))?.peers).toBe(1);
+    // B goes idle under A's music: band up, and — whoever the leader is — no pass.
+    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 8_000 }).toBe('attract');
+    await pageB.waitForTimeout(2500);
+    expect((await attract(pageA)).started).toBe(false);
+    expect((await attract(pageB)).started).toBe(false);
+    expect((await attract(pageB)).peerAudible).toBe(true);
+    expect(await pageB.evaluate(() => (window as any)._exhibitTest.transport.activeFile), 'B mirrors A').toBe(order[1]);
+    // A's music stops; the room is silent: the leader, whichever it is, plays.
+    await pageA.evaluate(() => ((window as any)._playing = false));
+    await pageA.evaluate(() => (window as any)._exhibitTest.transport.seek(11));
+    await expect
+      .poll(async () => (await attract(pageA)).started || (await attract(pageB)).started, { timeout: 15_000 })
+      .toBe(true);
+    const [a, b] = [await attract(pageA), await attract(pageB)];
+    expect(a.leader ? a.started : b.started, 'the leader is the one playing').toBe(true);
+    await pageA.close();
+    await pageB.close();
+  });
+
+  // 47.16 The autoplay policy made visible (audio.js `_awaitRunning`): Web Audio
+  // never rejects play(), so a context the browser keeps suspended is reported
+  // as a NotAllowedError from select(), which is what locks the loop (47.4).
+  // The wait itself is stubbed: headless browsers start every context (measured
+  // 2026-09-10), so the refusal is only observable headed, or on the iPad.
+  test('47.16 a context that never runs makes select() reject with NotAllowedError, and the loop locks', async ({ page }) => {
+    const { order } = await boot(page, IDLE);
+    await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      T.transport._awaitRunning = () =>
+        Promise.reject(Object.assign(new Error('suspended'), { name: 'NotAllowedError' }));
+    });
+    const rejected = await page.evaluate(
+      (f) => (window as any)._exhibitTest.transport.select(f, 0).then(() => null, (e: any) => e.name),
+      order[0],
+    );
+    expect(rejected).toBe('NotAllowedError');
+    await page.evaluate(() => (window as any)._exhibitTest.attract.force());
+    await expect.poll(async () => (await attract(page))?.phase, { timeout: 15_000 }).toBe('locked');
+    expect(await bandUp(page)).toBe(true);
+    await expect(page.locator('.attract-band')).toHaveClass(/is-locked/);
+  });
+
+  // 47.17 THE SECOND PIECE (ruling R6; 0.60.0). `?piece=kaiserwalzer` boots the
+  // Kaiserwalzer payload (tools/prep_exhibit_data.py --piece kaiserwalzer — a
+  // GENERATED, gitignored file like fledermaus.json and concerts.json, so a
+  // tree that runs this spec needs it built or copied): ten recordings, no
+  // annotations, and the band names the piece WITH its opus for the first
+  // time. With `attractPieces` the reload in the silence moves to the next piece.
+  test('47.17 ?piece=kaiserwalzer boots the second piece with its opus, and attractPieces cycles to it in the silence', async ({
+    page,
+  }) => {
+    const kw = await boot(page, 'debug=1&piece=kaiserwalzer');
+    expect(kw.order).toHaveLength(10);
+    expect(kw.ref).toBe('VPO-2021.wav');
+    const piece = await page.evaluate(() => (window as any)._exhibitTest.exhibit.piece);
+    expect(piece.id).toBe('kaiserwalzer');
+    expect(piece.opus).toBe('op. 437');
+    expect(await page.evaluate(() => (window as any)._exhibitTest.exhibit.annotations.length)).toBe(0);
+    await expect(page.locator('.mb-piece-title').first()).toHaveText('Kaiser-Walzer, op. 437');
+    // A recording the metadata sidecar has never met still gets a strip and a strap button.
+    await expect(page.locator('.vp').first().locator('.strip')).toHaveCount(10);
+
+    // The cycle: Die Fledermaus first, the reload in the silence lands on Kaiserwalzer.
+    const { order, durations } = await boot(
+      page,
+      `${IDLE}&attractGapMs=1600&attractReload=1&attractPieces=fledermaus,kaiserwalzer`,
+    );
+    expect(await page.evaluate(() => (window as any)._exhibitTest.config.piece)).toBe('fledermaus');
+    await armQuietTransport(page);
+    await page.evaluate(() => (window as any)._exhibitTest.attract.force());
+    await expect.poll(async () => (await attract(page))?.started).toBe(true);
+    const reloaded = page.waitForEvent('load');
+    await page.evaluate((t) => (window as any)._exhibitTest.transport.seek(t), durations[order[0]] - 0.1);
+    await expect.poll(async () => (await attract(page))?.phase).toBe('gap');
+    await reloaded;
+    expect(await page.evaluate(() => (window as any)._exhibitTest.ready)).toBe(true);
+    expect(await page.evaluate(() => (window as any)._exhibitTest.config.piece)).toBe('kaiserwalzer');
+    expect(await page.evaluate(() => (window as any)._exhibitTest.exhibit.piece.opus)).toBe('op. 437');
+    const s = await attract(page);
+    expect(s.resumed).toBe(true);
+    expect(s.bandUp).toBe(true);
   });
 });

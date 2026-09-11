@@ -348,7 +348,7 @@ const TABS = [
         label: "Audio arbiter",
         options: ["local", "broadcast"],
         hint:
-          "Room-level arbitration between multiple screens: broadcast pauses this screen when another same-profile window claims the room's audio, last claimant wins. local is inert single-screen behaviour.",
+          "Room-level arbitration between multiple screens: broadcast yields this screen's audio when another same-profile window claims the room's — a live table pauses, an idle one (attract band up) mutes and mirrors. Last claimant wins, except that a visitor always outranks the attract loop. local is inert single-screen behaviour. The two-screen attract loop needs broadcast.",
       },
     ],
   },
@@ -530,6 +530,9 @@ const STUDY_PRESET = {
   // default stays 0 until release.
   attractAfterIdleMs: 90000,
   attractDuringPlaybackMs: 180000,
+  // Two screens of one PC share the speakers: the loop's muted mirror and the
+  // tap hand-off (ruling R7) ride on the broadcast arbiter (2026-09-10).
+  arbiter: "broadcast",
   // The switch cue (alpha-tester feedback, 2026-09-10).
   switchCue: "arrow",
   annotationColors: "theme",

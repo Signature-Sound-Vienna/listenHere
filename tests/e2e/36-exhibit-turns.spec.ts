@@ -572,6 +572,58 @@ test.describe('36b. The AudioArbiter', () => {
     await pageA.close();
     await pageB.close();
   });
+
+  // 36.22 Claims carry a KIND (attract loop v2, 0.60.0): a visitor's outranks
+  // the loop's. The loop asking for the speakers a person holds is told to
+  // stand down and the person hears nothing of it; a person asking for the
+  // speakers the loop holds takes them, as the last claimant always did.
+  test("36.22 with kinds, the loop's claim cannot silence a person and a person's claim silences the loop", async ({
+    context,
+  }) => {
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    await boot(pageA, 'arbiter=broadcast');
+    await boot(pageB, 'arbiter=broadcast');
+
+    // A person plays on A: a "visitor" claim (no loop drives A's transport).
+    await pageA.click('.mb-play');
+    await expect
+      .poll(() => pageA.evaluate(() => (window as any)._exhibitTest.transport.playing), { timeout: 15_000 })
+      .toBe(true);
+    // The claim rides on the transport's emit after play(), which on Firefox
+    // follows the suspended context's start by a few milliseconds: poll.
+    await expect.poll(() => pageA.evaluate(() => (window as any)._exhibitTest.arbiter.kind)).toBe('visitor');
+
+    // The loop on B asks: B is revoked by the visitor, A plays on untouched.
+    await pageB.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      (window as any)._revoked = [];
+      T.arbiter.onRevoked((_by: string, kind: string) => (window as any)._revoked.push(kind));
+      T.arbiter.claim('loop');
+    });
+    await expect.poll(() => pageB.evaluate(() => (window as any)._revoked)).toEqual(['visitor']);
+    expect(await pageB.evaluate(() => (window as any)._exhibitTest.arbiter.holding)).toBe(false);
+    await pageB.waitForTimeout(500);
+    expect(await pageA.evaluate(() => (window as any)._exhibitTest.transport.playing), 'the loop cannot silence a person').toBe(true);
+    expect(await pageA.evaluate(() => (window as any)._exhibitTest.arbiter.holding)).toBe(true);
+
+    // The other way round: A's speakers were the loop's; a person's tap on B takes them.
+    await pageA.evaluate(() => (window as any)._exhibitTest.arbiter.claim('loop'));
+    await pageB.click('.mb-play');
+    await expect
+      .poll(() => pageB.evaluate(() => (window as any)._exhibitTest.transport.playing), { timeout: 15_000 })
+      .toBe(true);
+    await expect
+      .poll(() => pageA.evaluate(() => (window as any)._exhibitTest.transport.playing), {
+        timeout: 10_000,
+        message: "the person's claim never silenced the loop's screen",
+      })
+      .toBe(false);
+    expect(await pageB.evaluate(() => (window as any)._exhibitTest.arbiter.kind)).toBe('visitor');
+
+    await pageA.close();
+    await pageB.close();
+  });
 });
 
 test.describe('36. Demo feedback — the band says whose turn it is', () => {

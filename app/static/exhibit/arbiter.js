@@ -7,11 +7,21 @@
 // minimal form is exactly what the plan asked for: one interface, an
 // in-process implementation, and a BroadcastChannel implementation.
 //
-// The contract is deliberately tiny. A screen calls `claim()` whenever its
+// The contract is deliberately tiny. A screen calls `claim(kind)` whenever its
 // audio starts; the LAST claimant wins, and every other holder is told via
-// `onRevoked` and pauses itself. No grants, no queues, no reply traffic: the
-// room-level policy question ("should screens negotiate like viewports do?")
-// is an October question, and this interface is the seam it would slot into.
+// `onRevoked` and yields — a live table pauses, an idle one mutes and mirrors
+// (attract.js). No grants, no queues: the room-level policy question ("should
+// screens negotiate like viewports do?") is an October question, and this
+// interface is the seam it would slot into.
+//
+// THE ONE RANKING (attract loop v2, plan §4.4): a claim carries a KIND, and a
+// VISITOR outranks the LOOP. The attract loop claims as "loop" when its pass
+// starts a recording; a visitor's tap claims as "visitor". A holder that
+// outranks a claimant keeps the speakers and answers `hold`, and the claimant
+// revokes ITSELF — so the loop can never take the audio from a person, while
+// a person always takes it from the loop. Equal kinds keep the original rule:
+// the newest claim wins. Still no queues, and the two message types are the
+// whole protocol.
 //
 // "local" is the DEFAULT and is inert by construction — one screen, one
 // claimant, nothing to revoke — so shipping the seam changes no behaviour
@@ -25,11 +35,22 @@
 /** Query-string values createArbiter accepts (config.arbiter). */
 export const ARBITERS = ["local", "broadcast"];
 
+/** Claim kinds, LOWEST rank first: the loop yields to any visitor. */
+export const CLAIM_KINDS = ["loop", "visitor"];
+
+/** An unknown kind ranks as a visitor: a person is the safe assumption. */
+const rank = (kind) => {
+  const r = CLAIM_KINDS.indexOf(kind);
+  return r < 0 ? CLAIM_KINDS.length - 1 : r;
+};
+
 /**
  * @typedef {object} AudioArbiter
- * @property {() => void} claim      this screen's audio is starting
- * @property {() => void} release    this screen's audio stopped on its own
- * @property {(fn: (byId: string) => void) => () => void} onRevoked
+ * @property {(kind?: string) => void} claim   this screen's audio is starting, as "visitor" (default) or "loop"
+ * @property {() => void} release              this screen's audio stopped on its own (it no longer defends the speakers)
+ * @property {(fn: (byId: string, byKind: string) => void) => () => void} onRevoked
+ * @property {boolean} holding                 this screen believes it has the speakers
+ * @property {string|null} kind                the kind it holds them as
  * @property {() => void} destroy
  */
 
@@ -44,8 +65,18 @@ export function createArbiter(kind = "local") {
 
 /** One screen: every claim succeeds and nothing can revoke it. */
 class LocalArbiter {
-  claim() {}
-  release() {}
+  constructor() {
+    this.holding = false;
+    this.kind = null;
+  }
+  claim(kind = "visitor") {
+    this.holding = true;
+    this.kind = kind;
+  }
+  release() {
+    this.holding = false;
+    this.kind = null;
+  }
   onRevoked() {
     return () => {};
   }
@@ -58,29 +89,34 @@ class BroadcastArbiter {
     // randomUUID needs a secure context, which the plain-http LAN spike server
     // is not; uniqueness is all that matters here, not unguessability.
     this.id = crypto.randomUUID?.() ?? `screen-${Math.random().toString(36).slice(2)}`;
-    this._holding = false;
+    this.holding = false;
+    this.kind = null;
     this._handlers = new Set();
     this._bc = new BroadcastChannel(channelName);
     this._bc.onmessage = (e) => {
       const msg = e.data;
-      if (!msg || msg.type !== "claim" || msg.id === this.id) return;
-      if (!this._holding) return;
-      this._holding = false;
-      for (const fn of this._handlers) {
-        try {
-          fn(msg.id);
-        } catch (err) {
-          console.warn("exhibit arbiter: onRevoked handler threw", err);
+      if (!msg || msg.id === this.id || !this.holding) return;
+      if (msg.type === "claim") {
+        if (rank(this.kind) > rank(msg.kind)) {
+          // A person holds the speakers and the loop asked: the loop is told
+          // to stand down, and the person hears nothing of it.
+          this._bc.postMessage({ type: "hold", id: this.id, to: msg.id, kind: this.kind });
+          return;
         }
+        this._revoke(msg.id, msg.kind);
+      } else if (msg.type === "hold" && msg.to === this.id) {
+        this._revoke(msg.id, msg.kind);
       }
     };
   }
-  claim() {
-    this._holding = true;
-    this._bc.postMessage({ type: "claim", id: this.id });
+  claim(kind = "visitor") {
+    this.holding = true;
+    this.kind = kind;
+    this._bc.postMessage({ type: "claim", id: this.id, kind });
   }
   release() {
-    this._holding = false;
+    this.holding = false;
+    this.kind = null;
   }
   onRevoked(fn) {
     this._handlers.add(fn);
@@ -89,5 +125,16 @@ class BroadcastArbiter {
   destroy() {
     this._bc.close();
     this._handlers.clear();
+  }
+  _revoke(byId, byKind) {
+    this.holding = false;
+    this.kind = null;
+    for (const fn of this._handlers) {
+      try {
+        fn(byId, byKind);
+      } catch (err) {
+        console.warn("exhibit arbiter: onRevoked handler threw", err);
+      }
+    }
   }
 }

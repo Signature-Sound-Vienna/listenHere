@@ -415,8 +415,10 @@ const DEFAULTS = {
   // recording", "…is still listening") before fading. UI only.
   turnNoticeMs: 4000,
   // Room-level audio arbitration (arbiter.js): "local" is inert single-screen
-  // behaviour; "broadcast" pauses this screen when another same-profile window
-  // claims the room's audio. Last claimant wins.
+  // behaviour; "broadcast" yields this screen's audio when another same-profile
+  // window claims the room's. Last claimant wins, except that a visitor's claim
+  // always outranks the attract loop's. The two-screen attract loop (its muted
+  // mirror and the tap hand-off) needs "broadcast".
   arbiter: "local",
 
   // --- operations ---

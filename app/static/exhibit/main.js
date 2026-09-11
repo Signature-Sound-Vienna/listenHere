@@ -706,18 +706,32 @@ async function boot() {
   window._exhibitTest.config = config;
 
   // Room-level audio arbitration (arbiter.js): claim on every silence-to-sound
-  // transition, pause when another screen claims. The default "local" arbiter
-  // is inert, so this wiring costs nothing until ?arbiter=broadcast opts in.
-  // The claim hangs off the transport's own state rather than off the taps, so
-  // the band's shared play button claims exactly like a strip tap does.
+  // transition, yield when another screen's claim wins. The default "local"
+  // arbiter is inert, so this wiring costs nothing until ?arbiter=broadcast
+  // opts in. The claim hangs off the transport's own state rather than off the
+  // taps, so the band's shared play button claims exactly like a strip tap does.
+  // AUDIBLE means playing AND not muted: a window mirroring the room's sound
+  // muted (attract.js, ruling R7) is not on the speakers and claims nothing.
+  // The KIND is the loop's while a pass is driving the transport, a visitor's
+  // otherwise — a visitor's claim outranks the loop's (arbiter.js).
   const arbiter = createArbiter(config.arbiter);
   window._exhibitTest.arbiter = arbiter;
-  arbiter.onRevoked(() => transport.pause());
+  arbiter.onRevoked((byId, byKind) => {
+    // An idle screen (attract band up) does not fall silent when the other
+    // screen takes the speakers: it mutes and mirrors what the room now hears
+    // (R7). A live table, as before, pauses.
+    if (attractLoop?.yieldAudio(byKind)) return;
+    transport.pause();
+  });
   {
     let wasAudible = false;
     transport.subscribe((state) => {
-      if (state.playing && !wasAudible) arbiter.claim();
-      wasAudible = state.playing;
+      const audible = state.playing && !state.muted;
+      if (audible && !wasAudible) arbiter.claim(attractLoop?.drivesAudio() ? "loop" : "visitor");
+      // Stopped on its own (the piece ended, a pause): stop defending the
+      // speakers, or a finished visitor would still outrank the next pass.
+      else if (!audible && wasAudible) arbiter.release();
+      wasAudible = audible;
     });
   }
 

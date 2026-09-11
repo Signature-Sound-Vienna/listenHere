@@ -854,6 +854,7 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       'theme=parchment', // the staff ground (user, 2026-09-03)
       'attractAfterIdleMs=90000', // the attract loop after 90 s of room-wide idle (user, 2026-09-07)
       'attractDuringPlaybackMs=180000', // and taking over a playing, untouched table after 3 min
+      'arbiter=broadcast', // two screens, one set of speakers: the loop's mirror and hand-off need it (2026-09-10)
       'switchCue=arrow', // switches a side did not make are shown (alpha-tester feedback, 2026-09-10)
     ]) {
       expect(search).toContain(pair);

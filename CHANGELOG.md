@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.60.0 -- Attract loop v2: the idle screen mirrors the room and a tap hands the speakers over; a second piece
+* The idle screen (attract band up) plays what the room hears — the same recording, muted, in step with the audible screen — whether the loop or a visitor is playing; a touch on it fades that screen in and takes the speakers, and the other screen fades out and keeps mirroring instead of falling silent. When the loop's pass ends, both screens share the silence and, with the reload on, both reload in it. Needs `?arbiter=broadcast`, which the staff preset now carries.
+* The audio arbiter's claims carry a kind: a visitor's claim always outranks the loop's, so the loop never takes the audio from a person; a screen whose sound stops on its own stops defending the speakers.
+* A browser that blocks autoplay is detected: a recording asked to sound whose audio context does not start within a second is reported as refused, so the band shows “Tap to get started” instead of a silent table with a frozen clock.
+* `tools/exhibit_soak.mjs`: the one-hour soak of the loop (plan §7.4) — headless Chromium, the staff preset, a memory sample per minute over CDP, one or two screens; never part of the test suite.
+* `tools/prep_exhibit_data.py --piece kaiserwalzer`: a second payload from the Kaiser-Walzer alignment (provisional: a fast-preset alignment, no annotations, ten proposed recordings, audio under `audio/kaiserwalzer/`); `?piece=kaiserwalzer` shows “Kaiser-Walzer, op. 437” on the band, and `attractPieces=fledermaus,kaiserwalzer` cycles the two in the silence.
+* Testing: spec 47 grows to 17 (the mirror and the hand-off, the shared silence, no pass over an audible table, the refused context, the second piece); 36.22 pins the claim ranking; 35.25 the preset's arbiter.
+
 ### 0.58.0 -- more salient active strip, switches shown to the side that did not make them; the attract loop on demand
 * `?activeStrip=` (study panel, Layout): how the currently active strip is advertised as active. `surface` is the shipped look; `edge` adds an accent line along its top, `glow` an accent ring and soft halo round it, `bars` a small three-bar glyph after the caption that moves while the music plays.
 * `?switchCue=arrow` (Turns tab; staff preset on): a switch of the audible recording, or a jump of more than a second within it, that a viewport did not make itself — the other side's take, or the attract loop's — is drawn on that viewport as a pumpkin-orange arrow from the position that was playing to the one now playing (a loop between rows, an arch within one), then gone. The taker's own viewport gets nothing. `turns.js` records the last take for the attribution.

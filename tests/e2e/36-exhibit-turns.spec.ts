@@ -825,3 +825,283 @@ test.describe('36. Demo feedback — the band says whose turn it is', () => {
     ).toBe('upright');
   });
 });
+
+// ---------------------------------------------------------------------------
+// 36c. THE ROOM'S TURN MACHINE (plan §4.4, the room machine, 2026-09-11). Under
+// ?room=shared the two windows of the museum PC share ONE machine, hosted in a
+// SharedWorker (room-worker.js): viewports are room ids (screen × 2 + local
+// index, so 0–3), the holder can be on either table, the prompt of the request
+// policy appears on the HOLDER's viewport wherever it is, the requester sees
+// the wait, the other two viewports see nothing of it, and a take — a tap, a
+// grant, an auto-grant — is EXECUTED on the window that owns the taking
+// viewport. Two pages of one browser context share the worker (probed in both
+// browsers 2026-09-11), which is exactly the two-window arrangement.
+//
+// The same quiet transport as above: select() records, `playing` is a flag.
+// Room audibility (the contended predicate) is the worker's: a window claims
+// on its audible edge, so "the holder is listening" is the flag plus a seek.
+// THE MIRROR RECORDS TOO: once a window is audible, every other window follows
+// it through select() with the room's TIME as the target (room.js), so
+// `_taps` holds the mirror's re-aims beside the machine's takes. The takes
+// here are all bare switches — no time, the carry-over — so `tapsOf` reads
+// exactly the entries without a time: the machine's, never the mirror's.
+// ---------------------------------------------------------------------------
+
+test.describe("36c. The room's turn machine", () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  const tapsOf = (p: Page) =>
+    p.evaluate(() =>
+      ((window as any)._taps as { file: string; time?: number }[]).filter((t) => t.time === undefined).map((t) => t.file),
+    );
+  const roomState = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.room.state());
+  const bandHolder = (p: Page) =>
+    p.evaluate(() => ((window as any)._exhibitTest.band.el as HTMLElement).dataset.turnHolder);
+
+  /** Two windows of one room, screen 0 and screen 1, both welcomed by the worker. */
+  async function bootRoom(context: any, qs = '') {
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    const { order } = await boot(pageA, `debug=1&room=shared&screen=0${qs}`);
+    await boot(pageB, `debug=1&room=shared&screen=1${qs}`);
+    await armQuietTransport(pageA);
+    await armQuietTransport(pageB);
+    for (const p of [pageA, pageB]) {
+      await expect.poll(async () => (await roomState(p)).welcomed, { timeout: 5_000 }).toBe(true);
+    }
+    // One worker, two windows: each snapshot lists both.
+    await expect.poll(async () => (await roomState(pageA)).snapshot?.windows?.length, { timeout: 5_000 }).toBe(2);
+    await expect.poll(async () => (await roomState(pageB)).snapshot?.windows?.length, { timeout: 5_000 }).toBe(2);
+    return { pageA, pageB, order };
+  }
+
+  /**
+   * The room hears `page`: a person touches it (the hand-off — a window that has
+   * been MIRRORING is muted, and the audible edge needs the unmute; without the
+   * touch this raced the once-a-second sync and failed on Firefox), its
+   * transport "plays", and the arbiter claims through the worker.
+   */
+  async function makeAudible(page: Page) {
+    await page.evaluate(() => (window as any)._exhibitTest.room.touch());
+    await setPlaying(page, true);
+    await page.evaluate(() => (window as any)._exhibitTest.transport.seek(10));
+    const id = await page.evaluate(() => (window as any)._exhibitTest.room.id);
+    await expect.poll(async () => (await roomState(page)).snapshot?.audible?.id, { timeout: 5_000 }).toBe(id);
+  }
+
+  test('36.23 two windows share one machine: a tap on screen 1 takes the clock for room viewport 2 and executes on that window alone', async ({
+    context,
+  }) => {
+    const { pageA, pageB, order } = await bootRoom(context);
+    expect(await pageA.evaluate(() => (window as any)._exhibitTest.turns.shared)).toBe(true);
+    expect(await pageB.evaluate(() => (window as any)._exhibitTest.viewports.map((v: any) => v.roomId))).toEqual([2, 3]);
+    const [a, b] = order;
+
+    // A's near reader (room 0) chooses: the take executes on A, and B's snapshot agrees.
+    await tap(pageA, 0, a);
+    await expect.poll(async () => (await turnState(pageB)).holder).toBe(0);
+    expect(await tapsOf(pageA)).toEqual([a]);
+    expect(await tapsOf(pageB)).toEqual([]);
+    expect(await selectedIn(pageA, 0)).toEqual([a]);
+    expect(await selectedIn(pageB, 0), 'room viewport 2 chose nothing yet').toEqual([]);
+    expect(await bandHolder(pageA), "A's band marks its near edge").toBe('0');
+    expect(await bandHolder(pageB), "B's band marks nobody: the holder is on the other table").toBe('');
+
+    // B's near reader (room 2) takes: executed on B, not on A; both agree on the holder.
+    await tap(pageB, 2, b);
+    await expect.poll(async () => (await turnState(pageA)).holder).toBe(2);
+    expect((await turnState(pageB)).holder).toBe(2);
+    await expect.poll(() => tapsOf(pageB)).toEqual([b]);
+    expect(await tapsOf(pageA), 'the take is executed once, on the taker\'s window').toEqual([a]);
+    expect(await selectedIn(pageB, 0)).toEqual([b]);
+    expect(await selectedIn(pageA, 0), "A's own choice stays marked").toEqual([a]);
+    expect(await bandHolder(pageB)).toBe('0');
+    expect(await bandHolder(pageA)).toBe('');
+
+    await pageA.close();
+    await pageB.close();
+  });
+
+  test('36.24 attribution across screens: the viewport that lost the clock is told, on its own window and nowhere else', async ({
+    context,
+  }) => {
+    const { pageA, pageB, order } = await bootRoom(context, '&turnPolicy=attribution');
+    await tap(pageA, 0, order[0]);
+    await expect.poll(async () => (await turnState(pageB)).holder).toBe(0);
+    // B's FAR reader (room 3) takes.
+    await tap(pageB, 3, order[1]);
+    await expect.poll(async () => (await turnEl(pageA, 0)).role).toBe('notice');
+    expect((await turnEl(pageA, 1)).hidden).toBe(true);
+    expect((await turnEl(pageB, 0)).hidden).toBe(true);
+    expect((await turnEl(pageB, 1)).hidden).toBe(true);
+    expect((await turnState(pageA)).holder).toBe(3);
+    await expect.poll(() => tapsOf(pageB)).toEqual([order[1]]);
+    await pageA.close();
+    await pageB.close();
+  });
+
+  test("36.25 request across screens: the prompt on the holder's viewport, the wait on the requester's, nothing on the other two; the grant executes on the requester's window", async ({
+    context,
+  }) => {
+    const { pageA, pageB, order } = await bootRoom(context, '&turnPolicy=request&turnGrantMs=0');
+    const idOf = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.room.id as string);
+    const mutedOf = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.transport.muted as boolean);
+    const fileOf = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.transport.activeFile as string);
+    // A's far reader (room 1) holds and listens; B mirrors, muted.
+    await tap(pageA, 1, order[0]);
+    await expect.poll(async () => (await turnState(pageB)).holder).toBe(1);
+    await makeAudible(pageA);
+    await expect.poll(() => mutedOf(pageB), { timeout: 5_000 }).toBe(true);
+
+    // A visitor arrives at B: the touch is the hand-off (B sounds the same
+    // performance, A fades out and follows), and B's near reader (room 2) asks.
+    await setPlaying(pageB, true);
+    await pageB.evaluate(() => (window as any)._exhibitTest.room.touch());
+    await expect.poll(async () => (await roomState(pageA)).snapshot?.audible?.id, { timeout: 5_000 }).toBe(await idOf(pageB));
+    await expect.poll(() => mutedOf(pageA), { timeout: 5_000 }).toBe(true);
+    await tap(pageB, 2, order[1]);
+    await expect.poll(async () => (await turnEl(pageA, 1)).role).toBe('prompt');
+    expect((await turnEl(pageA, 1)).buttons).toBe(2);
+    await expect.poll(async () => (await turnEl(pageB, 0)).role).toBe('waiting');
+    expect((await turnEl(pageA, 0)).hidden, 'the holder\'s neighbour sees nothing').toBe(true);
+    expect((await turnEl(pageB, 1)).hidden, "the requester's neighbour sees nothing").toBe(true);
+    expect((await turnState(pageA)).pending).toEqual({ viewport: 2, file: order[1] });
+    expect(await tapsOf(pageB), 'nothing executed yet').toEqual([]);
+    expect(await selectedIn(pageB, 0), 'the requester\'s choice is marked while they wait').toEqual([order[1]]);
+
+    // The holder grants, on A — a real click on the prompt's button, which is
+    // NOT a hand-off touch: A stays muted. The take lands on B, and A follows it.
+    await pageA.click('.vp[data-viewport="1"] .turn-grant');
+    await expect.poll(async () => (await turnState(pageB)).holder).toBe(2);
+    await expect.poll(() => tapsOf(pageB)).toEqual([order[1]]);
+    expect(await tapsOf(pageA)).toEqual([order[0]]);
+    expect(await mutedOf(pageA), 'the grant button is an answer, not an arrival').toBe(true);
+    expect(await mutedOf(pageB)).toBe(false);
+    await expect.poll(() => fileOf(pageA), { timeout: 10_000 }).toBe(order[1]);
+    await expect.poll(async () => (await turnEl(pageA, 1)).hidden).toBe(true);
+    await expect.poll(async () => (await turnEl(pageB, 0)).hidden).toBe(true);
+    expect((await turnState(pageA)).pending).toBeNull();
+    await pageA.close();
+    await pageB.close();
+  });
+
+  test("36.26 deny and cooldown across screens: the requester's notice on their window, and a re-tap inside the cooldown prompts nobody", async ({
+    context,
+  }) => {
+    const { pageA, pageB, order } = await bootRoom(
+      context,
+      '&turnPolicy=request&turnGrantMs=0&turnDenyCooldownMs=60000',
+    );
+    await tap(pageA, 0, order[0]);
+    await expect.poll(async () => (await turnState(pageB)).holder).toBe(0);
+    await makeAudible(pageA);
+    await tap(pageB, 2, order[1]);
+    await expect.poll(async () => (await turnEl(pageA, 0)).role).toBe('prompt');
+
+    await pageA.evaluate(() => (window as any)._exhibitTest.turns.deny());
+    await expect.poll(async () => (await turnEl(pageB, 0)).role).toBe('notice');
+    await expect.poll(async () => (await turnState(pageA)).pending).toBeNull();
+    await expect.poll(async () => (await turnEl(pageA, 0)).hidden).toBe(true);
+    expect((await turnState(pageB)).holder).toBe(0);
+
+    // Inside the cooldown: B's re-tap marks the choice but puts nothing to A.
+    await tap(pageB, 2, order[2]);
+    await expect.poll(() => selectedIn(pageB, 0)).toEqual([order[2]]);
+    await pageB.waitForTimeout(400);
+    expect((await turnState(pageA)).pending).toBeNull();
+    expect((await turnEl(pageA, 0)).hidden).toBe(true);
+    expect((await turnEl(pageB, 0)).role).toBe('notice');
+    expect(await tapsOf(pageB)).toEqual([]);
+    await pageA.close();
+    await pageB.close();
+  });
+
+  test("36.27 an auto-grant executes on the requester's window", async ({ context }) => {
+    const { pageA, pageB, order } = await bootRoom(context, '&turnPolicy=request&turnGrantMs=1200');
+    await tap(pageA, 0, order[0]);
+    await expect.poll(async () => (await turnState(pageB)).holder).toBe(0);
+    await makeAudible(pageA);
+    await tap(pageB, 3, order[1]);
+    await expect.poll(async () => (await turnEl(pageA, 0)).role).toBe('prompt');
+    await expect.poll(async () => (await turnState(pageA)).holder, { timeout: 5_000 }).toBe(3);
+    await expect.poll(() => tapsOf(pageB)).toEqual([order[1]]);
+    expect(await tapsOf(pageA)).toEqual([order[0]]);
+    await pageA.close();
+    await pageB.close();
+  });
+
+  test("36.28 a requester that leaves the room withdraws its request: the holder's prompt goes, no denial, no cooldown", async ({
+    context,
+  }) => {
+    const { pageA, pageB, order } = await bootRoom(context, '&turnPolicy=request&turnGrantMs=0&turnDenyCooldownMs=60000');
+    await tap(pageA, 0, order[0]);
+    await expect.poll(async () => (await turnState(pageB)).holder).toBe(0);
+    await makeAudible(pageA);
+    await tap(pageB, 2, order[1]);
+    await expect.poll(async () => (await turnEl(pageA, 0)).role).toBe('prompt');
+    // B navigates away: pagehide says bye to the worker.
+    await pageB.goto('about:blank');
+    await expect.poll(async () => (await turnState(pageA)).pending, { timeout: 5_000 }).toBeNull();
+    await expect.poll(async () => (await turnEl(pageA, 0)).hidden).toBe(true);
+    const s = await pageA.evaluate(() => (window as any)._exhibitTest.turns.state());
+    expect(s.holder).toBe(0);
+    expect(s.cooldownUntil, 'a withdrawal is not a denial').toEqual({});
+    await expect.poll(async () => (await roomState(pageA)).snapshot?.windows?.length).toBe(1);
+    await pageA.close();
+    await pageB.close();
+  });
+
+  test("36.29 the room's arbiter is the worker's: a loop's claim cannot take the speakers from a person, a person's takes them from the loop", async ({
+    context,
+  }) => {
+    const { pageA, pageB } = await bootRoom(context);
+    // A person listens on A.
+    await makeAudible(pageA);
+    expect((await roomState(pageA)).snapshot.audible.kind).toBe('visitor');
+    // The loop asks from B: refused — B alone is told, A holds on.
+    await pageB.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      (window as any)._revoked = [];
+      T.arbiter.onRevoked((_by: string, kind: string) => (window as any)._revoked.push(kind));
+      T.arbiter.claim('loop');
+    });
+    await expect.poll(() => pageB.evaluate(() => (window as any)._revoked)).toEqual(['visitor']);
+    expect(await pageB.evaluate(() => (window as any)._exhibitTest.arbiter.holding)).toBe(false);
+    expect(await pageA.evaluate(() => (window as any)._exhibitTest.arbiter.holding)).toBe(true);
+    const idA = await pageA.evaluate(() => (window as any)._exhibitTest.room.id);
+    expect((await roomState(pageB)).snapshot.audible.id).toBe(idA);
+    // The other way round: A's speakers become the loop's; a person on B takes them.
+    await pageA.evaluate(() => (window as any)._exhibitTest.arbiter.claim('loop'));
+    await expect.poll(async () => (await roomState(pageA)).snapshot.audible.kind).toBe('loop');
+    await makeAudible(pageB);
+    await expect.poll(() => pageA.evaluate(() => (window as any)._exhibitTest.arbiter.holding), { timeout: 5_000 }).toBe(false);
+    expect(await pageB.evaluate(() => (window as any)._exhibitTest.arbiter.kind)).toBe('visitor');
+    await pageA.close();
+    await pageB.close();
+  });
+
+  test('36.30 without SharedWorker the room falls back to per-screen turns with a warning; room ids still name the viewports', async ({
+    context,
+  }) => {
+    const page = await context.newPage();
+    const warnings: string[] = [];
+    page.on('console', (m) => {
+      if (m.type() === 'warning') warnings.push(m.text());
+    });
+    await page.addInitScript(() => {
+      (window as any).SharedWorker = undefined;
+    });
+    const { order } = await boot(page, 'debug=1&room=shared&screen=1');
+    const s = await roomState(page);
+    expect(s.universal).toBe(true);
+    expect(s.worker).toBe(false);
+    expect(await page.evaluate(() => (window as any)._exhibitTest.turns.shared)).toBe(false);
+    expect(warnings.some((w) => w.includes('SharedWorker unavailable'))).toBe(true);
+    await armQuietTransport(page);
+    await tap(page, 2, order[0]);
+    expect((await turnState(page)).holder).toBe(2);
+    expect(await tapsOf(page)).toEqual([order[0]]);
+    expect(await selectedIn(page, 0)).toEqual([order[0]]);
+    await page.close();
+  });
+});

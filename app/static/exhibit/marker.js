@@ -29,9 +29,12 @@
 //            job: observed at capture, never stolen. Removal by tap is the
 //            HOOK, tapped while the glass is in hand ("put it away").
 //
-// The other viewport's marker appears here as a MIRRORED GHOST (rotated 180°,
-// translucent — their glass seen from across the table). Dropping or tapping
-// my glass onto the ghost ADOPTS their moment: merge is snap-assisted
+// Every OTHER viewport's marker appears here as a translucent GHOST — their
+// glass seen from where I sit — turned so that its HILT POINTS AT ITS SOURCE
+// (the room machine, 2026-09-11): 180° for the reader across the table, a
+// diagonal toward the neighbouring screen for the far table's two readers
+// (room.js ghostAngleFor decides; this module only paints the angle). Dropping
+// or tapping my glass onto a ghost ADOPTS that moment: merge is snap-assisted
 // placement, not a persistent merged object (ruled — joint ownership questions
 // for no visitor-visible gain).
 //
@@ -75,7 +78,8 @@ const FRESH_MS = 1400;
 // rounding) and a spiral of thread lines as the leather wrap — the wrap takes
 // the stitching token, so it exists only where the stitching does. Layer
 // paint, not SVG gradients: gradient defs need document-unique ids and this
-// markup is instantiated four times per screen (two glasses, two ghosts).
+// markup is instantiated up to eight times per screen (two glasses, and a
+// ghost per other viewport of the room).
 //
 // The lens is a CIRCLE (restored 2026-09-01 after alpha feedback around the
 // institute; it was an oval for one round). The hairline cursor point stays
@@ -124,11 +128,13 @@ const LENS_SPAN = 0.8;
  * @param {(file: string, time: number) => void} opts.onPlace  visitor placed or
  *   moved the glass; main.js converts to an index, echoes via setMarker, and
  *   routes the jump (placement IS the reader's own seek, ruled)
- * @param {() => void} opts.onAdopt          dropped/tapped onto the ghost
+ * @param {(source: number) => void} opts.onAdopt  dropped/tapped onto a ghost:
+ *   which source viewport's (room id)
  * @param {() => void} opts.onRemove         pulled off the waveforms, or
  *   rested via the hook — a LIFT no longer removes (see lift below)
  * @returns {{el: HTMLElement, setMarker(ix: number|null, file: string|null): void,
- *   setGhost(ix: number|null, file: string|null): void, lifted: boolean,
+ *   setGhosts(ghosts: {source: number, ix: number, file: string, angle: number}[]): void,
+ *   lifted: boolean,
  *   lift(): void, reset(): void, reposition(): void, state(): object,
  *   destroy(): void}}
  */
@@ -156,7 +162,7 @@ export function createMarkerLayer({
   let ix = null;
   let homeFile = null;
   let lifted = false;
-  let ghost = null; // { ix, file } — the OTHER viewport's marker
+  let ghosts = []; // [{ source, ix, file, angle }] — the OTHER viewports' markers
   let drag = null; // { pointerId, startX, startY, moved }
   let freshTimer = 0;
 
@@ -185,17 +191,36 @@ export function createMarkerLayer({
     ticks.set(file, tick);
   }
 
-  // The ghost: the other side's glass, mirrored. Interactive only while my
-  // own glass is in hand (CSS gates pointer-events on the layer's state), so
-  // a resting visitor cannot "press" the other side's marker by accident.
-  const ghostEl = document.createElement("div");
-  ghostEl.className = "marker-ghost";
-  ghostEl.innerHTML = GLASS_SVG;
-  ghostEl.hidden = true;
-  ghostEl.style.width = `${glassW}px`;
-  ghostEl.style.height = `${glassH}px`;
-  ghostEl.setAttribute("aria-label", labels.ghost || "");
-  stripsEl.appendChild(ghostEl);
+  // The ghosts: the other viewports' glasses, one element per source, made on
+  // demand and kept (setGhosts). Interactive only while my own glass is in
+  // hand (CSS gates pointer-events on the layer's state), so a resting visitor
+  // cannot "press" another reader's marker by accident. Each is turned so its
+  // hilt points at its source (--ghost-angle; room.js ghostAngleFor).
+  const ghostEls = new Map(); // source (room id) -> element
+  const ghostElFor = (source) => {
+    let el = ghostEls.get(source);
+    if (el) return el;
+    el = document.createElement("div");
+    el.className = "marker-ghost";
+    el.dataset.source = String(source);
+    el.innerHTML = GLASS_SVG;
+    el.hidden = true;
+    el.style.width = `${glassW}px`;
+    el.style.height = `${glassH}px`;
+    el.setAttribute("aria-label", labels.ghost || "");
+    // Tapping a ghost with my glass in hand adopts that reader's moment.
+    el.addEventListener("click", () => {
+      if (!lifted) return;
+      onAdopt(source);
+      // The echo (setMarker) normally lands the glass; if the adopt no-opped
+      // (the ghost's owner pulled their glass mid-gesture), settle honestly.
+      if (lifted) settle();
+    });
+    // Under the glass in DOM order, as the single ghost always was.
+    stripsEl.insertBefore(el, glass);
+    ghostEls.set(source, el);
+    return el;
+  };
 
   const glass = document.createElement("div");
   glass.className = "marker-glass";
@@ -318,17 +343,21 @@ export function createMarkerLayer({
     }
   };
 
-  const paintGhost = () => {
-    if (!ghost) {
-      ghostEl.hidden = true;
-      return;
+  const paintGhosts = () => {
+    const live = new Set();
+    for (const g of ghosts) {
+      const el = ghostElFor(g.source);
+      live.add(el);
+      const p = stripAnchor(g.file, timeFor(g.file, g.ix));
+      el.hidden = p == null;
+      el.style.setProperty("--ghost-angle", `${g.angle}deg`);
+      if (p) {
+        el.style.left = `${p.x - anchorPx.x}px`;
+        el.style.top = `${p.y - anchorPx.y}px`;
+      }
     }
-    const p = stripAnchor(ghost.file, timeFor(ghost.file, ghost.ix));
-    ghostEl.hidden = p == null;
-    if (p) {
-      ghostEl.style.left = `${p.x - anchorPx.x}px`;
-      ghostEl.style.top = `${p.y - anchorPx.y}px`;
-    }
+    // A source whose marker is gone keeps its element, hidden, for next time.
+    for (const el of ghostEls.values()) if (!live.has(el)) el.hidden = true;
   };
 
   /** Recompute every position from state — THE one rendering entry point. */
@@ -336,7 +365,7 @@ export function createMarkerLayer({
     if (drag) {
       // Mid-drag the glass is under the finger; only the projections move.
       paintTicks(drag.hoverIx ?? ix);
-      paintGhost();
+      paintGhosts();
       return;
     }
     if (lifted) {
@@ -352,13 +381,13 @@ export function createMarkerLayer({
       moveGlass(hookAnchor());
     }
     paintTicks(ix);
-    paintGhost();
+    paintGhosts();
   };
 
   const setEngaged = (on) => {
     layer.classList.toggle("is-engaged", on);
     glass.classList.toggle("is-engaged", on);
-    ghostEl.classList.toggle("is-engaged", on);
+    for (const el of ghostEls.values()) el.classList.toggle("is-engaged", on);
     for (const tick of ticks.values()) tick.classList.toggle("is-salient", on);
     // The strip stack pulses whenever the glass is IN HAND — lifted OR
     // dragged (second iteration round: drags pulse too).
@@ -430,21 +459,27 @@ export function createMarkerLayer({
     // 2026-08-27); the ghost brightens as a drop target and SNAPS the verdict
     // classes on for the last few pixels.
     const spot = spotAt(p.x, p.y);
-    const g = ghost && !ghostEl.hidden ? nearGhost(p) : false;
-    glass.classList.toggle("will-adopt", g);
-    glass.classList.toggle("will-remove", !g && !spot);
-    drag.hoverIx = g ? ghost.ix : spot ? ixFor(spot.file, spot.time) : null;
+    const g = nearGhost(p);
+    glass.classList.toggle("will-adopt", g != null);
+    glass.classList.toggle("will-remove", g == null && !spot);
+    drag.hoverIx = g ? g.ix : spot ? ixFor(spot.file, spot.time) : null;
     drag.spot = spot;
     drag.adopt = g;
     paintTicks(drag.hoverIx);
   });
 
+  /** The nearest visible ghost within the snap radius, or null. */
   const nearGhost = (p) => {
-    const gp = stripAnchor(ghost.file, timeFor(ghost.file, ghost.ix));
-    if (!gp) return false;
-    const dx = gp.x - p.x;
-    const dy = gp.y - p.y;
-    return dx * dx + dy * dy <= SNAP_PX * SNAP_PX;
+    let best = null;
+    for (const g of ghosts) {
+      const gp = stripAnchor(g.file, timeFor(g.file, g.ix));
+      if (!gp) continue;
+      const dx = gp.x - p.x;
+      const dy = gp.y - p.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= SNAP_PX * SNAP_PX && (!best || d2 < best.d2)) best = { ...g, d2 };
+    }
+    return best;
   };
 
   const endDrag = (e) => {
@@ -462,7 +497,7 @@ export function createMarkerLayer({
     setEngaged(false);
     lifted = false;
     glass.classList.remove("is-lifted");
-    if (d.adopt) onAdopt();
+    if (d.adopt) onAdopt(d.adopt.source);
     else if (d.spot) onPlace(d.spot.file, d.spot.time);
     else {
       // Dragged off the waveforms: the one drag that DOES remove.
@@ -490,7 +525,8 @@ export function createMarkerLayer({
   const onDocPointerDown = (e) => {
     if (!lifted || drag) return;
     const path = e.composedPath();
-    if (path.includes(glass) || path.includes(ghostEl) || path.includes(hook)) return;
+    if (path.includes(glass) || path.includes(hook)) return;
+    for (const el of ghostEls.values()) if (path.includes(el)) return;
     for (const strip of strips.values()) {
       if (path.includes(strip.el)) return; // the strip tap will place
     }
@@ -519,13 +555,6 @@ export function createMarkerLayer({
     settle();
   });
 
-  ghostEl.addEventListener("click", () => {
-    if (!lifted) return;
-    onAdopt();
-    // The echo (setMarker) normally lands the glass; if the adopt no-opped
-    // (the ghost's owner pulled their glass mid-gesture), settle honestly.
-    if (lifted) settle();
-  });
 
   // Keyboard fallback for the role="button": Enter/Space toggles the lift, so
   // the glass is at least reachable without a pointer. Placement stays a
@@ -577,9 +606,16 @@ export function createMarkerLayer({
       }
       reposition();
     },
-    setGhost(index, file) {
-      ghost = index == null ? null : { ix: index, file };
-      paintGhost();
+    /**
+     * The other viewports' markers, each with the angle its hilt is turned to
+     * (degrees, CSS-clockwise; 0 = the handle down, toward this reader).
+     * @param {{source: number, ix: number, file: string, angle: number}[]} list
+     */
+    setGhosts(list) {
+      ghosts = (list || [])
+        .filter((g) => g && g.ix != null && g.file)
+        .map((g) => ({ source: g.source, ix: g.ix, file: g.file, angle: Number(g.angle) || 0 }));
+      paintGhosts();
     },
     get lifted() {
       return lifted;
@@ -602,13 +638,21 @@ export function createMarkerLayer({
     reposition: queueReposition,
     /** For the specs: the layer's display state, all of it. */
     state() {
-      return { ix, homeFile, lifted, ghost: ghost ? { ...ghost } : null };
+      return {
+        ix,
+        homeFile,
+        lifted,
+        // `ghost` is the first — this screen's other half, by main.js's order —
+        // the shape spec 38 pinned before the room had more than one.
+        ghost: ghosts.length ? { ix: ghosts[0].ix, file: ghosts[0].file } : null,
+        ghosts: ghosts.map((g) => ({ ...g })),
+      };
     },
     destroy() {
       document.removeEventListener("pointerdown", onDocPointerDown, true);
       clearTimeout(freshTimer);
       for (const tick of ticks.values()) tick.remove();
-      ghostEl.remove();
+      for (const el of ghostEls.values()) el.remove();
       glass.remove();
       layer.remove();
     },

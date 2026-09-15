@@ -9,6 +9,7 @@
 //   node tools/exhibit_soak.mjs --minutes 3 --every 10   # a smoke run
 //   node tools/exhibit_soak.mjs --reload on           # does the reload-in-the-gap flush suffice?
 //   node tools/exhibit_soak.mjs --screens 2           # the second window mirrors (R7)
+//   node tools/exhibit_soak.mjs --screens 2 --room off  # without the room machine (0.60.0 behaviour)
 //   node tools/exhibit_soak.mjs --params 'attractGapMs=25000&attractAudience=expert'
 //
 // WHAT IT MEASURES, and why these defaults. The staff preset (study-panel.js) with
@@ -42,6 +43,10 @@ const url = arg("url", process.env.APP_BASE_URL || "http://localhost:5002");
 const reload = arg("reload", "off") === "on";
 const screens = Math.max(1, Number(arg("screens", 1)));
 const gapMs = Number(arg("gap", 6000));
+// The room machine (0.62.0): the windows share one turn machine in a
+// SharedWorker and every non-audible window mirrors. "off" is 0.60.0's
+// idle-only mirror. Each window carries its own screen index.
+const room = arg("room", "shared");
 const out = arg("out", path.join(os.tmpdir(), `exhibit-soak-${new Date().toISOString().replace(/[:.]/g, "-")}.jsonl`));
 
 // The staff preset, as study-panel.js defines it, with the loop timers made short.
@@ -50,6 +55,7 @@ const params = new URLSearchParams(
     "&bandOrientation=mirrored&bandTap=shimmer&theme=parchment&annotationColors=theme" +
     "&turnPolicy=request&tapMode=direct&marker=glass&audienceAll=true&pinExpiry=auto" +
     "&preload=on&playerCache=8&loadingGrace=500&switchCue=arrow&arbiter=broadcast" +
+    `&room=${room}` +
     `&attractAfterIdleMs=3000&attractDuringPlaybackMs=0&attractGapMs=${gapMs}&attractReload=${reload ? 1 : 0}`,
 );
 for (const [k, v] of new URLSearchParams(arg("params", ""))) params.set(k, v);
@@ -61,7 +67,7 @@ const pages = [];
 for (let i = 0; i < screens; i++) {
   const page = await context.newPage();
   page.on("pageerror", (e) => console.error(`[screen ${i}] page error:`, e.message));
-  await page.goto(pageUrl);
+  await page.goto(`${pageUrl}&screen=${i}`);
   await page.evaluate(() => window._exhibitTest.ready);
   const cdp = await context.newCDPSession(page);
   await cdp.send("Performance.enable");
@@ -79,6 +85,9 @@ const facts = () => {
     passCount: a?.passCount ?? null,
     mirroring: a?.mirroring ?? null,
     audible: a?.audible ?? null,
+    leader: a?.leader ?? null,
+    worker: T.room?.state?.().welcomed ?? null,
+    holder: T.turns?.holder ?? null,
     file: T.transport.activeFile,
     time: Math.round(T.transport.time),
     players: T.transport._players?.size ?? null,

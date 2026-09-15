@@ -30,19 +30,27 @@
 // table actually is (see the architecture notes); true multi-machine rooms
 // would need a socket implementation of this same interface, no more.
 //
+// THE ROOM'S ARBITER (the room machine, 0.62.0): under ?room=shared the room's
+// SharedWorker (room-worker.js) holds the speakers for every window — the turn
+// machine's contended predicate is "is the room audible?", so one authority
+// must know both. RoomArbiter is that worker's window-side face: the same
+// interface, the same ranking (the worker imports `claimRank`), the claim and
+// release sent as intents, the revoke arriving as an event.
+//
 // ZERO imports, by rule (see ENGINE-WANTS.md).
 
-/** Query-string values createArbiter accepts (config.arbiter). */
-export const ARBITERS = ["local", "broadcast"];
+/** Query-string values createArbiter accepts (config.arbiter); "room" is main.js's under ?room=shared. */
+export const ARBITERS = ["local", "broadcast", "room"];
 
 /** Claim kinds, LOWEST rank first: the loop yields to any visitor. */
 export const CLAIM_KINDS = ["loop", "visitor"];
 
-/** An unknown kind ranks as a visitor: a person is the safe assumption. */
-const rank = (kind) => {
+/** The rank of a claim kind; an unknown kind ranks as a visitor — a person is the safe assumption. */
+export const claimRank = (kind) => {
   const r = CLAIM_KINDS.indexOf(kind);
   return r < 0 ? CLAIM_KINDS.length - 1 : r;
 };
+const rank = claimRank;
 
 /**
  * @typedef {object} AudioArbiter
@@ -54,13 +62,74 @@ const rank = (kind) => {
  * @property {() => void} destroy
  */
 
-/** @returns {AudioArbiter} */
-export function createArbiter(kind = "local") {
+/**
+ * @param {string} [kind]  "local" | "broadcast" | "room"
+ * @param {object} [room]  room.js, for "room": its `worker` link is the authority
+ * @returns {AudioArbiter}
+ */
+export function createArbiter(kind = "local", room = null) {
+  if (kind === "room") {
+    if (room?.worker) return new RoomArbiter(room);
+    console.warn('exhibit arbiter: "room" needs the room\'s worker — using "broadcast"');
+    return new BroadcastArbiter();
+  }
   if (kind === "broadcast") return new BroadcastArbiter();
   if (kind !== "local") {
     console.warn(`exhibit arbiter: unknown kind "${kind}" — using "local"`);
   }
   return new LocalArbiter();
+}
+
+/**
+ * The room's worker holds the speakers (room-worker.js); this is its face in
+ * one window. `holding` is event-driven — true on claim, false on release or
+ * revoke — never derived from a passing snapshot, so a snapshot that predates
+ * this window's claim cannot flicker it; the room's own view of who sounds is
+ * `room.state()`'s business, not this one's.
+ */
+class RoomArbiter {
+  constructor(room) {
+    this.id = room.id;
+    this.holding = false;
+    this.kind = null;
+    this._link = room.worker;
+    this._handlers = new Set();
+    this._unsubscribe = this._link.onMessage((msg) => {
+      const ev = msg?.event;
+      if (msg?.type === "state" && ev?.type === "revoked" && ev.to === this.id) {
+        this._revoke(ev.byId, ev.byKind);
+      }
+    });
+  }
+  claim(kind = "visitor") {
+    this.holding = true;
+    this.kind = kind;
+    this._link.send({ type: "audible", kind });
+  }
+  release() {
+    this.holding = false;
+    this.kind = null;
+    this._link.send({ type: "silent" });
+  }
+  onRevoked(fn) {
+    this._handlers.add(fn);
+    return () => this._handlers.delete(fn);
+  }
+  destroy() {
+    this._unsubscribe();
+    this._handlers.clear();
+  }
+  _revoke(byId, byKind) {
+    this.holding = false;
+    this.kind = null;
+    for (const fn of this._handlers) {
+      try {
+        fn(byId, byKind);
+      } catch (err) {
+        console.warn("exhibit arbiter: onRevoked handler threw", err);
+      }
+    }
+  }
 }
 
 /** One screen: every claim succeeds and nothing can revoke it. */

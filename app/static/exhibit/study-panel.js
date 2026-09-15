@@ -250,7 +250,7 @@ const TABS = [
         label: "Reload in the silence",
         options: [true, false],
         hint:
-          "Reload the page halfway through the silence: invisible, it flushes anything an eight-hour day accumulates, and it is how the pieces cycle. Needs the kiosk browser's autoplay policy opened, or the loop resumes as “tap to start”.",
+          "Reload the page in the silence: invisible, it flushes anything an eight-hour day accumulates, and it is how the pieces cycle. The leader reloads at the midpoint and the other window later, so the room's worker always keeps a window. Needs the kiosk browser's autoplay policy opened, or the loop resumes as “tap to start”.",
       },
       {
         key: "attractAudience",
@@ -348,7 +348,21 @@ const TABS = [
         label: "Audio arbiter",
         options: ["local", "broadcast"],
         hint:
-          "Room-level arbitration between multiple screens: broadcast yields this screen's audio when another same-profile window claims the room's — a live table pauses, an idle one (attract band up) mutes and mirrors. Last claimant wins, except that a visitor always outranks the attract loop. local is inert single-screen behaviour. The two-screen attract loop needs broadcast.",
+          "Room-level arbitration between multiple screens: broadcast yields this screen's audio when another same-profile window claims the room's — a live table pauses, an idle one (attract band up) mutes and mirrors. Last claimant wins, except that a visitor always outranks the attract loop. local is inert single-screen behaviour. The two-screen attract loop needs broadcast; room=shared below implies it.",
+      },
+      {
+        key: "room",
+        label: "Room",
+        options: ["off", "shared"],
+        hint:
+          "The room machine (plan §4.4, 0.62.0): shared makes every non-audible window of this PC mirror the audible one — muted, in step — whether or not its attract band is up, so a take on any screen fades that screen in and the screen that loses the speakers mutes and follows instead of pausing; the arbiter is room-wide. off is the 0.60.0 behaviour: the mirror runs only under the band.",
+      },
+      {
+        key: "screen",
+        label: "This window's screen",
+        options: [0, 1],
+        hint:
+          "Which screen of the room this window is: room viewport ids are screen × viewports + the local index, 0–3 for two screens. Per window — set it in each window's URL; the Defaults reset keeps it.",
       },
     ],
   },
@@ -533,6 +547,9 @@ const STUDY_PRESET = {
   // Two screens of one PC share the speakers: the loop's muted mirror and the
   // tap hand-off (ruling R7) ride on the broadcast arbiter (2026-09-10).
   arbiter: "broadcast",
+  // The room machine (2026-09-11): every window mirrors the audible one, band
+  // or no band. Each window's URL adds its own `screen=`; the reset keeps it.
+  room: "shared",
   // The switch cue (alpha-tester feedback, 2026-09-10).
   switchCue: "arrow",
   annotationColors: "theme",
@@ -656,6 +673,10 @@ export function mountStudyPanel(config, actions = {}) {
   reset.addEventListener("click", () => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(STUDY_PRESET)) params.set(key, String(value));
+    // This window's place in the room is per WINDOW, not part of any preset:
+    // a reset that dropped it would make both windows screen 0.
+    const here = new URLSearchParams(location.search);
+    if (here.has("screen")) params.set("screen", here.get("screen"));
     location.href = location.pathname + `?${params.toString()}`;
   });
   footer.append(url, fit, reset, copy);

@@ -628,9 +628,9 @@ html, body {
   stroke-dasharray: 3 3;
 }
 
-/* The other side's marker, mirrored — their glass seen from across the table.
- * Interactive only while THIS side's glass is in hand (is-engaged), so a
- * resting visitor cannot press the other side's marker by accident. */
+/* Another reader's marker — their glass seen from where I sit. Interactive
+ * only while THIS side's glass is in hand (is-engaged), so a resting visitor
+ * cannot press another reader's marker by accident. */
 .marker-ghost {
   position: absolute; /* sized by marker.js, like the glass */
   z-index: 2;
@@ -638,12 +638,15 @@ html, body {
   pointer-events: none;
   transition: opacity 250ms ease;
 }
-/* Mirrored about the LENS CENTRE, not the box centre: the ghost is positioned
+/* Turned about the LENS CENTRE, not the box centre: the ghost is positioned
  * by the same anchor math as the glass (the lens centre sits at 31.1% of the
  * box), so a default-origin rotation would paint the lens ~38% of the box
- * BELOW the row it is anchored to — the handle simply points up instead. */
+ * BELOW the row it is anchored to. The angle is each ghost's own
+ * (--ghost-angle, set by marker.js from room.js ghostAngleFor): the hilt
+ * points at the source viewport — 180° for the reader across the table, a
+ * diagonal for the far table's two readers (the room machine, 2026-09-11). */
 .marker-ghost svg {
-  transform: rotate(180deg);
+  transform: rotate(var(--ghost-angle, 180deg));
   transform-origin: 50% 31.1%;
 }
 .marker-ghost.is-engaged {

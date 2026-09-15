@@ -421,6 +421,26 @@ const DEFAULTS = {
   // mirror and the tap hand-off) needs "broadcast".
   arbiter: "local",
 
+  // --- the room (room.js; the room machine, plan §4.4, planned 2026-09-11) ---
+  // Which screen of the room this window is. Room viewport ids are
+  // screen × viewports + the local index, so two windows of one PC name four
+  // distinct viewports. Per WINDOW: it lives in each window's URL, never in a
+  // preset (the study panel's reset keeps it).
+  screen: 0,
+  // Where screen s+1 stands as seen by the UPRIGHT reader (local viewport 0) of
+  // screen s: "ltr" = to their right (and so to the far reader's left), "rtl"
+  // the reverse. Only the oriented ghosts read it; both screens are assumed to
+  // stand the same way round.
+  screenOrder: "ltr",
+  // "off"    — each window is its own screen: the mirror and the hand-off run
+  //            only while a screen is idle under the attract band (v2, 0.60.0).
+  // "shared" — the room is one machine: EVERY non-audible window mirrors the
+  //            audible one muted and in step, a take anywhere fades that window
+  //            in, and the loser mutes and follows instead of pausing. Implies a
+  //            room-wide arbiter (a "local" arbiter is upgraded to "broadcast").
+  //            The shipped default stays off, per the A/B rule.
+  room: "off",
+
   // --- operations ---
   // Warm the audio at boot (user ruling 2026-08-26, from the iPad §7.2 round:
   // the exhibit must not be half-ready for its first visitor). "off" is the

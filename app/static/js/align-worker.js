@@ -102,7 +102,14 @@ SCORE_HOP  = SR // SCORE_FEATURE_RATE
 SCORE_N_FFT = 4096
 SCORE_DOWNSAMPLE = 2     # pool by this factor => coarse at 5 Hz
 ONSET_N_FFT = 1024       # short window (46 ms) for sharp onset detection
-ONSET_WEIGHT = 2.0       # chroma scale-up factor at detected onsets
+# (An ONSET_WEIGHT constant lived here until 0.59.0: build_score_features scaled
+# each chroma frame by 1 + weight × onset strength and L2-renormalised the
+# frame — which the per-frame normalisation cancelled exactly. Measured on
+# 2026-09-11: features, pooled features, and the cosine cost matrix differed by
+# < 1e-6 between weight 2 and weight 0. The parameter never changed an
+# alignment; it and the wizard's knob for it are gone. Alignments stamped with
+# an onsetWeight still load: readers ignore the key. No backticks in this
+# blob, ever — one ends the JS template literal that carries it.)
 
 # Audio-to-audio DTW parameters
 COARSE = 4               # coarse pooling factor
@@ -112,7 +119,7 @@ SLACK  = 80              # Sakoe-Chiba band half-width (fine frames)
 def _apply_options():
     """Override module constants from JS _opt_* globals (if set)."""
     global FEATURE_RATE, HOP, COARSE, SLACK
-    global SCORE_DOWNSAMPLE, ONSET_WEIGHT
+    global SCORE_DOWNSAMPLE
     v = int(_opt_feature_rate) if int(_opt_feature_rate) > 0 else None
     if v:
         FEATURE_RATE = v
@@ -126,9 +133,6 @@ def _apply_options():
     v = int(_opt_score_downsample) if int(_opt_score_downsample) > 0 else None
     if v:
         SCORE_DOWNSAMPLE = v
-    v = float(_opt_onset_weight)
-    if v >= 0:
-        ONSET_WEIGHT = v
 
 
 def _stft_setup(audio, n_fft, hop):
@@ -188,7 +192,7 @@ def compute_chroma_score(audio):
 def compute_onset_strength(audio, hop=None):
     """Spectral-flux onset strength — fully streaming.
     Uses ONSET_N_FFT short window for temporal resolution; hop defaults to
-    SCORE_HOP (chroma_score's), overridable for fix-mode segment features.
+    SCORE_HOP, overridable (the fix-mode lanes pass their own fine hop).
     Peak extra memory: 2 * ONSET_N_FFT/2 floats (current + prev frame).
     """
     n_fft = ONSET_N_FFT
@@ -227,18 +231,6 @@ def compute_onset_strength(audio, hop=None):
     if mx > 1e-8:
         flux /= mx
     return flux  # (n_frames,)
-
-
-def build_score_features(chroma, onset):
-    """Onset-weighted chroma: scale each frame by (1 + ONSET_WEIGHT * onset),
-    then L2-renormalise.  Amplifies attack moments in both score and real audio
-    so DTW strongly prefers aligning them together (approximates DLNCO).
-    """
-    scale = (np.float32(1.0) + np.float32(ONSET_WEIGHT) * onset)  # (n_frames,)
-    weighted = chroma * scale[np.newaxis, :]
-    norms = np.linalg.norm(weighted, axis=0, keepdims=True)
-    norms[norms < 1e-8] = np.float32(1.0)
-    return (weighted / norms).astype(np.float32)
 
 
 def _pool_features(feat, factor):
@@ -858,16 +850,14 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
       1. Parse SMF MIDI → notes + complete tempo map
       2. Synthesise to mono PCM (additive sine harmonics) — puts synth and
          real audio in the same STFT feature space
-      3. Extract STFT chroma (SCORE_N_FFT) and spectral-flux onset strength
-         (ONSET_N_FFT, finer window) for both synth and reference
-      4. Scale each chroma frame by (1 + ONSET_WEIGHT * onset), renormalise
-         → attack moments dominate the cost matrix, stabilising alignment
-         for ensemble music (approximates DLNCO onset weighting)
-      5. Coarse DTW: pool features by SCORE_DOWNSAMPLE (=> ~5 Hz),
+      3. Extract STFT chroma (SCORE_N_FFT, L2-normalised per frame) for both
+         synth and reference. (An onset-weighting step followed here until
+         0.59.0; see the note at ONSET_N_FFT — it was a measured no-op.)
+      4. Coarse DTW: pool features by SCORE_DOWNSAMPLE (=> ~5 Hz),
          run fully unconstrained DTW on the small matrix.  This captures
          global structure — the essential fix for the 'random' failure mode
          that plagued a single-level SC-band approach.
-      6. Map each deduplicated note onset/offset through the coarse warping
+      5. Map each deduplicated note onset/offset through the coarse warping
          path via linear interpolation → final score-to-audio alignment.
 
     Returns dict: score_onset, ref_onset, score_offset, ref_offset
@@ -890,23 +880,9 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
     synth_audio = synth_midi_audio(notes, tpq, tcs, midi_dur)
 
     reportProgress("Score alignment: extracting chroma features...", None)
-    sc = compute_chroma_score(synth_audio)
-    rc = compute_chroma_score(ref_audio)
-
-    reportProgress("Score alignment: extracting onset features...", None)
-    sc_onset = compute_onset_strength(synth_audio)
+    sc_feat = compute_chroma_score(synth_audio)
     del synth_audio
-    rc_onset = compute_onset_strength(ref_audio)
-
-    # Trim/pad onset arrays to match chroma frame count
-    n_sc = sc.shape[1];  n_rc = rc.shape[1]
-    sc_onset = sc_onset[:n_sc] if len(sc_onset) >= n_sc else np.pad(sc_onset, (0, n_sc - len(sc_onset)))
-    rc_onset = rc_onset[:n_rc] if len(rc_onset) >= n_rc else np.pad(rc_onset, (0, n_rc - len(rc_onset)))
-
-    # Onset-weighted chroma features
-    sc_feat = build_score_features(sc, sc_onset)
-    rc_feat = build_score_features(rc, rc_onset)
-    del sc, rc, sc_onset, rc_onset
+    rc_feat = compute_chroma_score(ref_audio)
 
     # --- Coarse DTW (unconstrained) on downsampled features ---
     reportProgress("Score alignment: coarse DTW...", None)
@@ -1020,15 +996,57 @@ def fix_begin(ref_audio, midi_bytes_py):
     }
 
 def _fix_features(audio, lo_sec, hi_sec, hop):
-    """Onset-weighted chroma for one audio slice at the segment's hop."""
+    """Per-frame L2-normalised chroma for one audio slice at the segment's hop."""
     lo = max(0, int(lo_sec * SR))
     hi = min(len(audio), int(hi_sec * SR))
-    seg = audio[lo:hi]
-    ch = compute_chroma(seg, n_fft=SCORE_N_FFT, hop=hop)
-    on = compute_onset_strength(seg, hop=hop)
-    n = ch.shape[1]
-    on = on[:n] if len(on) >= n else np.pad(on, (0, n - len(on)))
-    return build_score_features(ch, on)
+    return compute_chroma(audio[lo:hi], n_fft=SCORE_N_FFT, hop=hop)
+
+def _fix_guided_warp(feat_a, feat_b, a_lo, a_hi, b_lo, b_hi, knots_a, knots_b, slack, who):
+    """The anchored refill's core, shared by the score-to-reference and the
+    audio-to-audio corrections: a guided band DTW between two feature slices
+    whose corners ARE the two anchors. The band is centred on the PRIOR
+    mapping (knots_a -> knots_b: the stored values, endpoints forced onto the
+    anchors, made monotonic and clipped so garbage stored values can only cost
+    band width, never break the DTW's preconditions), +- slack seconds.
+    Returns wf: a-time -> b-time along the decoded path (linear interpolation,
+    edge-extrapolated). Reads nothing but its arguments, so a score-less
+    session can use it unchanged."""
+    n_a = feat_a.shape[1]; n_b = feat_b.shape[1]
+    if n_a < 2 or n_b < 2:
+        raise ValueError(who + ': segment too short to align')
+    seg_a = a_hi - a_lo; seg_b = b_hi - b_lo
+    ka = np.asarray(knots_a, dtype=np.float64)
+    kb = np.asarray(knots_b, dtype=np.float64)
+    kb = np.maximum.accumulate(np.clip(kb, b_lo, b_hi))
+    ka, first_ix = np.unique(ka, return_index=True)
+    kb = kb[first_ix]
+
+    a_times = a_lo + np.arange(n_a, dtype=np.float64) * seg_a / max(n_a - 1, 1)
+    centre_b = np.interp(a_times, ka, kb)
+    centre_f = (centre_b - b_lo) * (n_b - 1) / seg_b
+    slack_f = max(8, int(np.ceil(slack * (n_b - 1) / seg_b)))
+    j_lo = np.clip((centre_f - slack_f).astype(np.int32), 0, n_b - 1)
+    j_hi = np.minimum(n_b - 1, (centre_f + slack_f).astype(np.int32))
+    j_lo[0] = 0
+    j_lo = np.maximum.accumulate(j_lo)
+    j_hi = np.maximum.accumulate(j_hi)
+    j_hi[-1] = n_b - 1
+    j_hi = np.maximum(j_hi, j_lo)  # never an empty row band
+    # CONNECTIVITY: where the prior map jumps by more than the slack (a stored
+    # discontinuity, e.g. an unscored-audio artifact zone), the band would
+    # otherwise be DISJOINT between adjacent rows, severing the DP: every cell
+    # downstream of the jump accumulates inf, parents there are meaningless,
+    # and the backtrack walks out of band (found 2026-08-31 on the Fledermaus
+    # HQ corpus: a first-onset fix mapped the whole opening ~55 s late).
+    # Bridging the floor to the previous ceiling + 1 keeps every row reachable,
+    # so the DTW genuinely traverses the jump instead of silently breaking.
+    # min of two non-decreasing sequences, so j_lo stays non-decreasing.
+    j_lo[1:] = np.minimum(j_lo[1:], j_hi[:-1] + 1)
+
+    wp = make_monotonic(_guided_band_dtw(feat_a, feat_b, j_lo, j_hi))
+    a_path = a_lo + wp[0].astype(np.float64) * seg_a / max(n_a - 1, 1)
+    b_path = b_lo + wp[1].astype(np.float64) * seg_b / max(n_b - 1, 1)
+    return lambda xq: interp_linear_extrap(a_path, b_path, xq)
 
 def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frames=None):
     """Re-fill ref onsets/offsets for the events strictly between two anchors.
@@ -1065,45 +1083,12 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
     hop = max(FIX_MIN_HOP, int(np.ceil(max(seg_s, seg_r) * SR / cap)))
     feat_s = _fix_features(_fix['synth'], s_a, s_b, hop)
     feat_r = _fix_features(_fix['ref'], t_a, t_b, hop)
-    n_s = feat_s.shape[1]; n_r = feat_r.shape[1]
-    if n_s < 2 or n_r < 2:
-        raise ValueError('fix_realign_segment: segment too short to align')
-
-    # Guide band centre: the stored interior mapping, endpoints forced onto
-    # the anchors, made monotonic and clipped so garbage stored values can
-    # only cost band width, never break the DTW's preconditions.
-    ks = np.array([s_a] + [float(s_on[i]) for i in interior] + [s_b], dtype=np.float64)
-    kr = np.array([t_a] + [float(v) for v in prior_ref] + [t_b], dtype=np.float64)
-    kr = np.maximum.accumulate(np.clip(kr, t_a, t_b))
-    ks, first_ix = np.unique(ks, return_index=True)
-    kr = kr[first_ix]
-
-    s_times = s_a + np.arange(n_s, dtype=np.float64) * seg_s / max(n_s - 1, 1)
-    centre_r = np.interp(s_times, ks, kr)
-    centre_f = (centre_r - t_a) * (n_r - 1) / seg_r
-    slack_f = max(8, int(np.ceil(slack * (n_r - 1) / seg_r)))
-    j_lo = np.clip((centre_f - slack_f).astype(np.int32), 0, n_r - 1)
-    j_hi = np.minimum(n_r - 1, (centre_f + slack_f).astype(np.int32))
-    j_lo[0] = 0
-    j_lo = np.maximum.accumulate(j_lo)
-    j_hi = np.maximum.accumulate(j_hi)
-    j_hi[-1] = n_r - 1
-    j_hi = np.maximum(j_hi, j_lo)  # never an empty row band
-    # CONNECTIVITY: where the prior map jumps by more than the slack (a stored
-    # discontinuity — e.g. an unscored-audio artifact zone), the band would
-    # otherwise be DISJOINT between adjacent rows, severing the DP: every cell
-    # downstream of the jump accumulates inf, parents there are meaningless,
-    # and the backtrack walks out of band (found 2026-08-31 on the Fledermaus
-    # HQ corpus: a first-onset fix mapped the whole opening ~55 s late).
-    # Bridging the floor to the previous ceiling + 1 keeps every row reachable,
-    # so the DTW genuinely traverses the jump instead of silently breaking.
-    # min of two non-decreasing sequences, so j_lo stays non-decreasing.
-    j_lo[1:] = np.minimum(j_lo[1:], j_hi[:-1] + 1)
-
-    wp = make_monotonic(_guided_band_dtw(feat_s, feat_r, j_lo, j_hi))
-    s_path = s_a + wp[0].astype(np.float64) * seg_s / max(n_s - 1, 1)
-    r_path = t_a + wp[1].astype(np.float64) * seg_r / max(n_r - 1, 1)
-    wf = lambda xq: interp_linear_extrap(s_path, r_path, xq)
+    wf = _fix_guided_warp(
+        feat_s, feat_r, s_a, s_b, t_a, t_b,
+        [s_a] + [float(s_on[i]) for i in interior] + [s_b],
+        [t_a] + [float(v) for v in prior_ref] + [t_b],
+        slack, 'fix_realign_segment',
+    )
 
     # An OFFSET may legitimately lie past the segment's right edge: ties,
     # sustained notes under a moving line, any polyphonic overlap. On the
@@ -1135,6 +1120,61 @@ def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frame
         'anchor_a_offset': anchor_a_offset,
         'hop': hop,
     }
+
+# --- audio-to-audio correction (plan §14 increment 5): the target recording ---
+# The reference stays the common axis: a recording's grid is its own time
+# sampled on the REFERENCE raster (ANNOTATION_STEP), and an audio-to-audio
+# anchor is a point (reference time, target time) on that curve. The refill
+# rewrites the raster samples between two anchors. Nothing here reads the score
+# or the synth, so the same ops will serve a score-less session.
+
+def fix_target_begin(name, audio):
+    """Make a second recording resident beside the reference: the TARGET of an
+    audio-to-audio correction. One target at a time; a new begin replaces it."""
+    if _fix is None:
+        raise RuntimeError('fix_target_begin before fix_begin')
+    pcm = np.asarray(audio, dtype=np.float32)
+    _fix['target'] = {'name': str(name), 'pcm': pcm, 'dur': len(pcm) / SR}
+    return {'name': str(name), 'duration': _fix['target']['dur']}
+
+def fix_target_realign(ref_a, t_a, ref_b, t_b, raster_ref, prior_t, slack_sec=None, max_frames=None):
+    """Refill the target's grid between the anchors (ref_a <-> t_a) and
+    (ref_b <-> t_b): new target times for the reference-raster points
+    raster_ref strictly between them, guided by prior_t (the grid's CURRENT
+    values at those points), forced through both anchors, clipped into
+    [t_a, t_b], non-decreasing. Returns {'times', 'hop'}."""
+    if _fix is None or 'target' not in _fix:
+        raise RuntimeError('fix_target_realign before fix_target_begin')
+    slack = FIX_SLACK_SEC if slack_sec is None else float(slack_sec)
+    cap = FIX_MAX_FRAMES if max_frames is None else int(max_frames)
+    ref_a = float(ref_a); ref_b = float(ref_b); t_a = float(t_a); t_b = float(t_b)
+    if not (ref_b > ref_a and t_b > t_a):
+        raise ValueError('fix_target_realign: empty or reversed segment span')
+    raster = [float(r) for r in raster_ref]
+    if len(prior_t) != len(raster):
+        raise ValueError('fix_target_realign: prior_t length mismatch')
+    if any(not (ref_a < r < ref_b) for r in raster):
+        raise ValueError('fix_target_realign: raster point outside the segment')
+    if not raster:
+        return {'times': [], 'hop': 0}
+    seg_r = ref_b - ref_a; seg_t = t_b - t_a
+    hop = max(FIX_MIN_HOP, int(np.ceil(max(seg_r, seg_t) * SR / cap)))
+    feat_r = _fix_features(_fix['ref'], ref_a, ref_b, hop)
+    feat_t = _fix_features(_fix['target']['pcm'], t_a, t_b, hop)
+    wf = _fix_guided_warp(
+        feat_r, feat_t, ref_a, ref_b, t_a, t_b,
+        [ref_a] + raster + [ref_b],
+        [t_a] + [float(v) for v in prior_t] + [t_b],
+        slack, 'fix_target_realign',
+    )
+    times = np.clip(wf(np.asarray(raster, dtype=np.float64)), t_a, t_b)
+    times = np.maximum.accumulate(times)
+    return {'times': [float(v) for v in times], 'hop': hop}
+
+def fix_target_dispose():
+    """Release the target recording; the reference session stays."""
+    if _fix is not None:
+        _fix.pop('target', None)
 
 # --- fix-mode v2 lanes (plan §14 Layout Q2): mel spectrogram + onset curve + peaks ---
 # Display and snapping products, computed ONCE per correction session from the
@@ -1332,25 +1372,32 @@ def perceptual_attack_times(audio, peaks, hop):
         out.append(float(centres[k] + frac * (centres[k + 1] - centres[k])))
     return out
 
-def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, what='all', scale='mel'):
+def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, what='all', scale='mel', which='ref'):
     """The v2 lanes for the current correction session: the band spectrogram
     (user-configurable FFT size, window, hop, bands, frequency scale) and —
     unless what == 'mel', a configuration change — the fine-hop onset curve of
-    the resident reference audio with its picked peaks and their perceived
-    attack times (the two snap-to-onset target lists). Frame i of a lane is
-    centred at i * <lane>_hop / SR + <lane>_t0."""
+    the resident audio with its picked peaks and their perceived attack times
+    (the two snap-to-onset target lists). which = 'ref' | 'target' picks the
+    audio on the strip: the reference, or the audio-to-audio TARGET
+    (fix_target_begin). Frame i of a lane is centred at
+    i * <lane>_hop / SR + <lane>_t0."""
     if _fix is None:
         raise RuntimeError('fix_lanes before fix_begin')
+    if which == 'target':
+        if 'target' not in _fix:
+            raise RuntimeError('fix_lanes: no target recording resident')
+        ref = _fix['target']['pcm']
+    else:
+        ref = _fix['ref']
     onset_hop = LANE_HOP if hop is None else int(hop)
     n_mels = LANE_N_MELS if n_mels is None else int(n_mels)
     n_fft = LANE_N_FFT if n_fft is None else int(n_fft)
     mel_hop = onset_hop if mel_hop is None else int(mel_hop)
     window = window if window in LANE_WINDOWS else 'hann'
     scale = scale if scale in LANE_SCALES else 'mel'
-    ref = _fix['ref']
     mel = compute_mel_spectrogram(ref, n_fft, mel_hop, n_mels, window, scale)
     out = {
-        'sr': SR, 'what': what, 'window': window, 'n_fft': n_fft, 'n_mels': n_mels,
+        'sr': SR, 'what': what, 'which': which, 'window': window, 'n_fft': n_fft, 'n_mels': n_mels,
         'scale': scale,
         'band_hz': [float(c) for c in _band_centres(scale, n_mels, LANE_FMIN, SR / 2.0)],
         'mel_hop': mel_hop, 'mel_frames': int(mel.shape[1]), 'mel_t0': n_fft / 2.0 / SR,
@@ -1440,6 +1487,18 @@ async function initPyodide() {
  *   main → worker: "fix_dispose"
  *   worker → main: "fix_disposed"
  *
+ *   Audio-to-audio correction (increment 5) — a TARGET recording resident
+ *   beside the reference; its grid (target time on the reference raster) is
+ *   refilled between two (reference time ↔ target time) anchors:
+ *
+ *   main → worker: "fix_target_begin" { name, samples }   (samples transferred)
+ *   worker → main: "fix_target_ready" { name, duration } | "fix_target_error" { message }
+ *   main → worker: "fix_target_realign" { refA, tA, refB, tB, rasterRef, priorT,
+ *                                         slackSec?, maxFrames? }
+ *   worker → main: "fix_target_segment" { result: { times, hop } }
+ *   main → worker: "fix_target_dispose"   →   worker → main: "fix_target_disposed"
+ *   "fix_lanes" takes which: "ref" | "target" for the audio on the strip.
+ *
  *   (errors at any point) worker → main: "error" { message }
  *
  * Memory discipline: raw PCM is decoded on the main thread, transferred once,
@@ -1465,7 +1524,6 @@ self.onmessage = async function (e) {
       pyodide.globals.set("_opt_slack", opts.slack ?? 0);
       pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
       pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
-      pyodide.globals.set("_opt_onset_weight", opts.onsetWeight ?? -1);
       pyodide.globals.set("_ref_name_arg", refName);
       pyodide.globals.set("_peak_count_arg", peakCount || 0);
       pyodide.globals.set("_score_mode_arg", !!scoreMode);
@@ -1554,7 +1612,6 @@ json.dumps(result)
       pyodide.globals.set("_opt_slack", opts.slack ?? 0);
       pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
       pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
-      pyodide.globals.set("_opt_onset_weight", opts.onsetWeight ?? -1);
       pyodide.globals.set("_fix_ref_data", refSamples);
       pyodide.globals.set("_fix_midi_arg", meiMidi);
       const eventsJson = await pyodide.runPythonAsync(`
@@ -1608,7 +1665,7 @@ json.dumps(fix_realign_segment(
       // "error" would be claimed by whatever realign the client has pending.
       try {
         const pyodide = await pyodideReady;
-        const { hop, nMels, nFft, window: win, melHop, what, scale } = e.data;
+        const { hop, nMels, nFft, window: win, melHop, what, scale, which } = e.data;
         pyodide.globals.set("_lanes_hop", hop ?? 512);
         pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
         pyodide.globals.set("_lanes_n_fft", nFft ?? 2048);
@@ -1616,11 +1673,12 @@ json.dumps(fix_realign_segment(
         pyodide.globals.set("_lanes_mel_hop", melHop ?? hop ?? 512);
         pyodide.globals.set("_lanes_what", what || "all");
         pyodide.globals.set("_lanes_scale", scale || "mel");
+        pyodide.globals.set("_lanes_which", which || "ref");
         const metaJson = await pyodide.runPythonAsync(`
 import json
 _lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels), int(_lanes_n_fft),
                    str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what),
-                   str(_lanes_scale))
+                   str(_lanes_scale), str(_lanes_which))
 _lanes_mel = _lanes.pop('mel')
 _lanes_onset = _lanes.pop('onset')
 json.dumps(_lanes)
@@ -1645,6 +1703,58 @@ json.dumps(_lanes)
       const pyodide = await pyodideReady;
       await pyodide.runPythonAsync("fix_dispose()");
       self.postMessage({ type: "fix_disposed" });
+      return;
+    }
+
+    if (e.data.type === "fix_target_begin") {
+      // The audio-to-audio TARGET: a second recording resident beside the
+      // reference. Failures post under their own type — a pending realign
+      // would otherwise claim a generic "error".
+      try {
+        const pyodide = await pyodideReady;
+        const { name, samples } = e.data;
+        pyodide.globals.set("_fix_target_name", name);
+        pyodide.globals.set("_fix_target_data", samples);
+        const infoJson = await pyodide.runPythonAsync(`
+import json
+_fix_target_arr = np.frombuffer(_fix_target_data.to_py(), dtype=np.float32).copy()
+_fix_target_info = fix_target_begin(str(_fix_target_name), _fix_target_arr)
+del _fix_target_arr
+del globals()['_fix_target_data']
+import gc
+gc.collect()
+json.dumps(_fix_target_info)
+`);
+        self.postMessage({ type: "fix_target_ready", ...JSON.parse(infoJson) });
+      } catch (err) {
+        self.postMessage({ type: "fix_target_error", message: err.toString() });
+      }
+      return;
+    }
+
+    if (e.data.type === "fix_target_realign") {
+      const pyodide = await pyodideReady;
+      const { refA, tA, refB, tB, rasterRef, priorT, slackSec, maxFrames } = e.data;
+      pyodide.globals.set(
+        "_fix_tseg_arg",
+        JSON.stringify({ refA, tA, refB, tB, rasterRef, priorT, slackSec, maxFrames }),
+      );
+      const segJson = await pyodide.runPythonAsync(`
+import json
+_tseg = json.loads(str(_fix_tseg_arg))
+json.dumps(fix_target_realign(
+    _tseg['refA'], _tseg['tA'], _tseg['refB'], _tseg['tB'],
+    _tseg['rasterRef'], _tseg['priorT'], _tseg.get('slackSec'), _tseg.get('maxFrames'),
+))
+`);
+      self.postMessage({ type: "fix_target_segment", result: JSON.parse(segJson) });
+      return;
+    }
+
+    if (e.data.type === "fix_target_dispose") {
+      const pyodide = await pyodideReady;
+      await pyodide.runPythonAsync("fix_target_dispose()");
+      self.postMessage({ type: "fix_target_disposed" });
       return;
     }
   } catch (err) {

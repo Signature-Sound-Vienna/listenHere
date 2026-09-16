@@ -25,9 +25,10 @@ export const CORRECTIONS_VERSION = 1;
 
 const ANCHOR_KINDS = ['drag', 'approve', 'gap'];
 
-/** Fresh empty correction state. */
+/** Fresh empty correction state. `audio` holds the audio-to-audio anchors
+ *  per target recording (see the TARGET ANCHOR block below). */
 export function createCorrections() {
-  return { anchors: [], gaps: [] };
+  return { anchors: [], gaps: [], audio: {} };
 }
 
 /** The anchor pinning event i, or null. */
@@ -263,18 +264,242 @@ export function applyAnchorValue(refOnset, i, t) {
   return before;
 }
 
+// ---------------------------------------------------------------------------
+// Audio-to-audio anchors (plan §14, increment 5)
+//
+//   TARGET ANCHOR {refT, t, kind, ts, i?, q?} — pins REFERENCE time refT to
+//     time t of one target recording. Keyed by refT, not by event: the pair
+//     is a statement about two recordings, so it survives a later
+//     score↔reference edit (or a regeneration) that moves the tick it was
+//     laid on. i/q are display hints only (the onset group it was laid on)
+//     and are absent in a score-less session. kind: 'drag' | 'approve'.
+//   GRID SEGMENT {refA, tA, refB, tB, kLo, kHi, interiorCount} — the raster
+//     samples strictly between two neighbouring target anchors, the unit of
+//     refill. kLo..kHi index the recording's grid, which is its own time
+//     sampled on the reference raster; the corners are the grid's first and
+//     last samples, frozen (a recording may start "late": tLo can be < 0).
+//   ctx = {refGrid, tLo, tHi, base?} — the reference's own grid (the raster
+//     times), the target grid's two corner values, and optionally the
+//     per-target provenance recorded on the first anchor.
+// ---------------------------------------------------------------------------
+
+const TARGET_ANCHOR_KINDS = ['drag', 'approve'];
+/** Two reference times this close are the same raster point / anchor. */
+export const REF_T_EPS = 1e-6;
+
+function assertTargetCtx(ctx) {
+  if (
+    !ctx ||
+    !Array.isArray(ctx.refGrid) ||
+    ctx.refGrid.length < 2 ||
+    !Number.isFinite(ctx.tLo) ||
+    !Number.isFinite(ctx.tHi) ||
+    !(ctx.tHi > ctx.tLo)
+  ) {
+    throw new Error('correction-model: target ctx needs {refGrid[≥ 2], tLo < tHi}');
+  }
+}
+
+/** The per-target slot {anchors, base}, created on demand when `create`. */
+export function targetSlot(state, name, create = false) {
+  if (!state.audio) state.audio = {};
+  let slot = state.audio[name];
+  if (!slot && create) slot = state.audio[name] = { anchors: [], base: null };
+  return slot || null;
+}
+
+/** One target's anchors, sorted by refT (empty when none). */
+export function targetAnchors(state, name) {
+  return targetSlot(state, name)?.anchors || [];
+}
+
+/** Whether any target recording carries anchors. */
+export function hasTargetAnchors(state) {
+  return Object.values(state.audio || {}).some((s) => s.anchors.length > 0);
+}
+
+/** The anchor at reference time refT (within REF_T_EPS), or null. */
+export function findTargetAnchor(state, name, refT) {
+  return targetAnchors(state, name).find((a) => Math.abs(a.refT - refT) <= REF_T_EPS) || null;
+}
+
+/** The nearest anchors strictly before / after refT (null = the corner). */
+export function neighbourTargetAnchors(state, name, refT) {
+  let prev = null;
+  let next = null;
+  for (const a of targetAnchors(state, name)) {
+    if (a.refT < refT - REF_T_EPS) prev = a;
+    else if (a.refT > refT + REF_T_EPS) {
+      next = a;
+      break;
+    }
+  }
+  return { prev, next };
+}
+
+/** First raster index k with refGrid[k] > x (beyond the eps). */
+export function rasterAfter(refGrid, x) {
+  let lo = 0;
+  let hi = refGrid.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (refGrid[mid] <= x + REF_T_EPS) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** Last raster index k with refGrid[k] < x (beyond the eps); -1 if none. */
+export function rasterBefore(refGrid, x) {
+  let lo = 0;
+  let hi = refGrid.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (refGrid[mid] < x - REF_T_EPS) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo - 1;
+}
+
+/** The raster index sitting ON refT (within eps), or -1. */
+export function rasterAt(refGrid, refT) {
+  const k = rasterAfter(refGrid, refT) - 1;
+  return k >= 0 && Math.abs(refGrid[k] - refT) <= REF_T_EPS ? k : -1;
+}
+
+function gridSegmentBetween(prevAnchor, nextAnchor, ctx) {
+  const g = ctx.refGrid;
+  const last = g.length - 1;
+  const refA = prevAnchor ? prevAnchor.refT : g[0];
+  const tA = prevAnchor ? prevAnchor.t : ctx.tLo;
+  const refB = nextAnchor ? nextAnchor.refT : g[last];
+  const tB = nextAnchor ? nextAnchor.t : ctx.tHi;
+  const kLo = prevAnchor ? rasterAfter(g, refA) : 1;
+  const kHi = nextAnchor ? rasterBefore(g, refB) : last - 1;
+  return { refA, tA, refB, tB, kLo, kHi, interiorCount: Math.max(0, kHi - kLo + 1) };
+}
+
+function validateTargetAnchor(state, name, refT, t, ctx, ignoreRefT = null) {
+  const g = ctx.refGrid;
+  if (!Number.isFinite(refT) || !(refT > g[0] + REF_T_EPS) || !(refT < g[g.length - 1] - REF_T_EPS)) {
+    throw new Error(
+      `correction-model: target anchor reference time ${refT} is not strictly ` +
+        `inside the raster (${g[0]}, ${g[g.length - 1]})`,
+    );
+  }
+  if (!Number.isFinite(t)) throw new Error('correction-model: target anchor time must be finite');
+  const { prev, next } = neighbourTargetAnchors(state, name, refT);
+  const prevA = prev && ignoreRefT !== null && Math.abs(prev.refT - ignoreRefT) <= REF_T_EPS ? null : prev;
+  const nextA = next && ignoreRefT !== null && Math.abs(next.refT - ignoreRefT) <= REF_T_EPS ? null : next;
+  const lo = prevA ? prevA.t : ctx.tLo;
+  const hi = nextA ? nextA.t : ctx.tHi;
+  const loOk = prevA ? t > lo : t >= lo;
+  const hiOk = nextA ? t < hi : t <= hi;
+  if (!loOk || !hiOk) {
+    throw new Error(
+      `correction-model: target anchor time ${t} at reference ${refT} is outside ` +
+        `its neighbour bounds (${lo}, ${hi})`,
+    );
+  }
+}
+
+/**
+ * Pin (or re-pin) reference time refT to target time t for recording `name`.
+ * Returns the two grid segments flanking the anchor (either may have
+ * interiorCount 0). ctx.base, when given, becomes the slot's provenance on
+ * its first anchor.
+ */
+export function setTargetAnchor(state, name, { refT, t, kind, ts, i, q }, ctx) {
+  assertTargetCtx(ctx);
+  if (!TARGET_ANCHOR_KINDS.includes(kind)) {
+    throw new Error(`correction-model: unknown target anchor kind "${kind}"`);
+  }
+  const existing = findTargetAnchor(state, name, refT);
+  validateTargetAnchor(state, name, refT, t, ctx, existing ? existing.refT : null);
+  const slot = targetSlot(state, name, true);
+  if (!slot.base && ctx.base) slot.base = { ...ctx.base };
+  const hint = {};
+  if (Number.isInteger(i)) hint.i = i;
+  if (Number.isFinite(q)) hint.q = q;
+  if (existing) {
+    Object.assign(existing, { t, kind, ts }, hint);
+  } else {
+    const anchor = { refT, t, kind, ts, ...hint };
+    const at = slot.anchors.findIndex((a) => a.refT > refT);
+    if (at === -1) slot.anchors.push(anchor);
+    else slot.anchors.splice(at, 0, anchor);
+  }
+  const self = findTargetAnchor(state, name, refT);
+  const { prev, next } = neighbourTargetAnchors(state, name, refT);
+  return {
+    segments: [gridSegmentBetween(prev, self, ctx), gridSegmentBetween(self, next, ctx)],
+  };
+}
+
+/** Remove the anchor at refT; returns the merged segment between its former neighbours. */
+export function removeTargetAnchor(state, name, refT, ctx) {
+  assertTargetCtx(ctx);
+  const slot = targetSlot(state, name);
+  const at = slot ? slot.anchors.findIndex((a) => Math.abs(a.refT - refT) <= REF_T_EPS) : -1;
+  if (at === -1) {
+    throw new Error(`correction-model: no target anchor at reference time ${refT} for ${name}`);
+  }
+  slot.anchors.splice(at, 1);
+  const { prev, next } = neighbourTargetAnchors(state, name, refT);
+  return { segment: gridSegmentBetween(prev, next, ctx) };
+}
+
+/**
+ * Splice a refill's values into the target grid IN PLACE (the loaded grid and
+ * the alignment JSON's `times` alias one array — never replace it). Returns
+ * the before-values for the caller's undo entry.
+ */
+export function applyGridSegment(grid, segment, values) {
+  const n = segment.interiorCount;
+  if (values.length !== n) {
+    throw new Error(
+      `correction-model: grid refill length ${values.length} does not match interiorCount ${n}`,
+    );
+  }
+  const before = grid.slice(segment.kLo, segment.kLo + n);
+  for (let k = 0; k < n; k++) grid[segment.kLo + k] = values[k];
+  return { kLo: segment.kLo, kHi: segment.kHi, before };
+}
+
+/**
+ * An anchor whose refT sits ON a raster sample owns that sample's value (the
+ * analogue of applyAnchorValue); between samples the flanking refills, forced
+ * through the anchor, carry it. Returns {k, before} or null.
+ */
+export function applyTargetAnchorValue(grid, refGrid, refT, t) {
+  const k = rasterAt(refGrid, refT);
+  if (k === -1) return null;
+  const before = grid[k];
+  grid[k] = t;
+  return { k, before };
+}
+
 /**
  * The durable hand-correction record for header.corrections. `base` is the
  * provenance of the alignment the corrections were applied to (Verovio
  * version + options stamps, alignmentParams, …) — the item-T guard's data.
+ * `audio` (present only when some target carries anchors) holds the
+ * audio-to-audio anchors per target recording with that grid's provenance.
  */
 export function serialize(state, base) {
-  return {
+  const out = {
     version: CORRECTIONS_VERSION,
     base: base || null,
     anchors: state.anchors.map((a) => ({ ...a })),
     gaps: state.gaps.map((g) => ({ ...g })),
   };
+  const audio = {};
+  for (const [name, slot] of Object.entries(state.audio || {})) {
+    if (!slot.anchors.length) continue;
+    audio[name] = { base: slot.base || null, anchors: slot.anchors.map((a) => ({ ...a })) };
+  }
+  if (Object.keys(audio).length) out.audio = audio;
+  return out;
 }
 
 /** Rebuild correction state from a header.corrections record. */
@@ -300,6 +525,19 @@ export function deserialize(record) {
   }
   state.anchors.sort((a, b) => a.i - b.i);
   state.gaps.sort((a, b) => a.i - b.i);
+  // Additive since 0.59.0: a record without `audio` is a record with no
+  // audio-to-audio anchors, so older files load unchanged.
+  for (const [name, slot] of Object.entries(record.audio || {})) {
+    const anchors = [];
+    for (const a of slot?.anchors || []) {
+      if (!Number.isFinite(a.refT) || !Number.isFinite(a.t) || !TARGET_ANCHOR_KINDS.includes(a.kind)) {
+        throw new Error(`correction-model: malformed target anchor for ${name} in corrections record`);
+      }
+      anchors.push({ ...a });
+    }
+    anchors.sort((x, y) => x.refT - y.refT);
+    state.audio[name] = { anchors, base: slot?.base || null };
+  }
   return { state, base: record.base || null };
 }
 

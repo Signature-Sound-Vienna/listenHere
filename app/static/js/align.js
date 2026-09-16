@@ -22,23 +22,17 @@ const PRESETS = {
     coarse: 4,
     slack: 80,
     featureRate: 10,
-    scoreDownsample: 2,
-    onsetWeight: 2.0,
-  },
+    scoreDownsample: 2,  },
   balanced: {
     coarse: 2,
     slack: 120,
     featureRate: 10,
-    scoreDownsample: 1,
-    onsetWeight: 2.0,
-  },
+    scoreDownsample: 1,  },
   hq: {
     coarse: 2,
     slack: 160,
     featureRate: 20,
-    scoreDownsample: 1,
-    onsetWeight: 2.0,
-  },
+    scoreDownsample: 1,  },
 };
 
 const STORAGE_KEY = "listenHere_alignQuality";
@@ -74,9 +68,6 @@ function readAdvancedParams() {
     scoreDownsample: parseInt(
       document.getElementById("align-param-score-ds").value,
     ),
-    onsetWeight: parseFloat(
-      document.getElementById("align-param-onset-weight").value,
-    ),
   };
 }
 
@@ -86,7 +77,6 @@ function writeAdvancedParams(p) {
   document.getElementById("align-param-slack").value = p.slack;
   document.getElementById("align-param-feature-rate").value = p.featureRate;
   document.getElementById("align-param-score-ds").value = p.scoreDownsample;
-  document.getElementById("align-param-onset-weight").value = p.onsetWeight;
 }
 
 /** Check if current advanced params match any preset. */
@@ -96,8 +86,7 @@ function detectPreset(params) {
       p.coarse === params.coarse &&
       p.slack === params.slack &&
       p.featureRate === params.featureRate &&
-      p.scoreDownsample === params.scoreDownsample &&
-      p.onsetWeight === params.onsetWeight
+      p.scoreDownsample === params.scoreDownsample
     )
       return name;
   }
@@ -879,7 +868,6 @@ export function initAlignPanel() {
     "align-param-slack",
     "align-param-feature-rate",
     "align-param-score-ds",
-    "align-param-onset-weight",
   ];
   advancedInputs.forEach((id) => {
     const el = document.getElementById(id);

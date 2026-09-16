@@ -65,7 +65,6 @@ import {
   setVerovioPromise,
 } from "./align.js";
 import {
-  attachFixEntryButton,
   fixModeOnPieceReset,
   fixModePrewarm,
   fixTestState,
@@ -224,6 +223,30 @@ export function refreshSynthAlignmentGrid() {
   for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
   _tempoYRange = null;
   for (const fn of Object.keys(waveformViews)) drawAlignmentGrid(fn);
+  redrawAllMarkers();
+  return true;
+}
+
+/**
+ * One recording's grid was edited in place (fix mode's audio-to-audio
+ * correction writes the loaded grid, which the alignment JSON's `times`
+ * aliases): redraw its grid overlay, drop its tempo curve, and move the
+ * markers, which sit at grid indices. Also re-points the JSON at the live
+ * array in case an earlier grid undo replaced it. Returns false when no such
+ * recording is loaded.
+ */
+export function refreshRecordingGrid(filename) {
+  const grid = alignmentGrids[filename];
+  if (!Array.isArray(grid)) return false;
+  const entry = loadedAlignmentJSON?.body?.audio?.[filename];
+  if (entry && !Array.isArray(entry) && Array.isArray(entry.times) && entry.times !== grid) {
+    entry.times = grid;
+  } else if (entry && Array.isArray(entry) && entry !== grid) {
+    loadedAlignmentJSON.body.audio[filename] = grid;
+  }
+  delete _tempoRawCache[filename];
+  _tempoYRange = null;
+  if (waveformViews[filename]) drawAlignmentGrid(filename);
   redrawAllMarkers();
   return true;
 }
@@ -2174,7 +2197,6 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
   if (!(filename in wavesurfers) && !_preparing.has(filename)) {
     const waveform = createWaveformRow(filename);
     // Fix-mode entry affordance (?fixMode only; the module decides which rows).
-    attachFixEntryButton(filename, waveform);
 
     // Row done. Whether its renderer gets built now or when the user scrolls to
     // it is the lazy-creation decision (roadmap item L).
@@ -3872,7 +3894,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       case "fix-anchor":
       case "fix-anchor-batch":
-      case "fix-gap": {
+      case "fix-gap":
+      case "fix-grid-anchor": {
         // Snapshot semantics: the entry carries its before/after values, so
         // fix-mode applies the hop without the alignment worker; the same
         // entry object shuttles between the stacks.
@@ -3954,7 +3977,8 @@ document.addEventListener("DOMContentLoaded", () => {
       }
       case "fix-anchor":
       case "fix-anchor-batch":
-      case "fix-gap": {
+      case "fix-gap":
+      case "fix-grid-anchor": {
         applyFixCorrectionRedo(entry);
         _undoStack.push(entry);
         break;
@@ -3998,6 +4022,8 @@ document.addEventListener("DOMContentLoaded", () => {
         return "move marker";
       case "fix-anchor":
         return "alignment anchor";
+      case "fix-grid-anchor":
+        return `alignment anchor (${entry.file})`;
       case "fix-anchor-batch":
         return `alignment anchors (${entry.count})`;
       case "fix-gap":

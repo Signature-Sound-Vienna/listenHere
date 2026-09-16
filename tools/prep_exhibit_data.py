@@ -35,7 +35,15 @@ docs/exhibit-prototype-plan.md, not a preference:
   with it (keep the dated predecessor); re-run `--steps payload`. Note what that
   moves: score↔ref corrections change `body.score` only — every region time here
   re-derives through the audio-to-audio grids, which such corrections never touch —
-  so nothing on the wall moves until the exhibit's score view reads `body.score`.
+  so those alone move nothing on the wall until the exhibit's score view reads
+  `body.score`. AUDIO-TO-AUDIO corrections (0.59.0, `header.corrections.audio`,
+  keyed per recording) rewrite that recording's grid in place, so every region
+  whose index pair falls in a refilled span gets new times on that recording at
+  the next payload build: the wall MOVES, by design — the exhibit's regions were
+  never verified and wait for exactly this. `source.corrections.audio` names the
+  corrected recordings; diff the derived region times before and after a build.
+  A hand-placed override on a corrected recording is warned about below: it is
+  never recomputed, so it may now disagree with the grid around it.
 * **The 13 canonical pairs are ASSERTED, not trusted.** CANONICAL_PAIRS below is
   the plan's table; the script re-derives each pair from the source set's own grid
   and fails loudly on any disagreement. If a future re-align changes grid length,
@@ -484,9 +492,13 @@ def rederive_times(annotations, recordings, warnings):
     return filled
 
 
-def apply_overrides(annotations, overrides, warnings):
-    """Overlay hand-placed times. Applied LAST; a re-run must never recompute these."""
+def apply_overrides(annotations, overrides, warnings, corrections=None):
+    """Overlay hand-placed times. Applied LAST; a re-run must never recompute these.
+    `corrections` (summarise_corrections' output) names the recordings whose grids
+    carry audio-to-audio anchors: an override on one of those is flagged, since
+    the grid around it moved and the hand-placed time did not."""
     applied = 0
+    corrected = (corrections or {}).get("audio") or {}
     index = {a["id"]: a for a in annotations}
     for ann_id, regions in (overrides or {}).items():
         if ann_id.startswith("_"):
@@ -509,6 +521,13 @@ def apply_overrides(annotations, overrides, warnings):
                     "start": times["start"], "end": times["end"], "derived": False,
                 }
                 applied += 1
+                if filename in corrected:
+                    warnings.add("override-on-corrected-grid",
+                                 f"{ann_id}/{region_id}/{filename}: a hand-placed time on a "
+                                 f"recording whose grid carries {corrected[filename]} "
+                                 f"audio-to-audio anchor(s) — the grid around it moved and "
+                                 f"this time did not; check it against the corrected grid or "
+                                 f"retire the override")
     if applied:
         log(f"  applied {applied} hand-placed override times")
     else:
@@ -577,10 +596,16 @@ def summarise_corrections(record):
     None for an uncorrected alignment — the normal state before hand-correction."""
     if not isinstance(record, dict):
         return None
+    audio = {}
+    for filename, slot in (record.get("audio") or {}).items():
+        n = len((slot or {}).get("anchors") or [])
+        if n:
+            audio[filename] = n
     return {
         "version": record.get("version"),
         "anchors": len(record.get("anchors") or []),
         "gaps": len(record.get("gaps") or []),
+        "audio": audio,  # recording → its audio-to-audio anchor count (0.59.0)
         "base": record.get("base"),
     }
 
@@ -588,8 +613,14 @@ def summarise_corrections(record):
 def describe_corrections(summary):
     if summary is None:
         return "none (an uncorrected alignment)"
-    return (f"{summary['anchors']} anchors, {summary['gaps']} unscored-audio gaps "
+    text = (f"{summary['anchors']} anchors, {summary['gaps']} unscored-audio gaps "
             "(a hand-corrected alignment)")
+    audio = summary.get("audio") or {}
+    if audio:
+        parts = ", ".join(f"{f} ({n})" for f, n in sorted(audio.items()))
+        text += (f"; audio-to-audio anchors on {len(audio)} recording(s): {parts} — "
+                 "their region times move with the corrected grids")
+    return text
 
 
 def step_payload(args, sets, warnings):
@@ -604,11 +635,10 @@ def step_payload(args, sets, warnings):
     overrides_path = os.path.join(args.data_dir, OVERRIDES_FILE)
     seed_overrides(overrides_path)
     overrides = load_overrides(overrides_path, warnings)
-    apply_overrides(annotations, overrides, warnings)
-    pending_hand_placement(annotations, warnings)
-
     hq_header = sets["hq"]["header"]
     corrections = summarise_corrections(hq_header.get("corrections"))
+    apply_overrides(annotations, overrides, warnings, corrections)
+    pending_hand_placement(annotations, warnings)
     log(f"  corrections: {describe_corrections(corrections)}")
     payload = {
         "schema": SCHEMA,

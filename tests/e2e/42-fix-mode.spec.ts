@@ -189,9 +189,22 @@ async function installWorkerStub(
   }, opts);
 }
 
-/** Click a row's fix button and wait for the screen (stub pre-installed). */
+/**
+ * Enter fix mode through the chooser (increment 5's entry) and wait for the
+ * screen (stub pre-installed). The score row and the reference row both mean
+ * step 1, score↔ref; any other recording is a step-2 row — the score↔ref
+ * review is skipped when that row is still locked.
+ */
 async function enterFix(page: Page, row: string) {
-  await page.click(`.waveform[data-ix="${row}"] .wf-fix-btn`);
+  await page.click('#fix-chooser-open');
+  await page.waitForSelector('.fix-chooser');
+  if (row === REF_ROW || row === SYNTH_ROW) {
+    await page.click('#fix-chooser-open-ref');
+  } else {
+    const go = page.locator(`.fix-chooser-row[data-file="${row}"] .fix-chooser-go`);
+    if (await go.isDisabled()) await page.click('#fix-chooser-skip');
+    await go.click();
+  }
   await page.waitForFunction(() => (window as any)._listenTest.fix.active);
   // The first overlay paint is rAF-scheduled; wait for the ticks to land so
   // geometry assertions read a drawn screen, not a scheduled one.
@@ -208,27 +221,71 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     page,
   }) => {
     await gotoFixMode(page, undefined, { fixMode: false });
-    // The score row arrives asynchronously; wait for it so its absence of a
-    // button is meaningful rather than merely early.
+    // The score row arrives asynchronously; wait for it so the absence of an
+    // entry is meaningful rather than merely early.
     await page.waitForSelector(`.waveform[data-ix="${SYNTH_ROW}"]`);
     await page.waitForSelector(`.waveform[data-ix="${REF_ROW}"]`);
-    expect(await page.locator('.wf-fix-btn').count()).toBe(0);
+    await expect(page.locator('#fix-chooser-open')).toBeHidden();
+    expect(await page.locator('.wf-fix-btn').count()).toBe(0); // the per-row buttons are gone for good
+    expect(await page.locator('.fix-chooser').count()).toBe(0);
   });
 
-  test('42.2 with ?fixMode the button appears on exactly the score and reference rows', async ({
+  test('42.2 with ?fixMode ONE nav button opens the chooser: step 1 is the score against the reference, step 2 lists every other recording — locked until step 1 is reviewed or skipped — and the per-row buttons are gone', async ({
     page,
   }) => {
     await gotoFixMode(page);
-    await page.waitForSelector(
-      `.waveform[data-ix="${SYNTH_ROW}"] .wf-fix-btn`,
+    await page.waitForSelector(`.waveform[data-ix="${SYNTH_ROW}"]`);
+    expect(await page.locator('.wf-fix-btn').count()).toBe(0);
+    const open = page.locator('#fix-chooser-open');
+    await expect(open).toBeVisible();
+    await open.click();
+    await page.waitForSelector('.fix-chooser');
+    const r = await page.evaluate(() => {
+      const q = (s: string) => document.querySelector(s) as HTMLElement | null;
+      const rows = [...document.querySelectorAll('.fix-chooser-row[data-file]')].map((el) => ({
+        file: (el as HTMLElement).dataset.file,
+        count: el.querySelector('.fix-chooser-count')!.textContent,
+        disabled: (el.querySelector('.fix-chooser-go') as HTMLButtonElement).disabled,
+      }));
+      return {
+        step1Name: q('.fix-chooser-step[data-step="1"] .fix-chooser-name')!.textContent,
+        step1Count: q('.fix-chooser-step[data-step="1"] .fix-chooser-count')!.textContent,
+        step1Enabled: !(q('#fix-chooser-open-ref') as HTMLButtonElement).disabled,
+        locked: !!q('.fix-chooser-step[data-step="2"].fix-chooser-locked'),
+        note: q('#fix-chooser-lock-note')?.textContent ?? null,
+        skip: !!q('#fix-chooser-skip'),
+        rows,
+        chooser: (window as any)._listenTest.fix.chooser,
+      };
+    });
+    expect(r.step1Name).toBe(REF_ROW);
+    expect(r.step1Count).toBe('not yet reviewed');
+    expect(r.step1Enabled).toBe(true);
+    expect(r.locked).toBe(true);
+    expect(r.note).toMatch(/score ↔ reference alignment first/);
+    expect(r.skip).toBe(true);
+    expect(r.rows.map((x: any) => x.file).sort()).toEqual(
+      ['audio-a.mp3', 'audio-c.mp3', 'audio-short.mp3'].sort(),
     );
-    await page.waitForSelector(`.waveform[data-ix="${REF_ROW}"] .wf-fix-btn`);
-    const rows = await page.evaluate(() =>
-      [...document.querySelectorAll('.wf-fix-btn')].map(
-        (b) => (b.closest('.waveform') as HTMLElement).dataset.ix,
-      ),
+    for (const row of r.rows) {
+      expect(row.disabled).toBe(true);
+      expect(row.count).toBe('no anchors');
+    }
+    expect(r.chooser).toEqual({ open: true, reviewed: false });
+    // Skip unlocks step 2 in place; Escape closes the chooser.
+    await page.click('#fix-chooser-skip');
+    await expect(page.locator('#fix-chooser-skip')).toHaveCount(0);
+    await expect(page.locator('.fix-chooser-step[data-step="2"].fix-chooser-locked')).toHaveCount(0);
+    await expect(
+      page.locator('.fix-chooser-row[data-file="audio-a.mp3"] .fix-chooser-go'),
+    ).toBeEnabled();
+    await expect(page.locator('.fix-chooser-step[data-step="1"] .fix-chooser-count')).toHaveText(
+      'reviewed, no anchors',
     );
-    expect(rows.sort()).toEqual([SYNTH_ROW, REF_ROW].sort());
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.fix-chooser')).toHaveCount(0);
+    expect((await fixState(page)).chooser).toEqual({ open: false, reviewed: true });
+    expect((await fixState(page)).active).toBe(false);
   });
 
   test('42.3 entry refused on a Verovio version-stamp mismatch, naming both versions', async ({
@@ -238,7 +295,8 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
       json.header.verovioVersion = '5.11.0';
     });
     await installWorkerStub(page);
-    await page.click(`.waveform[data-ix="${REF_ROW}"] .wf-fix-btn`);
+    await page.click('#fix-chooser-open');
+    await page.click('#fix-chooser-open-ref');
     await page.waitForSelector('.lh-v6-confirm-dialog');
     const st = await fixState(page);
     expect(st.active).toBe(false);
@@ -257,7 +315,8 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
       json.header.verovioOptions = { expand: 'expansion-default' };
     });
     await installWorkerStub(page);
-    await page.click(`.waveform[data-ix="${REF_ROW}"] .wf-fix-btn`);
+    await page.click('#fix-chooser-open');
+    await page.click('#fix-chooser-open-ref');
     await page.waitForSelector('.lh-v6-confirm-dialog');
     const st = await fixState(page);
     expect(st.active).toBe(false);
@@ -272,7 +331,8 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
       json.body.score.score_onset[3] += 0.25;
     });
     await installWorkerStub(page);
-    await page.click(`.waveform[data-ix="${REF_ROW}"] .wf-fix-btn`);
+    await page.click('#fix-chooser-open');
+    await page.click('#fix-chooser-open-ref');
     await page.waitForSelector('.lh-v6-confirm-dialog');
     const st = await fixState(page);
     expect(st.active).toBe(false);
@@ -320,9 +380,9 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
   }) => {
     await gotoFixMode(page);
     await installWorkerStub(page);
-    await enterFix(page, SYNTH_ROW); // the score row enters the same mode
+    await enterFix(page, SYNTH_ROW); // the score row means step 1: score↔ref on the reference
     const st = await fixState(page);
-    expect(st.entryFile).toBe(SYNTH_ROW);
+    expect(st.entryFile).toBe(REF_ROW);
     expect(st.mode).toBe('score-ref');
     expect(st.pageGroupCount).toBeGreaterThan(10);
     expect(st.ticksOnPage).toBe(st.pageGroupCount);
@@ -1479,5 +1539,69 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     // 640 px is too short for the whole column, so the region itself scrolls.
     expect(fit.regionNeedsScroll).toBe(true);
     expect(fit.magnetW).toBeLessThan(60);
+  });
+
+  test('42.33 the chooser\'s lock: opening step 1 unlocks step 2 for the load; a file that already carries score↔ref corrections starts unlocked and shows their counts; a new load locks again', async ({
+    page,
+  }) => {
+    // (1) A fresh load: locked. Open step 1 (score↔ref), exit — unlocked, no skip needed.
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await page.click('#fix-chooser-open');
+    await expect(
+      page.locator('.fix-chooser-row[data-file="audio-a.mp3"] .fix-chooser-go'),
+    ).toBeDisabled();
+    await page.click('#fix-chooser-open-ref');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.active);
+    expect((await fixState(page)).mode).toBe('score-ref');
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    expect((await fixState(page)).chooser).toEqual({ open: false, reviewed: true });
+    await page.click('#fix-chooser-open');
+    await expect(page.locator('#fix-chooser-skip')).toHaveCount(0);
+    await expect(page.locator('#fix-chooser-lock-note')).toHaveCount(0);
+    await expect(
+      page.locator('.fix-chooser-row[data-file="audio-a.mp3"] .fix-chooser-go'),
+    ).toBeEnabled();
+    await expect(page.locator('.fix-chooser-step[data-step="1"] .fix-chooser-count')).toHaveText(
+      'reviewed, no anchors',
+    );
+    // A row's Open enters audio mode on that recording.
+    await page.click('.fix-chooser-row[data-file="audio-a.mp3"] .fix-chooser-go');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.active);
+    const st = await fixState(page);
+    expect(st.mode).toBe('audio');
+    expect(st.targetFile).toBe('audio-a.mp3');
+    expect(st.chooser.open).toBe(false);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+
+    // (2) A fresh load locks again: the review is per load, not per browser.
+    await gotoFixMode(page);
+    expect((await fixState(page)).chooser).toEqual({ open: false, reviewed: false });
+
+    // (3) A file that carries a score↔ref record: step 1 has been had. (Last:
+    // the route patch below outlives this navigation on the same page.)
+    await gotoFixMode(page, (json) => {
+      const sc = json.body.score;
+      json.header.corrections = {
+        version: 1,
+        base: null,
+        anchors: [{ i: 5, q: sc.score_onset[5], t: sc.ref_onset[5], kind: 'approve', ts: 1 }],
+        gaps: [],
+      };
+    });
+    await page.waitForFunction(() => (window as any)._listenTest.fix.corrections.anchors.length === 1);
+    expect((await fixState(page)).chooser).toEqual({ open: false, reviewed: true });
+    await page.click('#fix-chooser-open');
+    await expect(page.locator('.fix-chooser-step[data-step="1"] .fix-chooser-count')).toHaveText(
+      '1 anchor, 0 gaps',
+    );
+    await expect(page.locator('#fix-chooser-skip')).toHaveCount(0);
+    await expect(
+      page.locator('.fix-chooser-row[data-file="audio-c.mp3"] .fix-chooser-go'),
+    ).toBeEnabled();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.fix-chooser')).toHaveCount(0);
   });
 });

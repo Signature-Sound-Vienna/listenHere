@@ -364,6 +364,91 @@ for scale in ('mel', 'log', 'linear'):
 print(json.dumps(out))
 `;
 
+// Increment 5: the audio-to-audio refill. The same ladder under two tempo
+// maps is the "reference" and the "target"; both maps change tempo at quarter
+// 8, an event onset, so the TRUE reference→target map is piecewise-linear
+// between event onsets and known in closed form. Anchors at events 2 and 14
+// (true values), a deliberately naive LINEAR prior between them (wrong by
+// ~0.57 s at quarter 8), and the refill must recover the truth at the onsets.
+const HARNESS_TARGET = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+end_tick = max(n[1] for n in notes)
+
+# Reference: 120 BPM, then 160 from quarter 8. Target: 90 BPM, then 180 —
+# 33% slower, then 11% faster, so a linear prior is far off in the middle.
+tcs_b = [(0, 500000), (960, 375000)]
+tcs_c = [(0, 666667), (960, 333333)]
+ref = synth_midi_audio(notes, tpq, tcs_b, _tick_to_sec(end_tick, tpq, tcs_b) + 0.5)
+tgt = synth_midi_audio(notes, tpq, tcs_c, _tick_to_sec(end_tick, tpq, tcs_c) + 0.5)
+
+ev = fix_begin(ref, midi)
+def _raises(fn):
+    try:
+        fn()
+        return False
+    except Exception:
+        return True
+before_begin = _raises(lambda: fix_target_realign(0.5, 0.5, 2.0, 2.0, [1.0], [1.0]))
+lanes_before = _raises(lambda: fix_lanes(512, 16, which='target'))
+info = fix_target_begin('target.wav', tgt)
+
+# The true map at every quarter 0..16 (16 = the ladder's end).
+kb = [_tick_to_sec(q * tpq, tpq, tcs_b) for q in range(17)]
+kc = [_tick_to_sec(q * tpq, tpq, tcs_c) for q in range(17)]
+def true_t(r):
+    return float(np.interp(r, kb, kc))
+
+raster = np.arange(0, len(ref) / SR, ANNOTATION_STEP)
+ref_a, t_a, ref_b, t_b = kb[2], kc[2], kb[14], kc[14]
+ks = [float(r) for r in raster if ref_a < r < ref_b]
+prior = [t_a + (r - ref_a) * (t_b - t_a) / (ref_b - ref_a) for r in ks]
+res = fix_target_realign(ref_a, t_a, ref_b, t_b, ks, prior, 4.0, None)
+truth = [true_t(r) for r in ks]
+
+def nearest_ix(r):
+    return int(np.argmin(np.abs(np.asarray(ks) - r)))
+at_onsets = []
+for k in range(3, 14):
+    ix = nearest_ix(kb[k])
+    at_onsets.append({'k': k, 'refT': ks[ix], 'true': truth[ix], 'got': res['times'][ix], 'prior': prior[ix]})
+
+errors = {
+    'emptyRaster': fix_target_realign(kb[7], kc[7], kb[7] + 0.01, kc[7] + 0.01, [], []),
+    'reversed': _raises(lambda: fix_target_realign(ref_b, t_b, ref_a, t_a, ks, prior)),
+    'priorLen': _raises(lambda: fix_target_realign(ref_a, t_a, ref_b, t_b, ks, prior[:-1])),
+    'outside': _raises(lambda: fix_target_realign(ref_a, t_a, ref_b, t_b, ks + [ref_b + 1.0], prior + [t_b + 1.0])),
+    'tooShort': _raises(lambda: fix_target_realign(kb[7], kc[7], kb[7] + 0.03, kc[7] + 0.03, [kb[7] + 0.02], [kc[7] + 0.02])),
+}
+
+lanes_t = fix_lanes(512, 16, which='target')
+lanes_r = fix_lanes(512, 16)
+fix_target_dispose()
+after_dispose = _raises(lambda: fix_target_realign(ref_a, t_a, ref_b, t_b, ks, prior))
+lanes_after = _raises(lambda: fix_lanes(512, 16, which='target'))
+ref_still = fix_lanes(512, 16)['which']
+fix_dispose()
+
+print(json.dumps({
+    'info': info, 'beforeBegin': before_begin, 'lanesBefore': lanes_before,
+    'afterDispose': after_dispose, 'lanesAfter': lanes_after, 'refStill': ref_still,
+    'hop': res['hop'], 'n': len(ks), 'times': res['times'], 'truth': truth, 'prior': prior,
+    'tA': t_a, 'tB': t_b, 'atOnsets': at_onsets, 'errors': errors,
+    'targetPeaks': lanes_t['peaks'], 'targetWhich': lanes_t['which'], 'refWhich': lanes_r['which'],
+    'kc': kc, 'targetDur': len(tgt) / SR,
+    'melFramesTarget': lanes_t['mel_frames'], 'melFramesRef': lanes_r['mel_frames'],
+}))
+`;
+
 /** Run one python harness over align-worker.js's own PYTHON_CODE blob. */
 function execPython(harness: string, midiB64: string): any {
   const workerSrc = fs.readFileSync(
@@ -420,6 +505,12 @@ let scalesOut: any = null;
 function runScalesScenario(): any {
   if (!scalesOut) scalesOut = execPython(HARNESS_SCALES, buildMidiA().toString('base64'));
   return scalesOut;
+}
+
+let targetOut: any = null;
+function runTargetScenario(): any {
+  if (!targetOut) targetOut = execPython(HARNESS_TARGET, buildMidiA().toString('base64'));
+  return targetOut;
 }
 
 /** The worker's Python, exactly as Pyodide sees it. */
@@ -637,6 +728,132 @@ test.describe('41. alignment correction — model', () => {
     expect(r.valueMismatch.firstMismatch).toEqual({ index: 1, stored: 1.5, fresh: 1.75 });
     expect(r.lengthMismatch.ok).toBe(false);
     expect(r.lengthMismatch.lengthMismatch).toBe(true);
+  });
+
+  test('41.16 audio-to-audio anchors: keyed by reference time, segments on the raster, an on-sample anchor owns its sample, in-place grid splices, additive serialisation', async ({ page }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const step = 0.02;
+      const refGrid = Array.from({ length: 501 }, (_, k) => k * step); // 0 … 10 s
+      const grid = refGrid.map((t) => 1 + t * 1.1); // the target starts 1 s late, runs 10% slow
+      const gridRef = grid; // identity of the array must survive every splice
+      const ctx = {
+        refGrid,
+        tLo: grid[0],
+        tHi: grid[grid.length - 1],
+        base: { gridLength: grid.length, duration: 12.5 },
+      };
+      const threw = (fn: () => void) => {
+        try {
+          fn();
+          return false;
+        } catch {
+          return true;
+        }
+      };
+      const st = m.createCorrections();
+      const first = m.setTargetAnchor(
+        st,
+        'b.wav',
+        { refT: 4.01, t: 5.5, kind: 'drag', ts: 1, i: 7, q: 7 },
+        ctx,
+      );
+      m.setTargetAnchor(st, 'b.wav', { refT: 7.0, t: 8.7, kind: 'approve', ts: 2 }, ctx);
+      m.setTargetAnchor(st, 'b.wav', { refT: 2.0, t: 3.2, kind: 'drag', ts: 3 }, ctx);
+      const order = m.targetAnchors(st, 'b.wav').map((a: any) => a.refT);
+      const guards = {
+        tAtNext: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 5, t: 8.7, kind: 'drag', ts: 4 }, ctx)),
+        tAtPrev: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 5, t: 5.5, kind: 'drag', ts: 4 }, ctx)),
+        refAtCorner: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 0, t: 1, kind: 'drag', ts: 4 }, ctx)),
+        refPastEnd: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 10, t: 12, kind: 'drag', ts: 4 }, ctx)),
+        gapKind: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 5, t: 6.5, kind: 'gap', ts: 4 }, ctx)),
+        badCtx: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 5, t: 6.5, kind: 'drag', ts: 4 }, { refGrid, tLo: 3, tHi: 2 })),
+        ok: !threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 5, t: 6.5, kind: 'drag', ts: 4 }, ctx)),
+      };
+      m.removeTargetAnchor(st, 'b.wav', 5, ctx);
+      // Re-pinning within the eps replaces in place and keeps the hints.
+      const rep = m.setTargetAnchor(st, 'b.wav', { refT: 4.01 + 1e-9, t: 5.6, kind: 'approve', ts: 5 }, ctx);
+      const middle = { ...m.findTargetAnchor(st, 'b.wav', 4.01) };
+      const count = m.targetAnchors(st, 'b.wav').length;
+      // An anchor ON a raster sample owns that sample; one between samples does not.
+      const own = m.applyTargetAnchorValue(grid, refGrid, 7.0, 8.7);
+      const between = m.applyTargetAnchorValue(grid, refGrid, 4.01, 5.6);
+      grid[own.k] = own.before; // the undo of an on-sample anchor is its before-value
+      // In-place splice of the segment between 2.0 and 4.01, then exact restore.
+      const seg = rep.segments[0];
+      const values = Array.from({ length: seg.interiorCount }, () => 4);
+      const applied = m.applyGridSegment(grid, seg, values);
+      const spliced = grid.slice(seg.kLo, seg.kHi + 1).every((v: number) => v === 4);
+      const untouchedBefore = grid[seg.kLo - 1];
+      const untouchedAfter = grid[seg.kHi + 1];
+      for (let k = 0; k < applied.before.length; k++) grid[applied.kLo + k] = applied.before[k];
+      const restored = grid.every((v: number, k: number) => v === 1 + refGrid[k] * 1.1);
+      const lengthGuard = threw(() => m.applyGridSegment(grid, seg, [1, 2]));
+      const merged = m.removeTargetAnchor(st, 'b.wav', 4.01, ctx);
+      // Serialisation: additive, per-target base, round-trip; absent when empty.
+      const rec = m.serialize(st, { verovioVersion: '6.3.0' });
+      const back = m.deserialize(rec);
+      const emptyRec = m.serialize(m.createCorrections(), null);
+      const legacy = m.deserialize({ version: 1, base: null, anchors: [], gaps: [] });
+      const malformed = threw(() =>
+        m.deserialize({ version: 1, anchors: [], gaps: [], audio: { 'b.wav': { anchors: [{ refT: 1 }] } } }),
+      );
+      return {
+        first,
+        order,
+        guards,
+        rep,
+        middle,
+        count,
+        own,
+        between,
+        applied: { kLo: applied.kLo, kHi: applied.kHi, beforeLen: applied.before.length, before0: applied.before[0] },
+        spliced,
+        untouchedBefore,
+        untouchedAfter,
+        restored,
+        sameArray: grid === gridRef,
+        lengthGuard,
+        merged,
+        rec,
+        backAudio: back.state.audio,
+        hasBefore: m.hasTargetAnchors(st),
+        emptyHasAudio: 'audio' in emptyRec,
+        legacyAudio: legacy.state.audio,
+        malformed,
+      };
+    });
+    // Segments on the raster: strictly between the anchors, corners frozen.
+    expect(r.first.segments[0]).toEqual({ refA: 0, tA: 1, refB: 4.01, tB: 5.5, kLo: 1, kHi: 200, interiorCount: 200 });
+    expect(r.first.segments[1]).toMatchObject({ refA: 4.01, tA: 5.5, kLo: 201, kHi: 499, interiorCount: 299 });
+    expect(r.first.segments[1].refB).toBeCloseTo(10, 9);
+    expect(r.order).toEqual([2, 4.01, 7]);
+    expect(r.guards).toEqual({ tAtNext: true, tAtPrev: true, refAtCorner: true, refPastEnd: true, gapKind: true, badCtx: true, ok: true });
+    expect(r.count).toBe(3);
+    expect(r.middle).toEqual({ refT: 4.01, t: 5.6, kind: 'approve', ts: 5, i: 7, q: 7 });
+    // The segment between 2.0 (ON sample 100, excluded) and 4.01 (between samples).
+    expect(r.rep.segments[0]).toEqual({ refA: 2, tA: 3.2, refB: 4.01, tB: 5.6, kLo: 101, kHi: 200, interiorCount: 100 });
+    expect(r.own).toEqual({ k: 350, before: 1 + 7 * 1.1 });
+    expect(r.between).toBeNull();
+    expect(r.applied).toEqual({ kLo: 101, kHi: 200, beforeLen: 100, before0: 1 + 101 * 0.02 * 1.1 });
+    expect(r.spliced).toBe(true);
+    expect(r.untouchedBefore).toBeCloseTo(1 + 100 * 0.02 * 1.1, 12);
+    expect(r.untouchedAfter).toBeCloseTo(1 + 201 * 0.02 * 1.1, 12);
+    expect(r.restored).toBe(true);
+    expect(r.sameArray).toBe(true);
+    expect(r.lengthGuard).toBe(true);
+    expect(r.merged.segment).toEqual({ refA: 2, tA: 3.2, refB: 7, tB: 8.7, kLo: 101, kHi: 349, interiorCount: 249 });
+    // Serialisation.
+    expect(r.rec.version).toBe(1);
+    expect(r.rec.base).toEqual({ verovioVersion: '6.3.0' });
+    expect(r.rec.audio['b.wav'].base).toEqual({ gridLength: 501, duration: 12.5 });
+    expect(r.rec.audio['b.wav'].anchors.map((a: any) => a.refT)).toEqual([2, 7]);
+    expect(r.backAudio).toEqual(r.rec.audio);
+    expect(r.hasBefore).toBe(true);
+    expect(r.emptyHasAudio).toBe(false);
+    expect(r.legacyAudio).toEqual({});
+    expect(r.malformed).toBe(true);
   });
 });
 
@@ -1026,5 +1243,56 @@ test.describe('41. alignment correction — worker segment realign', () => {
     expect(firstAfter(offMidi)).toBe(tickB);
     expect(tempoAt(offMidi, tickA)).toBeGreaterThan(8);
     fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('41.17 audio-to-audio refill: a target resident beside the reference, the grid between two anchors recovered from a naive prior, lanes on the target, error paths, dispose', async () => {
+    test.setTimeout(120_000);
+    const out = runTargetScenario();
+    // Lifecycle: nothing before begin, nothing after dispose, the reference session untouched.
+    expect(out.beforeBegin).toBe(true);
+    expect(out.lanesBefore).toBe(true);
+    expect(out.info.name).toBe('target.wav');
+    expect(out.info.duration).toBeCloseTo(out.targetDur, 6);
+    expect(out.afterDispose).toBe(true);
+    expect(out.lanesAfter).toBe(true);
+    expect(out.refStill).toBe('ref');
+    // The refill: every raster point between the anchors, non-decreasing,
+    // inside [tA, tB], at the fine hop.
+    expect(out.hop).toBe(512);
+    expect(out.times.length).toBe(out.n);
+    expectMonotonic(out.times);
+    for (const v of out.times) {
+      expect(v).toBeGreaterThanOrEqual(out.tA);
+      expect(v).toBeLessThanOrEqual(out.tB);
+    }
+    // The naive linear prior is ~0.57 s off at quarter 8; the refill is
+    // within a few frames of the truth at every interior onset and closer
+    // than the prior everywhere it mattered.
+    const priorWorst = Math.max(...out.atOnsets.map((o: any) => Math.abs(o.prior - o.true)));
+    expect(priorWorst).toBeGreaterThan(0.4);
+    for (const o of out.atOnsets) {
+      expect(Math.abs(o.got - o.true), `event ${o.k}: got ${o.got}, true ${o.true}`).toBeLessThan(0.1);
+    }
+    // Inside a sustained pure tone the cost is flat and the path is decided
+    // by tie-breaks, so mid-note errors up to the note-length difference are
+    // expected on THIS corpus (real audio never ties); bound them loosely.
+    const worst = Math.max(...out.times.map((v: number, k: number) => Math.abs(v - out.truth[k])));
+    expect(worst).toBeLessThan(0.25);
+    // Error paths.
+    expect(out.errors.emptyRaster).toEqual({ times: [], hop: 0 });
+    expect(out.errors.reversed).toBe(true);
+    expect(out.errors.priorLen).toBe(true);
+    expect(out.errors.outside).toBe(true);
+    expect(out.errors.tooShort).toBe(true);
+    // Lanes on the TARGET: its own frame count and a picked peak within two
+    // frames of every target onset after the first (t = 0 is undetectable by
+    // construction, as in 41.11).
+    expect(out.targetWhich).toBe('target');
+    expect(out.refWhich).toBe('ref');
+    expect(out.melFramesTarget).not.toBe(out.melFramesRef);
+    for (let k = 1; k < 16; k++) {
+      const nearest = Math.min(...out.targetPeaks.map((p: number) => Math.abs(p - out.kc[k])));
+      expect(nearest, `target onset ${k} at ${out.kc[k]}`).toBeLessThan(0.05);
+    }
   });
 });

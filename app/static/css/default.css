@@ -6834,27 +6834,91 @@ body.lh-v6-drawer-open .drawer-btns {
    --------------------------------------------------------------------------- */
 
 /* Per-row entry affordance (score + reference rows only, module-gated). */
-.wf-fix-btn {
-  position: absolute;
-  right: 26px; /* clear of the reorder drag handle at right: 6px */
-  top: 6px;
-  z-index: 6;
+/* The correction entry: the nav's "Correct alignment…" button opens this
+   chooser — step 1 the score against the reference, step 2 the recordings
+   against the reference, locked until step 1 was opened this load (or the
+   file carries a record, or the user skips it). */
+.fix-chooser-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 10000;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 1px solid var(--color-waveform-border, #aaa);
-  border-radius: 999px;
-  background: var(--color-surface, rgba(255, 255, 255, 0.9));
-  color: var(--color-text, #222);
-  cursor: pointer;
-  opacity: 0.65;
-  transition: opacity 0.15s ease;
 }
-.wf-fix-btn:hover {
-  opacity: 1;
+.fix-chooser {
+  width: min(560px, 92vw);
+  max-height: 85vh;
+  overflow: auto;
+  background: var(--color-bg, #fff);
+  color: var(--color-text);
+  border: 1px solid var(--color-waveform-border, #aaa);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+  padding: 0.9em 1.1em 1.1em;
+}
+.fix-chooser-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.4em;
+}
+.fix-chooser-head h2 {
+  margin: 0;
+  font-size: 1.15em;
+}
+.fix-chooser-close {
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 1.1em;
+  cursor: pointer;
+  padding: 0.2em 0.45em;
+}
+.fix-chooser-step {
+  margin-top: 0.7em;
+  padding-top: 0.5em;
+  border-top: 1px solid var(--color-waveform-border, #ccc);
+}
+.fix-chooser-step h3 {
+  margin: 0 0 0.35em;
+  font-size: 0.95em;
+}
+.fix-chooser-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.25em 0;
+}
+.fix-chooser-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fix-chooser-count {
+  flex: 0 0 auto;
+  font-size: 0.85em;
+  color: var(--color-text-secondary, var(--color-text-muted, #666));
+}
+.fix-chooser-go {
+  flex: 0 0 auto;
+}
+.fix-chooser-note {
+  margin: 0.2em 0 0.4em;
+  font-size: 0.85em;
+  color: var(--color-text-secondary, var(--color-text-muted, #666));
+}
+.fix-chooser-skip {
+  display: block;
+  margin: 0 0 0.5em;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+.fix-chooser-locked .fix-chooser-list {
+  opacity: 0.55;
 }
 
 #fix-mode {

@@ -38,6 +38,7 @@ import {
   tk,
   scoreAlignment,
   loadedAlignmentJSON,
+  alignmentGrids,
   waveformPeaks,
   wavesurfers,
   fileBlobs,
@@ -48,6 +49,7 @@ import {
   resolveAudioUrl,
   pushFixUndoEntry,
   refreshSynthAlignmentGrid,
+  refreshRecordingGrid,
 } from "./listen.js";
 import {
   verifyQuarters,
@@ -61,6 +63,14 @@ import {
   syncGapTimes,
   applySegment,
   applyAnchorValue,
+  targetAnchors,
+  targetSlot,
+  hasTargetAnchors,
+  findTargetAnchor,
+  neighbourTargetAnchors,
+  setTargetAnchor,
+  applyGridSegment,
+  applyTargetAnchorValue,
   serialize as serializeCorrections,
   deserialize as deserializeCorrections,
 } from "./engine/correction-model.js";
@@ -231,7 +241,13 @@ let _lastEntry = { usedPrewarm: false, spinnerShown: false, ms: 0 };
  */
 let _corrections = createCorrections();
 let _pristine = null; // { on: number[], off: number[] } — as-loaded ref tables
-let _marks = []; // sorted reference times
+let _marks = []; // sorted times on the strip's timeline
+/** Whose timeline the marks are on: a session on another recording starts
+ *  with none, since a time in one recording means nothing in another. */
+let _marksFile = null;
+/** Recordings whose grids an audio-to-audio session changed and the main
+ *  view has not redrawn yet (cluster C: once, at exit). */
+const _dirtyGridFiles = new Set();
 /** The mark the last N-jump landed on, recoloured as ACTIVE; Delete removes
  *  it (M's hit test misses after a jump — the preroll parks 0.5 s away). */
 let _activeMarkT = null;
@@ -239,7 +255,7 @@ let _activeMarkT = null;
 let _correctionsBase = null;
 /** The as-loaded correction record, for Revert and dirtiness (JSON of
  *  {a: anchors, g: gaps}; "no record" is the empty pair, not null). */
-let _loadedCorrectionsJson = JSON.stringify({ a: [], g: [] });
+let _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {} });
 /** The one in-flight fix_realign request, or null (the worker is serial). */
 let _pendingRealign = null;
 /** Bumped on every change to the correction record or the tables it governs;
@@ -304,35 +320,225 @@ function _fixModeParamPresent() {
 }
 
 /**
- * Hang the fix-mode entry button on a waveform row. Called by listen.js for
- * every row it creates; this module decides whether the row gets one — only
- * under ?fixMode, and in v1 only on the score row and the reference row
- * (score↔ref correction; audio-to-audio rows join with a later increment).
+ * Whether `name` can be the TARGET of an audio-to-audio session: it has a
+ * grid on the reference raster (same length as the reference's own grid).
  */
-export function attachFixEntryButton(filename, rowEl) {
-  if (!_fixModeParamPresent()) return;
-  if (!rowEl || rowEl.querySelector(".wf-fix-btn")) return;
-  if (filename !== SYNTH_MEI_KEY && filename !== getReferenceAudioIx()) return;
-  if (!scoreAlignment?.score_onset?.length || !scoreAlignment?.ref_onset?.length)
-    return;
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "wf-fix-btn";
-  btn.tabIndex = -1;
-  btn.title = "Correct alignment (experimental)";
-  btn.setAttribute("aria-label", "Correct alignment");
-  btn.innerHTML =
-    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true">' +
-    '<line x1="4" y1="6" x2="20" y2="6"/><circle cx="9" cy="6" r="2.4" fill="var(--color-surface, #fff)"/>' +
-    '<line x1="4" y1="12" x2="20" y2="12"/><circle cx="15" cy="12" r="2.4" fill="var(--color-surface, #fff)"/>' +
-    '<line x1="4" y1="18" x2="20" y2="18"/><circle cx="7" cy="18" r="2.4" fill="var(--color-surface, #fff)"/>' +
-    "</svg>";
-  btn.addEventListener("mousedown", (e) => e.preventDefault());
-  btn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    enterFixMode(filename);
+function _targetGridUsable(name) {
+  const rg = alignmentGrids?.[getReferenceAudioIx()];
+  const tg = alignmentGrids?.[name];
+  return (
+    Array.isArray(rg) && Array.isArray(tg) && rg.length === tg.length && rg.length >= 2
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The entry: ONE nav button opens the chooser (plan §14's "wizard-like
+// entry", ruled 2026-08-30, shaped 2026-09-11). Step 1 is the score ↔
+// reference correction; step 2, the recordings against the reference, stays
+// LOCKED until step 1 has been opened this load — or the file already carries
+// a score↔ref record — or the user says the score↔ref alignment is already
+// good. The order is not pedantry: the right ear in an audio-to-audio session
+// is the score synth through the COMPOSED map, so a score↔ref error would be
+// heard as the recording's. The per-row buttons this replaces were the
+// provisional entry of increments 2–5. A score-less alignment (a later
+// iteration) will show step 2 alone.
+// ---------------------------------------------------------------------------
+
+/** Step 1 counts as reviewed this load: opened, carried in from the file's
+ *  record, or explicitly skipped. Reset per load (fixModePrewarm). */
+let _scoreRefReviewed = false;
+/** The open chooser's overlay, or null. */
+let _chooserEl = null;
+
+/** Whether the loaded alignment can be corrected here at all. This increment
+ *  renders the score pane in both modes, so a score is required. */
+function _entryUsable() {
+  return (
+    _fixModeParamPresent() &&
+    !!scoreAlignment?.score_onset?.length &&
+    !!scoreAlignment?.ref_onset?.length &&
+    Array.isArray(alignmentGrids?.[getReferenceAudioIx()])
+  );
+}
+
+/**
+ * Show or hide the nav's "Correct alignment…" button for the loaded piece.
+ * Called at the end of every completed load (fixModePrewarm). The button is
+ * hidden in the template, so without ?fixMode nothing appears (the A/B rule).
+ */
+export function installFixEntry() {
+  const btn = document.getElementById("fix-chooser-open");
+  if (!btn) return;
+  btn.hidden = !_entryUsable();
+  if (!btn.dataset.fixWired) {
+    btn.dataset.fixWired = "1";
+    btn.addEventListener("click", () => _openChooser());
+  }
+}
+
+/** Step 2's rows: every recording in the alignment but the reference and the synth. */
+function _targetCandidates() {
+  const ref = getReferenceAudioIx();
+  return Object.keys(alignmentGrids || {}).filter((k) => k !== SYNTH_MEI_KEY && k !== ref);
+}
+
+function _openChooser() {
+  if (_fix || _chooserEl || !_entryUsable()) return;
+  const overlay = document.createElement("div");
+  overlay.className = "fix-chooser-overlay";
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) _closeChooser();
   });
-  rowEl.appendChild(btn);
+  const card = document.createElement("div");
+  card.className = "fix-chooser";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-labelledby", "fix-chooser-title");
+  overlay.appendChild(card);
+  // Escape closes; captured so listen.js's global handler never sees it.
+  overlay._onKey = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      _closeChooser();
+    }
+  };
+  document.addEventListener("keydown", overlay._onKey, true);
+  _chooserEl = overlay;
+  document.body.appendChild(overlay);
+  _renderChooser(card);
+}
+
+function _closeChooser() {
+  const overlay = _chooserEl;
+  if (!overlay) return;
+  _chooserEl = null;
+  document.removeEventListener("keydown", overlay._onKey, true);
+  overlay.remove();
+}
+
+function _renderChooser(card) {
+  const ref = getReferenceAudioIx();
+  const reviewed = _scoreRefReviewed;
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  card.innerHTML = "";
+
+  const head = document.createElement("div");
+  head.className = "fix-chooser-head";
+  const title = document.createElement("h2");
+  title.id = "fix-chooser-title";
+  title.textContent = "Correct alignment";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "fix-chooser-close";
+  close.textContent = "✕";
+  close.setAttribute("aria-label", "Close");
+  close.addEventListener("click", () => _closeChooser());
+  head.append(title, close);
+
+  // Step 1: the score against the reference recording.
+  const s1 = document.createElement("section");
+  s1.className = "fix-chooser-step";
+  s1.dataset.step = "1";
+  const h1 = document.createElement("h3");
+  h1.textContent = "1 · Score ↔ reference";
+  const row1 = document.createElement("div");
+  row1.className = "fix-chooser-row";
+  const name1 = document.createElement("span");
+  name1.className = "fix-chooser-name";
+  name1.textContent = ref;
+  const count1 = document.createElement("span");
+  count1.className = "fix-chooser-count";
+  const na = _corrections.anchors.length;
+  const ng = _corrections.gaps.length;
+  count1.textContent =
+    na || ng
+      ? `${plural(na, "anchor")}, ${plural(ng, "gap")}`
+      : reviewed
+        ? "reviewed, no anchors"
+        : "not yet reviewed";
+  const go1 = document.createElement("button");
+  go1.type = "button";
+  go1.id = "fix-chooser-open-ref";
+  go1.className = "fix-chooser-go";
+  go1.textContent = "Open";
+  go1.title = "Correct the score's alignment to the reference recording";
+  go1.addEventListener("click", () => {
+    _closeChooser();
+    enterFixMode(ref);
+  });
+  row1.append(name1, count1, go1);
+  s1.append(h1, row1);
+
+  // Step 2: each recording against the reference.
+  const s2 = document.createElement("section");
+  s2.className = "fix-chooser-step" + (reviewed ? "" : " fix-chooser-locked");
+  s2.dataset.step = "2";
+  const h2 = document.createElement("h3");
+  h2.textContent = "2 · Recordings against the reference";
+  s2.appendChild(h2);
+  if (!reviewed) {
+    const note = document.createElement("p");
+    note.className = "fix-chooser-note";
+    note.id = "fix-chooser-lock-note";
+    note.textContent =
+      "Review the score ↔ reference alignment first: in these sessions the right ear " +
+      "plays the score through the reference, so a score error would be heard as the " +
+      "recording's.";
+    const skip = document.createElement("button");
+    skip.type = "button";
+    skip.id = "fix-chooser-skip";
+    skip.className = "fix-chooser-skip";
+    skip.textContent = "Skip — the score ↔ reference alignment is already good";
+    skip.addEventListener("click", () => {
+      _scoreRefReviewed = true;
+      _renderChooser(card);
+    });
+    s2.append(note, skip);
+  }
+  const list = document.createElement("div");
+  list.className = "fix-chooser-list";
+  const candidates = _targetCandidates();
+  for (const file of candidates) {
+    const usable = _targetGridUsable(file);
+    const row = document.createElement("div");
+    row.className = "fix-chooser-row";
+    row.dataset.file = file;
+    const name = document.createElement("span");
+    name.className = "fix-chooser-name";
+    name.textContent = file;
+    const count = document.createElement("span");
+    count.className = "fix-chooser-count";
+    const k = targetAnchors(_corrections, file).length;
+    count.textContent = !usable
+      ? "no grid on the reference raster"
+      : k
+        ? plural(k, "anchor")
+        : "no anchors";
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "fix-chooser-go";
+    go.textContent = "Open";
+    go.disabled = !reviewed || !usable;
+    go.title = !usable
+      ? "This recording has no alignment grid on the reference raster"
+      : !reviewed
+        ? "Review the score ↔ reference alignment first, or skip it above"
+        : `Correct ${file}'s alignment to the reference recording`;
+    go.addEventListener("click", () => {
+      _closeChooser();
+      enterFixMode(file);
+    });
+    row.append(name, count, go);
+    list.appendChild(row);
+  }
+  if (!candidates.length) {
+    const none = document.createElement("p");
+    none.className = "fix-chooser-note";
+    none.textContent = "No other recordings in this alignment.";
+    list.appendChild(none);
+  }
+  s2.appendChild(list);
+  card.append(head, s1, s2);
 }
 
 // ---------------------------------------------------------------------------
@@ -429,16 +635,17 @@ function _entryGuard() {
   return fresh;
 }
 
-function _refuse(message) {
+function _refuse(message, detail = null) {
   _lastRefusal = message;
   console.warn("fix mode refused:", message);
   return confirmDialog({
     title: "Cannot correct this alignment",
     body: [
       `Correction mode refused: ${message}.`,
-      "Corrections made against a score rendering that differs from the " +
-        "one the aligner saw would silently corrupt the alignment, so fix " +
-        "mode only opens when the two match exactly.",
+      detail ??
+        "Corrections made against a score rendering that differs from the " +
+          "one the aligner saw would silently corrupt the alignment, so fix " +
+          "mode only opens when the two match exactly.",
     ],
     confirmLabel: "Close",
     cancelLabel: null,
@@ -493,10 +700,35 @@ export async function enterFixMode(entryFile) {
   const contentEl = document.getElementById("content");
   if (!waveformsEl || !contentEl) return;
 
+  // The mode follows the row (plan §14 Q1): the score or reference row edits
+  // ref_onset; any other recording edits THAT recording's grid against the
+  // reference, on the same score pane with every onset projected through
+  // the composed map into the recording's timeline.
+  const audioMode = entryFile !== SYNTH_MEI_KEY && entryFile !== refFile;
+  if (audioMode && !_targetGridUsable(entryFile)) {
+    await _refuse(
+      `${entryFile} has no alignment grid on the reference raster`,
+      "An audio-to-audio correction edits the recording's grid against the " +
+        "reference; without one there is nothing to correct. Re-run the " +
+        "alignment with this recording included.",
+    );
+    return;
+  }
+
   _fix = {
-    mode: "score-ref",
+    mode: audioMode ? "audio" : "score-ref",
     entryFile,
     refFile,
+    /** The recording being corrected (audio mode), or null. */
+    targetFile: audioMode ? entryFile : null,
+    /** Whose audio the strip and the audition's left ear carry. */
+    stripFile: audioMode ? entryFile : refFile,
+    targetInfo: null, // the worker's fix_target_ready {name, duration}
+    fixReady: false, // fix_ready arrived (the reference session)
+    targetReady: !audioMode, // fix_target_ready arrived (audio mode only)
+    projOn: null, // audio mode: every event's onset projected into the target
+    projOff: null,
+    freeAnchorsDrawn: 0, // test surface: target anchors off any tick, drawn
     qOn: null,
     qOff: null,
     midiBytes: null,
@@ -583,6 +815,14 @@ export async function enterFixMode(entryFile) {
   f.nEvents = f.qOn.length;
   f.groups = _derived.groups;
   f.pageSvgCache = _derived.svgCache; // shared: survives exit for re-entry
+  if (f.mode === "audio") _recomputeProjection(f);
+  // Session marks belong to ONE recording's timeline.
+  if (_marksFile !== f.stripFile) {
+    _marks = [];
+    _activeMarkT = null;
+    _lastMarkJumpT = null;
+    _marksFile = f.stripFile;
+  }
 
   if (!usePrewarm || !_derived.pageCount) {
     // Layout for THIS pane size (the expensive part prewarm normally covers).
@@ -593,6 +833,9 @@ export async function enterFixMode(entryFile) {
     _assignGroupPages(f.groups);
   }
   f.pageCount = _derived.pageCount;
+  // Opening the score↔ref correction is what "reviewing" it means to the
+  // chooser's lock — whether or not an anchor is laid.
+  if (f.mode === "score-ref") _scoreRefReviewed = true;
 
   _buildStrip(_stripSource());
   _renderPage(f.groups[0]?.page || 1);
@@ -716,8 +959,10 @@ export function exitFixMode() {
   _lastReplay = null;
   _teardownFixDom(f);
   // The main view recomputes via the corrected-tables path ONCE, here, when
-  // anything about the corrections changed during the session (cluster C).
-  if (_correctionsEpoch !== f.epochAtEntry) _refreshMainView();
+  // anything about the corrections changed during the session (cluster C) —
+  // the synth grid for score↔ref edits, the edited recordings' grids for
+  // audio-to-audio ones.
+  if (_correctionsEpoch !== f.epochAtEntry || _dirtyGridFiles.size) _refreshMainView();
   // The worker keeps its Pyodide runtime for a cheap re-entry, but drops the
   // session's resident audio.
   if (_worker && _workerHasSession) {
@@ -735,6 +980,7 @@ export function exitFixMode() {
  */
 export function fixModeOnPieceReset() {
   exitFixMode();
+  _closeChooser();
   _derived = null;
   clearTimeout(_prewarmTimer);
   if (_worker) {
@@ -764,11 +1010,15 @@ export function fixModePrewarm() {
   _corrections = createCorrections();
   _pristine = null;
   _marks = [];
+  _marksFile = null;
   _activeMarkT = null;
   _lastMarkJumpT = null;
   _lastAnnounce = null;
   _correctionsBase = null;
-  _loadedCorrectionsJson = JSON.stringify({ a: [], g: [] });
+  _dirtyGridFiles.clear();
+  _scoreRefReviewed = false;
+  _closeChooser();
+  _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {} });
   if (_pendingRealign) {
     _pendingRealign.reject(new Error("piece replaced"));
     _pendingRealign = null;
@@ -787,15 +1037,23 @@ export function fixModePrewarm() {
       _loadedCorrectionsJson = JSON.stringify({
         a: _corrections.anchors,
         g: _corrections.gaps,
+        u: _corrections.audio,
       });
-      console.log(
-        `fix mode: resumed ${state.anchors.length} anchors and ` +
-          `${state.gaps.length} gaps from header.corrections`,
+      const targets = Object.values(state.audio || {}).reduce(
+        (n, s) => n + s.anchors.length,
+        0,
       );
+      console.log(
+        `fix mode: resumed ${state.anchors.length} anchors, ${state.gaps.length} gaps, ` +
+          `and ${targets} audio-to-audio anchors from header.corrections`,
+      );
+      // A file that already carries score↔ref corrections has had its step 1.
+      if (state.anchors.length || state.gaps.length) _scoreRefReviewed = true;
     } catch (e) {
       console.warn("fix mode: could not resume header.corrections —", e.message);
     }
   }
+  installFixEntry();
   clearTimeout(_prewarmTimer);
   _schedulePrewarm(2000, 20);
 }
@@ -971,19 +1229,94 @@ function _buildGroupsFrom(qOn) {
 /** How the last group build resolved score elements (test surface). */
 let _lastGroupStats = null;
 
-/** A group's CURRENT reference time — read live, so refills show through. */
-function _groupRefTime(group) {
-  return scoreAlignment.ref_onset[group.eventIxs[0]];
+/**
+ * A group's CURRENT time on the STRIP's timeline — read live, so refills show
+ * through. Score↔ref: the reference onset itself. Audio-to-audio: that onset
+ * projected through the target recording's live grid (score → ref → target,
+ * the composed map). The strip, the ticks, the follower, the audition, and
+ * every gesture read this and nothing else, so the two modes share the loop.
+ */
+function _groupStripTime(group) {
+  return _eventStripTime(group.eventIxs[0]);
 }
 
-/** The reference recording's duration — the correction model's upper corner.
- *  The decoded audition is exact; the worker's fix_ready and the stored strip
- *  peaks agree to within a frame, which is all the corner bound needs. */
+function _eventStripTime(i) {
+  const f = _fix;
+  if (f?.mode === "audio") return f.projOn ? f.projOn[i] : _refToTarget(scoreAlignment.ref_onset[i]);
+  return scoreAlignment.ref_onset[i];
+}
+
+function _eventStripOff(i) {
+  const f = _fix;
+  const off = scoreAlignment.ref_offset;
+  if (!Array.isArray(off)) return undefined;
+  if (f?.mode === "audio") return f.projOff ? f.projOff[i] : _refToTarget(off[i]);
+  return off[i];
+}
+
+/**
+ * Reference time → the target recording's time through its LIVE grid:
+ * piecewise-linear over the reference raster, edge-slope extrapolation beyond
+ * it (engine/time-map.js's discipline — never clamped, since a late-starting
+ * recording legitimately maps the reference's opening to negative seconds).
+ */
+function _refToTarget(refT) {
+  const f = _fix;
+  if (!Number.isFinite(refT) || !f?.targetFile) return refT;
+  const rg = alignmentGrids[f.refFile];
+  const tg = alignmentGrids[f.targetFile];
+  if (!rg || !tg || rg.length !== tg.length || rg.length < 2) return refT;
+  let k = _lowerBound(rg, refT); // first raster index with rg[k] >= refT
+  if (k <= 0) k = 1;
+  if (k >= rg.length) k = rg.length - 1;
+  const x0 = rg[k - 1];
+  const x1 = rg[k];
+  return tg[k - 1] + ((refT - x0) / Math.max(x1 - x0, 1e-9)) * (tg[k] - tg[k - 1]);
+}
+
+/**
+ * Audio mode: every event's onset and offset projected into the target's
+ * timeline, refreshed after any change to the target's grid (commit, undo,
+ * redo, revert). The audition renders from these tables and the ticks read
+ * them, so what is heard and what is drawn come from one projection.
+ */
+function _recomputeProjection(f) {
+  if (f.mode !== "audio") return;
+  const on = scoreAlignment.ref_onset;
+  const off = scoreAlignment.ref_offset;
+  const n = on.length;
+  const pOn = new Array(n);
+  const pOff = new Array(n);
+  for (let i = 0; i < n; i++) {
+    pOn[i] = _refToTarget(on[i]);
+    pOff[i] = Array.isArray(off) ? _refToTarget(off[i]) : undefined;
+  }
+  f.projOn = pOn;
+  f.projOff = pOff;
+}
+
+/** The onset/offset tables the audition renders from: the live ref tables
+ *  (score↔ref) or the projection into the target (audio-to-audio). */
+function _audTables(f) {
+  if (f.mode === "audio" && f.projOn) return { on: f.projOn, off: f.projOff };
+  return { on: scoreAlignment.ref_onset, off: scoreAlignment.ref_offset };
+}
+
+/** The target recording's live grid (audio mode), looked up on every use:
+ *  "Revert all" replaces the array, and the alignment JSON aliases it. */
+function _targetGrid() {
+  const f = _fix;
+  return f?.targetFile ? alignmentGrids[f.targetFile] : null;
+}
+
+/** The STRIP recording's duration — the correction model's upper corner.
+ *  The decoded audition is exact; the worker's readiness reply and the stored
+ *  strip peaks agree to within a frame, which is all the corner bound needs. */
 function _refDuration() {
   const f = _fix;
   return (
     f?.aud?.duration ??
-    f?.workerEvents?.ref_duration ??
+    (f?.mode === "audio" ? f?.targetInfo?.duration : f?.workerEvents?.ref_duration) ??
     f?.stripSource?.duration ??
     0
   );
@@ -1391,7 +1724,8 @@ function _buildDom(contentEl, waveformsEl) {
   title.className = "fix-title";
   // The card is already headed "Correction", so the line carries only what
   // that header cannot: which two things are being aligned.
-  title.textContent = `score ↔ ${f.refFile}`;
+  title.textContent =
+    f.mode === "audio" ? `${f.refFile} ↔ ${f.targetFile}` : `score ↔ ${f.refFile}`;
 
   // Page arrows of its own would duplicate the transport's skip buttons,
   // which turn pages while the session is open; what is left here is the
@@ -1483,6 +1817,10 @@ function _buildDom(contentEl, waveformsEl) {
     "either endpoint to place its boundary.";
   gapBtn.addEventListener("mousedown", (e) => e.preventDefault());
   gapBtn.addEventListener("click", () => _toggleGap());
+  if (f.mode === "audio") {
+    gapBtn.disabled = true;
+    gapBtn.title = "Unscored-audio gaps are laid in the score ↔ reference correction.";
+  }
   gapRow.appendChild(gapBtn);
   fsEdits.body.append(undoRow, gapRow);
   navBody.append(title, chip, fsScore.fs, fsPlayback.fs, fsSnap.fs, fsLanes.fs, fsEdits.fs);
@@ -2028,11 +2366,11 @@ function _turnPage(delta) {
 
 /** Best available peaks + duration for the reference recording. */
 function _stripSource() {
-  const pk = waveformPeaks[_fix.refFile];
+  const pk = waveformPeaks[_fix.stripFile];
   if (pk?.peaks?.length && pk?.duration) {
     return { peaks: pk.peaks, duration: pk.duration };
   }
-  const ws = wavesurfers[_fix.refFile];
+  const ws = wavesurfers[_fix.stripFile];
   if (ws) {
     try {
       const duration = ws.getDuration();
@@ -2106,7 +2444,7 @@ function _buildStrip(source) {
 function _pageWindow() {
   const f = _fix;
   const times = _groupsOnPage(f.page)
-    .map((g) => _groupRefTime(g))
+    .map((g) => _groupStripTime(g))
     .filter((t) => Number.isFinite(t));
   const duration = f.stripSource?.duration || 0;
   if (!times.length) return { t0: 0, t1: duration || 1 };
@@ -2249,6 +2587,7 @@ function _requestLanes(f, what) {
   _ensureWorker().postMessage({
     type: "fix_lanes",
     what,
+    which: f.mode === "audio" ? "target" : "ref", // the audio on the strip
     hop: LANE_HOP,
     nMels: _specCfg.nMels,
     nFft: _specCfg.nFft,
@@ -2902,14 +3241,25 @@ function _nearestOnsetPeak(t, radius, groupIx = null) {
 function _occupiedTimes(groupIxOrSet) {
   const f = _fix;
   if (!f) return [];
-  const own = new Set();
-  if (groupIxOrSet instanceof Set) {
-    for (const ix of groupIxOrSet) {
+  const ixs =
+    groupIxOrSet instanceof Set
+      ? [...groupIxOrSet]
+      : groupIxOrSet != null
+        ? [groupIxOrSet]
+        : [];
+  if (f.mode === "audio") {
+    const ownRef = new Set();
+    for (const ix of ixs) {
       const g = f.groups[ix];
-      if (g) own.add(_anchorEventOf(g));
+      if (g) ownRef.add(Math.round(scoreAlignment.ref_onset[g.eventIxs[0]] * 1e6));
     }
-  } else if (groupIxOrSet != null) {
-    const g = f.groups[groupIxOrSet];
+    return targetAnchors(_corrections, f.targetFile)
+      .filter((a) => !ownRef.has(Math.round(a.refT * 1e6)))
+      .map((a) => a.t);
+  }
+  const own = new Set();
+  for (const ix of ixs) {
+    const g = f.groups[ix];
     if (g) own.add(_anchorEventOf(g));
   }
   return _corrections.anchors.filter((a) => !own.has(a.i)).map((a) => a.t);
@@ -2966,7 +3316,7 @@ function _localSecondsPerQuarter(iLo, iHi) {
   let prevT = null;
   for (let i = lo; i <= hi; i++) {
     const q = f.qOn[i];
-    const t = refOn[i];
+    const t = _eventStripTime(i); // the STRIP recording's tempo
     if (!Number.isFinite(q) || !Number.isFinite(t)) continue;
     if (prevQ !== null && q > prevQ + 1e-6 && t > prevT + 0.02) {
       rates.push((t - prevT) / (q - prevQ));
@@ -3111,9 +3461,10 @@ function _redrawOverlays() {
 
   // Unscored-audio gaps: a hatched band across the lanes between the two
   // endpoint ticks — a SPAN, so none of the point glyphs — labelled when there
-  // is room. Painted first, so ticks and glyphs sit on top of it.
+  // is room. Painted first, so ticks and glyphs sit on top of it. They live
+  // on the REFERENCE's timeline: an audio-to-audio session shows none.
   let gapBands = 0;
-  for (const gp of _corrections.gaps) {
+  for (const gp of f.mode === "audio" ? [] : _corrections.gaps) {
     const xa = _timeToStripX(gp.tEnd);
     const xb = _timeToStripX(gp.tResume);
     if (xa === null || xb === null) continue;
@@ -3140,13 +3491,16 @@ function _redrawOverlays() {
 
   for (const g of pageGroups) {
     const dragging = g === dragGroup;
-    const t = dragging ? f.drag.curT : _groupRefTime(g);
+    const t = dragging ? f.drag.curT : _groupStripTime(g);
     if (!Number.isFinite(t)) continue;
     const x = _timeToStripX(t);
     if (x === null) continue;
     const selected = g === selGroup;
     const multi = f.multiSel.size > 0 && f.multiSel.has(f.groups.indexOf(g));
-    const anchor = findAnchor(_corrections, _anchorEventOf(g));
+    const anchor =
+      f.mode === "audio"
+        ? findTargetAnchor(_corrections, f.targetFile, scoreAlignment.ref_onset[g.eventIxs[0]])
+        : findAnchor(_corrections, _anchorEventOf(g));
     // Tick: the vertical line on the strip — the loop's drag handle.
     if (x >= -1 && x <= w + 1) {
       ctx.beginPath();
@@ -3252,6 +3606,40 @@ function _redrawOverlays() {
       conn.appendChild(line);
     }
   }
+  // Audio mode: a target anchor whose reference time no longer sits on any
+  // tick (a later score↔ref edit moved the onset it was laid on) still
+  // constrains the grid; it draws as a base glyph on a short stem, off any
+  // tick, where the grid now carries it.
+  let freeAnchors = 0;
+  if (f.mode === "audio") {
+    const onTicks = new Set(
+      pageGroups.map((g) => Math.round(scoreAlignment.ref_onset[g.eventIxs[0]] * 1e6)),
+    );
+    for (const a of targetAnchors(_corrections, f.targetFile)) {
+      if (onTicks.has(Math.round(a.refT * 1e6))) continue;
+      const x = _timeToStripX(_refToTarget(a.refT));
+      if (x === null || x < -4 || x > w + 4) continue;
+      ctx.globalAlpha = 0.8;
+      ctx.strokeStyle = tickColor;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, wb - 16);
+      ctx.lineTo(x, wb - 9);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.rect(x - 3.5, wb - 9, 7, 7);
+      if (a.kind === "approve") {
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = tickColor;
+        ctx.fill();
+      }
+      freeAnchors++;
+    }
+    ctx.globalAlpha = 1;
+  }
+  f.freeAnchorsDrawn = freeAnchors;
   // MARKS: flagged misalignments on the audio timeline (diamond flags along
   // the strip top). They survive refills by living in time, not in events.
   // The ACTIVE mark (the last N-jump's target, Delete's victim) draws larger
@@ -3320,7 +3708,7 @@ function _select(ix, { seek = false } = {}) {
   }
   _scheduleRedraw();
   if (seek) {
-    const t = _groupRefTime(g);
+    const t = _groupStripTime(g);
     if (Number.isFinite(t) && f.aud?.ready) {
       // Hold the follower until the playhead reaches the selected onset, or
       // the very next preroll frame would re-select the PREVIOUS group and
@@ -3364,7 +3752,7 @@ function _tickHit(x) {
   let bestDist = TICK_HIT_PX + 1;
   const pageGroups = _groupsOnPage(f.page);
   for (const g of pageGroups) {
-    const t = _groupRefTime(g);
+    const t = _groupStripTime(g);
     if (!Number.isFinite(t)) continue;
     const gx = _timeToStripX(t);
     const d = Math.abs(gx - x);
@@ -3388,6 +3776,17 @@ function _tickHit(x) {
  */
 function _dragBounds(groupIx) {
   const f = _fix;
+  if (f.mode === "audio") {
+    // Neighbouring TARGET anchors (strict by reference time, so the group's
+    // own anchor is never its own neighbour); the corners are the grid's
+    // first and last samples, frozen.
+    const refT = scoreAlignment.ref_onset[f.groups[groupIx].eventIxs[0]];
+    const { prev, next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
+    const tg = _targetGrid();
+    const lo = (prev ? prev.t : tg[0]) + ANCHOR_EPS_SEC;
+    const hi = (next ? next.t : tg[tg.length - 1]) - ANCHOR_EPS_SEC;
+    return { lo, hi: Math.max(lo, hi) };
+  }
   const i = _anchorEventOf(f.groups[groupIx]);
   const { prev, next } = neighbourAnchors(_corrections, i);
   const own = findAnchor(_corrections, i);
@@ -3436,7 +3835,7 @@ function _onTickMouseDown(e) {
   // is intact and the next drag must stay possible (latching editing off on
   // the first error is how the first real-corpus run got stuck).
   const editable = f.engineReady && !f.realignBusy;
-  const t0 = _groupRefTime(f.groups[hit]);
+  const t0 = _groupStripTime(f.groups[hit]);
   f.drag = {
     groupIx: hit,
     startX: e.clientX,
@@ -3554,7 +3953,7 @@ function _onMarqueeUp(e) {
   const b = Math.max(m.x0, x1);
   const picked = [];
   for (const g of _groupsOnPage(f.page)) {
-    const t = _groupRefTime(g);
+    const t = _groupStripTime(g);
     if (!Number.isFinite(t)) continue;
     const gx = _timeToStripX(t);
     if (gx !== null && gx >= a && gx <= b) picked.push(f.groups.indexOf(g));
@@ -3604,7 +4003,7 @@ function _nudge(dir, fine) {
   const g = f.groups[f.selGroupIx];
   if (!g) return;
   if (!f.drag) {
-    const t0 = _groupRefTime(g);
+    const t0 = _groupStripTime(g);
     if (!Number.isFinite(t0)) return;
     f.drag = {
       groupIx: f.selGroupIx,
@@ -3997,8 +4396,9 @@ function _renderSynthWindow(f, t0, t1) {
   const iHi = Math.min(out.length, Math.ceil(t1 * FIX_SR));
   if (iHi <= iLo) return;
   out.fill(0, iLo, iHi);
-  const refOn = scoreAlignment.ref_onset;
-  const refOff = scoreAlignment.ref_offset;
+  // The tables the right ear follows: the live ref tables, or (audio mode)
+  // every event projected through the composed map into the target.
+  const { on: refOn, off: refOff } = _audTables(f);
   const ATK_S = Math.round(0.01 * FIX_SR);
   const REL_S = Math.round(0.03 * FIX_SR);
   for (const note of a.notes) {
@@ -4077,10 +4477,9 @@ function _workletProbe(t0, t1) {
  *  it — the audition's own answer to "why can I not hear the note I fixed". */
 function _noteAudit(k) {
   const a = _fix?.aud;
-  const on = scoreAlignment.ref_onset[k];
-  const off = Array.isArray(scoreAlignment.ref_offset)
-    ? scoreAlignment.ref_offset[k]
-    : undefined;
+  const tables = _fix ? _audTables(_fix) : { on: scoreAlignment.ref_onset, off: scoreAlignment.ref_offset };
+  const on = tables.on[k];
+  const off = Array.isArray(tables.off) ? tables.off[k] : undefined;
   const out = {
     i: k,
     on,
@@ -4092,7 +4491,7 @@ function _noteAudit(k) {
   };
   if (!a?.ready || !Number.isFinite(on)) return out;
   // Measure exactly the span the renderer wrote, floor included.
-  const hi = on + _soundingDur(scoreAlignment.ref_onset, scoreAlignment.ref_offset, k);
+  const hi = on + _soundingDur(tables.on, tables.off, k);
   out.soundingEnd = hi;
   const data = a.buffer.getChannelData(1);
   const lo = Math.max(0, Math.floor(on * FIX_SR));
@@ -4239,13 +4638,13 @@ function _pageTimeSlice() {
   const f = _fix;
   const own = _groupsOnPage(f.page);
   if (!own.length) return null;
-  const startT = _groupRefTime(own[0]);
+  const startT = _groupStripTime(own[0]);
   if (!Number.isFinite(startT)) return null;
   let endT = f.aud?.duration ?? Infinity;
   for (let p = f.page + 1; p <= f.pageCount; p++) {
     const next = _groupsOnPage(p);
     if (next.length) {
-      endT = _groupRefTime(next[0]);
+      endT = _groupStripTime(next[0]);
       break;
     }
   }
@@ -4341,12 +4740,12 @@ function _fillArrowhead(ctx, x, yBase, dir) {
  */
 function _groupIxAtTime(t) {
   const gs = _fix.groups;
-  if (!gs.length || _groupRefTime(gs[0]) > t) return -1;
+  if (!gs.length || _groupStripTime(gs[0]) > t) return -1;
   let lo = 0;
   let hi = gs.length - 1;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (_groupRefTime(gs[mid]) <= t) lo = mid;
+    if (_groupStripTime(gs[mid]) <= t) lo = mid;
     else hi = mid - 1;
   }
   return lo;
@@ -4387,21 +4786,20 @@ function _followPlayback() {
     f.groups[ix].page > f.page
   ) {
     _audPause();
-    _audSeek(Math.max(0, _groupRefTime(f.groups[ix]) - 0.01));
+    _audSeek(Math.max(0, _groupStripTime(f.groups[ix]) - 0.01));
     return;
   }
   if (ix !== f.selGroupIx) _select(ix, { seek: false });
   const g = f.groups[ix];
-  const refOff = scoreAlignment.ref_offset;
   let offEnd = Infinity;
-  if (Array.isArray(refOff)) {
+  if (Array.isArray(scoreAlignment.ref_offset)) {
     offEnd = -Infinity;
     for (const e of g.eventIxs) {
-      const v = refOff[e];
+      const v = _eventStripOff(e);
       if (Number.isFinite(v) && v > offEnd) offEnd = v;
     }
   }
-  _setSounding(t >= _groupRefTime(g) - 1e-3 && t <= offEnd);
+  _setSounding(t >= _groupStripTime(g) - 1e-3 && t <= offEnd);
 }
 
 function _setSounding(on) {
@@ -4445,6 +4843,7 @@ function _realignSegmentViaWorker(segment, priorRef) {
 async function _commitAnchor(groupIx, t, kind) {
   const f = _fix;
   if (!f || f.realignBusy || !Number.isFinite(t)) return;
+  if (f.mode === "audio") return _commitGridAnchor(groupIx, t, kind);
   const g = f.groups[groupIx];
   if (!g) return;
   const i = _anchorEventOf(g);
@@ -4696,6 +5095,250 @@ async function _commitAnchor(groupIx, t, kind) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Audio-to-audio commits (increment 5): a (reference time ↔ target time)
+// anchor on the target recording's grid, refilled between its neighbours by
+// the worker's fix_target_realign on the two recordings' cached PCM.
+// ---------------------------------------------------------------------------
+
+/** Ask the worker to refill one grid segment; single in-flight, like the
+ *  score↔ref realign (the same pending slot resolves either reply). */
+function _realignGridViaWorker(seg, rasterRef, priorT) {
+  const worker = _ensureWorker();
+  return new Promise((resolve, reject) => {
+    _pendingRealign = { resolve, reject };
+    worker.postMessage({
+      type: "fix_target_realign",
+      refA: seg.refA,
+      tA: seg.tA,
+      refB: seg.refB,
+      tB: seg.tB,
+      rasterRef,
+      priorT,
+    });
+  });
+}
+
+/** Linear refill of a grid segment between its two anchors (the answer for a
+ *  span too short for DTW, and the audio twin of _linearFill). */
+function _linearGridFill(seg, rasterRef) {
+  const rate = (seg.tB - seg.tA) / Math.max(seg.refB - seg.refA, 1e-9);
+  return rasterRef.map((r) => seg.tA + (r - seg.refA) * rate);
+}
+
+/**
+ * Commit an anchor on the target recording's grid: the selected group's
+ * reference onset ↔ target time t. 'drag' refills the flanking grid segments
+ * (worker, or linear when too short) IN PLACE — the loaded grid and the
+ * alignment JSON's `times` are one array — and re-renders the projected
+ * synth; 'approve' pins the current value with zero data change. One
+ * fix-grid-anchor snapshot entry (grid slices before/after) rides listen.js's
+ * unified stack. The key is the REFERENCE time, not the event, so the anchor
+ * outlives a later score↔ref edit of the tick it was laid on.
+ */
+async function _commitGridAnchor(groupIx, t, kind) {
+  const f = _fix;
+  const g = f.groups[groupIx];
+  if (!g) return;
+  const file = f.targetFile;
+  const grid = _targetGrid();
+  const refGrid = alignmentGrids[f.refFile];
+  if (!grid || !refGrid || grid.length !== refGrid.length) {
+    _announce(`${file} has no grid on the reference raster; nothing to correct.`);
+    return;
+  }
+  const i = g.eventIxs[0];
+  const refT = scoreAlignment.ref_onset[i];
+  if (!Number.isFinite(refT)) return;
+  const tBefore = _eventStripTime(i); // for the trail: the projection is recomputed below
+  const ctx = {
+    refGrid,
+    tLo: grid[0],
+    tHi: grid[grid.length - 1],
+    base: {
+      gridLength: grid.length,
+      duration: waveformPeaks[file]?.duration ?? f.targetInfo?.duration ?? null,
+    },
+  };
+  const prevRecord = findTargetAnchor(_corrections, file, refT);
+  const approve = kind === "approve";
+  const entry = {
+    type: "fix-grid-anchor",
+    file,
+    refT,
+    i,
+    q: f.qOn[i],
+    t,
+    kind,
+    barHint: _barOfQuarter(f.qOn[i]),
+    prevAnchor: prevRecord ? { ...prevRecord } : null,
+    own: null, // {k, before, after} when refT sits ON a raster sample
+    segments: [], // {kLo, kHi, interiorCount, before[], after[]}
+    window: null, // the target-time span the commit changed
+    renderT1: null,
+  };
+  let segs;
+  try {
+    segs = setTargetAnchor(
+      _corrections,
+      file,
+      { refT, t, kind, ts: Date.now(), i, q: entry.q },
+      ctx,
+    ).segments;
+  } catch (err) {
+    _announce(`Cannot anchor here: ${err.message}`);
+    return;
+  }
+
+  if (approve) {
+    f.lastCommit = { kind, i, t, refT, file, realigned: 0, linear: 0, degenerate: 0 };
+    _pushCommitEntry(entry);
+    _syncCorrectionsHeader();
+    _scheduleRedraw();
+    return;
+  }
+
+  _setRealignBusy(f, true);
+  _setChip(
+    "realign",
+    _batch
+      ? `Moving ${_batch.done + 1} of ${_batch.total} — realigning…`
+      : "Realigning around the fix…",
+  );
+  const own = applyTargetAnchorValue(grid, refGrid, refT, t);
+  if (own) entry.own = { k: own.k, before: own.before, after: t };
+  let realigned = 0;
+  let linearFilled = 0;
+  try {
+    for (const seg of segs) {
+      if (seg.interiorCount <= 0) continue;
+      const rasterRef = refGrid.slice(seg.kLo, seg.kHi + 1);
+      const priorT = grid.slice(seg.kLo, seg.kHi + 1);
+      let times;
+      try {
+        const reply = await _realignGridViaWorker(seg, rasterRef, priorT);
+        if (_fix !== f) throw new Error("fix mode exited during the realign");
+        times = reply.result.times;
+        realigned++;
+      } catch (err) {
+        if (_fix === f && /too short to align/.test(err?.message || "")) {
+          times = _linearGridFill(seg, rasterRef);
+          linearFilled++;
+        } else {
+          throw err;
+        }
+      }
+      const before = applyGridSegment(grid, seg, times);
+      entry.segments.push({
+        kLo: seg.kLo,
+        kHi: seg.kHi,
+        interiorCount: seg.interiorCount,
+        before: before.before,
+        after: times.slice(),
+      });
+    }
+  } catch (err) {
+    _rollbackGridCommit(entry);
+    console.error(
+      "fix mode: grid realign failed, fix rolled back — anchor",
+      { file, refT, t, kind },
+      "segments",
+      segs,
+      "\n",
+      err,
+    );
+    if (_fix === f) {
+      _setRealignBusy(f, false);
+      _setChip("error", `Realign failed (${err.message}) — the fix was rolled back`);
+      _scheduleRedraw();
+    }
+    return;
+  }
+  _dirtyGridFiles.add(file);
+  _recomputeProjection(f);
+  // The changed span in the TARGET's time, out to the furthest offset of any
+  // event whose onset the refill moved (the audition's re-render window).
+  const t0 = Math.min(segs[0].tA, entry.own ? Math.min(entry.own.before, t) : t);
+  let t1 = segs[segs.length - 1].tB;
+  const refA = segs[0].refA;
+  const refB = segs[segs.length - 1].refB;
+  const refOn = scoreAlignment.ref_onset;
+  const { on: pOn, off: pOff } = _audTables(f);
+  const iLo = Math.max(0, _lowerBound(refOn, refA) - 1);
+  for (let k = iLo; k < f.nEvents && refOn[k] <= refB + 1e-9; k++) {
+    const end = pOn[k] + _soundingDur(pOn, pOff, k);
+    if (Number.isFinite(end) && end > t1) t1 = end;
+  }
+  entry.window = { t0, t1: segs[segs.length - 1].tB };
+  entry.renderT1 = t1;
+  _setRealignBusy(f, false);
+  f.lastCommit = { kind, i, t, refT, file, realigned, linear: linearFilled, degenerate: 0 };
+  const fmt = (v) => (Number.isFinite(v) ? v.toFixed(4) : String(v));
+  console.log(
+    `fix mode: ${kind} on ${file} at reference ${fmt(refT)} (event ${i}, bar ` +
+      `${entry.barHint ?? "?"}) — target time ${fmt(tBefore)} → ${fmt(t)}; ` +
+      `realigned ${realigned}, linear ${linearFilled}, raster samples ` +
+      `${entry.segments.reduce((s, x) => s + x.interiorCount, 0)}; re-render [${fmt(t0)}, ${fmt(t1)}]`,
+  );
+  _pushCommitEntry(entry);
+  _syncCorrectionsHeader();
+  _setChip("ready", "Correction engine ready");
+  _auditionRerender(t0, t1);
+  _scheduleRedraw();
+  _lastReplay = { t0, fixedT: t, passUntilT: entry.window.t1 };
+  if (_batch) {
+    _batch.first = _batch.first || _lastReplay;
+    _batch.last = _lastReplay;
+  } else if (!_replaySuppressed) {
+    _replayFix(_lastReplay);
+  }
+}
+
+/** Reverse a partially applied grid commit (worker error, exit mid-flight). */
+function _rollbackGridCommit(entry) {
+  _undoGridEntryData(entry);
+}
+
+/** Put a target anchor's slot back to its pre-entry state. */
+function _restoreTargetAnchorState(entry) {
+  const slot = targetSlot(_corrections, entry.file, true);
+  slot.anchors = slot.anchors.filter((a) => Math.abs(a.refT - entry.refT) > 1e-6);
+  if (entry.prevAnchor) slot.anchors.push({ ...entry.prevAnchor });
+  slot.anchors.sort((a, b) => a.refT - b.refT);
+  _syncCorrectionsHeader();
+}
+
+/** Undo a grid entry's data: the grid slices' before-values (in place) and
+ *  the anchor state. Snapshot semantics — never the worker. */
+function _undoGridEntryData(entry) {
+  const grid = alignmentGrids[entry.file];
+  if (grid && entry.kind !== "approve") {
+    for (const s of entry.segments) {
+      for (let k = 0; k < s.interiorCount; k++) grid[s.kLo + k] = s.before[k];
+    }
+    if (entry.own) grid[entry.own.k] = entry.own.before;
+    _dirtyGridFiles.add(entry.file);
+  }
+  _restoreTargetAnchorState(entry);
+}
+
+/** Redo a grid entry's data: the after-values and the anchor. */
+function _redoGridEntryData(entry) {
+  const grid = alignmentGrids[entry.file];
+  if (grid && entry.kind !== "approve") {
+    for (const s of entry.segments) {
+      for (let k = 0; k < s.interiorCount; k++) grid[s.kLo + k] = s.after[k];
+    }
+    if (entry.own) grid[entry.own.k] = entry.own.after;
+    _dirtyGridFiles.add(entry.file);
+  }
+  const slot = targetSlot(_corrections, entry.file, true);
+  slot.anchors = slot.anchors.filter((a) => Math.abs(a.refT - entry.refT) > 1e-6);
+  slot.anchors.push({ refT: entry.refT, t: entry.t, kind: entry.kind, ts: null, i: entry.i, q: entry.q });
+  slot.anchors.sort((a, b) => a.refT - b.refT);
+  _syncCorrectionsHeader();
+}
+
 /** A commit's history entry: onto listen.js's stack, or into a running batch. */
 function _pushCommitEntry(entry) {
   if (_batch) _batch.entries.push(entry);
@@ -4744,6 +5387,12 @@ function _gapAtGroup(g) {
 function _toggleGap() {
   const f = _fix;
   if (!f) return;
+  if (f.mode === "audio") {
+    // A gap labels unscored audio on the REFERENCE's timeline; a recording's
+    // own extra or missing audio is two anchors on adjacent raster samples.
+    _announce("Unscored-audio gaps are laid in the score ↔ reference correction.");
+    return;
+  }
   if (!f.engineReady || f.realignBusy || _batch) {
     _announce(_notEditableWhy());
     return;
@@ -4954,6 +5603,14 @@ function _refreshMainView() {
     if (refreshSynthAlignmentGrid()) {
       console.log("fix mode: main view's synth grid recomputed from the corrected tables");
     }
+    // Recordings whose grids an audio-to-audio session (or a history hop)
+    // changed: their grid overlay, tempo curve, and marker positions follow.
+    for (const file of _dirtyGridFiles) {
+      if (refreshRecordingGrid(file)) {
+        console.log(`fix mode: main view's grid for ${file} redrawn from the corrected values`);
+      }
+    }
+    _dirtyGridFiles.clear();
   } catch (err) {
     console.error("fix mode: main-view recompute failed:", err);
   }
@@ -4995,7 +5652,7 @@ async function _snapSelectionToOnsets() {
   for (const ix of ixs) {
     const g = f.groups[ix];
     if (!g) continue;
-    const t = _groupRefTime(g);
+    const t = _groupStripTime(g);
     if (!Number.isFinite(t)) continue;
     marks.push({ ix, t, q: f.qOn[g.eventIxs[0]], i: g.eventIxs[0] });
   }
@@ -5184,7 +5841,11 @@ function _syncCorrectionsHeader() {
   _correctionsEpoch++;
   const header = loadedAlignmentJSON?.header;
   if (!header) return;
-  if (!_corrections.anchors.length && !_corrections.gaps.length) {
+  if (
+    !_corrections.anchors.length &&
+    !_corrections.gaps.length &&
+    !hasTargetAnchors(_corrections)
+  ) {
     delete header.corrections;
     return;
   }
@@ -5238,6 +5899,10 @@ export function applyFixCorrectionUndo(entry) {
 }
 
 function _undoEntryData(entry) {
+  if (entry.type === "fix-grid-anchor") {
+    _undoGridEntryData(entry);
+    return;
+  }
   const refOn = scoreAlignment?.ref_onset;
   const refOff = scoreAlignment?.ref_offset;
   if (!refOn) return;
@@ -5272,6 +5937,10 @@ export function applyFixCorrectionRedo(entry) {
 }
 
 function _redoEntryData(entry) {
+  if (entry.type === "fix-grid-anchor") {
+    _redoGridEntryData(entry);
+    return;
+  }
   const refOn = scoreAlignment?.ref_onset;
   const refOff = scoreAlignment?.ref_offset;
   if (!refOn) return;
@@ -5314,7 +5983,13 @@ function _batchWindow(batch) {
 
 function _afterHistoryHop(entry, verb, count = 1, win = null) {
   const f = _fix;
-  if (f) {
+  const gridEntry = entry.type === "fix-grid-anchor";
+  // A grid hop is visible only to a session on THAT recording; any other open
+  // session neither shows nor plays it, so it is announced like an off-screen
+  // hop and the main view catches up at exit.
+  const visible = f && (!gridEntry || (f.mode === "audio" && f.targetFile === entry.file));
+  if (visible) {
+    if (gridEntry) _recomputeProjection(f);
     const ix = f.groups.findIndex((g) => g.eventIxs.includes(entry.i));
     if (ix !== -1) _select(ix, { seek: false });
     const w =
@@ -5326,12 +6001,15 @@ function _afterHistoryHop(entry, verb, count = 1, win = null) {
     const what =
       entry.type === "fix-gap"
         ? "unscored-audio gap"
-        : count > 1
-          ? `${count} alignment corrections`
-          : "alignment correction";
+        : gridEntry
+          ? `${count > 1 ? `${count} ` : ""}alignment correction${count > 1 ? "s" : ""} of ${entry.file}`
+          : count > 1
+            ? `${count} alignment corrections`
+            : "alignment correction";
     _announce(`${verb} ${what} ${where}.`);
-    // The hop changed the tables with no session open to defer the recompute to.
-    _refreshMainView();
+    // The hop changed data no open session shows: the main view catches up
+    // now if none is open, or at exit (the dirty set) if another one is.
+    if (!f) _refreshMainView();
   }
 }
 
@@ -5363,8 +6041,10 @@ export function fixCorrectionsDirty() {
       if (on[k] !== _pristine.on[k] || off[k] !== _pristine.off[k]) return true;
     }
   }
+  // The grids themselves are listen.js's to compare (its as-loaded copies
+  // cover every recording); the record is this module's.
   return (
-    JSON.stringify({ a: _corrections.anchors, g: _corrections.gaps }) !==
+    JSON.stringify({ a: _corrections.anchors, g: _corrections.gaps, u: _corrections.audio }) !==
     _loadedCorrectionsJson
   );
 }
@@ -5388,11 +6068,16 @@ export function fixRevertCorrections() {
   }
   const loaded = _loadedCorrectionsJson
     ? JSON.parse(_loadedCorrectionsJson)
-    : { a: [], g: [] };
-  _corrections = { anchors: loaded.a, gaps: loaded.g };
+    : { a: [], g: [], u: {} };
+  _corrections = { anchors: loaded.a, gaps: loaded.g, audio: loaded.u || {} };
   _syncCorrectionsHeader();
+  // The grids: listen.js's "Revert all" has already put every recording's
+  // as-loaded grid back (it owns those copies), so this module only has to
+  // stop remembering them as dirty and re-project what a session shows.
+  _dirtyGridFiles.clear();
   const f = _fix;
   if (f) {
+    _recomputeProjection(f);
     if (f.aud?.ready) _auditionRerender(0, f.aud.duration);
     _scheduleRedraw();
   } else {
@@ -5409,7 +6094,7 @@ export function fixRevertCorrections() {
 function _toggleMark() {
   const f = _fix;
   const g = f.groups[f.selGroupIx];
-  const t = f.aud?.ready ? _audPos() : g ? _groupRefTime(g) : null;
+  const t = f.aud?.ready ? _audPos() : g ? _groupStripTime(g) : null;
   if (!Number.isFinite(t)) return;
   const near = _marks.findIndex((m) => Math.abs(m - t) <= MARK_HIT_SEC);
   if (near !== -1) {
@@ -5443,7 +6128,7 @@ function _jumpMark(dir) {
   const f = _fix;
   if (!_marks.length) return;
   const g = f.groups[f.selGroupIx];
-  const pos = f.aud?.ready ? _audPos() : g ? _groupRefTime(g) : 0;
+  const pos = f.aud?.ready ? _audPos() : g ? _groupStripTime(g) : 0;
   let t = pos;
   if (
     _lastMarkJumpT !== null &&
@@ -5533,7 +6218,7 @@ function _onFixKeydown(e) {
       }
       const g = f.groups[f.selGroupIx];
       if (g) {
-        _commitAnchor(f.selGroupIx, _groupRefTime(g), "approve").catch((err) =>
+        _commitAnchor(f.selGroupIx, _groupStripTime(g), "approve").catch((err) =>
           console.error("fix mode: approve failed:", err),
         );
       }
@@ -5731,9 +6416,23 @@ async function _bootstrap() {
     "Preparing correction engine: decoding reference audio…",
   );
   _syncReadyAffordance();
-  const samples = await _decodeRefAudio(f.refFile);
+  const refSamples = await _decodeRefAudio(f.refFile);
   if (!_fix || _fix !== f) return; // exited while decoding
+  // Audio mode: the TARGET recording decodes too — it is the strip, the
+  // audition's left ear, and the worker's second resident PCM. Sequential,
+  // not parallel: two whole-recording decodes in flight double the peak.
+  let targetSamples = null;
+  if (f.mode === "audio") {
+    _setChip(
+      "decoding",
+      "Step 1/4: target audio…",
+      `Preparing correction engine: decoding ${f.targetFile}…`,
+    );
+    targetSamples = await _decodeRefAudio(f.targetFile);
+    if (!_fix || _fix !== f) return;
+  }
   f.timing.decodeMs = Math.round(performance.now() - T0);
+  const samples = targetSamples || refSamples; // the STRIP recording's PCM
 
   // A decode also upgrades (or provides) the strip: peaks derived from the
   // full-rate samples beat the stored ~4k-point envelope at page zoom.
@@ -5757,13 +6456,17 @@ async function _bootstrap() {
   const worker = _ensureWorker();
   worker.onmessage = (e) => {
     const d = e.data;
-    // A pending realign owns the next fix_segment (or error) regardless of
-    // which session is showing — the resolver's caller re-checks the session.
-    if (_pendingRealign && (d.type === "fix_segment" || d.type === "error")) {
+    // A pending realign owns the next fix_segment / fix_target_segment (or
+    // error) regardless of which session is showing — the resolver's caller
+    // re-checks the session.
+    if (
+      _pendingRealign &&
+      (d.type === "fix_segment" || d.type === "fix_target_segment" || d.type === "error")
+    ) {
       const p = _pendingRealign;
       _pendingRealign = null;
-      if (d.type === "fix_segment") p.resolve(d);
-      else p.reject(new Error(d.message));
+      if (d.type === "error") p.reject(new Error(d.message));
+      else p.resolve(d);
       return;
     }
     if (!_fix || _fix !== f) return;
@@ -5801,15 +6504,16 @@ async function _bootstrap() {
         return;
       }
       f.workerEvents = d.events;
-      f.engineReady = true;
-      f.timing.readyMs = Math.round(performance.now() - T0);
-      f.timing.readyAt = performance.now();
+      f.fixReady = true;
       f.timing.worker = d.timing || null;
-      _setChip("ready", "Ready to correct");
-      _syncReadyAffordance();
-      // The v2 lanes come AFTER arming, from the audio the worker now holds:
-      // a few seconds of numpy the correction session never waits for.
-      _requestLanes(f, "all");
+      _maybeArm(f, T0);
+    } else if (d.type === "fix_target_ready") {
+      // Audio mode: the target recording is resident beside the reference.
+      f.targetInfo = { name: d.name, duration: d.duration };
+      f.targetReady = true;
+      _maybeArm(f, T0);
+    } else if (d.type === "fix_target_error") {
+      _setChip("error", `Correction engine failed on ${f.targetFile}: ${d.message}`);
     } else if (d.type === "error") {
       _setChip("error", `Correction engine failed: ${d.message}`);
     }
@@ -5821,12 +6525,34 @@ async function _bootstrap() {
   worker.postMessage(
     {
       type: "fix_begin",
-      refSamples: samples,
+      refSamples,
       meiMidi: f.midiBytes,
       options: loadedAlignmentJSON?.header?.alignmentParams || {},
     },
-    [samples.buffer],
+    [refSamples.buffer],
   );
+  if (targetSamples) {
+    worker.postMessage(
+      { type: "fix_target_begin", name: f.targetFile, samples: targetSamples },
+      [targetSamples.buffer],
+    );
+  }
+}
+
+/**
+ * The engine is armed when every resident recording the session needs has
+ * arrived: the reference (fix_ready, with the event count agreeing) and, in
+ * audio mode, the target (fix_target_ready). Then the lanes are requested from
+ * the audio on the strip — a few seconds of numpy the session never waits for.
+ */
+function _maybeArm(f, T0) {
+  if (f.engineReady || !f.fixReady || !f.targetReady) return;
+  f.engineReady = true;
+  f.timing.readyMs = Math.round(performance.now() - T0);
+  f.timing.readyAt = performance.now();
+  _setChip("ready", "Ready to correct");
+  _syncReadyAffordance();
+  _requestLanes(f, "all");
 }
 
 // ---------------------------------------------------------------------------
@@ -5838,8 +6564,10 @@ export function fixTestState() {
     anchors: _corrections.anchors.map((a) => ({ ...a })),
     gaps: _corrections.gaps.map((g) => ({ ...g })),
     gapCount: _corrections.gaps.length,
+    audio: JSON.parse(JSON.stringify(_corrections.audio || {})),
     headerPresent: !!loadedAlignmentJSON?.header?.corrections,
   };
+  const chooser = { open: !!_chooserEl, reviewed: _scoreRefReviewed };
   if (!_fix) {
     return {
       active: false,
@@ -5847,13 +6575,14 @@ export function fixTestState() {
       prewarmReady: !!(_derived && _derived.pageCount),
       lastEntry: { ..._lastEntry },
       corrections,
+      chooser,
       marks: [..._marks],
       lastAnnounce: _lastAnnounce,
     };
   }
   const f = _fix;
   const sel = f.groups[f.selGroupIx] || null;
-  const selT = sel ? _groupRefTime(sel) : null;
+  const selT = sel ? _groupStripTime(sel) : null;
   return {
     active: true,
     replaySuppressed: _replaySuppressed,
@@ -5863,9 +6592,19 @@ export function fixTestState() {
     lastRefusal: _lastRefusal,
     prewarmReady: !!(_derived && _derived.pageCount),
     lastEntry: { ..._lastEntry },
+    chooser,
     mode: f.mode,
     entryFile: f.entryFile,
     refFile: f.refFile,
+    targetFile: f.targetFile,
+    stripFile: f.stripFile,
+    targetReady: f.targetReady,
+    targetInfo: f.targetInfo ? { ...f.targetInfo } : null,
+    freeAnchorsDrawn: f.freeAnchorsDrawn ?? 0,
+    gridAnchors: f.targetFile
+      ? targetAnchors(_corrections, f.targetFile).map((a) => ({ ...a }))
+      : [],
+    selRefT: sel ? scoreAlignment.ref_onset[sel.eventIxs[0]] : null,
     nEvents: f.nEvents,
     groupCount: f.groups.length,
     page: f.page,
@@ -5893,6 +6632,7 @@ export function fixTestState() {
         : null;
     })(),
     chipState: f.chipState,
+    chipText: f.els.chip?.title || f.els.chip?.textContent || null,
     groupStats: _lastGroupStats ? { ..._lastGroupStats } : null,
     corrections,
     marks: [..._marks],
@@ -5954,7 +6694,7 @@ export function fixTestState() {
     lanesError: f.lanesError,
     multiSel: [...f.multiSel].sort((a, b) => a - b),
     pageTicks: _groupsOnPage(f.page).map((g) => {
-      const t = _groupRefTime(g);
+      const t = _groupStripTime(g);
       return {
         ix: f.groups.indexOf(g),
         eventIx: g.eventIxs[0],

@@ -20,6 +20,8 @@ import { env } from '../support/env';
 import type { Page } from '@playwright/test';
 
 const REF_ROW = 'audio-b.mp3';
+/** A non-reference recording: its row opens AUDIO-TO-AUDIO correction. */
+const TARGET_ROW = 'audio-a.mp3';
 
 /** Navigate with ?fixMode (the spec-42 helper, plus its alignment patch). */
 async function gotoFixMode(page: Page, patch?: (json: any) => void) {
@@ -136,7 +138,60 @@ async function installWorkerStub(
           rec.tB = msg.tB;
           rec.priorLen = msg.priorRef?.length ?? null;
         }
+        if (msg.type === 'fix_target_begin') {
+          // Increment 5: the audio-to-audio target arrives (samples intact
+          // here — no transfer happens in a same-thread stub).
+          rec.name = msg.name;
+          rec.samplesLen = msg.samples?.length ?? null;
+          setTimeout(
+            () =>
+              w.onmessage?.({
+                data: {
+                  type: 'fix_target_ready',
+                  name: msg.name,
+                  duration: (msg.samples?.length ?? 0) / 22050,
+                },
+              }),
+            5,
+          );
+        }
+        if (msg.type === 'fix_target_realign') {
+          rec.refA = msg.refA;
+          rec.tA = msg.tA;
+          rec.refB = msg.refB;
+          rec.tB = msg.tB;
+          rec.n = msg.rasterRef?.length ?? null;
+          setTimeout(() => {
+            if (o.realignShort) {
+              w.onmessage?.({
+                data: {
+                  type: 'error',
+                  message:
+                    'PythonError: Traceback (most recent call last):\n' +
+                    'ValueError: fix_target_realign: segment too short to align',
+                },
+              });
+              return;
+            }
+            if (o.realignError) {
+              w.onmessage?.({ data: { type: 'error', message: o.realignError } });
+              return;
+            }
+            // A refill the stub can vouch for: linear between the anchors,
+            // bowed by a tenth of the span in the middle so it is NOT the
+            // linear fallback (the test tells the two apart).
+            const span = msg.refB - msg.refA;
+            const times = msg.rasterRef.map((r: number) => {
+              const u = (r - msg.refA) / span;
+              return msg.tA + u * (msg.tB - msg.tA) + 0.1 * span * u * (1 - u);
+            });
+            w.onmessage?.({
+              data: { type: 'fix_target_segment', result: { times, hop: 512 } },
+            });
+          }, 5);
+        }
         if (msg.type === 'fix_lanes') {
+          rec.which = msg.which;
           rec.hop = msg.hop;
           rec.nMels = msg.nMels;
           rec.nFft = msg.nFft;
@@ -224,14 +279,72 @@ async function installWorkerStub(
   }, opts);
 }
 
-/** Enter fix mode on the reference row and wait for the drawn screen. */
-async function enterFix(page: Page) {
-  await page.click(`.waveform[data-ix="${REF_ROW}"] .wf-fix-btn`);
+/**
+ * Enter fix mode through the chooser (increment 5's entry): step 1 for the
+ * reference (score↔ref), a step-2 row for any other recording — skipping the
+ * score↔ref review when the row is still locked. Waits for the drawn screen.
+ */
+async function enterViaChooser(page: Page, row: string) {
+  await page.click('#fix-chooser-open');
+  await page.waitForSelector('.fix-chooser');
+  if (row === REF_ROW) {
+    await page.click('#fix-chooser-open-ref');
+  } else {
+    const go = page.locator(`.fix-chooser-row[data-file="${row}"] .fix-chooser-go`);
+    if (await go.isDisabled()) await page.click('#fix-chooser-skip');
+    await go.click();
+  }
   await page.waitForFunction(() => (window as any)._listenTest.fix.active);
   await page.waitForFunction(
     () => (window as any)._listenTest.fix.ticksOnPage > 0,
   );
 }
+
+/** Enter fix mode on the reference (score↔ref) and wait for the drawn screen. */
+async function enterFix(page: Page) {
+  await enterViaChooser(page, REF_ROW);
+}
+
+/** Enter fix mode on ANY row and wait for the drawn screen (a non-reference
+ *  recording's row opens audio-to-audio correction of that recording). */
+async function enterFixOn(page: Page, row: string) {
+  await enterViaChooser(page, row);
+}
+
+/** One recording's grid as the main view holds it: an order-weighted
+ *  checksum, its corners, and whether the alignment JSON still aliases the
+ *  very same array (audio-to-audio edits must splice in place). */
+const gridSnapshot = (page: Page, file = TARGET_ROW) =>
+  page.evaluate((file) => {
+    const s = (window as any)._listenTest.session;
+    const g: number[] = s.alignmentGrids[file];
+    const json = s.loadedAlignmentJSON.body.audio[file];
+    const w = window as any;
+    w.__gridRef = w.__gridRef || g;
+    return {
+      checksum: g.reduce((acc, v, i) => acc + v * (i + 1), 0),
+      first: g[0],
+      last: g[g.length - 1],
+      len: g.length,
+      alias: (Array.isArray(json) ? json : json.times) === g,
+      sameArray: w.__gridRef === g,
+    };
+  }, file);
+
+/** Reference time → a recording's time through its LIVE grid, computed in the
+ *  page from the raw arrays (the spec's own arithmetic, not the module's). */
+const projectInPage = (page: Page, refT: number, file = TARGET_ROW) =>
+  page.evaluate(
+    ({ refT, file, REF }) => {
+      const s = (window as any)._listenTest.session;
+      const rg: number[] = s.alignmentGrids[REF];
+      const tg: number[] = s.alignmentGrids[file];
+      let k = rg.findIndex((v) => v >= refT);
+      if (k <= 0) k = 1;
+      return tg[k - 1] + ((refT - rg[k - 1]) / (rg[k] - rg[k - 1])) * (tg[k] - tg[k - 1]);
+    },
+    { refT, file, REF: REF_ROW } as any,
+  );
 
 /** Wait for the correction engine (stubbed) AND the audition (real decode +
  *  synth render — allow real time). */
@@ -2098,5 +2211,233 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
       return a.channelPeak ? a.channelPeak(1, 0, 300) : null;
     });
     if (peak !== null) expect(peak).toBeLessThanOrEqual(0.9 + 1e-6);
+  });
+
+  // --- Increment 5 (2026-09-11): audio-to-audio correction on the same score pane ---
+
+  test('43.40 audio-to-audio entry: a non-reference row opens audio mode on that recording — its waveform on the strip, every tick projected through its live grid, the engine and the lanes target it, gaps stand down', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    const st = await fixState(page);
+    expect(st.mode).toBe('audio');
+    expect(st.entryFile).toBe(TARGET_ROW);
+    expect(st.targetFile).toBe(TARGET_ROW);
+    expect(st.stripFile).toBe(TARGET_ROW);
+    expect(st.refFile).toBe(REF_ROW);
+    expect(st.targetReady).toBe(true);
+    // The strip and the audition's left ear are the TARGET recording (audio-a
+    // is ~277 s; the reference audio-b is ~305 s).
+    expect(st.aud.duration).toBeGreaterThan(270);
+    expect(st.aud.duration).toBeLessThan(285);
+    expect(st.targetInfo.name).toBe(TARGET_ROW);
+    expect(await page.locator('.fix-title').textContent()).toBe(`${REF_ROW} ↔ ${TARGET_ROW}`);
+    // The engine got the target beside the reference, and the lanes were
+    // asked for the target's audio.
+    const posted = await page.evaluate(() => (window as any).__fixStub.posted);
+    const begin = posted.find((p: any) => p.type === 'fix_target_begin');
+    expect(begin.name).toBe(TARGET_ROW);
+    expect(begin.samplesLen).toBeGreaterThan(22050 * 200);
+    expect(posted.find((p: any) => p.type === 'fix_lanes').which).toBe('target');
+    // Every tick on the page is the group's REFERENCE onset projected through
+    // audio-a's grid — and that is not the reference onset itself.
+    const ticks = await page.evaluate(() => {
+      const lt = (window as any)._listenTest;
+      return lt.fix.pageTicks.map((pt: any) => ({
+        t: pt.t,
+        refT: lt.session.scoreAlignment.ref_onset[pt.eventIx],
+      }));
+    });
+    expect(ticks.length).toBeGreaterThan(3);
+    let differ = 0;
+    for (const tk of ticks) {
+      expect(tk.t).toBeCloseTo(await projectInPage(page, tk.refT), 6);
+      if (Math.abs(tk.t - tk.refT) > 0.05) differ++;
+    }
+    expect(differ).toBeGreaterThan(0);
+    // Gaps are a reference-timeline label: the button stands down and G says so.
+    await expect(page.locator('#fix-gap-btn')).toBeDisabled();
+    await page.keyboard.press('g');
+    expect((await fixState(page)).lastAnnounce).toMatch(/score ↔ reference/);
+    expect((await fixState(page)).corrections.gaps).toEqual([]);
+  });
+
+  test('43.41 a drag in audio mode lays a (reference time ↔ recording time) anchor: the grid is refilled IN PLACE between its neighbours, the JSON alias survives, the record lands under header.corrections.audio, undo restores the grid bit-exactly and names the recording, redo re-applies', async ({
+    page,
+  }) => {
+    // Page errors and console errors during the flow are part of the verdict.
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+    page.on('console', (m) => {
+      if (m.type() === 'error') errors.push(`console: ${m.text()}`);
+    });
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off'); // no auto-replay: the follower must not move the selection under the assertions
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const before = await gridSnapshot(page);
+    const pre = await fixState(page);
+    expect(pre.gridAnchors).toEqual([]);
+    await dragSelectedTick(page, 30);
+    const st = await fixState(page);
+    // A rolled-back commit leaves an error chip and no lastCommit: name it.
+    expect(st.chipState, st.chipText ?? '').not.toBe('error');
+    expect(errors).toEqual([]);
+    expect(st.lastCommit).toMatchObject({ kind: 'drag', file: TARGET_ROW, linear: 0 });
+    expect(st.lastCommit.realigned).toBe(2); // both flanks had interior raster samples
+    expect(st.gridAnchors).toHaveLength(1);
+    const a = st.gridAnchors[0];
+    expect(a.kind).toBe('drag');
+    expect(a.refT).toBeCloseTo(pre.selRefT, 9);
+    expect(a.i).toBe(pre.selEventIx);
+    // The tick moved by the drag (no lanes in this stub, so no magnet) …
+    expect(a.t - pre.selT).toBeCloseTo(30 / pre.stripPps, 1);
+    // … and now shows the anchor through the grid's own interpolation.
+    expect(st.selT).toBeCloseTo(a.t, 2);
+    expect(await projectInPage(page, a.refT)).toBeCloseTo(a.t, 2);
+    // The worker refilled the two flanks, each ending / starting at the anchor.
+    const posted = await page.evaluate(() =>
+      (window as any).__fixStub.posted.filter((p: any) => p.type === 'fix_target_realign'),
+    );
+    expect(posted).toHaveLength(2);
+    for (const p of posted) {
+      expect(p.refA).toBeLessThan(p.refB);
+      expect(p.tA).toBeLessThan(p.tB);
+      expect(p.n).toBeGreaterThan(0);
+    }
+    expect(posted[0].refB).toBeCloseTo(a.refT, 9);
+    expect(posted[0].tB).toBeCloseTo(a.t, 9);
+    expect(posted[1].refA).toBeCloseTo(a.refT, 9);
+    expect(posted[1].tA).toBeCloseTo(a.t, 9);
+    // The grid changed IN PLACE: the same array, still aliased by the JSON,
+    // corners frozen, values moved.
+    const after = await gridSnapshot(page);
+    expect(after.sameArray).toBe(true);
+    expect(after.alias).toBe(true);
+    expect(after.len).toBe(before.len);
+    expect(after.first).toBe(before.first);
+    expect(after.last).toBe(before.last);
+    expect(after.checksum).not.toBe(before.checksum);
+    // The durable record: audio-to-audio anchors under `audio`, per recording,
+    // with the grid's provenance; the score↔ref lists untouched.
+    const hdr = await page.evaluate(
+      () => (window as any)._listenTest.session.loadedAlignmentJSON.header.corrections,
+    );
+    expect(hdr.version).toBe(1);
+    expect(hdr.anchors).toEqual([]);
+    expect(hdr.gaps).toEqual([]);
+    expect(hdr.audio[TARGET_ROW].anchors).toHaveLength(1);
+    expect(hdr.audio[TARGET_ROW].anchors[0]).toMatchObject({ refT: a.refT, t: a.t, kind: 'drag', i: a.i });
+    expect(hdr.audio[TARGET_ROW].base).toMatchObject({ gridLength: before.len });
+    // The right ear was re-rendered over the changed span of the RECORDING's time.
+    expect(st.aud.renderWindow).not.toBeNull();
+    expect(st.aud.renderWindow.t0).toBeLessThan(a.t);
+    expect(st.aud.renderWindow.t1).toBeGreaterThan(a.t);
+    // Undo: bit-exact restore, the record gone, the label names the recording.
+    await expect(page.locator('#undo-btn')).toContainText(`alignment anchor (${TARGET_ROW})`);
+    await page.click('#undo-btn');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gridAnchors.length === 0);
+    const undone = await gridSnapshot(page);
+    expect(undone.checksum).toBe(before.checksum);
+    expect(undone.sameArray).toBe(true);
+    expect((await fixState(page)).corrections.headerPresent).toBe(false);
+    // Redo re-applies the very values.
+    await page.click('#redo-btn');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gridAnchors.length === 1);
+    expect((await gridSnapshot(page)).checksum).toBe(after.checksum);
+    expect((await fixState(page)).corrections.headerPresent).toBe(true);
+  });
+
+  test('43.42 approve pins the current projection with zero data change; the record outlives the session and resumes on re-entry; a score↔ref session shows no target anchors on its ticks', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.keyboard.press('ArrowRight');
+    const before = await gridSnapshot(page);
+    const pre = await fixState(page);
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gridAnchors.length === 1);
+    const st = await fixState(page);
+    expect(st.gridAnchors[0]).toMatchObject({ kind: 'approve', i: pre.selEventIx });
+    expect(st.gridAnchors[0].refT).toBeCloseTo(pre.selRefT, 9);
+    expect(st.gridAnchors[0].t).toBeCloseTo(pre.selT, 9);
+    expect(st.lastCommit).toMatchObject({ kind: 'approve', file: TARGET_ROW, realigned: 0 });
+    expect((await gridSnapshot(page)).checksum).toBe(before.checksum);
+    expect(st.corrections.headerPresent).toBe(true);
+    // Exit: the record stays in the loaded alignment; the grid is still the
+    // JSON's own array; the main view has nothing stale to redraw.
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    const closed = await fixState(page);
+    expect(closed.corrections.audio[TARGET_ROW].anchors).toHaveLength(1);
+    expect((await gridSnapshot(page)).alias).toBe(true);
+    // Re-entry on the same recording resumes the anchor on its tick.
+    await enterFixOn(page, TARGET_ROW);
+    expect((await fixState(page)).gridAnchors).toHaveLength(1);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    // A score↔ref session: no target, no target anchors on its ticks, gaps live.
+    await enterFix(page);
+    const sr = await fixState(page);
+    expect(sr.mode).toBe('score-ref');
+    expect(sr.targetFile).toBeNull();
+    expect(sr.gridAnchors).toEqual([]);
+    expect(sr.corrections.audio[TARGET_ROW].anchors).toHaveLength(1);
+    await expect(page.locator('#fix-gap-btn')).toBeEnabled();
+  });
+
+  test('43.43 a grid segment too short for DTW falls back to a LINEAR refill between its anchors, and the commit still lands', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page, { realignShort: true });
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await dragSelectedTick(page, 25);
+    const st = await fixState(page);
+    expect(st.lastCommit).toMatchObject({ kind: 'drag', file: TARGET_ROW, realigned: 0, linear: 2 });
+    expect(st.gridAnchors).toHaveLength(1);
+    const a = st.gridAnchors[0];
+    // Every raster sample of the left flank lies on the line from the corner
+    // to the anchor; every sample of the right flank on the line from the
+    // anchor to the far corner.
+    const lines = await page.evaluate(
+      ({ refT, t, file, REF }) => {
+        const s = (window as any)._listenTest.session;
+        const rg: number[] = s.alignmentGrids[REF];
+        const tg: number[] = s.alignmentGrids[file];
+        const n = rg.length;
+        const kA = rg.findIndex((v) => v > refT + 1e-6); // first sample after the anchor
+        let worstL = 0;
+        for (let k = 1; k < kA; k++) {
+          const want = tg[0] + ((rg[k] - rg[0]) / (refT - rg[0])) * (t - tg[0]);
+          worstL = Math.max(worstL, Math.abs(tg[k] - want));
+        }
+        let worstR = 0;
+        for (let k = kA; k < n - 1; k++) {
+          const want = t + ((rg[k] - refT) / (rg[n - 1] - refT)) * (tg[n - 1] - t);
+          worstR = Math.max(worstR, Math.abs(tg[k] - want));
+        }
+        return { worstL, worstR, kA, n };
+      },
+      { refT: a.refT, t: a.t, file: TARGET_ROW, REF: REF_ROW },
+    );
+    expect(lines.kA).toBeGreaterThan(1);
+    expect(lines.kA).toBeLessThan(lines.n - 1);
+    expect(lines.worstL).toBeLessThan(1e-6);
+    expect(lines.worstR).toBeLessThan(1e-6);
   });
 });

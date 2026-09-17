@@ -326,6 +326,8 @@ function buildScreen(root) {
       pinDeadline: null,
       pinTotalMs: 0,
       pinTicker: 0,
+      turnTicker: 0,     // the grant ring's tick (paintTurn)
+      turnPending: null, // the request the turn element currently shows
       expiryEl: null,
       ringRearm: null,
       // ?detailFade: the shown text's lifecycle — when it went on show, its
@@ -1779,7 +1781,7 @@ async function boot() {
   // sweep is the loop's "tidy the table": every viewport back to the listening
   // view with nothing shown, pinned, marked, or zoomed, the glasses on their
   // hooks, and nobody holding the clock.
-  if (config.attractAfterIdleMs > 0 || config.attractDuringPlaybackMs > 0) {
+  if (config.attractAfterIdleMs > 0) {
     const sweepTable = () => {
       for (const vp of viewports) {
         setView(vp, "listen");
@@ -1913,6 +1915,15 @@ function setPanelOpen(vp, open) {
  * side — the events carry the viewport they are for — while the pending shapes
  * are derived from state, so a repaint mid-notice must not clear a notice the
  * new state knows nothing about: hence the turnNotice guard on the clear.
+ *
+ * THE GRANT RING (user, 2026-09-15: the auto-grant "feels a bit of a rug-pull"):
+ * while a request stands with a deadline (turnGrantMs > 0), both shapes carry a
+ * depleting ring — the "Keep reading…" ring's twin — driven from the machine's
+ * `pending.expiresAt`, a wall-clock stamp both windows of the room read, so the
+ * holder and the requester see the same countdown. The pending shapes are
+ * REBUILT ONLY WHEN THE REQUEST CHANGES (viewport, file, deadline): every
+ * snapshot from the room's worker repaints, and recreating the buttons under
+ * a finger on each would lose the press.
  */
 function paintTurn(vp, state, event, turns) {
   if (event?.type === "taken" && event.from === vp.roomId) {
@@ -1931,6 +1942,7 @@ function paintTurn(vp, state, event, turns) {
   const pending = state.pending;
   if (pending && vp.roomId === state.holder) {
     cancelTurnNotice(vp);
+    if (samePendingShape(vp, pending, "prompt")) return;
     vp.turnEl.textContent = "";
     const label = document.createElement("span");
     label.textContent = t("turn.prompt", vp.language);
@@ -1947,20 +1959,73 @@ function paintTurn(vp, state, event, turns) {
     vp.turnEl.append(label, grant, deny);
     vp.turnEl.dataset.role = "prompt";
     vp.turnEl.hidden = false;
+    armTurnRing(vp, pending, "prompt");
   } else if (pending && vp.roomId === pending.viewport) {
     cancelTurnNotice(vp);
-    vp.turnEl.textContent = t("turn.waiting", vp.language);
+    if (samePendingShape(vp, pending, "waiting")) return;
+    vp.turnEl.textContent = "";
+    const words = document.createElement("span");
+    words.textContent = t("turn.waiting", vp.language);
+    vp.turnEl.append(words);
     vp.turnEl.dataset.role = "waiting";
     vp.turnEl.hidden = false;
+    armTurnRing(vp, pending, "waiting");
   } else if (!vp.turnNotice) {
+    cancelTurnRing(vp);
     vp.turnEl.hidden = true;
     vp.turnEl.textContent = "";
     delete vp.turnEl.dataset.role;
   }
 }
 
+/** The element already shows this very request in this shape: leave it (and its buttons) alone. */
+function samePendingShape(vp, pending, role) {
+  const p = vp.turnPending;
+  return (
+    p != null &&
+    p.role === role &&
+    vp.turnEl.dataset.role === role &&
+    p.viewport === pending.viewport &&
+    p.file === pending.file &&
+    p.expiresAt === pending.expiresAt
+  );
+}
+
+/**
+ * The countdown ring on a pending shape, when the request has a deadline
+ * (turnGrantMs > 0; none with explicit grants only). The fraction left of
+ * the configured grant window, ticked every 200 ms like the pin's ring; the
+ * machine's grant at the deadline repaints the element away.
+ */
+function armTurnRing(vp, pending, role) {
+  cancelTurnRing(vp);
+  vp.turnPending = { viewport: pending.viewport, file: pending.file, expiresAt: pending.expiresAt ?? null, role };
+  if (pending.expiresAt == null) return; // explicit grants only: no deadline, no ring
+  const expiresAt = Number(pending.expiresAt);
+  if (!Number.isFinite(expiresAt)) return;
+  const total = Math.max(1, Number(config.turnGrantMs) || expiresAt - Date.now());
+  const ring = document.createElement("span");
+  ring.className = "turn-ring";
+  ring.setAttribute("aria-hidden", "true");
+  vp.turnEl.prepend(ring);
+  const tick = () => {
+    const left = expiresAt - Date.now();
+    ring.style.setProperty("--turn-frac", String(Math.max(0, Math.min(1, left / total))));
+    if (left <= 0) cancelTurnRing(vp, { keepPending: true });
+  };
+  vp.turnTicker = setInterval(tick, 200);
+  tick();
+}
+
+function cancelTurnRing(vp, { keepPending = false } = {}) {
+  if (vp.turnTicker) clearInterval(vp.turnTicker);
+  vp.turnTicker = 0;
+  if (!keepPending) vp.turnPending = null;
+}
+
 function flashTurnNotice(vp, text) {
   cancelTurnNotice(vp);
+  cancelTurnRing(vp);
   vp.turnEl.textContent = text;
   vp.turnEl.dataset.role = "notice";
   vp.turnEl.hidden = false;

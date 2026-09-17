@@ -1,27 +1,49 @@
 // exhibit/attract.js
 //
-// THE ATTRACT LOOP (plan §4.4; design ruled with the user 2026-09-07). How an
-// unattended table behaves for eleven months: when the whole ROOM has been idle
-// for `attractAfterIdleMs` — no touch on any viewport of any screen, and no
-// music playing — the table tidies itself (the sweep), raises the attract band
-// over the middle band (the station's name, a sentence of intent, the logos, and
-// "tap to start"), and plays the piece through BY ITSELF, switching recordings
-// at the annotations' moments so the table demonstrates its own signature move.
-// Between passes it falls silent for `attractGapMs` so the room breathes, and in
-// that silence it may reload itself (`attractReload`), which is invisible,
+// THE ATTRACT LOOP (plan §4.4; design ruled with the user 2026-09-07, the idle
+// model replaced 2026-09-16). How an unattended table behaves for eleven
+// months: a SCREEN nobody has touched for `attractAfterIdleMs` tidies itself
+// (the sweep of its own table) and raises the attract band over the middle
+// band (the station's name, a sentence of intent, the logos, and "tap to
+// start"). What plays under the band is the ROOM's business: while the other
+// screen is in use this one RESTS — band up, mirroring what the room hears,
+// muted — and once BOTH screens are past their idle window the loop plays the
+// piece through BY ITSELF, switching recordings at the annotations' moments so
+// the table demonstrates its own signature move: the window whose music is on
+// the speakers carries on from its playhead (the take-over), or, the room
+// silent, the LEADER plays from the top while the other screen mirrors.
+// Between passes it falls silent for `attractGapMs` so the room breathes, and
+// in that silence it may reload itself (`attractReload`), which is invisible,
 // flushes any leak an eight-hour day could accumulate (§7.4), and is how the
 // pieces will cycle once there are several (`?piece=`).
 //
+// ONE TIMER PER SCREEN, COUNTING TOUCHES (user, 2026-09-16; it replaced the
+// two-timer room model — idle-and-silent for X, playing-untouched for Y —
+// judged not worth two knobs: the band over a listener costs one tap and the
+// music plays on, and the sweep the band brings is what the take-over did
+// anyway). Music playing or stopping does not move the count; only a touch
+// does. The room is idle exactly when the LATER screen reaches its window, so
+// there is no room timer: `quietSince` is the latest touch anywhere.
+//
 // THE VISITOR WALKS INTO A LIVE TABLE (ruling R7). A touch on a screen lowers
 // that screen's band at once and stops the loop's SCHEDULING — never the music.
-// The visitor's first strip tap is an ordinary take. The untouched screen keeps
-// its band until it is touched itself.
+// The visitor's first strip tap is an ordinary take. A touch on the OTHER
+// screen during a pass or a gap leaves this one RESTING: band up, the music
+// playing on, nothing scheduled, until this screen is touched itself.
 //
-// THE ROOM. Two screens (one PC, two windows) share one set of speakers, so idle
-// is a room fact, agreed over the room's channel (room.js): every window
-// announces its interactions, keeps a last-interaction time per peer, and the
-// room is idle when every known peer has been quiet. Only the LEADER (the lowest
-// peer id) plays the sequence; the other window raises its band and MIRRORS.
+// PHASES. "idle-wait" (live table, band down, counting) · "rest" (band up, the
+// other screen in use) · "attract" (the loop runs — this window plays the pass,
+// or mirrors the one that does) · "gap" (the silence between passes) ·
+// "locked" (playback refused here — "tap to start").
+//
+// PRESENCE — ONE SEAM, TWO IMPLEMENTATIONS. The room's facts the loop needs —
+// the latest touch anywhere, idle, the leader, another window's music on the
+// speakers, the peers, the gap — come through `presence`: `channelPresence`
+// keeps them over the room's BroadcastChannel (hello/bye with a 15 s TTL,
+// activity, gap; the leader the lowest id, or the worker's registry when there
+// is one) — the v2 path, kept verbatim for room=off and for a room without a
+// SharedWorker; `workerPresence` (room=shared with the worker) reads them from
+// the room's snapshot (room-worker.js keeps them) and forwards the intents.
 //
 // THE MIRROR (ruling R7 in full, v2) LIVES IN room.js since the room machine
 // (0.62.0): the audible window's once-a-second `sync`, the muted follow, the
@@ -30,8 +52,8 @@
 // under room=off that is the only time the mirror runs, and the only time the
 // audience follows the sync) and when playback is refused here, and to unmute
 // for its own pass. The loop's pass claims as "loop", which any visitor's claim
-// outranks (arbiter.js). When the audible pass ends, its `gap` message puts
-// every idle screen into the same silence, so both reload in it.
+// outranks (arbiter.js). When the audible pass ends, its `gap` puts every idle
+// screen into the same silence, so both reload in it.
 //
 // THE AUTOPLAY CONSTRAINT. Browsers refuse audible playback without a user
 // activation unless the kiosk's policy is opened (the museum PC's launch flag).
@@ -103,12 +125,11 @@ export function createAttractLoop({
   now = () => Date.now(),
 }) {
   const idleMs = Math.max(0, Number(config.attractAfterIdleMs) || 0);
-  const playMs = Math.max(0, Number(config.attractDuringPlaybackMs) || 0);
   const gapMs = Math.max(0, Number(config.attractGapMs) || 0);
   const language = viewports[0]?.language ?? "en";
 
   // ---- state ----------------------------------------------------------------
-  let phase = "idle-wait"; // "idle-wait" | "attract" | "gap" | "locked"
+  let phase = "idle-wait"; // "idle-wait" | "rest" | "attract" | "gap" | "locked"
   let bandUp = false;
   let started = false;     // the pass's first playback has been asked for
   let passPending = false; // runPass's first select is in flight (a build can take a second)
@@ -120,78 +141,40 @@ export function createAttractLoop({
   let gapTimer = 0;
   let reloadAt = null;     // when this window will reload in the gap (attractReload)
   let resumed = false;
-  let takenOver = false; // this pass carried on from a playing table (the second timer)
-  let lastLocal = now();
+  let resumedFrom = null;  // "room" (the worker's welcome snapshot) | "storage" (the sessionStorage record) | null
+  let takenOver = false;   // this pass carried on from a playing table (the take-over)
+  let lastLocal = now();   // this SCREEN's latest touch — the one timer's origin
   let lastFile = null;
-  const peers = new Map(); // id -> {lastSeen, lastActivity, audible}
 
   // ---- the room --------------------------------------------------------------
-  // The channel and this tab's stable id are the room's (room.js); the loop is
-  // one subscriber on it. The mirror is the room's too — read here, never held.
-  const { id, post } = room;
-  const unsubscribeMessages = room.onMessage((msg) => {
-    const known = peers.has(msg.id);
-    const peer = peers.get(msg.id) ?? { lastSeen: 0, lastActivity: 0 };
-    peer.lastSeen = now();
-    if (msg.type === "hello") {
-      peer.lastActivity = Math.max(peer.lastActivity, Number(msg.lastActivity) || 0);
-      peer.audible = Boolean(msg.audible);
-    } else if (msg.type === "sync") {
-      // The room's audible state, from whichever window is on the speakers;
-      // the room has already mirrored it (room.js). Only the peer's audibility
-      // is the loop's business here.
-      peer.audible = Boolean(msg.playing);
-    } else if (msg.type === "gap") {
-      // The audible pass ended over there. The silence is the room's, so an
-      // idle screen falls into the same gap — and reloads in it, if configured,
-      // so the follower flushes its day too (§7.4).
-      if (bandUp && (phase === "attract" || phase === "idle-wait")) {
-        room.stopMirror({ pause: true });
-        enterGap(Number(msg.gapEndsAt) || undefined);
-      }
-    } else if (msg.type === "activity") {
-      peer.lastActivity = now();
-      // Somebody is at the OTHER screen: the room is no longer idle, so the
-      // loop stops scheduling. This screen's band stays — it is untouched —
-      // and whatever is playing plays on; the arbiter settles the speakers.
-      if (phase !== "idle-wait") endLoop();
-    } else if (msg.type === "bye") {
-      peers.delete(msg.id);
-      return;
-    }
-    peers.set(msg.id, peer);
-    // A newcomer learns of us at once rather than at the next heartbeat, so
-    // both windows agree on the leader within a round trip.
-    if (!known) hello();
-  });
-  // Who plays the pass. With the room's worker the leader is the lowest SCREEN
-  // among the connected windows the heartbeat still vouches for (deterministic:
-  // screen 0 leads); without it, the lowest peer id among the heartbeat peers,
-  // as before.
-  const isLeader = () => {
-    const live = new Set([...peers.keys(), id]);
-    const fromRoom = room.leaderId?.((w) => live.has(w.id));
-    return fromRoom != null ? fromRoom === id : [...peers.keys(), id].sort()[0] === id;
-  };
+  // This tab's stable id is the room's (room.js); the mirror is the room's too —
+  // read here, never held. The room's facts come through the presence seam.
+  const { id } = room;
   /** This window is on the speakers: playing and not muted. */
   const audible = () => room.audible();
-  /** Another window's music is on the speakers (its last hello or sync said so). */
-  const peerAudible = () => [...peers.values()].some((p) => p.audible);
-  const hello = () => post({ type: "hello", lastActivity: lastLocal, audible: audible() });
-  const quietSince = () => {
-    let q = lastLocal;
-    for (const p of peers.values()) q = Math.max(q, p.lastActivity);
-    return q;
-  };
-  const purgePeers = () => {
-    for (const [pid, p] of peers) if (now() - p.lastSeen > PEER_TTL_MS) peers.delete(pid);
-  };
-  const helloTimer = setInterval(() => {
-    purgePeers();
-    hello();
-  }, HELLO_MS);
-  hello();
-  window.addEventListener("pagehide", () => post({ type: "bye" }));
+  const presence = room.worker
+    ? workerPresence({ room, now })
+    : channelPresence({ room, now, idleMs, lastActivity: () => lastLocal, audible });
+  const unsubscribePresence = presence.onEvent((ev) => {
+    if (ev.type === "activity") {
+      // Somebody is at the OTHER screen: the room is no longer idle, so the
+      // loop stops scheduling. This screen's band stays — it is untouched —
+      // and whatever is playing plays on (R7); the arbiter settles the speakers.
+      if (phase === "attract" || phase === "gap") rest();
+    } else if (ev.type === "gap") {
+      // The audible pass ended over there. The silence is the room's, so an
+      // idle screen falls into the same gap — and reloads in it, if configured,
+      // so the follower flushes its day too (§7.4). A gap can only come from a
+      // running pass, so a "rest" that has not yet seen the room turn idle
+      // (the tick is a second) joins it too.
+      if (bandUp && (phase === "attract" || phase === "rest")) {
+        room.stopMirror({ pause: true });
+        enterGap(Number.isFinite(ev.endsAt) ? ev.endsAt : now() + gapMs, false);
+      }
+    }
+  });
+  const isLeader = () => presence.isLeader();
+  const peerAudible = () => presence.peerAudible();
 
   // ---- interaction ---------------------------------------------------------------
   // The room owns the listeners (room.js: a trusted pointer or key, never the
@@ -200,10 +183,8 @@ export function createAttractLoop({
   // claim main.js makes on the audible edge has the other screen fade out.
   const touched = () => {
     lastLocal = now();
-    post({ type: "activity" });
+    presence.postActivity();
     if (phase !== "idle-wait") endLoop();
-    // The band goes whatever the phase — it can be up in idle-wait too, when the
-    // other screen's touch ended the loop and this one was left mirroring.
     lowerBand();
   };
   const unsubscribeTouch = room.onTouch(touched);
@@ -215,33 +196,22 @@ export function createAttractLoop({
 
   // ---- the idle rule ------------------------------------------------------------------
   const evalTimer = setInterval(() => {
-    const quiet = now() - quietSince();
-    if (phase === "attract" && !started && !passPending && !transport.playing) {
+    if (phase === "idle-wait") {
+      // This screen's own window: untouched for T, band up and the table swept,
+      // whatever plays — the room then says what happens under the band.
+      if (idleMs && now() - lastLocal >= idleMs) raise();
+    } else if (phase === "rest") {
+      // The other screen has gone quiet too: the room is idle, the loop's.
+      if (presence.idle()) decide();
+    } else if (phase === "attract" && !started && !passPending && !transport.playing) {
       // A resting leader — it stood back because the other screen was audible
-      // when the band went up, or it mirrored a visitor's table that has since
-      // stopped — and the room has fallen silent under the band for the idle
-      // window: the pass is the leader's to run now. Without this both screens
-      // would wait for each other for ever. The idle window keeps a visitor
-      // who merely paused from being played over.
-      if (isLeader() && !peerAudible() && (!idleMs || quiet >= idleMs)) runPass();
-      return;
+      // when the room went idle, or it mirrored a table whose music has since
+      // stopped — and the room is silent and idle: the pass is the leader's to
+      // run now. Without this both screens would wait for each other for ever.
+      if (isLeader() && !peerAudible() && presence.idle()) runPass();
     }
-    if (phase !== "idle-wait") return;
-    if (transport.playing) {
-      // The second timer (user, 2026-09-07): a playing table nobody has touched
-      // for Y is taken over from where it is, never restarted. A muted mirror is
-      // not this window's music to take over — the audible window's loop does.
-      if (!room.mirroring && playMs && quiet >= playMs) takeOver();
-      return;
-    }
-    if (idleMs && quiet >= idleMs) start();
   }, EVAL_MS);
-  // The music stopping is the moment the idle count starts — a visitor who
-  // listened for eight minutes without touching anything was not idle.
-  let wasPlaying = transport.playing;
   transport.subscribe((state) => {
-    if (wasPlaying && !state.playing && phase === "idle-wait") lastLocal = now();
-    wasPlaying = state.playing;
     if (phase === "attract" && started && !room.mirroring) followPass(state);
   });
 
@@ -398,24 +368,54 @@ export function createAttractLoop({
     return out;
   }
 
-  function start() {
-    phase = "attract";
-    takenOver = false;
+  /**
+   * This screen's idle window has passed (or force()): its own table is swept
+   * and its band goes up; the room decides what plays under it.
+   */
+  function raise(roomIdle = presence.idle()) {
     sweep();
     raiseBand();
-    post({ type: "attract", leader: isLeader() });
-    // The other screen raises its band and mirrors — and so does this one when a
-    // peer's music is already on the speakers (a taken-over table next door).
-    if (!isLeader() || peerAudible()) return;
-    runPass();
+    decide(roomIdle);
   }
 
-  /** The second timer: carry on from the playhead — table tidied, band up, no restart. */
+  /**
+   * What this screen does under its band, from the room's facts. The other
+   * screen in use → REST (mirror, nothing scheduled). The room idle → the loop:
+   * this window's own music on the speakers carries on from its playhead (the
+   * take-over — never a restart); another window's music → that window's loop
+   * takes over and this one mirrors; the room silent → the leader's pass from
+   * the top, the other screen mirroring.
+   */
+  function decide(roomIdle = presence.idle()) {
+    if (!roomIdle) {
+      phase = "rest";
+      started = false;
+      return;
+    }
+    if (audible()) {
+      takeOver();
+      return;
+    }
+    phase = "attract";
+    takenOver = false;
+    started = false;
+    if (isLeader() && !peerAudible()) runPass();
+  }
+
+  /** The other screen is in use: the band stays up, nothing is scheduled, the music plays on (R7). */
+  function rest() {
+    phase = "rest";
+    started = false;
+    clearTimeout(gapTimer);
+    gapEndsAt = null;
+    reloadAt = null;
+    forgetResume();
+  }
+
+  /** The take-over: carry on from the playhead — table tidied, band up, no restart. */
   function takeOver() {
     phase = "attract";
     takenOver = true;
-    sweep();
-    raiseBand();
     // The audience stays as the last visitor left it; the pass's switch points
     // are its annotations still ahead of the playhead.
     audience = store.get(viewports[0]?.index ?? 0) ?? null;
@@ -426,8 +426,7 @@ export function createAttractLoop({
     while (pointer < steps.length && steps[pointer].ix <= here) pointer++;
     started = true;
     lastFile = file;
-    hello(); // tell the other screen the speakers are taken
-    post({ type: "attract", leader: true, takenOver: true });
+    presence.announce(); // tell the other screen the speakers are taken
   }
 
   function runPass() {
@@ -475,17 +474,18 @@ export function createAttractLoop({
   }
 
   /**
-   * The silence between passes. Our own pass ending posts the gap to the room so
-   * the idle screens share it; a peer's gap arrives with its end time (`endsAt`).
+   * The silence between passes. Our OWN pass ending (`own`: followPass saw the
+   * recording run out) posts the gap to the room so the idle screens share it
+   * — and the worker counts the pass — while a peer's gap arrives with its end
+   * time (`endsAt`) and is reported by nobody else.
    */
-  function enterGap(endsAt) {
-    const own = phase === "attract" && !room.mirroring;
+  function enterGap(endsAt, own = endsAt == null) {
     phase = "gap";
     started = false;
     room.stopMirror();
     passCount += 1;
     gapEndsAt = Math.max(now(), Number.isFinite(endsAt) ? endsAt : now() + gapMs);
-    if (own) post({ type: "gap", gapEndsAt });
+    if (own) presence.postGap(gapEndsAt);
     const left = gapEndsAt - now();
     clearTimeout(gapTimer);
     if (config.attractReload) {
@@ -539,12 +539,17 @@ export function createAttractLoop({
     raiseBand();
   }
 
-  /** The loop stops SCHEDULING; whatever plays, plays on (R7). */
+  /** This screen was touched: the loop stops SCHEDULING; whatever plays, plays on (R7). */
   function endLoop() {
     phase = "idle-wait";
     started = false;
     clearTimeout(gapTimer);
     gapEndsAt = null;
+    reloadAt = null;
+    forgetResume();
+  }
+
+  function forgetResume() {
     try {
       sessionStorage.removeItem(RESUME_KEY);
     } catch (_) {
@@ -553,21 +558,52 @@ export function createAttractLoop({
   }
 
   // ---- resume after a reload in the silence -------------------------------------------------
+  // The ROOM's gap first (the worker's welcome snapshot: a window connecting
+  // while the room is in its silence joins it, with the shared end time and
+  // pass count — this is how a window back from its reload carries on); the
+  // sessionStorage record this window wrote before it reloaded is the FALLBACK,
+  // for a fresh worker (a single-screen room, or both windows gone at once) and
+  // for the channel path.
+  let stored = null;
   try {
     const raw = sessionStorage.getItem(RESUME_KEY);
     if (raw) {
       sessionStorage.removeItem(RESUME_KEY);
-      const rec = JSON.parse(raw);
-      resumed = true;
-      passCount = Number(rec.passCount) || 0;
-      phase = "gap";
-      sweep();
-      raiseBand();
-      gapEndsAt = Math.max(now(), Number(rec.gapEndsAt) || now());
-      gapTimer = setTimeout(nextPass, gapEndsAt - now());
+      stored = JSON.parse(raw);
     }
   } catch (_) {
     /* no storage */
+  }
+  const resumeFrom = (snapshot) => {
+    const gap = snapshot?.loop?.gap;
+    if (gap && Number(gap.endsAt) > now()) resumeGap(Number(gap.endsAt), Number(snapshot.loop.passCount) || 0, "room");
+    else if (stored) resumeGap(Number(stored.gapEndsAt) || now(), Number(stored.passCount) || 0, "storage");
+    stored = null;
+  };
+  if (room.worker) {
+    if (room.snapshot) resumeFrom(room.snapshot);
+    else {
+      const off = room.worker.onMessage((msg) => {
+        if (msg.type !== "welcome") return;
+        off();
+        if (phase === "idle-wait") resumeFrom(msg.snapshot);
+      });
+    }
+  } else if (stored) {
+    resumeFrom(null);
+  }
+
+  /** Straight into the room's gap after a reload: band up, table swept, the next pass at its end. */
+  function resumeGap(endsAt, count, from) {
+    resumed = true;
+    resumedFrom = from;
+    passCount = count;
+    phase = "gap";
+    sweep();
+    raiseBand();
+    gapEndsAt = Math.max(now(), endsAt);
+    clearTimeout(gapTimer);
+    gapTimer = setTimeout(nextPass, gapEndsAt - now());
   }
 
   return {
@@ -579,10 +615,13 @@ export function createAttractLoop({
         phase,
         bandUp,
         leader: isLeader(),
-        peers: peers.size,
+        presence: presence.kind,
+        peers: presence.peers(),
         idleMs,
         gapMs,
-        quietMs: now() - quietSince(),
+        quietMs: now() - presence.quietSince(),
+        quietHereMs: now() - lastLocal,
+        roomIdle: presence.idle(),
         started,
         passCount,
         audience,
@@ -592,6 +631,7 @@ export function createAttractLoop({
         gapEndsAt,
         reloadAt,
         resumed,
+        resumedFrom,
         takenOver,
         mirroring: room.mirroring,
         muted: transport.muted,
@@ -601,9 +641,9 @@ export function createAttractLoop({
         id,
       };
     },
-    /** Start now, whatever the idle clock says (tests, and a staff shortcut). */
+    /** Start now, whatever the clocks say (tests, and the study panel's demo button): the room counts as idle. */
     force() {
-      if (phase === "idle-wait") start();
+      if (phase === "idle-wait") raise(true);
     },
     /** Register an interaction without a pointer event (tests): the room's touch, hand-off included. */
     touch: room.touch,
@@ -613,14 +653,175 @@ export function createAttractLoop({
     },
     /** Tear down: timers, the room subscriptions, the band. The channel is the room's. */
     destroy() {
-      clearInterval(helloTimer);
       clearInterval(evalTimer);
       clearTimeout(gapTimer);
-      unsubscribeMessages();
+      unsubscribePresence();
       unsubscribeTouch();
       unsubscribeRefused();
-      post({ type: "bye" });
+      presence.destroy();
       el.remove();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// PRESENCE: the room's facts the loop reads, behind one seam.
+//
+//   quietSince()   the latest touch anywhere in the room (this screen included)
+//   idle()         the room is idle: idleMs > 0 and quiet for at least idleMs
+//   isLeader()     this window plays the pass when the room is silent
+//   peerAudible()  another window's music is on the speakers
+//   peers()        live windows besides this one
+//   postActivity() a touch here; postGap(endsAt) this window's pass ended
+//   announce()     say where we stand at once (the take-over)
+//   onEvent(fn)    {type: "activity"} · {type: "gap", endsAt}
+// ---------------------------------------------------------------------------
+
+/**
+ * Presence from the room's SharedWorker (room=shared with a worker; protocol
+ * 2): the facts are the worker's — every window stamps its touches there
+ * (room.js's touch() sends `activity`), the worker keeps the latest touch,
+ * the idle verdict, the leader among the LIVE windows, the speakers, and the
+ * gap — and this window reads them from the latest snapshot. An idle room
+ * waking on the other screen's touch arrives as a `wake` event at once; a
+ * pass ending anywhere as `gap`.
+ */
+function workerPresence({ room, now }) {
+  const { id } = room;
+  const link = room.worker;
+  const subs = new Set();
+  const snap = () => room.snapshot;
+  const emit = (ev) => {
+    for (const fn of subs) {
+      try {
+        fn(ev);
+      } catch (err) {
+        console.warn("exhibit attract: presence subscriber threw", err);
+      }
+    }
+  };
+  const unsubscribe = link.onMessage((msg) => {
+    const ev = msg?.event;
+    if (!ev) return;
+    if (ev.type === "wake" && ev.byId !== id) emit({ type: "activity", byId: ev.byId });
+    else if (ev.type === "gap" && ev.byId !== id) emit({ type: "gap", endsAt: Number(ev.endsAt) || undefined });
+  });
+  return {
+    kind: "worker",
+    quietSince: () => snap()?.loop?.quietSince ?? now(),
+    idle: () => Boolean(snap()?.loop?.idle),
+    isLeader: () => snap()?.leader === id,
+    peerAudible: () => {
+      const a = snap()?.audible;
+      return Boolean(a && a.id !== id);
+    },
+    peers: () => Math.max(0, (snap()?.windows?.length ?? 1) - 1),
+    // room.js's touch() has already sent the activity intent: nothing to add.
+    postActivity: () => {},
+    postGap: (endsAt) => link.send({ type: "gap", endsAt }),
+    announce: () => {},
+    onEvent(fn) {
+      subs.add(fn);
+      return () => subs.delete(fn);
+    },
+    destroy() {
+      unsubscribe();
+      subs.clear();
+    },
+  };
+}
+
+/**
+ * Presence over the room's BroadcastChannel — the v2 path: hello every 5 s
+ * with this window's latest touch and audibility, a 15 s TTL, activity and
+ * gap messages, the leader the lowest id among the live windows (or the
+ * worker's registry, when the room has one). Used under room=off, and under
+ * room=shared when there is no SharedWorker.
+ */
+function channelPresence({ room, now, idleMs, lastActivity, audible }) {
+  const { id, post } = room;
+  const peers = new Map(); // id -> {lastSeen, lastActivity, audible}
+  const subs = new Set();
+  const emit = (ev) => {
+    for (const fn of subs) {
+      try {
+        fn(ev);
+      } catch (err) {
+        console.warn("exhibit attract: presence subscriber threw", err);
+      }
+    }
+  };
+  const hello = () => post({ type: "hello", lastActivity: lastActivity(), audible: audible() });
+  const unsubscribe = room.onMessage((msg) => {
+    const known = peers.has(msg.id);
+    const peer = peers.get(msg.id) ?? { lastSeen: 0, lastActivity: 0 };
+    peer.lastSeen = now();
+    if (msg.type === "hello") {
+      peer.lastActivity = Math.max(peer.lastActivity, Number(msg.lastActivity) || 0);
+      peer.audible = Boolean(msg.audible);
+    } else if (msg.type === "sync") {
+      // The room's audible state, from whichever window is on the speakers;
+      // the room has already mirrored it (room.js). Only the peer's audibility
+      // is the loop's business here.
+      peer.audible = Boolean(msg.playing);
+    } else if (msg.type === "gap") {
+      peers.set(msg.id, peer);
+      emit({ type: "gap", endsAt: Number(msg.gapEndsAt) || undefined });
+      return;
+    } else if (msg.type === "activity") {
+      peer.lastActivity = now();
+      peers.set(msg.id, peer);
+      emit({ type: "activity", byId: msg.id });
+      return;
+    } else if (msg.type === "bye") {
+      peers.delete(msg.id);
+      return;
+    }
+    peers.set(msg.id, peer);
+    // A newcomer learns of us at once rather than at the next heartbeat, so
+    // both windows agree on the leader within a round trip.
+    if (!known) hello();
+  });
+  const purge = () => {
+    for (const [pid, p] of peers) if (now() - p.lastSeen > PEER_TTL_MS) peers.delete(pid);
+  };
+  const helloTimer = setInterval(() => {
+    purge();
+    hello();
+  }, HELLO_MS);
+  hello();
+  const bye = () => post({ type: "bye" });
+  window.addEventListener("pagehide", bye);
+  const quietSince = () => {
+    let q = lastActivity();
+    for (const p of peers.values()) q = Math.max(q, p.lastActivity);
+    return q;
+  };
+  return {
+    kind: "channel",
+    quietSince,
+    idle: () => idleMs > 0 && now() - quietSince() >= idleMs,
+    // With the room's worker the leader is the lowest LIVE screen (room.js reads
+    // the snapshot; deterministic: screen 0 leads); without it the lowest id.
+    isLeader() {
+      const fromRoom = room.leaderId?.();
+      return fromRoom != null ? fromRoom === id : [...peers.keys(), id].sort()[0] === id;
+    },
+    peerAudible: () => [...peers.values()].some((p) => p.audible),
+    peers: () => peers.size,
+    postActivity: () => post({ type: "activity" }),
+    postGap: (endsAt) => post({ type: "gap", gapEndsAt: endsAt }),
+    announce: hello,
+    onEvent(fn) {
+      subs.add(fn);
+      return () => subs.delete(fn);
+    },
+    destroy() {
+      clearInterval(helloTimer);
+      unsubscribe();
+      window.removeEventListener("pagehide", bye);
+      subs.clear();
+      bye();
     },
   };
 }

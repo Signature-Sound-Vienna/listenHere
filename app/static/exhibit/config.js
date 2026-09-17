@@ -475,18 +475,17 @@ const DEFAULTS = {
   // reader who chose the jump needs no telling. "off" | "arrow".
   switchCue: "off",
 
-  // --- the attract loop (attract.js; plan §4.4, design ruled 2026-09-07) ---
-  // Idle for this long on EVERY viewport of the room (the screens agree over a
-  // BroadcastChannel) and the table tidies itself, raises the attract band, and
-  // plays the piece through by itself, switching recordings at the
-  // annotations. 0 = off, the shipped default until release (the staff preset
-  // carries 90 s); a visitor's touch ends the loop and finds a live table.
+  // --- the attract loop (attract.js; plan §4.4, design ruled 2026-09-07, the
+  // idle model replaced 2026-09-16) ---
+  // A SCREEN untouched for this long — touches only; music playing or stopping
+  // does not move the count — tidies its own table and raises the attract band.
+  // While the other screen is in use it rests under the band, mirroring the
+  // room; once both screens are past the window the loop plays the piece
+  // through by itself, carrying on from the playhead if music is on the
+  // speakers, from the top if the room is silent. 0 = off, the shipped default
+  // until release (the staff preset carries 3 min); a visitor's touch ends the
+  // loop on that screen and finds a live table.
   attractAfterIdleMs: 0,
-  // The second timer (user, 2026-09-07): the room untouched this long WHILE
-  // music plays, and the loop takes over from the current playhead — band up,
-  // table tidied, the pass continuing from here with the audience as it is —
-  // rather than starting the piece again. 0 = off.
-  attractDuringPlaybackMs: 0,
   // Silence between passes of the piece, so the room breathes (user, 2026-09-07).
   attractGapMs: 25000,
   // Reload the page in the middle of that silence: invisible, it flushes any

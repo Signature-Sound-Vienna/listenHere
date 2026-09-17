@@ -30,7 +30,9 @@
 //     over the link. Its URL carries ROOM_PROTOCOL, so a code change gets a
 //     fresh worker by construction; the worker's `welcome` echoes the version.
 //     No SharedWorker (or a failed one) means turns stay per screen, with a
-//     warning — the screens still mirror.
+//     warning — the screens still mirror. This window pings the worker every
+//     PING_MS (protocol 2): a window silent for 15 s is expired there as if it
+//     had said bye, so a crashed window's claim on the speakers dies with it.
 //
 // WHEN IT RUNS. `?room=shared` is the room machine: the mirror is universal and
 // the arbiter is room-wide. Under `room=off` (the shipped default) this module
@@ -50,8 +52,9 @@ const ID_KEY = "lh-exhibit-room-id";
 const WORKER_URL = "./room-worker.js";
 const WORKER_NAME = "lh-exhibit-room";
 /** The worker protocol: bump it when the intents or the snapshot change shape. */
-export const ROOM_PROTOCOL = 1;
+export const ROOM_PROTOCOL = 2;
 const SYNC_MS = 1000;   // how often the audible window says where it is
+const PING_MS = 5000;   // the heartbeat to the room's worker; silent 15 s = gone (room-worker.js)
 const DRIFT_S = 0.1;    // a mirror further off than this re-seeks
 const FADE_MS = 200;    // the hand-off crossfade, both directions
 const PEER_SYNC_TTL_MS = 2500; // a peer's "playing" sync older than this no longer counts
@@ -120,8 +123,7 @@ export function createRoom({ config, transport, store, viewports, exhibit, now =
     mode = "off";
   }
   const shared = mode === "shared";
-  const loopConfigured =
-    (Number(config.attractAfterIdleMs) || 0) > 0 || (Number(config.attractDuringPlaybackMs) || 0) > 0;
+  const loopConfigured = (Number(config.attractAfterIdleMs) || 0) > 0;
   const haveChannel = typeof BroadcastChannel === "function";
   if (shared && !haveChannel) {
     console.warn("exhibit room: BroadcastChannel unavailable — the screens run independently");
@@ -157,7 +159,12 @@ export function createRoom({ config, transport, store, viewports, exhibit, now =
 
   // ---- the channel -------------------------------------------------------------
   const bc = active ? new BroadcastChannel(CHANNEL) : null;
-  const post = (msg) => bc?.postMessage({ ...msg, id, screen, t: now() });
+  // `detached` (a debug seam, see detach()): this window has "crashed" — it
+  // says nothing more on either the channel or the worker's port.
+  let detached = false;
+  const post = (msg) => {
+    if (!detached) bc?.postMessage({ ...msg, id, screen, t: now() });
+  };
   if (bc) {
     bc.onmessage = (e) => {
       const msg = e.data;
@@ -295,6 +302,7 @@ export function createRoom({ config, transport, store, viewports, exhibit, now =
    * lose to a visitor at the other table.
    */
   function touch() {
+    link?.send({ type: "activity" }); // the room's clock of touches (protocol 2)
     for (const fn of touchSubs) {
       try {
         fn();
@@ -361,7 +369,10 @@ export function createRoom({ config, transport, store, viewports, exhibit, now =
         };
         sw.onerror = (e) => console.warn("exhibit room: worker error", e?.message || e);
         sw.port.start();
-        sw.port.postMessage({
+        const send = (msg) => {
+          if (!detached) sw.port.postMessage(msg);
+        };
+        send({
           type: "hello",
           id,
           screen,
@@ -370,16 +381,27 @@ export function createRoom({ config, transport, store, viewports, exhibit, now =
           policy: config.turnPolicy,
           grantMs: config.turnGrantMs,
           denyCooldownMs: config.turnDenyCooldownMs,
+          // The loop's facts the worker keeps (protocol 2): the newest window's
+          // idle window wins, as its turn policy does.
+          lastActivity: now(),
+          idleMs: Math.max(0, Number(config.attractAfterIdleMs) || 0),
         });
-        window.addEventListener("pagehide", () => sw.port.postMessage({ type: "bye" }));
+        const bye = () => send({ type: "bye" });
+        window.addEventListener("pagehide", bye);
+        const pingTimer = setInterval(() => send({ type: "ping" }), PING_MS);
         link = {
-          send: (msg) => sw.port.postMessage(msg),
+          send,
           onMessage(fn) {
             workerSubs.add(fn);
             return () => workerSubs.delete(fn);
           },
           get welcomed() {
             return welcomed;
+          },
+          /** Stop the heartbeat and the pagehide bye (detach(), below). */
+          _detach() {
+            clearInterval(pingTimer);
+            window.removeEventListener("pagehide", bye);
           },
         };
       } catch (e) {
@@ -399,18 +421,27 @@ export function createRoom({ config, transport, store, viewports, exhibit, now =
     viewportIds,
     /** The link to the room's SharedWorker ({send, onMessage, welcomed}), or null. */
     worker: link,
+    /** The worker's latest snapshot (turns, speakers, windows, leader, loop), or null. */
+    get snapshot() {
+      return roomSnapshot;
+    },
     /**
-     * The room's LEADER by the worker's registry — the connected window on the
-     * lowest screen (ties by id) — or null without a worker or before its first
-     * snapshot. `accept` narrows the candidates to windows the caller knows to
-     * be alive (attract.js: its heartbeat peers), since a window that crashed
-     * without saying bye stays in the registry.
+     * The room's LEADER by the worker's registry — the LIVE window on the
+     * lowest screen (ties by id; the worker expires a window silent for 15 s,
+     * so a crash without bye leaves the registry within that) — or null
+     * without a worker or before its first snapshot.
      */
-    leaderId(accept = () => true) {
-      const windows = (roomSnapshot?.windows ?? []).filter((w) => accept(w));
-      if (!windows.length) return null;
-      windows.sort((a, b) => a.screen - b.screen || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-      return windows[0].id;
+    leaderId() {
+      return roomSnapshot?.leader ?? null;
+    },
+    /**
+     * A DEBUG seam (spec 47.22): this window falls silent as a crashed one
+     * would — no heartbeat, no sync, no activity, and no bye at pagehide, on
+     * the channel or to the worker — so the room's expiry can be exercised.
+     */
+    detach() {
+      detached = true;
+      link?._detach();
     },
     post,
     /** Every message from OTHER windows, sync included; returns an unsubscribe. */
@@ -469,6 +500,7 @@ export function createRoom({ config, transport, store, viewports, exhibit, now =
         universal,
         worker: link != null,
         welcomed: link?.welcomed ?? false,
+        detached,
         snapshot: roomSnapshot,
         id,
         screen,
@@ -484,6 +516,7 @@ export function createRoom({ config, transport, store, viewports, exhibit, now =
     },
     destroy() {
       if (syncTimer) clearInterval(syncTimer);
+      link?._detach();
       unsubscribeTransport();
       window.removeEventListener("pointerdown", onInteract, true);
       window.removeEventListener("keydown", onInteract, true);

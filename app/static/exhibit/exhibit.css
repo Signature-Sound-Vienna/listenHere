@@ -1588,6 +1588,18 @@ html, body {
   border-color: var(--ex-accent-border);
   color: var(--ex-bg);
 }
+/* The grant ring (main.js paintTurn; 0.64.0): the "Keep reading…" ring's twin,
+ * depleting over the grant window on the holder's prompt and the requester's
+ * wait alike, so neither side is surprised by the auto-grant. */
+.vp-turn .turn-ring {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: conic-gradient(var(--ex-accent) calc(var(--turn-frac, 1) * 360deg), transparent 0);
+  -webkit-mask: radial-gradient(circle at center, transparent 55%, #000 56%);
+  mask: radial-gradient(circle at center, transparent 55%, #000 56%);
+}
 
 /* --------------------------------------------------------------------------
  * The study panel (?studyPanel=true, study-panel.js): staff tooling for
@@ -2617,11 +2629,25 @@ html, body {
   0%, 100% { transform: scale(0.85); opacity: 0.35; }
   50% { transform: scale(1.15); opacity: 0.8; }
 }
-/* Playback refused (no activation yet): the invitation is the whole point. */
-.attract-band.is-locked .ab-tap { font-weight: 600; }
+/* Playback refused (no activation yet): the invitation is the whole point —
+ * the tap line breathes (user, 2026-09-15), from its left end so the row does
+ * not drift, and the glyph's ring quickens in the accent. */
+.attract-band.is-locked .ab-tap {
+  font-weight: 600;
+  transform-origin: left center;
+  animation: ab-tap-pulse 1.6s ease-in-out infinite;
+}
 .attract-band.is-locked .ab-tap-glyph { stroke: var(--ex-accent-border); }
+.attract-band.is-locked .ab-tap-ring {
+  stroke: var(--ex-accent);
+  animation-duration: 1.2s;
+}
+@keyframes ab-tap-pulse {
+  0%, 100% { opacity: 0.72; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.04); }
+}
 @media (prefers-reduced-motion: reduce) {
-  .ab-waved, .ab-body, .ab-tap-ring { animation: none; }
+  .ab-waved, .ab-body, .ab-tap-ring, .attract-band.is-locked .ab-tap { animation: none; }
   .attract-band { transition: none; }
 }
 

@@ -91,10 +91,13 @@ test.describe('47. The attract loop', () => {
   test('47.2 after the idle window the table sweeps itself, raises the band, plays from the top, and switches at the first annotation', async ({
     page,
   }) => {
-    const { order } = await boot(page, `${IDLE}&turnPolicy=request&viewSwitch=1`);
+    // A wider window than IDLE: the things to sweep must be in place before the
+    // loop's tick fires (Firefox under parallel workers took over 2 s to get there).
+    const { order } = await boot(page, `debug=1&attractAfterIdleMs=2500&turnPolicy=request&viewSwitch=1`);
     await armQuietTransport(page);
     // Something to sweep: one half in an explorer, a holder on the clock.
     await page.evaluate(() => (window as any)._exhibitTest.setView(0, 'years'));
+    expect((await attract(page)).phase, 'the loop has not fired yet').toBe('idle-wait');
     await page.evaluate((f) => (window as any)._exhibitTest.turns.request(0, f), order[1]);
     expect(await page.evaluate(() => (window as any)._exhibitTest.turns.state().holder)).toBe(0);
     (await taps(page)).length = 0;
@@ -180,6 +183,17 @@ test.describe('47. The attract loop', () => {
     expect(await bandUp(page)).toBe(true);
     await expect(page.locator('.attract-band')).toHaveClass(/is-locked/);
     await expect(page.locator('.attract-band .ab-copy[data-copy="0"] .ab-tap')).toBeVisible();
+    // The locked tap line pulses (user, 2026-09-15) — CSS only, and not under reduced motion.
+    const pulse = () =>
+      page.evaluate(() => {
+        const tap = document.querySelector('.attract-band .ab-copy[data-copy="0"] .ab-tap') as HTMLElement;
+        const ring = document.querySelector('.attract-band .ab-copy[data-copy="0"] .ab-tap-ring') as SVGElement;
+        return { tap: getComputedStyle(tap).animationName, ring: getComputedStyle(ring).animationDuration };
+      });
+    expect(await pulse()).toEqual({ tap: 'ab-tap-pulse', ring: '1.2s' });
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    expect((await pulse()).tap).toBe('none');
+    await page.emulateMedia({ reducedMotion: null });
     await page.mouse.click(512, 683);
     await expect.poll(async () => (await attract(page))?.phase).toBe('idle-wait');
     await expect.poll(() => bandUp(page)).toBe(false);
@@ -249,9 +263,11 @@ test.describe('47. The attract loop', () => {
     expect(await page.evaluate(() => (window as any)._exhibitTest.audience.get(1))).toBe(mode);
   });
 
-  // 47.8 The room: two screens agree on idleness, one leader plays, both
-  // raise their band; a touch on the OTHER screen ends the loop for both.
-  test('47.8 two screens: one leader plays, both raise the band, and a touch on either ends the loop for both', async ({
+  // 47.8 The room: two screens each pass their own idle window, the room is
+  // idle when the later one does, one leader plays, both raise their band; a
+  // touch on the OTHER screen ends the scheduling and leaves this one RESTING
+  // (band up, mirroring — the rest phase, 0.64.0), never a live table.
+  test('47.8 two screens: one leader plays, both raise the band, and a touch on one leaves the other resting', async ({
     context,
   }) => {
     const pageA = await context.newPage();
@@ -274,42 +290,59 @@ test.describe('47. The attract loop', () => {
     expect(await bandUp(pageA)).toBe(true);
     expect(await bandUp(pageB)).toBe(true);
 
-    // A visitor at B: B's band goes, A's loop stops scheduling, A's band stays.
+    // A visitor at B: B's band goes and B is live; A stops scheduling and RESTS
+    // — band up, nothing scheduled, the other screen in use. Both presence
+    // paths are the channel's here (room=off).
+    expect(a.presence).toBe('channel');
     await pageB.mouse.click(512, 683);
     await expect.poll(async () => (await attract(pageB))?.phase).toBe('idle-wait');
-    await expect.poll(async () => (await attract(pageA))?.phase).toBe('idle-wait');
+    await expect.poll(async () => (await attract(pageA))?.phase).toBe('rest');
     await expect.poll(() => bandUp(pageB)).toBe(false);
     expect(await bandUp(pageA)).toBe(true);
+    expect((await attract(pageA)).started).toBe(false);
+    expect((await attract(pageA)).roomIdle).toBe(false);
+    // A stays resting while B is in use: its own window passed long ago, the room is B's.
+    await pageB.waitForTimeout(600);
+    await pageB.mouse.click(512, 683);
+    await pageB.waitForTimeout(600);
+    expect((await attract(pageA)).phase).toBe('rest');
+    expect((await attract(pageB)).phase).toBe('idle-wait');
+    // B untouched for its window: the room is idle again — B's band rises, the loop resumes.
+    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 8_000 }).toBe('attract');
+    await expect.poll(async () => (await attract(pageA))?.phase, { timeout: 5_000 }).toBe('attract');
+    expect(await bandUp(pageB)).toBe(true);
 
     await pageA.close();
     await pageB.close();
   });
 
-  // 47.9 The study panel offers the loop on its own tab, and the staff preset
-  // carries the 90 s (35.25 pins the pair too).
-  test('47.9 the study panel has an Attract tab with the demo button and six parameters', async ({ page }) => {
+  // 47.9 The study panel offers the loop on its own tab: the demo button and
+  // five parameters, the one idle timer first (35.25 pins the preset's 3 min).
+  test('47.9 the study panel has an Attract tab with the demo button and five parameters', async ({ page }) => {
     await boot(page, 'debug=1&studyPanel=true');
     await page.click('.study-cog');
     await page.click('.study-tab[data-tab="attract"]');
     const labels = await page.locator('.study-row .study-label').allTextContents();
     expect(labels).toEqual([
       'Demo',
-      'Start after idle (ms; 0 = off)',
-      'Take over during playback after (ms; 0 = off)',
+      'Screen idle after (ms; 0 = off)',
       'Silence between passes (ms)',
       'Reload in the silence',
       'Annotations shown',
       'Logo language',
     ]);
     await expect(page.locator('.study-row').nth(1).locator('.study-option.is-on')).toHaveText(/^0 •$/);
+    expect(await page.evaluate(() => 'attractDuringPlaybackMs' in (window as any)._exhibitTest.config)).toBe(false);
   });
 
-  // 47.10 The second timer (user, 2026-09-07): music playing and the room
-  // untouched for Y — the loop TAKES OVER from the playhead: band up, table
-  // tidied, no restart from the top, the audience as it was, and only the
-  // annotations still ahead are switch points.
-  test('47.10 during playback the loop takes over from the current playhead instead of restarting', async ({ page }) => {
-    const { order } = await boot(page, `${IDLE}&attractDuringPlaybackMs=1200&viewSwitch=1`);
+  // 47.10 THE TAKE-OVER (user, 2026-09-07; the one timer since 2026-09-16):
+  // music playing and the screen untouched for T — the loop TAKES OVER from
+  // the playhead: band up, table tidied, no restart from the top, the audience
+  // as it was, and only the annotations still ahead are switch points.
+  test('47.10 a playing table untouched for the idle window is taken over from the current playhead, not restarted', async ({
+    page,
+  }) => {
+    const { order } = await boot(page, `${IDLE}&viewSwitch=1`);
     await armQuietTransport(page);
     await page.evaluate((f) => (window as any)._exhibitTest.turns.request(0, f), order[2]);
     await page.evaluate(() => (window as any)._exhibitTest.setView(1, 'years'));
@@ -350,16 +383,34 @@ test.describe('47. The attract loop', () => {
     expect(await en.locator('p[lang="de"]').count()).toBe(0);
   });
 
-  // 47.11 The primary timer waits while music plays: a listener who touches
-  // nothing for eight minutes is not idle.
-  test('47.11 the idle timer does not fire while music is playing', async ({ page }) => {
-    const { order } = await boot(page, IDLE);
+  // 47.11 The timer counts TOUCHES only (user, 2026-09-16; inverted from v1,
+  // where the music stopping restarted the count): music that plays and then
+  // stops does not postpone the band — it rises T after the last touch, and
+  // the room being silent by then, the leader plays from the top.
+  test('47.11 the idle window counts touches only: music stopping does not postpone the band', async ({ page }) => {
+    const T = 2500;
+    const { order } = await boot(page, `debug=1&attractAfterIdleMs=${T}`);
+    const booted = Date.now();
     await armQuietTransport(page);
     await page.evaluate((f) => (window as any)._exhibitTest.turns.request(0, f), order[1]);
     await page.evaluate(() => ((window as any)._playing = true));
-    await page.waitForTimeout(2600);
+    await page.evaluate(() => (window as any)._exhibitTest.transport.seek(30));
+    // Still counting, band down, while the music plays…
+    await page.waitForTimeout(1800);
     expect((await attract(page)).phase).toBe('idle-wait');
     expect(await bandUp(page)).toBe(false);
+    // …the music stops (the flag, then a seek so the transport emits): no restart of the count.
+    await page.evaluate(() => ((window as any)._playing = false));
+    await page.evaluate(() => (window as any)._exhibitTest.transport.seek(31));
+    // The band rises at T from boot (+ the one-second tick), not T from the stop.
+    const deadline = booted + T + 1500;
+    await expect.poll(async () => (await attract(page))?.phase, { timeout: Math.max(500, deadline - Date.now()) }).toBe('attract');
+    expect(await bandUp(page)).toBe(true);
+    const s = await attract(page);
+    expect(s.takenOver, 'the room was silent: a pass from the top, not a take-over').toBe(false);
+    await expect.poll(async () => (await attract(page))?.started, { timeout: 15_000 }).toBe(true);
+    const t = await taps(page);
+    expect(t[t.length - 1]).toEqual({ file: order[0], time: 0 });
   });
 
   // 47.13 THE MIRROR (ruling R7 in full; v2, 0.60.0). The idle screen plays what
@@ -415,12 +466,13 @@ test.describe('47. The attract loop', () => {
     expect(await mutedOf(follower)).toBe(false);
     expect((await attract(follower)).mirroring).toBe(false);
     await expect.poll(() => holding(follower)).toBe(true);
-    // The leader yielded — muted, not paused — with its band up, mirroring the new audible table.
+    // The leader yielded — muted, not paused — with its band up, RESTING and
+    // mirroring the new audible table (the other screen is in use).
     await expect.poll(() => mutedOf(leader), { timeout: 5_000 }).toBe(true);
     const l = await attract(leader);
     expect(l.mirroring).toBe(true);
     expect(l.bandUp).toBe(true);
-    expect(l.phase).toBe('idle-wait');
+    expect(l.phase).toBe('rest');
     expect(await leader.evaluate(() => (window as any)._exhibitTest.transport.playing), 'nothing goes silent on touch').toBe(true);
     expect(await holding(leader)).toBe(false);
     // The visitor switches recordings: the mirroring screen switches with them.
@@ -472,36 +524,64 @@ test.describe('47. The attract loop', () => {
     await pageB.close();
   });
 
-  // 47.15 A leader that stood back because the other screen was audible when
-  // its band went up runs the pass once the room falls silent — nobody plays
-  // over a person, and the two screens never wait for each other for ever.
-  test('47.15 the loop never plays over an audible table, and takes the room once it falls silent', async ({ context }) => {
+  // 47.15 THE BAND PER SCREEN over a visitor's music (0.64.0): B, untouched,
+  // RESTS under A's visitor's music — band up, mirroring, no pass. When A's
+  // visitor has been gone T, both screens are past their window and the room
+  // is idle: the AUDIBLE window, A, is TAKEN OVER from its playhead — never
+  // restarted, whoever the leader is — and B follows it. When A's music ends,
+  // the room falls into the gap and the leader's next pass starts from the top.
+  test('47.15 the loop never plays over an audible table: the untouched screen rests, the audible one is taken over at T, and the gap follows', async ({
+    context,
+  }) => {
     const pageA = await context.newPage();
     const pageB = await context.newPage();
-    const { order } = await boot(pageA, `${IDLE}&arbiter=broadcast`);
+    const qs = `${IDLE}&arbiter=broadcast&attractGapMs=1500&attractReload=0`;
+    const { order, durations } = await boot(pageA, qs);
+    await boot(pageB, qs);
     await armQuietTransport(pageA);
-    // A visitor's table on A, playing (the flag, then a seek so the room hears the audible edge).
+    await armQuietTransport(pageB);
+    await expect.poll(async () => (await attract(pageA))?.peers).toBe(1);
+    await expect.poll(async () => (await attract(pageB))?.peers).toBe(1);
+    // A visitor at A: the touch, a take, "playing" (the flag, then a seek so the room hears the audible edge).
+    await pageA.evaluate(() => (window as any)._exhibitTest.room.touch());
     await pageA.evaluate((f) => (window as any)._exhibitTest.turns.request(0, f), order[1]);
     await pageA.evaluate(() => ((window as any)._playing = true));
     await pageA.evaluate(() => (window as any)._exhibitTest.transport.seek(10));
-    await boot(pageB, `${IDLE}&arbiter=broadcast`);
-    await armQuietTransport(pageB);
-    await expect.poll(async () => (await attract(pageB))?.peers).toBe(1);
-    // B goes idle under A's music: band up, and — whoever the leader is — no pass.
-    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 8_000 }).toBe('attract');
-    await pageB.waitForTimeout(2500);
-    expect((await attract(pageA)).started).toBe(false);
+    const tapsA = (await taps(pageA)).length;
+    // B goes untouched past T while A is in use — the visitor keeps touching A
+    // (the idle window is 1.2 s here): B RESTS — band up, mirroring A, no pass.
+    for (let i = 0; i < 12 && (await attract(pageB)).phase !== 'rest'; i++) {
+      await pageA.evaluate(() => (window as any)._exhibitTest.room.touch());
+      await pageA.waitForTimeout(400);
+    }
+    expect((await attract(pageB)).phase).toBe('rest');
+    expect(await bandUp(pageB)).toBe(true);
     expect((await attract(pageB)).started).toBe(false);
     expect((await attract(pageB)).peerAudible).toBe(true);
-    expect(await pageB.evaluate(() => (window as any)._exhibitTest.transport.activeFile), 'B mirrors A').toBe(order[1]);
-    // A's music stops; the room is silent: the leader, whichever it is, plays.
+    await expect.poll(() => pageB.evaluate(() => (window as any)._exhibitTest.transport.activeFile), { timeout: 10_000 }).toBe(order[1]);
+    expect((await attract(pageA)).phase, 'A is live').toBe('idle-wait');
+    expect(await bandUp(pageA)).toBe(false);
+    // A's visitor has been gone T: A's band rises and A is TAKEN OVER from its
+    // playhead — no select, the same recording — and B follows as the loop's.
+    await expect.poll(async () => (await attract(pageA))?.phase, { timeout: 8_000 }).toBe('attract');
+    const a = await attract(pageA);
+    expect(a.takenOver).toBe(true);
+    expect(a.started).toBe(true);
+    expect((await taps(pageA)).length, 'never restarted').toBe(tapsA);
+    expect(await pageA.evaluate(() => (window as any)._exhibitTest.transport.activeFile)).toBe(order[1]);
+    expect(await bandUp(pageA)).toBe(true);
+    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 5_000 }).toBe('attract');
+    expect((await attract(pageB)).started).toBe(false);
+    // A's music ends: the room's gap, then the leader's pass from the top.
     await pageA.evaluate(() => ((window as any)._playing = false));
-    await pageA.evaluate(() => (window as any)._exhibitTest.transport.seek(11));
-    await expect
-      .poll(async () => (await attract(pageA)).started || (await attract(pageB)).started, { timeout: 15_000 })
-      .toBe(true);
-    const [a, b] = [await attract(pageA), await attract(pageB)];
-    expect(a.leader ? a.started : b.started, 'the leader is the one playing').toBe(true);
+    await pageA.evaluate((t) => (window as any)._exhibitTest.transport.seek(t), durations[order[1]] - 0.1);
+    await expect.poll(async () => (await attract(pageA))?.phase).toBe('gap');
+    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 3_000 }).toBe('gap');
+    const [leader, follower] = (await attract(pageA)).leader ? [pageA, pageB] : [pageB, pageA];
+    await expect.poll(async () => (await attract(leader)).started, { timeout: 8_000 }).toBe(true);
+    const t = await taps(leader);
+    expect(t[t.length - 1]).toEqual({ file: order[0], time: 0 });
+    expect((await attract(follower)).started).toBe(false);
     await pageA.close();
     await pageB.close();
   });
@@ -523,6 +603,10 @@ test.describe('47. The attract loop', () => {
       order[0],
     );
     expect(rejected).toBe('NotAllowedError');
+    // The probe's play() resolved before the wait rejected, so the (silent) transport
+    // reports playing; paused, or the loop would take the "playing" table over
+    // rather than start its own pass (47.10) — the pass is what locks.
+    await page.evaluate(() => (window as any)._exhibitTest.transport.pause());
     await page.evaluate(() => (window as any)._exhibitTest.attract.force());
     await expect.poll(async () => (await attract(page))?.phase, { timeout: 15_000 }).toBe('locked');
     expect(await bandUp(page)).toBe(true);
@@ -679,6 +763,251 @@ test.describe('47. The attract loop', () => {
     const apart = b.reloadAt - a.reloadAt;
     expect(apart).toBeGreaterThan(GAP * 0.25 - 1500);
     expect(apart).toBeLessThan(GAP * 0.25 + 1500);
+    await pageA.close();
+    await pageB.close();
+  });
+
+  // 47.22 PRESENCE IN THE WORKER (0.64.0, increment 1): a window that crashes
+  // without saying bye — no heartbeat, no sync, no bye — is expired by the
+  // room's worker within 15 s: it leaves the registry, its claim on the
+  // speakers dies with it (the 0.62.0 hole: a stale visitor claim outranked the
+  // loop's for ever), and the leader is recomputed among the LIVE windows. The
+  // survivor's loop then runs its pass. `room.detach()` is the crash.
+  test('47.22 ?room=shared: a window that falls silent is expired by the worker — its speakers claim dies, the survivor leads and plays', async ({
+    context,
+  }) => {
+    test.setTimeout(60_000);
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    await boot(pageA, `${IDLE}&room=shared&screen=0`);
+    await boot(pageB, `${IDLE}&room=shared&screen=1`);
+    await armQuietTransport(pageA);
+    await armQuietTransport(pageB);
+    const room = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.room.state());
+    const idA = await pageA.evaluate(() => (window as any)._exhibitTest.room.id as string);
+    const idB = await pageB.evaluate(() => (window as any)._exhibitTest.room.id as string);
+    await expect.poll(async () => (await room(pageA)).snapshot?.windows?.length, { timeout: 5_000 }).toBe(2);
+    expect((await room(pageA)).snapshot.leader, 'screen 0 leads').toBe(idA);
+
+    // A visitor at B: the touch (the hand-off), the flag, a seek — B claims the speakers.
+    await pageB.evaluate(() => (window as any)._exhibitTest.room.touch());
+    await pageB.evaluate(() => ((window as any)._playing = true));
+    await pageB.evaluate(() => (window as any)._exhibitTest.transport.seek(10));
+    await expect.poll(async () => (await room(pageA)).snapshot?.audible?.id, { timeout: 5_000 }).toBe(idB);
+    expect((await room(pageA)).snapshot.audible.kind).toBe('visitor');
+    await expect.poll(async () => (await attract(pageA))?.phase).toBe('idle-wait');
+
+    // B crashes: silent on every channel, no bye at pagehide.
+    await pageB.evaluate(() => (window as any)._exhibitTest.room.detach());
+    expect((await room(pageB)).detached).toBe(true);
+    await pageB.close();
+    // Within the TTL and a sweep: one window, nobody audible, A the leader.
+    await expect.poll(async () => (await room(pageA)).snapshot?.windows?.length, { timeout: 25_000 }).toBe(1);
+    const s = (await room(pageA)).snapshot;
+    expect(s.windows[0].id).toBe(idA);
+    expect(s.audible, 'the stale claim died with the window').toBeNull();
+    expect(s.leader).toBe(idA);
+    // The room is A's alone and long idle: its loop runs the pass.
+    await expect.poll(async () => (await attract(pageA))?.phase, { timeout: 10_000 }).toBe('attract');
+    await expect.poll(async () => (await attract(pageA))?.started, { timeout: 15_000 }).toBe(true);
+    expect((await attract(pageA)).leader).toBe(true);
+    await pageA.close();
+  });
+
+  // 47.23 THE GAP IN THE WORKER (0.64.0, increment 4): the silence between
+  // passes is ROOM state. The leader's pass ends, both windows enter the gap,
+  // and the leader REALLY reloads at its midpoint: back, its welcome snapshot
+  // carries the gap, so it resumes IN the silence with the room's end time and
+  // pass count (`resumedFrom: "room"`, the storage record unused), and plays
+  // again when the gap ends while the follower — reloaded later, resumed the
+  // same way — waits. The room's touch clock survives the reloads: no window's
+  // return counts as a visitor.
+  test("47.23 ?room=shared: the leader reloads in the silence and resumes the room's gap from the worker, then plays again", async ({
+    context,
+  }) => {
+    test.setTimeout(90_000);
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    const GAP = 20_000;
+    const qs = `${IDLE}&room=shared&attractGapMs=${GAP}&attractReload=1`;
+    const { order, durations } = await boot(pageA, `${qs}&screen=0`);
+    await boot(pageB, `${qs}&screen=1`);
+    await armQuietTransport(pageA);
+    await armQuietTransport(pageB);
+    const room = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.room.state());
+    await expect.poll(async () => (await attract(pageA))?.peers).toBe(1);
+    await expect.poll(async () => (await attract(pageA))?.phase, { timeout: 8_000 }).toBe('attract');
+    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 8_000 }).toBe('attract');
+    await expect.poll(async () => (await attract(pageA)).started, { timeout: 15_000 }).toBe(true);
+    expect((await attract(pageA)).leader).toBe(true);
+
+    // The pass ends on A: the room's gap, reported to the worker.
+    const reloadedA = pageA.waitForEvent('load');
+    await pageA.evaluate((t) => (window as any)._exhibitTest.transport.seek(t), durations[order[0]] - 0.1);
+    await expect.poll(async () => (await attract(pageA))?.phase).toBe('gap');
+    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 5_000 }).toBe('gap');
+    const before = await attract(pageA);
+    expect(before.passCount).toBe(1);
+    const roomGap = (await room(pageB)).snapshot.loop;
+    expect(roomGap.passCount).toBe(1);
+    expect(Math.abs(roomGap.gap.endsAt - before.gapEndsAt)).toBeLessThan(300);
+    expect(before.reloadAt).toBeLessThan((await attract(pageB)).reloadAt);
+
+    // A reloads at the midpoint and comes back IN the gap, from the room.
+    await reloadedA;
+    expect(await pageA.evaluate(() => (window as any)._exhibitTest.ready)).toBe(true);
+    await armQuietTransport(pageA);
+    await expect.poll(async () => (await attract(pageA))?.resumed, { timeout: 5_000 }).toBe(true);
+    const after = await attract(pageA);
+    expect(after.resumedFrom).toBe('room');
+    expect(after.phase).toBe('gap');
+    expect(after.bandUp).toBe(true);
+    expect(after.passCount).toBe(1);
+    expect(Math.abs(after.gapEndsAt - before.gapEndsAt)).toBeLessThan(300);
+    expect(after.presence).toBe('worker');
+    // Its return is not a touch: the room stays idle for the loop (its welcome
+    // snapshot says so already; a tick may separate the two windows' views).
+    await expect.poll(async () => (await room(pageA)).snapshot?.loop?.idle, { timeout: 3_000 }).toBe(true);
+    expect((await room(pageB)).snapshot.loop.idle).toBe(true);
+
+    // B reloads later (0.75 of the gap) and resumes the same way.
+    await pageB.waitForEvent('load');
+    expect(await pageB.evaluate(() => (window as any)._exhibitTest.ready)).toBe(true);
+    await armQuietTransport(pageB);
+    await expect.poll(async () => (await attract(pageB))?.resumed, { timeout: 5_000 }).toBe(true);
+    expect((await attract(pageB)).resumedFrom).toBe('room');
+    expect((await attract(pageB)).phase).toBe('gap');
+
+    // After the gap the leader plays from the top; the follower waits.
+    await expect.poll(async () => (await attract(pageA))?.phase, { timeout: 15_000 }).toBe('attract');
+    await expect.poll(async () => (await attract(pageA))?.started, { timeout: 15_000 }).toBe(true);
+    const t = await taps(pageA);
+    expect(t[t.length - 1]).toEqual({ file: order[0], time: 0 });
+    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 5_000 }).toBe('attract');
+    expect((await attract(pageB)).started).toBe(false);
+    expect((await attract(pageB)).leader).toBe(false);
+    await pageA.close();
+    await pageB.close();
+  });
+
+  // 47.24 THE LOOP AS THE MACHINE'S IDLE CASE (0.64.0, increment 3): 47.8's
+  // twin under ?room=shared. The idle verdict is the worker's — one fact both
+  // windows read from the same snapshot — the leader is screen 0, and a touch
+  // on either screen makes that screen live and leaves the other RESTING.
+  test('47.24 ?room=shared: the room idles by the worker, screen 0 plays, and a touch on either screen leaves the other resting', async ({
+    context,
+  }) => {
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    await boot(pageA, `${IDLE}&room=shared&screen=0`);
+    await boot(pageB, `${IDLE}&room=shared&screen=1`);
+    await armQuietTransport(pageA);
+    await armQuietTransport(pageB);
+    const room = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.room.state());
+    await expect.poll(async () => (await attract(pageA))?.peers).toBe(1);
+    await expect.poll(async () => (await attract(pageB))?.peers).toBe(1);
+    expect((await attract(pageA)).presence).toBe('worker');
+    expect((await attract(pageB)).presence).toBe('worker');
+    await expect.poll(async () => (await attract(pageA))?.phase, { timeout: 8_000 }).toBe('attract');
+    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 8_000 }).toBe('attract');
+    // The verdict is the room's: both snapshots say idle.
+    expect((await room(pageA)).snapshot.loop.idle).toBe(true);
+    expect((await room(pageB)).snapshot.loop.idle).toBe(true);
+    expect((await attract(pageA)).roomIdle).toBe(true);
+    await expect.poll(async () => (await attract(pageA)).started, { timeout: 15_000 }).toBe(true);
+    expect((await attract(pageA)).leader, 'screen 0 leads').toBe(true);
+    expect((await attract(pageB)).leader).toBe(false);
+    expect((await attract(pageB)).started).toBe(false);
+    expect(await bandUp(pageA)).toBe(true);
+    expect(await bandUp(pageB)).toBe(true);
+
+    // A visitor at B: the wake reaches A at once — B live, A RESTING with its band up.
+    await pageB.mouse.click(512, 683);
+    await expect.poll(async () => (await attract(pageB))?.phase).toBe('idle-wait');
+    await expect.poll(async () => (await attract(pageA))?.phase).toBe('rest');
+    await expect.poll(() => bandUp(pageB)).toBe(false);
+    expect(await bandUp(pageA)).toBe(true);
+    expect((await room(pageA)).snapshot.loop.idle).toBe(false);
+    // …and at A: A live too, B (untouched since) still live — nobody rests over an empty room.
+    await pageA.mouse.click(512, 683);
+    await expect.poll(async () => (await attract(pageA))?.phase).toBe('idle-wait');
+    await expect.poll(() => bandUp(pageA)).toBe(false);
+    // B untouched for its window while A is in use: B's band rises and B rests;
+    // a touch on A keeps A live under it.
+    for (let i = 0; i < 12 && (await attract(pageB)).phase !== 'rest'; i++) {
+      await pageA.mouse.click(512, 683);
+      await pageA.waitForTimeout(400);
+    }
+    expect((await attract(pageB)).phase).toBe('rest');
+    expect(await bandUp(pageB)).toBe(true);
+    await pageA.mouse.click(512, 683);
+    expect((await attract(pageA)).phase).toBe('idle-wait');
+    expect(await bandUp(pageA)).toBe(false);
+    await pageA.close();
+    await pageB.close();
+  });
+
+  // 47.25 THE BAND PER SCREEN (0.64.0): B, untouched for T while A's visitor is
+  // active, raises ITS band and sweeps ITS table — mirroring A muted, taking A's
+  // audience along (an idle screen does) — while A's band stays down and A's
+  // holder, choice, and glass SURVIVE B's sweep (the scoped `reset {viewports}`;
+  // a room-wide reset would have wiped them). When A's visitor pauses and is
+  // gone T, the room is idle and silent: the leader's pass from the top.
+  test("47.25 ?room=shared: an untouched screen's band rises and its sweep spares the other table; the leader plays once that table is quiet too", async ({
+    context,
+  }) => {
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    const { order } = await boot(pageA, `${IDLE}&room=shared&screen=0&marker=glass&turnPolicy=request`);
+    await boot(pageB, `${IDLE}&room=shared&screen=1&marker=glass&turnPolicy=request`);
+    await armQuietTransport(pageA);
+    await armQuietTransport(pageB);
+    await expect.poll(async () => (await attract(pageA))?.peers).toBe(1);
+    await expect.poll(async () => (await attract(pageB))?.peers).toBe(1);
+    const turnsOf = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.turns.state());
+    const audienceOf = (p: Page) => p.evaluate(() => (window as any)._exhibitTest.audience.get(0) as string);
+    // A visitor at A: touch, a take (room 0 holds and chose), a glass at 120 s, "expert", playing.
+    await pageB.evaluate(() => (window as any)._exhibitTest.audience.set(0, 'kids'));
+    await pageA.evaluate(() => (window as any)._exhibitTest.audience.set(0, 'expert'));
+    await pageA.evaluate(() => (window as any)._exhibitTest.room.touch());
+    await pageA.evaluate((f) => (window as any)._exhibitTest.turns.request(0, f), order[1]);
+    // The glass on the recording A is playing (placing one selects that file and moment).
+    await pageA.evaluate((f) => (window as any)._exhibitTest.placeMarker(0, f, 120), order[1]);
+    await pageA.evaluate(() => ((window as any)._playing = true));
+    await pageA.evaluate(() => (window as any)._exhibitTest.transport.seek(10));
+    await expect.poll(async () => (await turnsOf(pageB)).holder).toBe(0);
+    expect(await pageA.evaluate(() => (window as any)._exhibitTest.viewports[0].markerIx)).not.toBeNull();
+    const tapsA = (await taps(pageA)).length;
+    // B goes untouched past T while the visitor keeps touching A: B's band rises, B rests.
+    for (let i = 0; i < 12 && (await attract(pageB)).phase !== 'rest'; i++) {
+      await pageA.evaluate(() => (window as any)._exhibitTest.room.touch());
+      await pageA.waitForTimeout(400);
+    }
+    expect((await attract(pageB)).phase).toBe('rest');
+    expect(await bandUp(pageB)).toBe(true);
+    expect((await attract(pageA)).phase, 'A is live').toBe('idle-wait');
+    expect(await bandUp(pageA)).toBe(false);
+    // B mirrors A with A's audience; A's table is untouched by B's sweep.
+    await expect.poll(() => pageB.evaluate(() => (window as any)._exhibitTest.transport.activeFile), { timeout: 10_000 }).toBe(order[1]);
+    await expect.poll(() => audienceOf(pageB), { timeout: 5_000 }).toBe('expert');
+    const s = await turnsOf(pageA);
+    expect(s.holder, "A's holder survives B's sweep").toBe(0);
+    expect(s.selected[0], "A's choice survives").toBe(order[1]);
+    expect(await pageA.evaluate(() => (window as any)._exhibitTest.viewports[0].markerIx), "A's glass survives").not.toBeNull();
+    expect(await pageA.evaluate(() => (window as any)._exhibitTest.marker(0).ix)).not.toBeNull();
+    expect((await taps(pageA)).length, 'nothing executed on A').toBe(tapsA);
+    // A's visitor pauses and leaves: T later A's band rises, the room is idle
+    // and silent, and the leader (screen 0 = A) plays from the top.
+    await pageA.evaluate(() => ((window as any)._playing = false));
+    await pageA.evaluate(() => (window as any)._exhibitTest.transport.seek(11));
+    await expect.poll(async () => (await attract(pageA))?.phase, { timeout: 8_000 }).toBe('attract');
+    expect((await attract(pageA)).takenOver).toBe(false);
+    await expect.poll(async () => (await attract(pageA))?.started, { timeout: 15_000 }).toBe(true);
+    const t = await taps(pageA);
+    expect(t[t.length - 1]).toEqual({ file: order[0], time: 0 });
+    expect((await turnsOf(pageA)).holder, "A's own sweep").toBeNull();
+    await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 5_000 }).toBe('attract');
+    expect((await attract(pageB)).started).toBe(false);
     await pageA.close();
     await pageB.close();
   });

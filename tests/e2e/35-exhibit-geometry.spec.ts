@@ -852,8 +852,7 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       // tappable facts wearing the shimmer cue (plan §10 note of that date).
       'bandTap=shimmer',
       'theme=parchment', // the staff ground (user, 2026-09-03)
-      'attractAfterIdleMs=90000', // the attract loop after 90 s of room-wide idle (user, 2026-09-07)
-      'attractDuringPlaybackMs=180000', // and taking over a playing, untouched table after 3 min
+      'attractAfterIdleMs=180000', // the attract loop: a screen untouched for 3 min (user, 2026-09-07; one timer since 2026-09-16)
       'arbiter=broadcast', // two screens, one set of speakers: the loop's mirror and hand-off need it (2026-09-10)
       'room=shared', // the room machine: every window of the PC mirrors the audible one (2026-09-11)
       'switchCue=arrow', // switches a side did not make are shown (alpha-tester feedback, 2026-09-10)

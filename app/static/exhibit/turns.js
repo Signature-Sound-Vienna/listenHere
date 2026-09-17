@@ -267,6 +267,32 @@ export class TurnMachine {
     this._emit({ type: "reset" });
   }
 
+  /**
+   * The sweep of ONE screen (0.64.0: the band is per screen, so its sweep must
+   * not wipe the other table's holder, choices, or glasses): the given
+   * viewports (room ids) drop their choices and cooldowns; the holder, if one
+   * of them, is dropped; a request FROM one of them is withdrawn (no denial).
+   * A request TO a holder among them — the requester waiting on a table nobody
+   * is at any more — is granted: uncontended, it would have been an instant
+   * take. Emits `reset {viewports}`.
+   */
+  resetViewports(ids) {
+    const set = new Set((ids ?? []).map(Number));
+    if (this.pending && set.has(this.pending.viewport)) {
+      this.pending = null;
+      this._clearTimer();
+    }
+    if (this.holder != null && set.has(this.holder)) {
+      this.holder = null;
+      if (this.pending) this.grant(); // emits execute + granted
+    }
+    for (const v of set) {
+      delete this.selected[v];
+      delete this.cooldownUntil[v];
+    }
+    this._emit({ type: "reset", viewports: [...set] });
+  }
+
   /** A snapshot for renderers and tests; copied so nobody edits ours. */
   state() {
     return {
@@ -483,9 +509,14 @@ export class TurnTaking {
     else this._machine.deny();
   }
 
-  /** The attract loop's sweep: the machine back to its empty state (room-wide under the worker). */
+  /**
+   * The attract loop's sweep of THIS screen: under the worker only this
+   * window's viewports are reset (TurnMachine.resetViewports — the other
+   * table's holder and choices survive; a bare `reset` intent stays room-wide);
+   * without it the machine is this window's own and goes back to empty.
+   */
   reset() {
-    if (this._link) this._link.send({ type: "reset" });
+    if (this._link) this._link.send({ type: "reset", viewports: [...(this._room?.viewportIds ?? [])] });
     else this._machine.reset();
   }
 

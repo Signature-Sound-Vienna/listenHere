@@ -223,21 +223,14 @@ const TABS = [
         label: "Demo",
         button: "Start the attract loop now",
         unavailable: "Loop is off — set a timer first",
-        hint: "Raises the band and starts a pass at once, whatever the idle clock says (user, 2026-09-10). Needs the loop enabled: one of the two timers above 0. Taps on this panel never count as a visitor's, so the panel can stay open while the loop runs.",
+        hint: "Raises the band and starts a pass at once, whatever the idle clock says (user, 2026-09-10). Needs the loop enabled: the idle timer above 0. Taps on this panel never count as a visitor's, so the panel can stay open while the loop runs.",
       },
       {
         key: "attractAfterIdleMs",
-        label: "Start after idle (ms; 0 = off)",
-        options: [0, 30000, 60000, 90000, 120000],
+        label: "Screen idle after (ms; 0 = off)",
+        options: [0, 15000, 60000, 180000, 300000], // 15 s is for testing and demos
         hint:
-          "How long every viewport of the room must have gone untouched, with nothing playing, before the loop starts. Both screens agree over a channel. 0 is the shipped default until release; the staff preset carries 90 s.",
-      },
-      {
-        key: "attractDuringPlaybackMs",
-        label: "Take over during playback after (ms; 0 = off)",
-        options: [0, 15000, 120000, 180000, 300000], // 15 s is for testing and demos
-        hint:
-          "The second timer: the room untouched this long while music is playing, and the loop takes over from the current playhead — band up, table tidied, the pass carrying on from here with the audience as it is — instead of starting the piece again.",
+          "How long this screen must have gone untouched — touches only; music playing or stopping does not move the count — before its table is tidied and the band comes up. While the other screen is in use the screen rests under the band, mirroring the room; once both screens are past the window the loop plays: from the playhead if music is on the speakers, from the top if the room is silent. 0 is the shipped default until release; the staff preset carries 3 min.",
       },
       {
         key: "attractGapMs",
@@ -540,10 +533,9 @@ const STUDY_PRESET = {
   // The parchment ground (user, 2026-09-03): the staff table reads like the
   // hand-written concert diaries the palette was drawn from.
   theme: "parchment",
-  // The attract loop (user, 2026-09-07): 90 s of room-wide idle; the shipped
-  // default stays 0 until release.
-  attractAfterIdleMs: 90000,
-  attractDuringPlaybackMs: 180000,
+  // The attract loop (user, 2026-09-07; one per-screen timer since 2026-09-16):
+  // a screen untouched for 3 min; the shipped default stays 0 until release.
+  attractAfterIdleMs: 180000,
   // Two screens of one PC share the speakers: the loop's muted mirror and the
   // tap hand-off (ruling R7) ride on the broadcast arbiter (2026-09-10).
   arbiter: "broadcast",

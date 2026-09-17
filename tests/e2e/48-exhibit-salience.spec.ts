@@ -64,6 +64,26 @@ async function cues(page: Page, viewport: number) {
   );
 }
 
+/**
+ * The arrows are transient (1.1 s + a 0.28 s wipe; longer under reduced
+ * motion) and a select's build takes a variable few hundred milliseconds in
+ * Chromium, so ACCUMULATED counts across several switches race the first
+ * arrow's death (48.3 failed 4 of 6 that way, 2026-09-15). The attribution is
+ * therefore asserted as a DELTA: every arrow standing before a step is tagged,
+ * and only the untagged ones — the step's own — are counted afterwards.
+ */
+async function tagCues(page: Page) {
+  await page.evaluate(() => {
+    for (const g of document.querySelectorAll('.switch-cue g.cue')) (g as HTMLElement).dataset.seen = '1';
+  });
+}
+async function newCues(page: Page, viewport: number) {
+  return page.evaluate(
+    (v) => document.querySelectorAll(`.vp[data-viewport="${v}"] .switch-cue g.cue:not([data-seen])`).length,
+    viewport,
+  );
+}
+
 test.describe('48. Alpha-tester feedback: salience and the switch cue', () => {
   test.use({ viewport: { width: 1024, height: 1366 } });
 
@@ -120,17 +140,20 @@ test.describe('48. Alpha-tester feedback: salience and the switch cue', () => {
     await armQuietTransport(page);
     const [a, b, c] = order.filter((f) => f !== ref);
     // From the resting reference to a: viewport 0's own take.
+    await tagCues(page);
     await page.evaluate((f) => (window as any)._exhibitTest.turns.request(0, f), a);
-    expect(await cues(page, 0), "the taker's own viewport").toBe(0);
-    expect(await cues(page, 1), 'the other viewport').toBe(1);
+    await expect.poll(() => newCues(page, 1), { timeout: 3_000 }).toBe(1);
+    expect(await newCues(page, 0), "the taker's own viewport").toBe(0);
     // Viewport 1 takes b: the mirror image.
+    await tagCues(page);
     await page.evaluate((f) => (window as any)._exhibitTest.turns.request(1, f), b);
-    expect(await cues(page, 0)).toBe(1);
-    expect(await cues(page, 1)).toBe(1);
+    await expect.poll(() => newCues(page, 0), { timeout: 3_000 }).toBe(1);
+    expect(await newCues(page, 1)).toBe(0);
     // Nobody's switch (the attract loop's path): both sides are shown.
+    await tagCues(page);
     await page.evaluate((f) => (window as any)._exhibitTest.transport.select(f), c);
-    expect(await cues(page, 0)).toBe(2);
-    expect(await cues(page, 1)).toBe(2);
+    await expect.poll(() => newCues(page, 0), { timeout: 3_000 }).toBe(1);
+    await expect.poll(() => newCues(page, 1), { timeout: 3_000 }).toBe(1);
     // The arrows are transient — and so is the overlay itself: nothing may be left
     // over the strips once the last arrow has gone (the far half's jitter, 2026-09-10).
     await expect.poll(() => cues(page, 0), { timeout: 5_000 }).toBe(0);

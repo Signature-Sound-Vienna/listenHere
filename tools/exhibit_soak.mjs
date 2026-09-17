@@ -56,7 +56,7 @@ const params = new URLSearchParams(
     "&turnPolicy=request&tapMode=direct&marker=glass&audienceAll=true&pinExpiry=auto" +
     "&preload=on&playerCache=8&loadingGrace=500&switchCue=arrow&arbiter=broadcast" +
     `&room=${room}` +
-    `&attractAfterIdleMs=3000&attractDuringPlaybackMs=0&attractGapMs=${gapMs}&attractReload=${reload ? 1 : 0}`,
+    `&attractAfterIdleMs=3000&attractGapMs=${gapMs}&attractReload=${reload ? 1 : 0}`,
 );
 for (const [k, v] of new URLSearchParams(arg("params", ""))) params.set(k, v);
 const pageUrl = `${url.replace(/\/$/, "")}/exhibit?${params}`;

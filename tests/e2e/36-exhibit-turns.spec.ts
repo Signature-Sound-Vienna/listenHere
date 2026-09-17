@@ -1016,14 +1016,24 @@ test.describe("36c. The room's turn machine", () => {
     await pageB.close();
   });
 
-  test("36.27 an auto-grant executes on the requester's window", async ({ context }) => {
-    const { pageA, pageB, order } = await bootRoom(context, '&turnPolicy=request&turnGrantMs=1200');
+  test("36.27 an auto-grant executes on the requester's window, and both windows' grant rings agree", async ({ context }) => {
+    const { pageA, pageB, order } = await bootRoom(context, '&turnPolicy=request&turnGrantMs=3000');
     await tap(pageA, 0, order[0]);
     await expect.poll(async () => (await turnState(pageB)).holder).toBe(0);
     await makeAudible(pageA);
     await tap(pageB, 3, order[1]);
     await expect.poll(async () => (await turnEl(pageA, 0)).role).toBe('prompt');
-    await expect.poll(async () => (await turnState(pageA)).holder, { timeout: 5_000 }).toBe(3);
+    await expect.poll(async () => (await turnEl(pageB, 1)).role).toBe('waiting');
+    // The ring (0.64.0) counts the same deadline down on both tables: the
+    // machine's wall-clock stamp, read by both windows.
+    await pageA.waitForTimeout(600);
+    const fracA = await ringFrac(pageA, 0);
+    const fracB = await ringFrac(pageB, 1);
+    expect(fracA).not.toBeNull();
+    expect(fracB).not.toBeNull();
+    expect(fracA!).toBeLessThan(1);
+    expect(Math.abs(fracA! - fracB!)).toBeLessThan(0.1);
+    await expect.poll(async () => (await turnState(pageA)).holder, { timeout: 8_000 }).toBe(3);
     await expect.poll(() => tapsOf(pageB)).toEqual([order[1]]);
     expect(await tapsOf(pageA)).toEqual([order[0]]);
     await pageA.close();
@@ -1104,4 +1114,65 @@ test.describe("36c. The room's turn machine", () => {
     expect(await selectedIn(page, 0)).toEqual([order[0]]);
     await page.close();
   });
+
+  // 36.31 THE GRANT RING (user, 2026-09-15: the auto-grant "feels a bit of a
+  // rug-pull"; 0.64.0). While a request stands with a deadline, the holder's
+  // prompt AND the requester's waiting note carry a depleting ring — the
+  // "Keep reading…" ring's twin — driven from the machine's `pending.expiresAt`;
+  // both go with the grant. With explicit grants only (turnGrantMs=0) there is
+  // no deadline and no ring. The prompt is rebuilt only when the request
+  // changes, so the ring's tick never recreates the buttons under a finger.
+  test('36.31 a pending request shows a depleting grant ring on the prompt and on the wait; none without a deadline', async ({
+    context,
+  }) => {
+    const page = await context.newPage();
+    const { order } = await boot(page, 'debug=1&turnPolicy=request&turnGrantMs=3000');
+    await armQuietTransport(page);
+    await tap(page, 0, order[0]);
+    await setPlaying(page, true);
+    await tap(page, 1, order[1]);
+    await expect.poll(async () => (await turnEl(page, 0)).role).toBe('prompt');
+    expect((await turnEl(page, 1)).role).toBe('waiting');
+    expect(await page.locator('.vp[data-viewport="0"] .vp-turn .turn-ring').count()).toBe(1);
+    expect(await page.locator('.vp[data-viewport="1"] .vp-turn .turn-ring').count()).toBe(1);
+    // A mark on the button: if the ring's tick rebuilt the prompt, it would be gone.
+    await page.evaluate(() => ((document.querySelector('.vp[data-viewport="0"] .turn-grant') as HTMLElement).dataset.mark = 'same'));
+    // Half way through the window the ring is below half, and the buttons are the same elements.
+    await page.waitForTimeout(1500);
+    const f0 = await ringFrac(page, 0);
+    const f1 = await ringFrac(page, 1);
+    expect(f0!).toBeLessThan(0.55);
+    expect(f0!).toBeGreaterThan(0.2);
+    expect(Math.abs(f0! - f1!)).toBeLessThan(0.1);
+    expect(
+      await page.evaluate(() => (document.querySelector('.vp[data-viewport="0"] .turn-grant') as HTMLElement).dataset.mark),
+      'the prompt was not rebuilt under the finger',
+    ).toBe('same');
+    // The grant: both rings go with the prompt and the wait.
+    await expect.poll(async () => (await turnState(page)).holder, { timeout: 5_000 }).toBe(1);
+    await expect.poll(() => page.locator('.vp-turn .turn-ring').count()).toBe(0);
+    expect((await turnEl(page, 0)).hidden).toBe(true);
+    expect((await turnEl(page, 1)).hidden).toBe(true);
+
+    // No deadline, no ring.
+    await boot(page, 'debug=1&turnPolicy=request&turnGrantMs=0');
+    await armQuietTransport(page);
+    await tap(page, 0, order[0]);
+    await setPlaying(page, true);
+    await tap(page, 1, order[1]);
+    await expect.poll(async () => (await turnEl(page, 0)).role).toBe('prompt');
+    expect((await turnEl(page, 1)).role).toBe('waiting');
+    expect(await page.locator('.vp-turn .turn-ring').count()).toBe(0);
+    await page.close();
+  });
 });
+
+/** The grant ring's fraction on one viewport's turn element, or null without a ring. */
+async function ringFrac(page: Page, viewport: number) {
+  return page.evaluate((v) => {
+    const ring = document.querySelector(`.vp[data-viewport="${v}"] .vp-turn .turn-ring`) as HTMLElement | null;
+    if (!ring) return null;
+    const raw = ring.style.getPropertyValue('--turn-frac');
+    return raw === '' ? null : Number(raw);
+  }, viewport);
+}

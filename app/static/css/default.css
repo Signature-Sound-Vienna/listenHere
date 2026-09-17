@@ -2983,12 +2983,6 @@ body.marker-dragging * {
   cursor: grabbing !important;
 }
 
-.align-correction-overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
-}
-
 /* === Alignment panel (embedded in listen page) === */
 
 #align-panel {

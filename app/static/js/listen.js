@@ -1244,12 +1244,12 @@ export function refreshWfBg(filename) {
 // imported at the top of this file.
 
 // ---------------------------------------------------------------------------
-// Alignment correction (drag-to-morph)
+// Unified undo/redo, marker dragging. (The marker-drag "Fix alignment" mode —
+// a Gaussian warp of a grid around a dragged marker — was removed in 0.61.0,
+// ruling B4: alignment correction is fix-mode.js's job now.)
 // ---------------------------------------------------------------------------
-let _alignCorrectionMode = false;
 // Unified Undo/Redo: arrays of tagged entries
 // Entry types:
-//   { type:'align-fix', filename, grid }
 //   { type:'marker-add', alignIx, markerArrayIx }
 //   { type:'marker-delete', alignIx, markerArrayIx }
 //   { type:'marker-move', markerArrayIx, oldAlignIx, newAlignIx }
@@ -1287,64 +1287,11 @@ export function setAnnoChangesPending(v) {
 }
 // Revert: original grids captured when alignment first loads
 const _alignOriginalGrids = {};
-// Radius presets (in alignment indices)
-const _ALIGN_RADIUS_NARROW = 10;
-const _ALIGN_RADIUS_MEDIUM = 30;
-const _ALIGN_RADIUS_WIDE = 90;
-// Current radius selection (set from UI)
-let _alignRadius = _ALIGN_RADIUS_MEDIUM;
 // Drag markers: whether markers are currently draggable
 export let dragMarkersEnabled = false;
-// Drag mode: 'move' or 'fix'
-let _dragMode = "move";
 // Track whether pulse hints have been shown (first-time tooltips)
 let _pulseHintShown = false;
 let _disableDragHintShown = false;
-
-/** Symmetric Gaussian weight. */
-function _gaussianWeight(j, jCenter, sigma) {
-  const diff = j - jCenter;
-  return Math.exp(-(diff * diff) / (2 * sigma * sigma));
-}
-
-/** Choose sigma: modifier keys override the UI selection. */
-function _sigmaFromEvent(e) {
-  if (e.shiftKey && e.altKey) return _ALIGN_RADIUS_NARROW;
-  if (e.shiftKey) return _ALIGN_RADIUS_MEDIUM;
-  return _alignRadius;
-}
-
-/**
- * Apply a Gaussian-weighted displacement to a grid, enforcing monotonicity.
- * Returns a new array (does not mutate the input).
- *
- * @param {number[]} grid        - alignment times
- * @param {number}   jCenter     - index of the drag anchor
- * @param {number}   dtDrag      - displacement in seconds at the anchor
- * @param {number}   sigma       - Gaussian radius (in indices)
- * @returns {number[]} morphed grid
- */
-function _morphGrid(grid, jCenter, dtDrag, sigma) {
-  const n = grid.length;
-
-  const out = new Array(n);
-  for (let j = 0; j < n; j++) {
-    const w = _gaussianWeight(j, jCenter, sigma);
-    out[j] = grid[j] + dtDrag * w;
-  }
-  // Enforce monotonicity outward from the drag anchor: entries that
-  // would violate ordering get shoved aside in the appropriate direction.
-  const EPS = 1e-6;
-  // Left of anchor: push entries leftward if they collide
-  for (let j = jCenter - 1; j >= 0; j--) {
-    if (out[j] >= out[j + 1]) out[j] = out[j + 1] - EPS;
-  }
-  // Right of anchor: push entries rightward if they collide
-  for (let j = jCenter + 1; j < n; j++) {
-    if (out[j] <= out[j - 1]) out[j] = out[j - 1] + EPS;
-  }
-  return out;
-}
 
 // ---------------------------------------------------------------------------
 // Pane-level loading indicator.
@@ -1787,55 +1734,13 @@ function updateCloseListeningBadge() {
   const cb = document.getElementById("close-listening-cb");
   if (cb) cb.checked = closeListeningMode;
   // Update dependent controls
-  _updateDragFieldsetState();
-}
-
-/** Update enabled state of drag-marker fieldset and radius fieldset. */
-function _updateDragFieldsetState() {
-  const dragFieldset = document.getElementById("drag-marker-fieldset");
-  const radiusFieldset = document.getElementById("radius-fieldset");
-  // Drag markers is always available (not gated on close-listening)
-  if (dragFieldset) dragFieldset.disabled = false;
-  if (radiusFieldset)
-    radiusFieldset.disabled = !(dragMarkersEnabled && _dragMode === "fix");
-  // Update marker visual classes
   updateMarkerDraggableClass();
-  // Update correction overlay pointer-events
-  const corrActive = dragMarkersEnabled && _dragMode === "fix";
-  if (corrActive !== _alignCorrectionMode) {
-    _alignCorrectionMode = corrActive;
-    _applyCorrectionOverlayPointerEvents();
-  }
 }
 
-/** Apply the effective pointer-events state to correction overlay canvases.
- *  Correction overlays are interactive only when fix-alignment mode is active
- *  AND draw-region mode is not active (draw mode needs events to pass through
- *  to the WaveSurfer wrapper for the regions plugin). */
+/** Draw-region mode: set by annotation code when entering/exiting it, read by
+ *  engine modules (waveform-layout suppresses its own drags while it is on). */
 let _drawModeActive = false;
 
-/** Are the alignment-correction overlay canvases interactive right now?
- *  The two flags are only ever meaningful together, so engine modules get this
- *  one accessor rather than both (increment 22): a correction canvas takes
- *  pointer events only in fix-alignment mode with draw-region mode off.
- *  This is the single source of truth for that expression — the pointer-events
- *  sweep below and engine/waveform-events.js's canvas creation both read it. */
-export function correctionOverlaysInteractive() {
-  return _alignCorrectionMode && !_drawModeActive;
-}
-
-function _applyCorrectionOverlayPointerEvents() {
-  const effective = correctionOverlaysInteractive();
-  document.querySelectorAll(".align-correction-overlay").forEach((c) => {
-    c.style.pointerEvents = effective ? "auto" : "none";
-    if (!effective) c.style.cursor = "";
-  });
-  document.body.classList.toggle("align-correction-active", effective);
-}
-
-/** Called by annotation.js when entering/exiting draw-region mode.
- *  Suppresses correction overlay pointer-events so drag-selection
- *  events reach the WaveSurfer wrapper. */
 /** Read-only accessor for engine modules; only annotation code sets the flag. */
 export function isDrawModeActive() {
   return _drawModeActive;
@@ -1843,7 +1748,6 @@ export function isDrawModeActive() {
 
 export function setDrawModeActive(active) {
   _drawModeActive = active;
-  _applyCorrectionOverlayPointerEvents();
   // Toggle a class so CSS can suppress native drag on waveform elements
   document
     .getElementById("waveforms")
@@ -3690,12 +3594,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const toolsPanel = document.getElementById("tools-panel");
   const closeListeningCb = document.getElementById("close-listening-cb");
   const dragMarkersCb = document.getElementById("drag-markers-cb");
-  const dragModeMove = document.getElementById("drag-mode-move");
-  const dragModeFix = document.getElementById("drag-mode-fix");
-  const radiusFieldset = document.getElementById("radius-fieldset");
-  const radiusNarrow = document.getElementById("radius-narrow");
-  const radiusMedium = document.getElementById("radius-medium");
-  const radiusWide = document.getElementById("radius-wide");
   const undoBtn = document.getElementById("undo-btn");
   const redoBtn = document.getElementById("redo-btn");
   const revertBtn = document.getElementById("revert-all-btn");
@@ -3732,44 +3630,12 @@ document.addEventListener("DOMContentLoaded", () => {
   if (dragMarkersCb) {
     // Sync initial state from (possibly browser-cached) form value
     dragMarkersEnabled = dragMarkersCb.checked;
-    if (dragModeMove) dragModeMove.disabled = !dragMarkersEnabled;
-    if (dragModeFix) dragModeFix.disabled = !dragMarkersEnabled;
+    updateMarkerDraggableClass();
     dragMarkersCb.addEventListener("change", () => {
       dragMarkersEnabled = dragMarkersCb.checked;
-      // Enable/disable the drag-mode radio buttons
-      if (dragModeMove) dragModeMove.disabled = !dragMarkersEnabled;
-      if (dragModeFix) dragModeFix.disabled = !dragMarkersEnabled;
-      _updateDragFieldsetState();
+      updateMarkerDraggableClass();
     });
   }
-
-  // --- Drag mode radios ---
-  // Sync initial state from (possibly browser-cached) radio selection
-  _dragMode =
-    document.querySelector('input[name="drag-mode"]:checked')?.value || "move";
-  [dragModeMove, dragModeFix].forEach((r) => {
-    if (r)
-      r.addEventListener("change", () => {
-        _dragMode =
-          document.querySelector('input[name="drag-mode"]:checked')?.value ||
-          "move";
-        _updateDragFieldsetState();
-      });
-  });
-
-  // Apply initial enabled/correction state
-  _updateDragFieldsetState();
-
-  // --- Radius radios ---
-  // Sync initial state from (possibly browser-cached) radio selection
-  const _initRadius = document.querySelector('input[name="radius"]:checked');
-  if (_initRadius) _alignRadius = parseInt(_initRadius.value);
-  [radiusNarrow, radiusMedium, radiusWide].forEach((r) => {
-    if (r)
-      r.addEventListener("change", () => {
-        _alignRadius = parseInt(r.value);
-      });
-  });
 
   // --- Unified Undo / Redo ---
 
@@ -3827,17 +3693,6 @@ document.addEventListener("DOMContentLoaded", () => {
     _changeCounter--;
     const entry = _undoStack.pop();
     switch (entry.type) {
-      case "align-fix": {
-        _redoStack.push({
-          type: "align-fix",
-          filename: entry.filename,
-          grid: alignmentGrids[entry.filename].slice(),
-        });
-        alignmentGrids[entry.filename] = entry.grid;
-        _syncGridToJSON(entry.filename);
-        drawAlignmentGrid(entry.filename);
-        break;
-      }
       case "marker-add": {
         // Undo add = remove the marker
         const ix = markers.indexOf(entry.alignIx);
@@ -3914,17 +3769,6 @@ document.addEventListener("DOMContentLoaded", () => {
     _changeCounter++;
     const entry = _redoStack.pop();
     switch (entry.type) {
-      case "align-fix": {
-        _undoStack.push({
-          type: "align-fix",
-          filename: entry.filename,
-          grid: alignmentGrids[entry.filename].slice(),
-        });
-        alignmentGrids[entry.filename] = entry.grid;
-        _syncGridToJSON(entry.filename);
-        drawAlignmentGrid(entry.filename);
-        break;
-      }
       case "marker-add": {
         // Redo add = re-insert
         const insertIx = Math.min(entry.markerArrayIx, markers.length);
@@ -4012,8 +3856,6 @@ document.addEventListener("DOMContentLoaded", () => {
   function _actionLabel(entry) {
     if (!entry) return "";
     switch (entry.type) {
-      case "align-fix":
-        return "fix alignment";
       case "marker-add":
         return "add marker";
       case "marker-delete":
@@ -4266,447 +4108,68 @@ document.addEventListener("DOMContentLoaded", () => {
       startAlignIx: markers[nearby.markerArrayIx],
       wfEl,
     };
-
-    // If in fix-alignment mode, also set up the correction drag
-    if (_dragMode === "fix") {
-      const grid = alignmentGrids[filename];
-      if (
-        !grid ||
-        filename === referenceAudioIx ||
-        filename === SYNTH_MEI_KEY
-      ) {
-        _markerDragState = null;
-        document.body.classList.remove("marker-dragging");
-        return;
-      }
-      const jCenter = markers[nearby.markerArrayIx];
-      const sigma = _sigmaFromEvent(e);
-      const isGlobal = e.ctrlKey || e.metaKey;
-      const origGrid = grid.slice();
-      const dur = wavesurfers[filename]?.getDuration() || 1;
-      // Push undo entries for alignment grids
-      if (isGlobal) {
-        for (const fn of Object.keys(alignmentGrids)) {
-          if (fn === referenceAudioIx || fn === SYNTH_MEI_KEY) continue;
-          _pushUndo({
-            type: "align-fix",
-            filename: fn,
-            grid: alignmentGrids[fn].slice(),
-          });
-        }
-      } else {
-        _pushUndo({ type: "align-fix", filename, grid: origGrid });
-      }
-      _markerDragState.fixMode = true;
-      _markerDragState.jCenter = jCenter;
-      _markerDragState.origGrid = origGrid;
-      _markerDragState.sigma = sigma;
-      _markerDragState.dur = dur;
-      _markerDragState.isGlobal = isGlobal;
-    }
   });
 
   // Mousemove: drag marker
   document.addEventListener("mousemove", (e) => {
     if (!_markerDragState) return;
-    const { filename, markerArrayIx, startX, wfEl, fixMode } = _markerDragState;
+    const { filename, markerArrayIx, startX, wfEl } = _markerDragState;
     const dur = wavesurfers[filename]?.getDuration() || 1;
     const rect = wfEl.getBoundingClientRect();
     const _zoomedW = getZoomedWidth(filename) || rect.width;
 
-    if (fixMode) {
-      // Fix alignment mode: morph the grid
-      _markerDragState.sigma = _sigmaFromEvent(e);
-      const sigma = _markerDragState.sigma;
-      const dtDrag = (e.clientX - startX) / (_zoomedW / dur);
-      const morphed = _morphGrid(
-        _markerDragState.origGrid,
-        _markerDragState.jCenter,
-        dtDrag,
-        sigma,
-      );
-      const corrCanvas = wfEl.querySelector(".align-correction-overlay");
-      if (corrCanvas) {
-        _drawMorphPreview(
-          corrCanvas,
-          filename,
-          morphed,
-          _markerDragState.origGrid,
-        );
-      }
-      // Show the dragged marker at its morphed position
-      const morphedTime = morphed[_markerDragState.jCenter];
-      const _fullW = getZoomedWidth(filename);
-      const leftPx =
-        dur > 0
-          ? Math.max(0, Math.min(_fullW, (morphedTime / dur) * _fullW))
-          : 0;
-      const markerEl = wfEl.querySelector(
-        `.ws-marker[data-align-ix="${markers[markerArrayIx]}"]`,
-      );
-      if (markerEl) markerEl.style.left = `${leftPx}px`;
-      // Update all other markers on this waveform to their morphed positions
-      wfEl.querySelectorAll(".ws-marker[data-align-ix]").forEach((el) => {
-        if (el === markerEl) return;
-        const aIx = parseInt(el.dataset.alignIx);
-        if (aIx >= 0 && aIx < morphed.length) {
-          const t = morphed[aIx];
-          const p =
-            dur > 0 ? Math.max(0, Math.min(_fullW, (t / dur) * _fullW)) : 0;
-          el.style.left = `${p}px`;
-        }
-      });
-      // Global preview on other waveforms
-      if (_markerDragState.isGlobal) {
-        document.querySelectorAll(".align-correction-overlay").forEach((c) => {
-          const fn = c.closest(".waveform")?.dataset.ix;
-          if (
-            !fn ||
-            fn === filename ||
-            fn === referenceAudioIx ||
-            fn === SYNTH_MEI_KEY
-          )
-            return;
-          const fnOrigGrid = _undoStack
-            .slice()
-            .reverse()
-            .find((u) => u.type === "align-fix" && u.filename === fn)?.grid;
-          if (!fnOrigGrid) return;
-          const refSpacing =
-            _markerDragState.origGrid[_markerDragState.jCenter] || 1;
-          const localSpacing = fnOrigGrid[_markerDragState.jCenter] || 1;
-          const scale = localSpacing / refSpacing;
-          const localMorphed = _morphGrid(
-            fnOrigGrid,
-            _markerDragState.jCenter,
-            dtDrag * scale,
-            sigma,
-          );
-          _drawMorphPreview(c, fn, localMorphed, fnOrigGrid);
-        });
-      }
-    } else {
-      // Move marker mode: show cursor at new position
-      const pxDelta = e.clientX - startX;
-      const timeDelta = (pxDelta / _zoomedW) * dur;
-      const origTime = getCorrespondingTime(
-        filename,
-        _markerDragState.startAlignIx,
-      );
-      const newTime = Math.max(0, Math.min(dur, origTime + timeDelta));
-      const newAlignIx = getClosestAlignmentIx(newTime, filename);
-      // Temporarily update marker position for visual feedback
-      markers[markerArrayIx] = newAlignIx;
-      redrawAllMarkers();
-    }
+    // Move marker mode: show cursor at new position
+    const pxDelta = e.clientX - startX;
+    const timeDelta = (pxDelta / _zoomedW) * dur;
+    const origTime = getCorrespondingTime(
+      filename,
+      _markerDragState.startAlignIx,
+    );
+    const newTime = Math.max(0, Math.min(dur, origTime + timeDelta));
+    const newAlignIx = getClosestAlignmentIx(newTime, filename);
+    // Temporarily update marker position for visual feedback
+    markers[markerArrayIx] = newAlignIx;
+    redrawAllMarkers();
   });
 
   // Mouseup: commit marker drag
   document.addEventListener("mouseup", (e) => {
     if (!_markerDragState) return;
-    const { filename, markerArrayIx, startX, startAlignIx, wfEl, fixMode } =
+    const { filename, markerArrayIx, startX, startAlignIx, wfEl } =
       _markerDragState;
     const dur = wavesurfers[filename]?.getDuration() || 1;
     const rect = wfEl.getBoundingClientRect();
     const _zoomedW = getZoomedWidth(filename) || rect.width;
 
-    if (fixMode) {
-      const dtDrag = (e.clientX - startX) / (_zoomedW / dur);
-      if (Math.abs(dtDrag) < 1e-4) {
-        // No meaningful drag — pop the undo entries
-        if (_markerDragState.isGlobal) {
-          for (const fn of Object.keys(alignmentGrids)) {
-            if (fn === referenceAudioIx || fn === SYNTH_MEI_KEY) continue;
-            _undoStack.pop();
-          }
-        } else {
-          _undoStack.pop();
-        }
-      } else {
-        const sigma = _markerDragState.sigma;
-        const morphed = _morphGrid(
-          _markerDragState.origGrid,
-          _markerDragState.jCenter,
-          dtDrag,
-          sigma,
-        );
-        alignmentGrids[filename] = morphed;
-        _syncGridToJSON(filename);
-        drawAlignmentGrid(filename);
-        if (_markerDragState.isGlobal) {
-          for (const fn of Object.keys(alignmentGrids)) {
-            if (
-              fn === filename ||
-              fn === referenceAudioIx ||
-              fn === SYNTH_MEI_KEY
-            )
-              continue;
-            const fnOrigGrid = _undoStack
-              .slice()
-              .reverse()
-              .find((u) => u.type === "align-fix" && u.filename === fn)?.grid;
-            if (!fnOrigGrid) continue;
-            const refSpacing =
-              _markerDragState.origGrid[_markerDragState.jCenter] || 1;
-            const localSpacing = fnOrigGrid[_markerDragState.jCenter] || 1;
-            const scale = localSpacing / refSpacing;
-            const localMorphed = _morphGrid(
-              fnOrigGrid,
-              _markerDragState.jCenter,
-              dtDrag * scale,
-              sigma,
-            );
-            alignmentGrids[fn] = localMorphed;
-            _syncGridToJSON(fn);
-            drawAlignmentGrid(fn);
-          }
-        }
-        // Commit: clear redo stack
-        _redoStack.length = 0;
-      }
-      // Clear correction overlays
-      document.querySelectorAll(".align-correction-overlay").forEach((c) => {
-        c.getContext("2d").clearRect(0, 0, c.width, c.height);
-      });
-      // Redraw markers — grid times have changed, so marker positions must update
+    // Move marker mode: commit the new position
+    const pxDelta = e.clientX - startX;
+    const timeDelta = (pxDelta / _zoomedW) * dur;
+    const origTime = getCorrespondingTime(filename, startAlignIx);
+    const newTime = Math.max(0, Math.min(dur, origTime + timeDelta));
+    const newAlignIx = getClosestAlignmentIx(newTime, filename);
+    if (newAlignIx !== startAlignIx) {
+      markers[markerArrayIx] = newAlignIx;
+      persistMarkers();
+      _pushUndo(
+        {
+          type: "marker-move",
+          markerArrayIx,
+          oldAlignIx: startAlignIx,
+          newAlignIx,
+        },
+        true,
+      );
       redrawAllMarkers();
+      if (closeListeningMode) seekToActiveMarker();
     } else {
-      // Move marker mode: commit the new position
-      const pxDelta = e.clientX - startX;
-      const timeDelta = (pxDelta / _zoomedW) * dur;
-      const origTime = getCorrespondingTime(filename, startAlignIx);
-      const newTime = Math.max(0, Math.min(dur, origTime + timeDelta));
-      const newAlignIx = getClosestAlignmentIx(newTime, filename);
-      if (newAlignIx !== startAlignIx) {
-        markers[markerArrayIx] = newAlignIx;
-        persistMarkers();
-        _pushUndo(
-          {
-            type: "marker-move",
-            markerArrayIx,
-            oldAlignIx: startAlignIx,
-            newAlignIx,
-          },
-          true,
-        );
-        redrawAllMarkers();
-        if (closeListeningMode) seekToActiveMarker();
-      } else {
-        // Restore original position (no change)
-        markers[markerArrayIx] = startAlignIx;
-        redrawAllMarkers();
-      }
+      // Restore original position (no change)
+      markers[markerArrayIx] = startAlignIx;
+      redrawAllMarkers();
     }
     _markerDragState = null;
     document.body.classList.remove("marker-dragging");
     _updateUndoRedoState();
   });
-
-  // --- Hover influence zone for fix-alignment mode ---
-  let _lastHoverCanvas = null;
-  let _lastHoverFilename = null;
-  let _lastHoverMouseX = null;
-
-  document.addEventListener("keydown", _onModifierChange);
-  document.addEventListener("keyup", _onModifierChange);
-  function _onModifierChange(e) {
-    if (!_alignCorrectionMode || _markerDragState) return;
-    if (!(e.key === "Shift" || e.key === "Alt")) return;
-    if (_lastHoverCanvas && _lastHoverFilename && _lastHoverMouseX != null) {
-      const sigma = _sigmaFromEvent(e);
-      _drawInfluenceZone(
-        _lastHoverCanvas,
-        _lastHoverFilename,
-        _lastHoverMouseX,
-        sigma,
-      );
-    }
-  }
-
-  function _drawInfluenceZone(canvas, filename, mouseX, sigma) {
-    const ctx = canvas.getContext("2d");
-    const viewW = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, viewW, h);
-    const grid = alignmentGrids[filename];
-    if (!grid || grid.length === 0) return;
-    const dur = wavesurfers[filename]?.getDuration() || 1;
-    const fullW = getZoomedWidth(filename) || viewW;
-    const scrollLeft = wavesurfers[filename]?.getScroll() || 0;
-    // mouseX is viewport-relative; convert to full-width coordinate for time lookup
-    const mouseTime = ((mouseX + scrollLeft) / fullW) * dur;
-    let jCenter = 0;
-    let bestDist = Infinity;
-    for (let j = 0; j < grid.length; j++) {
-      const d = Math.abs(grid[j] - mouseTime);
-      if (d < bestDist) {
-        bestDist = d;
-        jCenter = j;
-      }
-    }
-    const _izC = parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
-    const _izRgb = `${_izC.r},${_izC.g},${_izC.b}`;
-    ctx.fillStyle = `rgba(${_izRgb},0.12)`;
-    const cutoff = Math.ceil(sigma * 3);
-    const jMin = Math.max(0, jCenter - cutoff);
-    const jMax = Math.min(grid.length - 1, jCenter + cutoff);
-    const xMin = (grid[jMin] / dur) * fullW - scrollLeft;
-    const xMax = (grid[jMax] / dur) * fullW - scrollLeft;
-    ctx.fillRect(xMin, 0, xMax - xMin, h);
-    const xCenter = (grid[jCenter] / dur) * fullW - scrollLeft;
-    ctx.strokeStyle = `rgba(${_izRgb},0.5)`;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(xCenter, 0);
-    ctx.lineTo(xCenter, h);
-    ctx.stroke();
-  }
-
-  function _drawMorphPreview(canvas, filename, morphedGrid, origGrid) {
-    const ctx = canvas.getContext("2d");
-    const viewW = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, viewW, h);
-    const dur = wavesurfers[filename]?.getDuration() || 1;
-    const fullW = getZoomedWidth(filename) || viewW;
-    const scrollLeft = wavesurfers[filename]?.getScroll() || 0;
-    // Dynamic extent band: highlight all entries with displacement > 0.5% of peak
-    if (_markerDragState && _markerDragState.fixMode && origGrid) {
-      let peakDisp = 0;
-      for (let j = 0; j < morphedGrid.length; j++) {
-        peakDisp = Math.max(peakDisp, Math.abs(morphedGrid[j] - origGrid[j]));
-      }
-      if (peakDisp > 1e-6) {
-        const threshold = peakDisp * 0.005;
-        let jMin = morphedGrid.length - 1;
-        let jMax = 0;
-        for (let j = 0; j < morphedGrid.length; j++) {
-          if (Math.abs(morphedGrid[j] - origGrid[j]) > threshold) {
-            if (j < jMin) jMin = j;
-            if (j > jMax) jMax = j;
-          }
-        }
-        if (jMin <= jMax) {
-          const xMin = (morphedGrid[jMin] / dur) * fullW - scrollLeft;
-          const xMax = (morphedGrid[jMax] / dur) * fullW - scrollLeft;
-          const _mpBand = parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
-          ctx.fillStyle = `rgba(${_mpBand.r},${_mpBand.g},${_mpBand.b},0.08)`;
-          ctx.fillRect(xMin, 0, xMax - xMin, h);
-        }
-      }
-    }
-    // Compute peak displacement for colour interpolation
-    const n = morphedGrid.length;
-    let peakDispAll = 0;
-    if (origGrid) {
-      for (let j = 0; j < n; j++) {
-        peakDispAll = Math.max(
-          peakDispAll,
-          Math.abs(morphedGrid[j] - origGrid[j]),
-        );
-      }
-    }
-    // Colour endpoints: grid base → bright red, by displacement ratio
-    const r0 = 140,
-      g0 = 90,
-      b0 = 90,
-      a0 = 0.55; // grid base
-    const r1 = 220,
-      g1 = 40,
-      b1 = 40,
-      a1 = 0.9; // max displacement
-    const minPixelStep = 4;
-    let lastAbsX = -999;
-    ctx.lineWidth = 1;
-    for (let j = 0; j < n; j++) {
-      const absoluteX = (j / n) * fullW - scrollLeft;
-      const relativeX = (morphedGrid[j] / dur) * fullW - scrollLeft;
-      if (absoluteX > viewW + 10 && relativeX > viewW + 10) continue;
-      if (absoluteX < -10 && relativeX < -10) continue;
-      if (absoluteX - lastAbsX < minPixelStep) continue;
-      lastAbsX = absoluteX;
-      const disp = origGrid ? Math.abs(morphedGrid[j] - origGrid[j]) : 0;
-      // Skip lines with negligible displacement
-      if (peakDispAll > 1e-6 && disp / peakDispAll < 0.005) continue;
-      const t = peakDispAll > 1e-6 ? disp / peakDispAll : 0;
-      const r = Math.round(r0 + (r1 - r0) * t);
-      const g = Math.round(g0 + (g1 - g0) * t);
-      const b = Math.round(b0 + (b1 - b0) * t);
-      const a = (a0 + (a1 - a0) * t).toFixed(2);
-      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
-      ctx.beginPath();
-      ctx.moveTo(absoluteX, 0);
-      ctx.lineTo(relativeX, h / 6);
-      ctx.moveTo(relativeX, 5 * (h / 6));
-      ctx.lineTo(absoluteX, h);
-      ctx.stroke();
-    }
-  }
-
-  // Hover: show influence zone near active marker in fix mode
-  // Only display when cursor is close to a marker (within MARKER_GRAB_PX).
-  document.getElementById("waveforms").addEventListener("mousemove", (e) => {
-    if (!_alignCorrectionMode) return;
-    if (_markerDragState) return;
-    const wfEl = e.target.closest(".waveform");
-    if (!wfEl) return;
-    const filename = wfEl.dataset.ix;
-    if (!filename || filename === referenceAudioIx) return;
-    const canvas = wfEl.querySelector(".align-correction-overlay");
-    if (!canvas) return;
-
-    // Only show influence zone when near a marker
-    const nearby = _findNearbyMarker(wfEl, e.clientX);
-    if (!nearby) {
-      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
-      canvas.style.cursor = "";
-      canvas.title = "";
-      _lastHoverCanvas = null;
-      _lastHoverFilename = null;
-      _lastHoverMouseX = null;
-      return;
-    }
-    // Score waveform alignment is derived from the notation — show forbidden
-    if (filename === SYNTH_MEI_KEY) {
-      canvas.style.cursor = "not-allowed";
-      canvas.title =
-        "Score alignment cannot be adjusted — it is derived from note onsets";
-      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
-      _lastHoverCanvas = null;
-      _lastHoverFilename = null;
-      _lastHoverMouseX = null;
-      return;
-    }
-    canvas.style.cursor = "grab";
-    canvas.title = "";
-    const rect = canvas.getBoundingClientRect();
-    const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
-    _lastHoverCanvas = canvas;
-    _lastHoverFilename = filename;
-    _lastHoverMouseX = mouseX;
-    const sigma = _sigmaFromEvent(e);
-    _drawInfluenceZone(canvas, filename, mouseX, sigma);
-  });
-
-  document.getElementById("waveforms").addEventListener(
-    "mouseleave",
-    (e) => {
-      if (!_alignCorrectionMode || _markerDragState) return;
-      const wfEl = e.target.closest(".waveform");
-      if (wfEl) {
-        const canvas = wfEl.querySelector(".align-correction-overlay");
-        if (canvas) {
-          canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
-          canvas.style.cursor = "";
-          canvas.title = "";
-        }
-      }
-      _lastHoverCanvas = null;
-      _lastHoverFilename = null;
-      _lastHoverMouseX = null;
-    },
-    true,
-  );
 
   // load alignment json
   if (window.alignMode === "align") {
@@ -5239,9 +4702,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Time measurement (Shift-hold durations, Shift+drag spans) lives in
-  // ./engine/measure.js. Align-correction mode claims Shift for its influence
-  // zone, so that conflict is injected rather than imported over there.
-  initMeasureInteractions({ isSuppressed: () => _alignCorrectionMode });
+  // ./engine/measure.js.
+  initMeasureInteractions();
 });
 
 /**

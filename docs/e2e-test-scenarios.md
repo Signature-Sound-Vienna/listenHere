@@ -298,43 +298,23 @@ Test fixtures assume a small collection of public-domain audio files (e.g. `audi
 
 ## 8. Alignment Correction (Drag Markers)
 
+The marker-drag **Fix alignment** mode (a Gaussian warp of a recording's grid around a dragged marker, with Narrow/Medium/Wide ranges and Ctrl+drag across all recordings; scenarios 8.3–8.6, 8.8, 8.9) was removed in 0.61.0 per ruling B4. Alignment correction is fix mode's (sections 41–43); "Enable dragging" only moves markers.
+
 ### 8.1 Enable drag mode
 - Check **Enable dragging** in Drag Markers fieldset
-- Expected: cursor changes to indicate drag mode active; hint tooltip appears on waveforms
+- Expected: cursor changes to indicate drag mode active; hint tooltip appears on waveforms; no drag-mode radios or range fieldset exist
 
-### 8.2 Move marker mode — drag a marker
-- Add a marker; enable drag with **Move marker** mode; drag the marker on a non-reference waveform
+### 8.2 Drag a marker
+- Add a marker; enable dragging; drag the marker on any waveform
 - Expected: marker position updates in real time; releases at new position; all other waveforms show corresponding new aligned position
 
-### 8.3 Fix alignment mode — drag shifts alignment grid
-- Enable **Fix alignment** mode with Medium range; drag a marker
-- Expected: alignment grid for that waveform is locally warped around the dragged position; alignment visualisation lines update; other waveforms unaffected
-
-### 8.4 Fix alignment — range options
-- Test Narrow, Medium, Wide ranges
-- Expected: Narrow produces tight local shift; Wide produces broad smooth shift
-
-### 8.5 Fix alignment — Ctrl+drag applies to all waveforms
-- Ctrl+drag a marker in Fix alignment mode
-- Expected: all non-reference waveforms receive the same alignment correction (not just the dragged one)
-
-### 8.6 Cannot drag reference audio or score waveform
-- Attempt to drag a marker on the reference audio waveform
-- Expected: drag has no effect; no error
-- If a synthesised score waveform is present, attempt to drag a marker on it as well
-- Expected: drag has no effect; no error
-
 ### 8.7 Revert alignment edits
-- Make several drag corrections; click **Revert alignment edits**
-- Expected: all alignment grids return to original state; alignment visualisation updates
+- Make marker edits and fix-mode corrections; click **Revert alignment edits**
+- Expected: markers return to the saved set, fix-mode corrections revert to the as-loaded record; the button is disabled until there is something to revert
 
-### 8.8 Undo alignment fix
-- Fix alignment; press Ctrl+Z
-- Expected: alignment grid reverts to state before fix
-
-### 8.9 Alignment fix persisted in saved JSON
-- Fix alignment, save data, inspect JSON
-- Expected: modified alignment grid values present in the corresponding file's grid in `body`
+### 8.8 Undo and redo
+- Add or move a marker; press Ctrl+Z, then Ctrl+Shift+Z
+- Expected: the undo and redo buttons start disabled; undo becomes enabled after the first edit and reverts it; redo re-applies it
 
 ---
 

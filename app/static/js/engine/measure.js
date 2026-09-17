@@ -11,10 +11,6 @@
 // session data. It owns its event wiring too: initMeasureInteractions is called
 // once the DOM is ready.
 //
-// The Shift key is contended: align-correction mode uses it for the influence
-// zone. Rather than import that flag, the owner passes an `isSuppressed`
-// predicate, so this module stays ignorant of whatever else may claim the key.
-//
 // Extracted from listen.js (Phase 1 refactor, increment 17). Behaviour-preserving.
 
 import {
@@ -144,15 +140,10 @@ export function clearMeasureVisuals() {
 
 /**
  * Wire the Shift-hold and Shift+drag gestures. Call once, after the DOM exists.
- *
- * @param {object} opts
- * @param {() => boolean} [opts.isSuppressed] true while another mode owns the
- *   Shift key (align correction), so measurement stays out of its way.
  */
-export function initMeasureInteractions({ isSuppressed = () => false } = {}) {
+export function initMeasureInteractions() {
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Shift" || e.repeat) return;
-    if (isSuppressed()) return; // another mode (align correction) owns Shift
     _measureShiftHeld = true;
     showMarkerDurations();
   });

@@ -1,85 +1,150 @@
 # Conductor portraits
 
-Gen-AI stylised portraits for the middle band (exhibit plan §5.5). Circular gold
-medallions on blue velvet, sized to the band's `border-radius: 50%` frame.
+One circular gold medallion per conductor of the New Year's Concert, sized to the
+band's `border-radius: 50%` frame. Since **0.67.0** these are **freely-licensed
+photographs from Wikimedia Commons**, not Gen-AI impressions.
 
-## Provenance — read this before adding any
+## Why they changed
 
-These are **AI-generated impressions of real, named people**, not photographs
-and not licensed likenesses. Three obligations follow, and the second is only
-half met:
+The first batch (2026-09-01) were AI-generated stylised portraits, and the plan
+was to commission more until every conductor had one. That route closed: image
+models now decline to render living public figures, even as caricature, so the
+remaining fifteen could not be made. Photographs under a free licence are the
+alternative, and they are better in two ways and worse in one.
 
-1. **Provenance is recorded per image** — the table below, plus a
-   `_disposition` and `_why` on every `portrait` entry in
-   `../data/metadata-overrides.json`.
-2. **They must be labelled visibly as AI-generated impressions** wherever a
-   visitor sees them.
-   - **The mark is done** (designed 2026-09-01). Every asset carries a small
-     gold bubble with a four-point spark in it, straddling the medallion's rim
-     at the upper right, plus the IPTC `DigitalSourceType` of
-     `trainedAlgorithmicMedia` in its XMP. It is burned into the image by
-     `tools/split_portraits.py`, so no surface can forget it and no surface has
-     to remember it — see **THE AI MARK** in that file for why it looks the way
-     it does. It needs no text, so the band's no-labels rule (plan §6.3 — a
-     caption would have to pick one of two readers' languages) survives.
-   - **UPDATE 0.50.0 (2026-09-02): the sentence ships at the foot of the by-year
-     explorer (`years-view.js`, string `about.portraitsAi`), which exists only where
-     `?viewSwitch` is configured — so the kiosk URL must carry it (plan §11(e)).**
-   - **UPDATE 0.52.0 (2026-09-02): the by-conductor explorer (`conductors-view.js`)
-     shows a portrait LARGE and carries the same sentence at its foot. The explorers
-     are now also reachable from the mirrored band (`?bandTap=…`, plan §11(f)), so the
-     kiosk URL may carry that instead of `?viewSwitch=1`.**
-     The earlier note, kept for the record:
-   - **The prose is NOT done, and it is still release-blocking.** A spark is
-     recognisable, not self-explanatory: a visitor who has never seen it cannot
-     know what it claims. One plain sentence saying the portraits are
-     AI-generated impressions, on the **about page** when that is built, is what
-     turns the mark into disclosure. Until then this obligation is half met.
-3. **They are display only.** Nothing derives a fact from a portrait.
+* **Better:** they are of the person. Nothing has to be disclosed as invented, and
+  the half-met AI-labelling obligation the old version of this file called
+  release-blocking is discharged by deletion rather than by a sentence.
+* **Better:** coverage is nearly complete on the first pass — 18 of 21, where the
+  AI route had 3 wired and 6 waiting.
+* **Worse:** attribution is now a LICENCE CONDITION rather than a courtesy, and
+  the band carries no labels (plan §6.3). See **Credit**, below.
 
-| batch | delivered | source | count |
-|---|---|---|---|
-| 1 | 2026-09-01 | `ConductorPortraits_initial.jpg`, a 1600×898 3×3 contact sheet | 9 |
+## Provenance
 
-Batch 1 was split by `tools/split_portraits.py`, which finds each medallion by
-its gold ring rather than by assuming a grid pitch, cuts it out onto
-transparency, and stamps the AI mark. **WebP, not JPEG** — the inset medallion
-needs an alpha channel, and alpha turns out to be free: measured on a real crop,
-WebP q88 is 20 KB against the 24 KB JPEG it replaces (PNG would be 134 KB).
+| | |
+|---|---|
+| `sources.json` | **authored.** Which Commons file stands for each conductor, which square of it the medallion cuts, and why that file and not another. |
+| `credits.json` | **generated** by `tools/fetch_conductor_portraits.py build`, and committed — the kiosk has no network, so the credit has to travel in the repo. |
+| each `.webp` | carries the photographer, licence, Commons page and IPTC `digitalCapture` in its XMP, so the claim survives the file being copied out of the exhibit. |
 
-## Naming: one portrait per RECORDING
+The old assets stamped IPTC `trainedAlgorithmicMedia` and a gold spark. Both are
+gone: on a photograph of a real person they would be a false statement about the
+picture. `tools/split_portraits.py`, which drew them, is superseded.
 
-`<recording-slug>-<sitter>.webp`, where the recording slug is the same one the
-prepped payload uses for audio (`audio/vpo-1987.mp3` → `vpo-1987-karajan.webp`).
+## Credit
 
-**Per recording, not per conductor** — the corpus runs to 90-odd releases and
-60-plus New Year's Concerts, so the same conductor recurs across decades and
-each version gets its own sitting, at the age they were for that concert. A
-conductor-keyed file would have collapsed those into one face.
+18 photographs, of which **8 are public domain or CC0** and **10 require
+attribution** (CC BY or CC BY-SA). The exhibit credits **all 18** — more than the
+licence compels (user, 2026-09-18) — wherever it can name someone; `attribution`
+in `credits.json` records which were obligatory.
 
-| file | recording | sitter |
-|---|---|---|
-| `vpo-1987-karajan.webp` | `VPO-1987.wav` | Herbert von Karajan |
-| `vpo-1989-kleiber.webp` | `VPO-1989.wav` | Carlos Kleiber |
-| `vpo-2022-barenboim.webp` | `VPO-2022.wav` | Daniel Barenboim |
+The credit appears at the **foot of the explorers**, where the AI-disclosure
+sentence used to (`strings.js`, `portraitAbout`; `years-view.js`,
+`conductors-view.js`). It names the photographer of the portrait **currently on
+the card**, not all eighteen at once: a kiosk that must not scroll has no room for
+a roll-call, and a credit beside its own picture is the stronger reading of the
+licence. Where the photographer is genuinely unrecorded the holding institution
+stands in — the BnF for Boskovsky, the Barindelli collection for Maazel and Mehta.
 
-### `unassigned/`
+**This means the kiosk URL must reach an explorer** (`?viewSwitch=1` or
+`?bandTap=…`, plan §11(e)/(f)). The band alone shows faces with no surface for
+their credit. That was already true of the AI sentence; it is a licence condition
+now rather than an editorial promise.
 
-Batch 1 arrived keyed to conductors, and six of the nine have no recording in
-the *Fledermaus* payload yet. They wait here under the sitter's surname — the
-only thing known about them — and get a recording slug when one is assigned:
+**PERSONALITY RIGHTS ARE NOT SETTLED BY THE LICENCE, and are not this file's to
+settle.** Commons flags several living sitters with its own `personality`
+restriction, and Austrian §78 UrhG (*Bildnisschutz*) is separate from copyright.
+Editorial museum use is the normal case, but the institution signs that off.
 
-`abbado`, `harnoncourt`, `jansons`, `maazel`, `muti`, `welser-moest`.
+## Naming: one portrait per CONDUCTOR
 
-All six conduct New Year's Concerts in the wider corpus; none of them conducts
-one of the twenty *Fledermaus* overture recordings, which is why they are not
-wired up. Spellings here are the standard ones (Claudio Abb**a**do, Mariss
-Jans**ons**, Franz Welser-M**ö**st) rather than the contact sheet's.
+`<surname-slug>.webp` — `karajan.webp`, `welser-moest.webp`.
 
-## Wiring one up
+This **reverses** the old rule, which was one per RECORDING so that each sitting
+could show the conductor at the age they were for that concert. That worked when
+the faces were commissioned; Commons offers one usable picture of a person, taken
+whenever it was taken. So a conductor has one face, and **the year shown against a
+medallion is the photograph's, not the concert's** — Karajan is 1963 against a
+1987 concert. That is the honest reading, and it is what `conductors-view.js`
+prints. Where even the photograph's date is unreliable, no year is shown.
 
-Add a `portrait` field to the recording's entry in
-`../data/metadata-overrides.json` — the authored, committed layer that
-`tools/prep_exhibit_metadata.py` applies last. The path is relative to the
-exhibit root (`portraits/…`); `payload.js`'s `portraitUrl` resolves it, so it
-does not depend on which document is showing the band.
+## The three with no photograph
+
+`boskovsky` had none either, until the author identified him in a group plate
+(see `sources.json`). These three still have none, and get a **placeholder
+medallion** — the gold ring around a quiet blue field, depicting nobody:
+
+| slug | why |
+|---|---|
+| `kendlinger` | no files on Commons at all; appears only in the recordings payload |
+| `bauer-theussl` | no files on Commons at all; appears only in the recordings payload |
+| `schmid` | identity unresolved — the only conductor of that name on Wikidata died in 2000, and the recording is dated 2003 |
+
+There is a fourth name with no portrait and no placeholder: **Georg Randolph
+Warren**, on the 1982 Philharmonia release, is an Alfred Scholz pseudonym. There is
+no sitter to photograph, and the band correctly shows its "?" instead.
+
+## The template
+
+Measured off the shipped AI medallions rather than assumed, because the CSS was
+built around them:
+
+| | |
+|---|---|
+| canvas | 340 × 340, RGBA |
+| medallion | outer edge of the gold at **0.86** of the canvas half-width |
+| gold ring | **0.775 → 0.849**, rgb(198, 162, 94), lit from the upper left |
+| outside | transparent |
+
+**The 0.86 inset stays even though the AI mark it was made for is gone.**
+`exhibit.css` grew `.mb-portrait` and `--ex-strap-disc-portrait` specifically to
+compensate for that transparent margin, so that the visible gold circle lines up
+with the paper discs beside it. Changing it here would silently shrink every face
+on the wall.
+
+**WebP, not JPEG** — the inset medallion needs an alpha channel, and alpha is
+free: 13–27 KB per asset.
+
+### Zooming out past the edge of the picture
+
+A `crop` `size` over 1.0 asks for a frame wider than the photograph. That is the
+only way to make a face smaller in the disc when the picture already fills its own
+frame, which Karajan's and Nelsons' both do — and Nelsons has no other picture on
+Commons at all. The overflow is filled by **replicating the edge pixels**, which
+invents no detail: it continues the ground the sitter already stands against. Both
+of those grounds are a plain sweep (blurred grey, a red backdrop), so the join does
+not read. It WOULD read on a busy background — the build prints how much it added;
+look at the asset, and prefer a different photograph over a large pad.
+
+A velvet ground behind the medallions was tried on 2026-09-18 and removed the same
+day (user): the medallion wants nothing behind it.
+
+## Adding or replacing one
+
+```
+python3 tools/fetch_conductor_portraits.py survey --only muti   # propose
+# look at the contact sheet, write file + crop into sources.json
+python3 tools/fetch_conductor_portraits.py build --only muti    # render
+python3 tools/prep_exhibit_metadata.py                          # recordings
+python3 tools/prep_exhibit_concerts.py                          # concerts + credits
+```
+
+`survey` proposes and a person disposes — see **WHY SELECTION IS NOT AUTOMATED**
+in the tool, which is not a style preference: ranking a category by licence and
+resolution returns a street sign for Karajan, a grave for Boskovsky, a letter for
+Mehta, Renée Fleming for Thielemann, and two sixteenth-century maps for Prêtre
+(*prêtre* is French for priest).
+
+Watch for `!! <slug>: crop clamped to fit` on a build. It means the square would
+not fit around the centre you chose and was slid back inside the picture, so the
+frame is not the one you picked. That is how Karajan first shipped with his chin
+cut off.
+
+## Wiring
+
+Nothing to wire by hand any more. `prep_exhibit_metadata.py` gives every recording
+its conductor's portrait by name, and `prep_exhibit_concerts.py` does the same for
+all 88 concerts and emits `conductorPortraits` into the sidecar. The three
+`portrait` entries that used to sit in `data/metadata-overrides.json` are gone —
+an authored override still wins if one is ever needed again.

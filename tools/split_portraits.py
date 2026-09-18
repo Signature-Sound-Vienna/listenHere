@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-"""Split a contact sheet of Gen-AI conductor portraits into one file per sitter,
+"""SUPERSEDED 2026-09-18 by tools/fetch_conductor_portraits.py. DO NOT RUN.
+
+The exhibit's portraits are freely-licensed PHOTOGRAPHS now, and every asset this
+script wrote has been deleted. It survives only as the record of how the medallion
+template and the AI mark were designed — the geometry it measured is what the new
+tool reproduces. Running it would stamp IPTC `trainedAlgorithmicMedia` and a gold
+spark onto the portraits directory, which on photographs of real, named people is
+a false statement about the pictures.
+
+WHY THE ROUTE CLOSED: image models now decline to render living public figures,
+even as caricature, so the batches that were to follow the first nine cannot be
+made. See app/static/exhibit/portraits/README.md.
+
+--- the original docstring follows ---
+
+Split a contact sheet of Gen-AI conductor portraits into one file per sitter,
 and mark each one visibly as AI-generated.
 
 The portraits arrive as a single image: a grid of circular gold-ringed medallions
@@ -287,6 +302,11 @@ def compose(img, circle, size, margin, supersample=4, mark=True):
 
 
 def main():
+    if "--i-know-this-is-superseded" not in sys.argv:
+        sys.exit("SUPERSEDED: the exhibit's portraits are photographs now, and this "
+                 "script stamps them as AI-generated. See portraits/README.md. Pass "
+                 "--i-know-this-is-superseded only to reproduce the historical batch.")
+    sys.argv = [a for a in sys.argv if a != "--i-know-this-is-superseded"]
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("sheet", help="the contact sheet image")
     ap.add_argument("--rows", type=int, default=3)

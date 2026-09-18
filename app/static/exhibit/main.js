@@ -40,7 +40,7 @@ import { createViewportZoom } from "./zoom.js";
 import { applyTheme, annotationSeries, recolorAnnotations } from "./themes.js";
 import { createMiddleBand } from "./middle-band.js";
 import { createAnnotationList, groupForFileIn, hasGroupStory } from "./annotation-list.js";
-import { loadConcerts } from "./concerts.js";
+import { loadConcerts, loadDyk } from "./concerts.js";
 import { createAttractLoop } from "./attract.js";
 import { createRoom, ghostAngleFor, roomViewportId } from "./room.js";
 
@@ -65,6 +65,9 @@ const data = {
   // The turn machine, for the same reason: the by-year explorer's "listen"
   // tap is a bare recording switch made from a module-level view.
   turns: null,
+  // The audience store, for the same reason again: an explorer's "did you
+  // know?" story is told in the register its own reader is set to.
+  audience: null,
 };
 
 /** The recording the shared clock is on, or null before the first selection. */
@@ -387,6 +390,8 @@ const VIEWS = ["listen", "years", "conductors"];
 let viewModules = null;   // { years, conductors }: Promise<module> each, once an entry is configured
 let concertsData;         // Promise<Concerts|null> once asked; undefined = never asked
 let concertsResolved;     // the settled value of the above; undefined until it lands
+let dykData;              // Promise<Dyk|null> — the museum's "did you know?" text, same rules
+let dykResolved;          // its settled value; undefined until it lands
 let bandHandle = null;    // the middle band, once built (its facts re-ask when the sidecar lands)
 let attractLoop = null;   // the attract loop, once created (the study panel's demo button drives it)
 
@@ -451,12 +456,19 @@ function openingFor(name, opening) {
 }
 
 /** Build an explorer for `vp`, with the close control that is its way back. */
-function buildView(name, m, vp, concerts, opening) {
+function buildView(name, m, vp, concerts, dyk, opening) {
   const exhibit = data.exhibit;
   const common = {
     viewport: vp.index,
     language: vp.language,
     concerts,
+    // The museum's "did you know?" text, and the two things it needs to tell a
+    // story in the right voice: this reader's audience (the store, so the
+    // explorer re-renders when they change register without leaving it), and
+    // whether the placeholder figures are drawn.
+    dyk,
+    audienceStore: data.audience,
+    dykImages: config.dykImages !== "off",
     piece: exhibit.piece,
     portraitUrl: (path) => portraitUrl({ portrait: path }),
     // The way from a concert into its music: the BARE aligned switch a strip
@@ -521,9 +533,9 @@ async function setView(vp, name, opening = {}) {
   if (name === "listen") return;
   let handle = vp.views[name];
   if (!handle) {
-    const [m, concerts] = await Promise.all([viewModules[name], concertsData]);
+    const [m, concerts, dyk] = await Promise.all([viewModules[name], concertsData, dykData]);
     if (vp.view !== name) return; // switched away while loading
-    handle = vp.views[name] = buildView(name, m, vp, concerts, opening);
+    handle = vp.views[name] = buildView(name, m, vp, concerts, dyk, opening);
   } else {
     // Re-entering: onto the tapped fact, else the audible recording's.
     const at = openingFor(name, opening);
@@ -636,6 +648,13 @@ async function boot() {
       // The band's facts could not lead anywhere until now.
       bandHandle?.refresh();
     });
+    // The museum's "did you know?" text rides with the sidecar: same gate, so
+    // the shipped listening kiosk still fetches neither.
+    dykData = loadDyk({ debug: config.debug });
+    dykData.then((d) => {
+      dykResolved = d;
+      window._exhibitTest.dyk = d;
+    });
     window.addEventListener("resize", () => {
       for (const vp of viewports) if (vp.view !== "listen") positionView(vp);
     });
@@ -652,6 +671,10 @@ async function boot() {
     config.audienceAll ? [...AUDIENCES, "all"] : AUDIENCES,
   );
   window._exhibitTest.audience = store;
+  // The same holder idiom as the transport and the turn machine above: the
+  // explorers are built from a module-level function, and the story they tell
+  // is told in the reader's own register (dyk.js).
+  data.audience = store;
 
   const transport = new Transport({
     audio: exhibit.audio,
@@ -777,6 +800,9 @@ async function boot() {
     // The RESOLVED orientation, the same one buildScreen reserved height for
     // (config.js bandOrientationFor) — a single viewport cannot mirror or flip.
     orientation: bandOrientation,
+    // How many readers the band faces: with one, its single cluster IS that
+    // reader's, so a fact tap is attributable whatever the orientation.
+    viewports: config.viewports,
     // A turn mark needs somebody to take a turn FROM: with one viewport the
     // holder is always the only reader, so the mark would be decoration that
     // never changes. Suppressed there rather than painted permanently.
@@ -804,7 +830,7 @@ async function boot() {
     // Opens the TAPPING reader's half on the fact. The clock is untouched: a
     // view is per-viewport state, so this is not a turn (turns.js).
     onFact: (cluster, fact, meta, file) => {
-      const ix = bandTapViewport(bandOrientation, cluster);
+      const ix = bandTapViewport(bandOrientation, cluster, config.viewports);
       const vp = ix == null ? null : viewports[ix];
       if (!vp || !concertsResolved) return;
       if (fact === "year") setView(vp, "years", { year: concertsResolved.yearOf(file) });

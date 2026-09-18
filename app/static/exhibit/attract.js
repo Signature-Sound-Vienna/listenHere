@@ -76,19 +76,29 @@ const HELLO_MS = 5000;   // presence heartbeat
 const PEER_TTL_MS = 15000; // a peer silent this long has closed or crashed
 const EVAL_MS = 1000;    // how often the idle rule is evaluated
 const AUDIENCE_ORDER = ["kids", "adults", "expert"];
-// The marks are drawn MONOCHROME (user, 2026-09-08): each SVG is a CSS mask over the
-// band's paper colour, so the three institutions sit in the band's own tone with
-// nothing behind them. The ratio is the SVG's viewBox, since a mask has no size;
+// The marks are drawn MONOCHROME (user, 2026-09-08): each artwork is a CSS mask over
+// the band's paper colour, so the institutions sit in the band's own tone with
+// nothing behind them. The ratio is the artwork's own, since a mask has no size;
 // `scale` trims a mark that reads over-large beside the others (the IWK wordmark).
+//
+// THE HOUSE OF STRAUSS MARK IS A RASTER, and the only one: it arrived as a WebP
+// with no vector beside it (assets/logos/HoS.webp). It masks correctly because it
+// carries a real alpha channel — the wordmark is cut out, not painted on white —
+// and at 2048 px wide it has resolution to spare for a 52 px-tall mark. Its ratio
+// is the file's, whose ink sits inside a ~5% margin, close enough to the others'
+// trim that it needs no crop. If a vector ever arrives, swap the file and the
+// ratio and nothing else changes.
 const LOGOS = {
   de: [
     { src: "logos/iwk-de.svg", ratio: 602 / 118, scale: 0.85, name: "Institut für musikalische Akustik – Wiener Klangstil" },
     { src: "logos/mdw-de.svg", ratio: 90.57 / 70.5, name: "mdw – Universität für Musik und darstellende Kunst Wien" },
+    { src: "logos/hos.webp", ratio: 2048 / 969, name: "House of Strauss" },
     { src: "logos/fwf-de.svg", ratio: 875.9 / 238.1, name: "FWF – Österreichischer Wissenschaftsfonds" },
   ],
   en: [
     { src: "logos/iwk-en.svg", ratio: 602 / 118, scale: 0.85, name: "Department of Music Acoustics – Wiener Klangstil" },
     { src: "logos/mdw-en.svg", ratio: 417 / 355, name: "mdw – University of Music and Performing Arts Vienna" },
+    { src: "logos/hos.webp", ratio: 2048 / 969, name: "House of Strauss" },
     { src: "logos/fwf-en.svg", ratio: 875.9 / 238.1, name: "FWF – Austrian Science Fund" },
   ],
 };

@@ -80,6 +80,7 @@ export function createMiddleBand(
   {
     language = "en",
     orientation = "upright",
+    viewports = 2,
     turnIndicator = "off",
     flipMotion = "fade",
     onToggle,
@@ -242,14 +243,17 @@ export function createMiddleBand(
   /**
    * The view a reader's half is showing, so that half's copy can stand its cue
    * down on the fact that opened it (user, 2026-09-03): a shimmering year beside
-   * the by-year explorer it already opened would be asking again. Mirrored only
-   * — the one orientation where cluster = viewport (turns.js bandTapViewport);
-   * elsewhere the copy is shared and says nothing. `view` is "listen" | "years"
-   * | "conductors"; the CSS keys off the cluster's data-current-view. The fact
-   * stays tappable — a second tap re-selects — it is just quiet.
+   * the by-year explorer it already opened would be asking again. Wherever
+   * cluster = viewport, which is mirrored — or ANY orientation at a single
+   * viewport, where the one cluster is the one reader's (turns.js
+   * bandTapViewport, 2026-09-18). With two readers sharing one copy it says
+   * nothing, because standing down would answer for the reader who did not tap.
+   * `view` is "listen" | "years" | "conductors"; the CSS keys off the cluster's
+   * data-current-view. The fact stays tappable — a second tap re-selects — it
+   * is just quiet.
    */
   function setCurrentView(index, view) {
-    if (orientation !== "mirrored") return;
+    if (orientation !== "mirrored" && viewports !== 1) return;
     const c = clusters[index];
     if (!c) return;
     if (view && view !== "listen") c.root.dataset.currentView = view;
@@ -456,7 +460,7 @@ function buildCluster(data, language, index = 0, facts = null) {
     // card colour behind it would ring the face. The initials still want it.
     portrait.classList.toggle("has-portrait", Boolean(portraitSrc));
     if (portraitSrc) {
-      // A generated portrait, once there is one. Set as a background rather than
+      // The conductor's portrait, once there is one. Set as a background rather than
       // an <img> so a missing file degrades to the placeholder circle instead of
       // a broken-image glyph on a museum wall. Resolved against the exhibit root
       // by payload.js, not left relative to whatever document is showing this.

@@ -875,10 +875,12 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     await page.click('.study-cog');
     await page.click('.study-tab[data-tab="views"]');
     const rows = page.locator('.study-row');
-    await expect(rows).toHaveCount(3);
+    await expect(rows).toHaveCount(4);
     await expect(rows.nth(0).locator('.study-label')).toHaveText(/Near half/);
     await expect(rows.nth(1).locator('.study-label')).toHaveText(/Far half/);
     await expect(rows.nth(2).locator('.study-label')).toHaveText(/View switch/);
+    // The explorers' own knobs arrive on this tab as they are built (0.66.0).
+    await expect(rows.nth(3).locator('.study-label')).toHaveText(/Did-you-know images/);
     // Listen is the default in both halves, and marked as such.
     await expect(rows.nth(1).locator('.study-option.is-on')).toHaveText(/Listen •/);
 

@@ -211,6 +211,13 @@ const TABS = [
         hint:
           "Offers each viewport a toolbar switch between the listening interface and the explorers of the whole New Year's Concert series — year by year, and conductor by conductor (plan §11). Off is the shipped exhibit; an explorer draws over this half's strips while the other half keeps listening. Since 0.52.0 this is the debug and fallback entry: the ruled entry is the band (Band tab, “Tappable facts”), and every explorer carries its own close control.",
       },
+      {
+        key: "dykImages",
+        label: "Did-you-know images",
+        options: ["on", "off"],
+        hint:
+          "Whether the “Did you know?” story shows the picture it refers to. The TEXT is content and always on — six concerts and six conductors, told in whichever register this half is set to (Kids, Adults, Scholars), reachable from the chip in the explorer's corner. Two of the twelve stories carry a picture, and both are photographs of unknown licence, so what is drawn today is a placeholder frame at the picture's own shape. Off hides the frame and keeps the text.",
+      },
     ],
   },
   {
@@ -626,12 +633,13 @@ export function mountStudyPanel(config, actions = {}) {
     tabs.appendChild(b);
   }
 
-  // The footer: the current configuration as its URL — selectable against the
-  // kiosk's global user-select: none, because copying it IS the feature.
+  // The footer: the fit line, and the two buttons that carry the configuration
+  // away. The URL used to be ECHOED here in full, selectable; it is not any
+  // more (user, 2026-09-18) — the query string has grown past 300 characters
+  // and the echo was taking most of the panel's height to say what "Copy URL"
+  // already does.
   const footer = document.createElement("div");
   footer.className = "study-footer";
-  const url = document.createElement("code");
-  url.className = "study-url";
   // THE FIT LINE. Strip height, recording count, and the commentary panel are
   // one budget, and the panel is the residual — so a taller strip or an extra
   // recording is paid for out of the description text. The failure is silent:
@@ -645,14 +653,33 @@ export function mountStudyPanel(config, actions = {}) {
   copy.className = "study-copy";
   copy.textContent = "Copy URL";
   copy.addEventListener("click", async () => {
+    const say = (text, ms) => {
+      copy.textContent = text;
+      setTimeout(() => (copy.textContent = "Copy URL"), ms);
+    };
     try {
       await navigator.clipboard.writeText(location.href);
-      copy.textContent = "Copied";
-      setTimeout(() => (copy.textContent = "Copy URL"), 1200);
+      say("Copied", 1200);
     } catch (_) {
-      // No clipboard (e.g. plain-http LAN): the text is selectable, say so.
-      copy.textContent = "Select the text";
-      setTimeout(() => (copy.textContent = "Copy URL"), 2000);
+      // `navigator.clipboard` needs a SECURE CONTEXT, and the exhibit runs on
+      // plain http over the museum's LAN — so on the iPad this is the path that
+      // actually runs. It used to fall back to "select the text yourself" from
+      // the echo below; with the echo gone the button has to finish the job, so
+      // it copies from an off-screen textarea the old way.
+      const scratch = document.createElement("textarea");
+      scratch.value = location.href;
+      scratch.setAttribute("readonly", "");
+      scratch.style.cssText = "position:fixed;top:-1000px;opacity:0;";
+      document.body.appendChild(scratch);
+      scratch.select();
+      let ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch (__) {
+        ok = false;
+      }
+      scratch.remove();
+      say(ok ? "Copied" : "Copy failed", ok ? 1200 : 2000);
     }
   });
   // A RESET, not a merge: the button rewrites the whole query to the preset,
@@ -671,7 +698,7 @@ export function mountStudyPanel(config, actions = {}) {
     if (here.has("screen")) params.set("screen", here.get("screen"));
     location.href = location.pathname + `?${params.toString()}`;
   });
-  footer.append(url, fit, reset, copy);
+  footer.append(fit, reset, copy);
 
   /**
    * Measure what a visitor can actually READ, and say so.
@@ -703,6 +730,22 @@ export function mountStudyPanel(config, actions = {}) {
         clearTimeout(fitDebounce);
         fitDebounce = setTimeout(paintFit, 120);
       }).observe(detail, { childList: true, characterData: true, subtree: true });
+    }
+    // NOT ON SCREEN IS NOT ZERO (user asked what "commentary 0 px" meant,
+    // 2026-09-18, and the honest answer was "nothing"). This line was written
+    // for the below-layout, where the box is always shown; under
+    // `?sideSlot=annotations` the commentary moves into the side panel, which is
+    // CLOSED until a visitor opens it, and an explorer overlay hides it too. In
+    // both cases clientHeight is 0 with nothing wrong at all, and the line was
+    // reporting its loudest red for the whole session.
+    if (detail.offsetParent === null && !detail.getClientRects().length) {
+      fit.textContent = "commentary not on screen";
+      fit.dataset.level = "";
+      fit.title =
+        "There is nothing to measure right now: the commentary box is not being " +
+        "displayed. With ?sideSlot=annotations it lives in the side panel, which " +
+        "opens on a tap; an open explorer hides it too. Not a fault.";
+      return;
     }
     const box = detail.clientHeight;
     const text = detail.scrollHeight;
@@ -790,7 +833,6 @@ export function mountStudyPanel(config, actions = {}) {
       }
       body.appendChild(row);
     }
-    url.textContent = location.search || "(defaults)";
     paintFit();
   }
 

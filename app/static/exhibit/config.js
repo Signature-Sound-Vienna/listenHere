@@ -195,7 +195,7 @@ const DEFAULTS = {
   //                  viewport, with nothing reloaded (user ruling 2026-09-02).
   //   "conductors" — the by-conductor explorer of the same series: every
   //                  conductor, their years, and the portrait large where the
-  //                  exhibit has one (the AI mark is in the asset).
+  //                  exhibit has one (its photo credit sits at the view's foot).
   views: ["listen", "listen"],
   // Whether each viewport's toolbar offers the switch between them. OFF by
   // default so the shipped exhibit stays byte-identical — on the wire too: the
@@ -232,6 +232,13 @@ const DEFAULTS = {
   //                 between passes on one rhythm; reduced motion gets the
   //                 underline instead.
   bandTap: "off",
+  // THE "DID YOU KNOW?" FIGURES (content/dyk/, dyk.js). The museum text itself
+  // is CONTENT and always on — there is no knob for it, and the A/B rule for UX
+  // variants does not reach authored content (user, 2026-09-18). What IS a knob
+  // is the two PICTURES it refers to: both are press photographs of unknown
+  // licence, so the exhibit draws a placeholder frame at the right aspect in
+  // their place. "on" shows those frames, "off" hides them and leaves the text.
+  dykImages: "on",
 
   // --- appearance ---
   // Palette preset (exhibit/themes.js): "dark" is the shipped look; the others
@@ -616,6 +623,11 @@ export function bandTapFor(config) {
     warn(`exhibit: unknown bandTap "${want}" — using "off"`);
     return "off";
   }
+  // ...except with ONE viewport, where there are not two readers to tell apart:
+  // the single cluster's tap is the only reader's whatever the orientation
+  // (turns.js bandTapViewport). Refusing it there was this rule drawn too wide
+  // — it left a one-viewport table with no way in but ?viewSwitch=1 (2026-09-18).
+  if (config.viewports === 1) return want;
   if (bandOrientationFor(config) !== "mirrored") {
     warn(
       `exhibit: bandTap "${want}" needs bandOrientation=mirrored (only mirrored copies ` +

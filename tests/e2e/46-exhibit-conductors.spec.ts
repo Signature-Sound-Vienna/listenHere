@@ -126,7 +126,7 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
     const fetched: string[] = [];
     page.on('request', (r) => {
       const u = r.url();
-      if (u.includes('concerts.json') || u.includes('-view.js')) fetched.push(u);
+      if (u.includes('concerts.json') || u.includes('dyk.json') || u.includes('-view.js')) fetched.push(u);
     });
     await boot(page, 'debug=1&bandOrientation=mirrored');
     const f = await facts(page);
@@ -249,12 +249,14 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
     const close = ov.locator('.view-close');
     await expect(close).toHaveCount(1);
     await expect(close).toHaveAttribute('aria-label', /.+/);
-    // Behind the overlay the toolbar's per-view controls stand down, like 45.2.
+    // Behind the overlay the zoom control stands down and the audience switch
+    // does not, like 45.2 — the explorer carries text in the reader's register.
     expect(
-      await page.evaluate(() =>
-        getComputedStyle(document.querySelector('.vp[data-viewport="1"] .audience-switch')!).visibility,
-      ),
-    ).toBe('hidden');
+      await page.evaluate(() => ({
+        zoom: getComputedStyle(document.querySelector('.vp[data-viewport="1"] .zoom-ctl')!).visibility,
+        audience: getComputedStyle(document.querySelector('.vp[data-viewport="1"] .audience-switch')!).visibility,
+      })),
+    ).toEqual({ zoom: 'hidden', audience: 'visible' });
     expect(await page.locator('.view-switch').count()).toBe(0);
     await close.click();
     await expect(page.locator('.vp[data-viewport="1"] .vp-view')).toHaveCount(0);
@@ -421,25 +423,37 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
     expect(cells.map((c) => c.year)).toEqual(most.years);
     for (const cell of cells) {
       expect(cell.playable, `year ${cell.year}`).toBe(most.playable.some((p) => p.year === cell.year));
-      expect(cell.programme, `year ${cell.year}`).toBe(most.onProgramme.find(([y]) => y === cell.year)![1]);
+      // One mark on these cells since 0.66.0, like the by-year grid's: playable.
+      expect(cell.programme, `year ${cell.year}`).toBe(false);
       expect(cell.button, 'years on the card are marks, not navigation (plan §11(f))').toBe(false);
     }
     expect(await card.locator('.cv-role').count()).toBe(most.roles.length ? 1 : 0);
     if (most.roles.length) await expect(card.locator('.cv-role')).toHaveText(most.roles.join(' · '));
 
-    // A conductor with a portrait: shown large, the mark in the asset, no label added.
+    // A conductor with a portrait: shown large, no label added to the medallion.
+    // Since 0.67.0 that is ONE sitting per conductor rather than one per
+    // recording, and the year against it is the PHOTOGRAPH's — which is sometimes
+    // not knowable at all (the BnF dates Boskovsky's plate 1936 while dating the
+    // ensemble in it from 1948), so the attribute is absent rather than wrong.
     const faced = s.conductors.find((c) => c.portraits.length > 0);
+    expect(faced, 'fixture needs a conductor with a portrait').toBeTruthy();
     if (faced) {
       await ov.locator(`.cv-entry[data-conductor="${faced.name}"]`).click();
       await expect(card).toHaveAttribute('data-conductor', faced.name);
       const latest = faced.portraits[faced.portraits.length - 1];
-      await expect(card.locator('.cv-medallion-large')).toHaveAttribute('data-portrait-year', String(latest.year));
+      const medallion = card.locator('.cv-medallion-large');
+      if (latest.year == null) {
+        expect(await medallion.getAttribute('data-portrait-year')).toBeNull();
+      } else {
+        await expect(medallion).toHaveAttribute('data-portrait-year', String(latest.year));
+      }
       expect(await card.locator('.cv-portrait').getAttribute('src')).toContain(latest.path.split('/').pop()!);
       expect(await card.locator('[data-ai-label]').count()).toBe(0);
       expect(await card.locator('.cv-sitting').count()).toBe(faced.portraits.length > 1 ? faced.portraits.length : 0);
     }
-    // The one sentence explaining the mark, once per explorer (plan §11(d)).
-    await expect(ov.locator('.cv-about')).toContainText('AI-generated');
+    // The one portraits sentence, once per explorer (plan §11(d)) — since 0.67.0
+    // it carries the photograph's credit rather than explaining the AI mark.
+    await expect(ov.locator('.cv-about')).toContainText('photographs from Wikimedia Commons');
     expect(await page.locator('.cv-about').count()).toBe(1);
   });
 
@@ -672,5 +686,188 @@ test.describe('46. The band is the interface — the wordless affordances', () =
 
     await page.evaluate(() => (window as any)._exhibitTest.setView(0, 'listen'));
     expect(await anims()).toEqual({ ...all, current0: null });
+  });
+});
+
+test.describe('46. The band is the interface — a single reader', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 46.15 ONE VIEWPORT (0.66.0, user 2026-09-18). The mirrored requirement
+  // exists only so a tap can be told apart between two facing readers; with one
+  // viewport there is one reader, so the single cluster's facts are attributable
+  // whatever the orientation. Before this, a one-viewport table had no way into
+  // the explorers but ?viewSwitch=1, and the band said so in a warning.
+  test('46.15 with one viewport the band’s facts are tappable upright, and open that reader’s explorer', async ({
+    page,
+  }) => {
+    const warnings: string[] = [];
+    page.on('console', (m) => {
+      if (m.type() === 'warning') warnings.push(m.text());
+    });
+    await boot(page, 'debug=1&viewports=1&bandTap=plain');
+    await awaitConcerts(page);
+    const f = await facts(page);
+    expect(f.tap, 'bandTap was resolved away at a single viewport').toBe('plain');
+    expect(f.clusters).toBe(1);
+    expect(f.facts.length).toBeGreaterThan(0);
+    expect(f.facts.every((x) => x.tappable)).toBe(true);
+    expect(
+      warnings.some((w) => w.includes('bandTap') && w.includes('mirrored')),
+      'the mirrored warning fired at a single viewport',
+    ).toBe(false);
+
+    // The year opens the one reader's by-year explorer, on the audible concert.
+    const s = await series(page);
+    await page.click(fact(0, 'year'));
+    await overlay(page, 0, 'years');
+    expect(await page.evaluate(() => (window as any)._exhibitTest.view(0))).toBe('years');
+    expect(await page.evaluate(() => (window as any)._exhibitTest.yearsView(0).year)).toBe(
+      s.playableYears[s.activeFile],
+    );
+    // And the fact that opened it stands its cue down on that one cluster too.
+    expect(
+      await page.evaluate(
+        () => (document.querySelector('.mb-cluster') as HTMLElement).dataset.currentView ?? null,
+      ),
+    ).toBe('years');
+
+    // The conductor opens the other explorer, from the same one cluster.
+    await page.locator('.vp[data-viewport="0"] .view-close').click();
+    await page.click(fact(0, 'conductor'));
+    await overlay(page, 0, 'conductors');
+    expect(await page.evaluate(() => (window as any)._exhibitTest.view(0))).toBe('conductors');
+    expect(await page.evaluate(() => (window as any)._exhibitTest.conductorsView(0).conductor)).toBe(
+      s.metadata[s.activeFile].conductor,
+    );
+  });
+});
+
+test.describe('46. The by-conductor explorer — "did you know?"', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 46.13 The roster's mark, the story in the card, and the placeholder figure.
+  // The text side is pinned by 45.10–45.12 — one module (dyk.js), the same block
+  // in both explorers. What is only testable here is the FIGURE: two of the
+  // twelve stories refer to a photograph the exhibit may not show, so what is
+  // drawn is a frame at the picture's own shape.
+  test('46.13 conductors with a story show it under their facts; one with a picture gets a placeholder frame and caption', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&views=conductors,listen');
+    const ov = await overlay(page, 0, 'conductors');
+    const content = await page.evaluate(() => {
+      const d = (window as any)._exhibitTest.dyk;
+      if (!d) return null;
+      const withImage: string[] = [];
+      const without: string[] = [];
+      for (const [name, e] of d.conductors) (e.image ? withImage : without).push(name);
+      return { all: [...d.conductors.keys()], withImage, without };
+    });
+    expect(content, 'the "did you know?" content did not load').not.toBeNull();
+    expect(content!.withImage.length).toBeGreaterThan(0);
+    expect(content!.without.length).toBeGreaterThan(0);
+
+    // Exactly the conductors who have one, and no others.
+    const marked = await ov.locator('.cv-entry[data-dyk="1"]').evaluateAll((els) =>
+      els.map((e) => (e as HTMLElement).dataset.conductor).sort(),
+    );
+    expect(marked).toEqual([...content!.all].sort());
+
+    const story = ov.locator('.cv-detail .dyk');
+
+    // One with a picture: the frame is a PLACEHOLDER at the picture's own
+    // aspect, it says so, and the caption is there. Nothing derives a fact from
+    // it (the portraits README's rule 3) — hence no img.
+    const withPic = content!.withImage[0];
+    await ov.locator(`.cv-entry[data-conductor="${withPic}"]`).click();
+    await expect(story).toBeVisible();
+    const fig = story.locator('.dyk-figure');
+    await expect(fig).toHaveAttribute('data-status', 'placeholder');
+    await expect(fig.locator('figcaption')).not.toBeEmpty();
+    await expect(fig.locator('.dyk-pending')).toBeVisible();
+    expect(await fig.locator('img').count()).toBe(0);
+    const shape = await page.evaluate((name) => {
+      const d = (window as any)._exhibitTest.dyk;
+      const [w, h] = d.forConductor(name).image.aspect;
+      const frame = document.querySelector('.vp[data-viewport="0"] .dyk-frame') as HTMLElement;
+      const box = frame.getBoundingClientRect();
+      return { want: w / h, got: box.width / box.height };
+    }, withPic);
+    expect(Math.abs(shape.got - shape.want), 'the frame is not at the picture’s aspect').toBeLessThan(0.05);
+    // Conductors have no subtitle to be an eyebrow — that is a year's hook.
+    await expect(story.locator('.dyk-eyebrow')).toBeHidden();
+    // Under their facts, and above the way into their music.
+    expect(
+      await page.evaluate(() => {
+        const kids = [...document.querySelectorAll('.vp[data-viewport="0"] .cv-detail > *')].map(
+          (e) => e.className.split(' ')[0],
+        );
+        return {
+          afterYears: kids.indexOf('dyk') > kids.indexOf('cv-years'),
+          beforeFoot: kids.indexOf('cv-foot') === -1 || kids.indexOf('dyk') < kids.indexOf('cv-foot'),
+        };
+      }),
+    ).toEqual({ afterYears: true, beforeFoot: true });
+    // The card does not scroll; only the story may, and it says when it does.
+    const fits = await page.evaluate(() => {
+      const vp = document.querySelector('.vp[data-viewport="0"]') as HTMLElement;
+      const detail = vp.querySelector('.cv-detail') as HTMLElement;
+      const dyk = vp.querySelector('.dyk') as HTMLElement;
+      const body = vp.querySelector('.dyk-body') as HTMLElement;
+      return {
+        cardOverflow: detail.scrollHeight - detail.clientHeight,
+        scrolls: body.scrollHeight > body.clientHeight + 1,
+        flagged: dyk.dataset.scroll ?? null,
+      };
+    });
+    expect(fits.cardOverflow).toBeLessThanOrEqual(0);
+    expect(fits.flagged).toBe(fits.scrolls ? '1' : null);
+
+    // One with a story but no picture: text, no figure.
+    await ov.locator(`.cv-entry[data-conductor="${content!.without[0]}"]`).click();
+    await expect(story.locator('.dyk-text')).not.toBeEmpty();
+    expect(await story.locator('.dyk-figure').count()).toBe(0);
+
+    // One with no story at all: no mark, and nothing in the card.
+    const none = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      return T.concerts.conductors.map((c: any) => c.name).find((n: string) => !T.dyk.forConductor(n));
+    });
+    expect(none, 'every conductor has a story — this assertion needs a new subject').toBeTruthy();
+    await ov.locator(`.cv-entry[data-conductor="${none}"]`).click();
+    await expect(story).toBeHidden();
+    expect(await ov.locator(`.cv-entry[data-conductor="${none}"][data-dyk="1"]`).count()).toBe(0);
+  });
+
+  // 46.14 ?dykImages=off — the knob is over the PICTURE, never over the text
+  // (user, 2026-09-18: the text is content and always on), and it is on the
+  // study panel's Views tab where the explorers' knobs live.
+  test('46.14 ?dykImages=off drops the figure and keeps the story; the Views tab carries the row', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&views=conductors,listen&dykImages=off&studyPanel=true');
+    const ov = await overlay(page, 0, 'conductors');
+    const withPic = await page.evaluate(() => {
+      const d = (window as any)._exhibitTest.dyk;
+      for (const [name, e] of d.conductors) if (e.image) return name;
+      return null;
+    });
+    expect(withPic).toBeTruthy();
+    await ov.locator(`.cv-entry[data-conductor="${withPic}"]`).click();
+    const story = ov.locator('.cv-detail .dyk');
+    await expect(story).toBeVisible();
+    await expect(story.locator('.dyk-text')).not.toBeEmpty();
+    expect(await story.locator('.dyk-figure').count(), 'the figure survived dykImages=off').toBe(0);
+    // The story itself is untouched by the knob: the content still carries the
+    // picture, the view simply does not draw it.
+    expect(await page.evaluate((n) => !!(window as any)._exhibitTest.dyk.forConductor(n).image, withPic)).toBe(true);
+
+    // And the row is on the Views tab, where the explorers' knobs live, showing
+    // the value the URL asked for (35.29 counts the tab's rows).
+    await page.click('.study-cog');
+    await page.click('.study-tab[data-tab="views"]');
+    const row = page.locator('.study-row').filter({ has: page.locator('.study-label', { hasText: 'Did-you-know images' }) });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator('.study-option.is-on')).toHaveText('off');
   });
 });

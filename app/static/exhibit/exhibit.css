@@ -1478,9 +1478,11 @@ html, body {
   color: var(--ex-band-faint);
   letter-spacing: 0.02em;
 }
-/* The card colour is the PLACEHOLDER's disc, and a marked portrait is
+/* The card colour is the PLACEHOLDER's disc, and a portrait asset is
  * transparent around its medallion — so leaving it would ring every face with
- * a pale circle. Only the initials still want a disc behind them. */
+ * a pale circle. Only the initials still want a disc behind them.
+ * A velvet ground was tried here on 2026-09-18 and REMOVED the same day (user):
+ * the medallion wants nothing behind it. */
 .mb-portrait.has-portrait { background-color: transparent; }
 
 /* Numerals and a proper name: the two things that need no translation. */
@@ -1644,9 +1646,18 @@ html, body {
   right: 10px;
   bottom: 62px;
   z-index: 50;
-  width: 400px;
+  /* Wide enough for the tab row on ONE line: seven tabs measured 454 px at
+   * 0.82 rem, and at 400 px they wrapped to two rows (user, 2026-09-18). A new
+   * tab means measuring again rather than assuming this still holds. */
+  width: 500px;
   max-width: calc(100vw - 20px);
-  max-height: min(70vh, 640px);
+  /* PINNED, not "up to" (user, 2026-09-18): as a max-height the panel took its
+   * tab's natural height and jumped 273 px between Views (367) and Layout, Misc
+   * or Theme (640, the cap) every time the staff switched tab. A fixed height
+   * makes the frame stand still and `.study-body` below do the scrolling — which
+   * three of the seven tabs already needed at any height, since Misc alone wants
+   * 1259 px. Measured 2026-09-18; the 70vh keeps it sane on a short window. */
+  height: min(70vh, 640px);
   display: flex;
   flex-direction: column;
   background: var(--ex-panel);
@@ -1731,17 +1742,11 @@ html, body {
   padding: 8px 12px;
   border-top: 1px solid var(--ex-border);
 }
-.study-url {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-size: 0.72rem;
-  color: var(--ex-text-dim);
-  /* Copying the configuration URL is the point — override the kiosk's global
-   * user-select: none for exactly this element. */
-  -webkit-user-select: text;
-  user-select: text;
-}
+/* The configuration URL used to be echoed here in full and selectable. It is
+ * not any more (user, 2026-09-18): past 300 characters it took most of the
+ * panel's height to repeat what "Copy URL" does in one tap, and that button now
+ * falls back to an off-screen textarea where the clipboard API is unavailable
+ * (plain http over the museum's LAN), so nothing is lost with it gone. */
 /* The fit line: how much of the commentary a visitor can read at the current
  * geometry. Neutral while the text fits, amber under half, red once the box is
  * too short to hold a line at all — the state that ships silently, because the
@@ -1754,7 +1759,9 @@ html, body {
  * tooling, exempt from the palette like its English labels, so adding two
  * tokens to eight themes to serve one debug line would be the wrong trade. */
 .study-fit {
-  flex: 0 0 auto;
+  /* Takes the width the URL used to, so the two buttons stay hard right. */
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
   color: var(--ex-text-dim);
@@ -1818,7 +1825,11 @@ html, body {
   border-color: var(--ex-accent-border);
   color: var(--ex-on-accent);
 }
-.vp[data-view]:not([data-view="listen"]) .audience-switch,
+/* Behind an overlay the zoom control stands down — there is no waveform to
+ * zoom. The AUDIENCE switch does NOT, since 0.66.0: the explorers now carry
+ * authored text in the reader's own register ("did you know?", dyk.js), so
+ * changing register is a thing to do INSIDE an explorer rather than a reason to
+ * leave it (45.2 and 46.3 pin both halves of this). */
 .vp[data-view]:not([data-view="listen"]) .zoom-ctl { visibility: hidden; }
 
 /* The way back, inside every explorer (plan §11(f)): the band is the way in
@@ -1844,6 +1855,156 @@ html, body {
   appearance: none;
 }
 .view-close:focus-visible { outline: 2px solid var(--ex-accent-border); outline-offset: 2px; }
+
+/* ===========================================================================
+ * "Did you know?" (dyk.js) — the museum's authored text, IN the card: under the
+ * programme in the by-year explorer, under the conductor's own facts in the
+ * by-conductor one. It is simply present whenever the selected year or
+ * conductor has a story (user, 2026-09-18, having tried the alternative).
+ *
+ * THIS IS THE ONE THING IN THE EXHIBIT THAT SCROLLS, and it is a considered
+ * exception rather than a lapse. The kiosk rule exists because a clipped LIST
+ * reads as a complete list — a programme missing its last encore looks finished
+ * — so the programme steps its type down and the roster steps its rows. Prose
+ * cuts visibly, and a reader who wants the rest can reach for it. The block
+ * says there is more (`data-scroll`, and the fade below) rather than hoping.
+ *
+ * The heights, measured at the kiosk geometry (1024×1366, two viewports → an
+ * overlay 571 px tall, a card 521): the story wants 121–210 px and the by-year
+ * card has 4–113 px spare, so the two give way to each other — the story is
+ * capped at a share of the card and scrolls past it, and `fitProgramme` steps
+ * the list denser against what is left. The programme must never be the one to
+ * clip: a lost encore is invisible, a cut-off paragraph is not.
+ * ======================================================================== */
+.dyk {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  /* THE LIST FITS FIRST, THE STORY TAKES WHAT IS LEFT. `flex-basis: 0` means
+   * the story asks for nothing and grows into the space the card has spare, so
+   * the programme keeps its own content height and `fitProgramme` steps its type
+   * against what remains — rather than the two shrinking proportionally, which
+   * let the list run out of density steps and CLIP (45.11 caught exactly that).
+   * The floor is what makes it a paragraph rather than a tease; past it, the
+   * story scrolls, because a cut paragraph is visible and a lost encore is not. */
+  flex: 1 1 0;
+  min-height: 88px;
+  min-width: 0;
+  /* An accent rule down its side rather than a hairline above it (user,
+   * 2026-09-18: "bigger and more salient, but not annoying"). The card's other
+   * sections are archive data; this is the one editorial voice on it, and a
+   * pull-quote's rule says so without shouting. */
+  padding: 2px 0 2px 11px;
+  border-left: 3px solid var(--ex-accent-border);
+}
+/* An explicit display beats the UA's [hidden] rule — the study panel's own
+ * lesson, and the chip that preceded this block learned it the hard way. */
+.dyk[hidden] { display: none; }
+
+/* The heading wears the same dot the grid cell and the roster row wear for a
+ * year or conductor with a story, so the mark and the thing it promises match.
+ * Sized like the card's other section heads (.yv-programme-head) but in the
+ * accent, because this is the one section that is not archive data. */
+/* Sentence case at a real heading size, not the small caps the card's data
+ * sections wear: this one is meant to be noticed from a step back. Upper case
+ * at this size reads as shouting, which is the "annoying" half of the ask. */
+.dyk-heading {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  color: var(--ex-accent-border);
+}
+.dyk-heading::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--ex-accent-border);
+}
+/* The year's own hook, in Chanda's words ("the time the concert was first
+ * televised"). Conductors have none, and it hides rather than leaving a gap. */
+.dyk-eyebrow {
+  margin: 0;
+  font-size: 0.78rem;
+  font-style: italic;
+  color: var(--ex-text-soft);
+}
+.dyk-eyebrow[hidden] { display: none; }
+
+/* Only the prose scrolls: the heading and the hook stay put, so a reader half
+ * way down still knows what they are reading. */
+.dyk-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+.dyk-text {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--ex-text-body);
+}
+/* There is more below. No scrollbar on a kiosk and no wheel, so a full-looking
+ * box reads as finished — the fade is the only thing saying otherwise. */
+.dyk[data-scroll="1"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 20px;
+  pointer-events: none;
+  background: linear-gradient(to top, var(--ex-bg), transparent);
+}
+
+/* The figure: a frame at the picture's own aspect, standing in for a photograph
+ * the exhibit may not yet show (content/dyk/README.md). Nothing derives a fact
+ * from it — the portraits README's rule 3 holds here too. Narrow, because it
+ * shares a 440–496 px card column with the text rather than a whole overlay. */
+.dyk-figure {
+  margin: 0;
+  flex: 0 0 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dyk-frame {
+  width: 100%;
+  border: 1px dashed var(--ex-border-strong);
+  border-radius: 6px;
+  background: var(--ex-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.dyk-figure[data-status="licensed"] .dyk-frame { border-style: solid; }
+.dyk-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dyk-pending {
+  font-size: 0.68rem;
+  text-align: center;
+  color: var(--ex-text-dim);
+}
+.dyk-figure figcaption {
+  font-size: 0.68rem;
+  line-height: 1.3;
+  color: var(--ex-text-soft);
+}
 
 .vp-view {
   position: absolute;
@@ -1923,31 +2084,35 @@ html, body {
 }
 .yv-cell-blank { border-color: transparent; background: none; cursor: default; }
 .yv-cell[data-state="gap"] { color: var(--ex-text-faint); border-style: dashed; background: none; }
-/* The two cell marks — a filled dot for a concert the exhibit can PLAY, a
- * hairline underline for a concert whose programme carried the current piece.
+/* TWO CELL MARKS, AND ONLY TWO (user, 2026-09-18), TOLD APART BY SHAPE rather
+ * than by colour: a HAIRLINE along the foot means the exhibit can play this
+ * concert, a DOT at the top right means it has a story. Two dots in two corners
+ * asked a visitor to remember which corner meant what; a line and a dot do not.
  * Language-free, like everything on the band. */
-.yv-cell[data-programme="1"]::after {
+.yv-cell[data-playable="1"]::after {
   content: "";
   position: absolute;
   left: 9px; right: 9px; bottom: 5px;
   height: 2px;
   border-radius: 1px;
-  background: var(--ex-text-dim);
+  background: var(--ex-mark);
 }
-.yv-cell[data-playable="1"]::before {
+.yv-cell[data-dyk="1"]::before {
   content: "";
   position: absolute;
   top: 4px; right: 4px;
-  width: 8px; height: 8px;
+  width: 10px; height: 10px;
   border-radius: 50%;
-  background: var(--ex-mark);
+  background: var(--ex-accent-border);
 }
 .yv-cell.is-selected {
   background: var(--ex-accent);
   border-color: var(--ex-accent-border);
   color: var(--ex-on-accent);
 }
-.yv-cell.is-selected::after { background: var(--ex-on-accent); }
+/* On the accent-filled cell both marks take the contrasting ink; they stay
+ * distinguishable because they differ in SHAPE, not in colour. */
+.yv-cell.is-selected::after, .yv-cell.is-selected::before { background: var(--ex-on-accent); }
 
 /* The card. */
 .yv-detail {
@@ -2007,23 +2172,21 @@ html, body {
 }
 /* The two denser steps years-view.js's fitProgramme walks when the list would
  * otherwise spill a third column off the right edge. */
-.yv-programme.is-dense  { font-size: 0.72rem; line-height: 1.22; }
-.yv-programme.is-denser { font-size: 0.66rem; line-height: 1.16; }
+.yv-programme.is-dense   { font-size: 0.72rem; line-height: 1.22; }
+.yv-programme.is-denser  { font-size: 0.66rem; line-height: 1.16; }
+/* A FOURTH rung, added when the story began sharing the card (2026-09-18): at
+ * three steps 2005's 22 items spilled a third column 249 px off the right edge,
+ * losing the Radetzky March — on the one year whose whole story is that the
+ * Radetzky March was left out. */
+.yv-programme.is-densest { font-size: 0.60rem; line-height: 1.12; }
 .yv-item { break-inside: avoid; padding-right: 1em; position: relative; }
 .yv-item-composer { color: var(--ex-text-soft); }
 .yv-item-composer::after { content: ": "; }
-/* The source marks (years.legend*): one archive lists it, the other does not. */
-.yv-item[data-source="philharmoniker"]::after,
-.yv-item[data-source="musikverein"]::after {
-  position: absolute;
-  right: 0;
-  top: 0.1em;
-  font-size: 0.85em;
-  color: var(--ex-text-soft);
-}
-.yv-item[data-source="philharmoniker"]::after { content: "◆"; }
-.yv-item[data-source="musikverein"]::after { content: "◇"; }
-.yv-programme-empty, .yv-caveat, .yv-legend {
+/* The per-item ◆/◇ source marks are GONE (user, 2026-09-18): which of the two
+ * archives vouches for an encore is the museum's bookkeeping, not a visitor's
+ * reading. `data-source` survives on the element — nothing is dropped or chosen
+ * silently, which is the half of that contract that mattered (45.6). */
+.yv-programme-empty, .yv-caveat {
   margin: 0;
   font-size: 0.72rem;
   color: var(--ex-text-dim);
@@ -2031,16 +2194,18 @@ html, body {
 .yv-foot {
   margin-top: auto;
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px 16px;
 }
-/* One row: the collection line yields to the button and ellipsises, so the
- * foot costs the programme a single line whatever the release title's length. */
+/* The collection line used to share one row with the button and ellipsise
+ * against it. Since the button grew (user, 2026-09-18) that left it reading
+ * "On di…", so it now takes its own row when there is not 180 px for it — and
+ * still ellipsises there, so a long release title costs one line, not three. */
 .yv-library, .yv-on-programme {
   margin: 0;
-  flex: 1 1 0;
+  flex: 1 1 180px;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -2049,18 +2214,32 @@ html, body {
   color: var(--ex-text-soft);
 }
 .yv-listen { flex: 0 0 auto; }
+/* THE ONE TAP OUT OF THE EXPLORER AND INTO THE MUSIC, so it is the loudest
+ * thing on the card (user, 2026-09-18). Bigger than a 44 px minimum and bolder
+ * than the prose around it, with a ▶ that says "this makes sound" before the
+ * words are read, and a soft accent halo lifting it off the card. */
 .yv-listen, .cv-listen {
-  min-height: 44px;
-  padding: 0 18px;
+  min-height: 52px;
+  padding: 0 22px;
   border: 1px solid var(--ex-accent-border);
-  border-radius: 22px;
+  border-radius: 26px;
   background: var(--ex-accent);
   color: var(--ex-on-accent);
   font: inherit;
-  font-size: 0.85rem;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   cursor: pointer;
+  box-shadow: 0 2px 10px -2px var(--ex-accent-border);
   -webkit-appearance: none;
   appearance: none;
+}
+.yv-listen::before, .cv-listen::before {
+  content: "▶";
+  margin-right: 9px;
+  font-size: 0.8em;
+  /* The glyph is decoration; the button's own words carry the meaning. */
+  speak: never;
 }
 
 /* ===========================================================================
@@ -2150,19 +2329,34 @@ html, body {
 }
 .cv-entry-medallion[data-portrait="1"] { background: transparent; }
 .cv-entry-portrait, .cv-portrait { width: 100%; height: 100%; object-fit: cover; display: block; }
-/* The year grid's dot: a conductor the exhibit can play, at the medallion's
- * upper right. */
+/* The same two marks in the same two shapes as the year grid: a HAIRLINE under
+ * the medallion for a conductor the exhibit can play, a DOT at its top right
+ * for one with a story. */
 .cv-entry[data-playable="1"]::after {
   content: "";
   position: absolute;
-  left: 32px;
+  left: 8px;
+  right: auto;
+  width: 24px;
   top: 50%;
-  margin-top: -19px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+  margin-top: 16px;
+  height: 2px;
+  border-radius: 1px;
   background: var(--ex-mark);
 }
+.cv-entry[data-dyk="1"]::before {
+  content: "";
+  position: absolute;
+  left: 30px;
+  top: 50%;
+  margin-top: -19px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ex-accent-border);
+}
+.cv-roster.is-dense .cv-entry[data-playable="1"]::after { left: 7px; width: 20px; margin-top: 13px; }
+.cv-roster.is-dense .cv-entry[data-dyk="1"]::before { left: 24px; margin-top: -16px; }
 .cv-entry-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 .cv-entry-name {
   font-size: 0.9rem;
@@ -2194,7 +2388,6 @@ html, body {
 .cv-entry.is-selected .cv-entry-count { border-color: var(--ex-on-accent); color: inherit; }
 .cv-roster.is-dense .cv-entry { min-height: 34px; padding-top: 0; padding-bottom: 0; grid-template-columns: 30px minmax(0, 1fr) auto; }
 .cv-roster.is-dense .cv-entry-medallion { width: 30px; height: 30px; }
-.cv-roster.is-dense .cv-entry[data-playable="1"]::after { left: 26px; margin-top: -16px; }
 .cv-roster.is-denser .cv-entry-name { font-size: 0.8rem; }
 .cv-roster.is-denser .cv-entry-years { display: none; }
 
@@ -2251,20 +2444,14 @@ html, body {
   align-items: center;
   justify-content: center;
 }
-.cv-year[data-programme="1"]::after {
+/* One mark here, in the grid's "can be played" shape so the symbol means the
+ * same thing wherever a visitor meets it. */
+.cv-year[data-playable="1"]::after {
   content: "";
   position: absolute;
   left: 10px; right: 10px; bottom: 3px;
   height: 2px;
   border-radius: 1px;
-  background: var(--ex-text-dim);
-}
-.cv-year[data-playable="1"]::before {
-  content: "";
-  position: absolute;
-  top: 3px; right: 3px;
-  width: 6px; height: 6px;
-  border-radius: 50%;
   background: var(--ex-mark);
 }
 /* Every sitting the exhibit has a face for, when there is more than one — the

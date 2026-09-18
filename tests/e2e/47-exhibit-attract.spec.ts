@@ -122,7 +122,27 @@ test.describe('47. The attract loop', () => {
     // The band carries the words and the marks.
     await expect(page.locator('.attract-band .ab-copy')).toHaveCount(2);
     await expect(page.locator('.attract-band .ab-copy[data-copy="0"] .ab-title')).toContainText('Same Procedure');
-    expect(await page.locator('.attract-band .ab-copy[data-copy="0"] .ab-logos .ab-mark').count()).toBe(3);
+    // Four institutions since 0.66.0 — the House of Strauss mark joined the two
+    // mdw ones and the funder's. Read from the module's own table rather than a
+    // literal, so adding a fifth is a one-line change in one place.
+    const marks = page.locator('.attract-band .ab-copy[data-copy="0"] .ab-logos .ab-mark');
+    expect(await marks.count()).toBe(4);
+    await expect(marks.nth(2)).toHaveAttribute('aria-label', 'House of Strauss');
+    // Every mark actually resolves: a mask whose file 404s renders as nothing at
+    // all, silently, which is exactly how a missing logo would ship unnoticed.
+    const loaded = await page.evaluate(async () => {
+      const srcs = [...document.querySelectorAll('.attract-band .ab-copy[data-copy="0"] .ab-mark')].map((m) =>
+        getComputedStyle(m as HTMLElement).getPropertyValue('--ab-mark-src').trim().replace(/^url\("?|"?\)$/g, ''),
+      );
+      const base = new URL('./static/exhibit/', location.origin + '/');
+      return Promise.all(
+        srcs.map(async (s) => {
+          const r = await fetch(new URL(s, base));
+          return { src: s, ok: r.ok, type: r.headers.get('content-type') };
+        }),
+      );
+    });
+    expect(loaded.every((l) => l.ok), `a logo mask did not load: ${JSON.stringify(loaded)}`).toBe(true);
     // One language per copy, the viewport's (English by default): no German line.
     await expect(page.locator('.attract-band .ab-copy[data-copy="0"] .ab-fwf p[lang="en"]')).toContainText('FWF');
     expect(await page.locator('.attract-band .ab-copy[data-copy="0"] p[lang="de"]').count()).toBe(0);

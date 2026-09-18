@@ -154,10 +154,6 @@ const CATALOGUE = {
     en: "As listed in the concert archives. Encores were often not recorded.",
   },
   "years.programmeUnknown": { en: "The programme is not in our archives." },
-  // Legend for the per-item source marks: an item one archive lists and the
-  // other does not is shown, and marked, rather than dropped or trusted.
-  "years.legendPhilharmoniker": { en: "listed by the orchestra's archive only" },
-  "years.legendMusikverein": { en: "listed by the Musikverein's archive only" },
   "years.with": { en: "With" },
   "years.inLibrary": { en: "On disc in the project's collection" },
   // The direct route from a concert to its music: switches the transport to
@@ -177,12 +173,37 @@ const CATALOGUE = {
   // The direct route from a conductor to their music: one button per recording
   // of the current piece the exhibit holds from their concerts.
   "conductors.listen": { en: "Listen to {piece} from {year}" },
-  // THE ONE PLAIN SENTENCE that the AI mark on the portraits needs (plan §5.5,
-  // §11(d)) — release-blocking for December, and this view is the first
-  // surface allowed to carry text. The glyph itself is burned into every
-  // portrait asset, so no view adds a label; this sentence explains it once.
-  "about.portraitsAi": {
-    en: "The conductor portraits are AI-generated impressions, not photographs; the small gold spark marks each one.",
+  // THE ONE PLAIN SENTENCE the portraits need (plan §5.5, §11(d)) — this view is
+  // the first surface allowed to carry text. It used to explain the AI mark; since
+  // 0.67.0 the portraits are photographs and it carries their credit instead.
+  // "Did you know?" (dyk.js) — the museum's authored text about six concerts
+  // and six conductors, in the reader's own register. Only the chrome is here;
+  // the text itself, and each year's hook, are Chanda's, and arrive as content
+  // from data/dyk.json (content/dyk/). German for the heading now, because the
+  // heading is OURS — her text is English until the in-house translation lands,
+  // and falls back like the attract band's title.
+  "dyk.heading": { de: "Wussten Sie schon?", en: "Did you know?" },
+  // Inside the placeholder frame that stands in for a picture the exhibit may
+  // not yet show (licence unresolved — content/dyk/README.md).
+  "dyk.imagePending": { en: "Picture to come" },
+  // THE PORTRAIT CREDIT (0.67.0). The Gen-AI portraits are gone — image models
+  // will no longer render living public figures — and freely-licensed photographs
+  // replaced them. That swapped one obligation for another: the AI batch had to be
+  // DISCLOSED, and a CC BY / CC BY-SA photograph has to be ATTRIBUTED, which is a
+  // licence condition rather than a courtesy.
+  //
+  // The band carries no labels (plan §6.3), so the credit lives here, at the foot
+  // of the explorers, where the AI sentence used to. It names the photographer of
+  // the picture CURRENTLY on the glass rather than listing all eighteen: eighteen
+  // lines do not fit a kiosk that must not scroll, and a credit beside its own
+  // image is the stronger reading of the licence anyway.
+  "about.portraitsPhoto": {
+    en: "The conductor portraits are photographs from Wikimedia Commons.",
+    de: "Die Dirigentenporträts sind Fotografien von Wikimedia Commons.",
+  },
+  "about.portraitCredit": {
+    en: "Photo: {artist} ({licence}).",
+    de: "Foto: {artist} ({licence}).",
   },
 };
 
@@ -217,6 +238,36 @@ export function t(key, lang = FALLBACK_LANGUAGE) {
   if (entry[lang] != null) return entry[lang];
   _warnOnce(`key "${key}" has no "${lang}" translation`);
   return entry[FALLBACK_LANGUAGE] ?? key;
+}
+
+/**
+ * The portraits line for an explorer's foot: the standing sentence, plus the
+ * photographer and licence of the portrait CURRENTLY shown when there is one.
+ *
+ * One line rather than a credits list, for two reasons. The kiosk must not scroll
+ * (plan §6.3), and eighteen credits do not fit under a card; and a credit next to
+ * the picture it belongs to is a better discharge of CC BY / CC BY-SA than a
+ * roll-call somewhere else on the screen.
+ *
+ * EVERY picture we can name is credited, including the public-domain ones the
+ * licence does not compel a credit for (user, 2026-09-18) — the entry's
+ * `attribution` flag records which were obligatory, and is not what decides what
+ * is shown. What does decide it is whether anyone is NAMED: some archive scans
+ * record no photographer at all, and "Photo: unknown" is worse than silence. A
+ * placeholder medallion depicts nobody, so it is credited to nobody.
+ *
+ * @param {string} language
+ * @param {{artist?: string, licence?: string, attribution?: boolean,
+ *          placeholder?: boolean}|null} credit
+ */
+export function portraitAbout(language, credit = null) {
+  const general = t("about.portraitsPhoto", language);
+  if (!credit || credit.placeholder) return general;
+  if (!credit.artist || !credit.licence) return general;
+  const line = t("about.portraitCredit", language)
+    .replace("{artist}", credit.artist)
+    .replace("{licence}", credit.licence);
+  return `${general} ${line}`;
 }
 
 /**

@@ -80,11 +80,21 @@ export const TURN_POLICIES = ["hijack", "attribution", "request"];
  * it is nobody's in particular — the same reasoning that exempts the play
  * control, applied to the facts.
  *
+ * ONE VIEWPORT IS THE OTHER CASE WHERE THE BAND CAN SAY (2026-09-18). The
+ * mirrored rule exists because a shared copy cannot be attributed to one of two
+ * facing readers. With a single viewport there are not two readers: every tap
+ * on the one cluster is the only reader's, by construction, whatever the
+ * orientation. Refusing it there was the rule drawn too wide — it left a
+ * one-viewport table (the staff laptop, and any single-screen kiosk) with no
+ * way into the explorers but `?viewSwitch=1`.
+ *
  * @param {string} orientation   the RESOLVED band orientation (config.js)
  * @param {number} clusterIndex
+ * @param {number} [viewports]   how many readers the band faces
  * @returns {number|null}
  */
-export function bandTapViewport(orientation, clusterIndex) {
+export function bandTapViewport(orientation, clusterIndex, viewports = 2) {
+  if (Number(viewports) === 1) return 0;
   if (orientation !== "mirrored") return null;
   const i = Number(clusterIndex);
   return Number.isInteger(i) && i >= 0 ? i : null;

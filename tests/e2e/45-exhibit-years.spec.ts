@@ -129,9 +129,18 @@ test.describe('45. The by-year explorer', () => {
         stripsInDom: vp1.querySelectorAll('.strip').length,
         overlaysInVp0: vp0.querySelectorAll('.vp-view').length,
         playing: T.transport.playing,
-        // The overlay begins where the toolbar ends — layout values, so the far
-        // half's 180° rotation cannot confuse the measurement.
+        // THE OVERLAY FILLS THE HALF since 2026-09-18 (user). It used to BEGIN
+        // where the toolbar ended, and this asserted `overlayTop >=
+        // toolbarBottom`; now the box is the half and the toolbar's strip is
+        // PADDING inside it, so the thing to pin is that the content still
+        // clears the toolbar — the switch is painted over the overlay up there,
+        // and a heading sliding under it is the regression to catch.
+        // Layout values, so the far half's 180° rotation cannot confuse them.
         overlayTop: ov.offsetTop,
+        overlayBottom: ov.offsetTop + ov.offsetHeight,
+        contentTop: ov.offsetTop + parseFloat(getComputedStyle(ov).paddingTop),
+        halfHeight: vp1.clientHeight,
+        toolbarTop: toolbar.offsetTop,
         toolbarBottom: toolbar.offsetTop + toolbar.offsetHeight,
         // Behind the overlay the zoom control stands down — there is no
         // waveform to zoom. The AUDIENCE switch does not, since 0.66.0: the
@@ -151,7 +160,13 @@ test.describe('45. The by-year explorer', () => {
     expect(state.stripsInDom).toBe(state.stripsStillMounted);
     expect(state.overlaysInVp0).toBe(0);
     expect(state.playing).toBe(true);
-    expect(state.overlayTop).toBeGreaterThanOrEqual(state.toolbarBottom);
+    // The overlay starts at the top of the half — above the toolbar, which it is
+    // now drawn UNDER — and reaches the bottom of it.
+    expect(state.overlayTop).toBeLessThanOrEqual(state.toolbarTop);
+    expect(state.overlayBottom).toBe(state.halfHeight);
+    // …and its CONTENT still begins below the toolbar, so nothing slides under
+    // the audience switch painted up there.
+    expect(state.contentTop).toBeGreaterThanOrEqual(state.toolbarBottom);
     expect(state.zoomVisible).toBe('hidden');
     expect(state.audienceSwitchVisible).toBe('visible');
     expect(state.pressed).toEqual([['listen', 'false'], ['years', 'true'], ['conductors', 'false']]);

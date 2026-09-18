@@ -20,10 +20,12 @@
 //     is where a portrait is shown LARGE, and a CC BY / CC BY-SA photograph may
 //     not be shown without its credit — nothing labels the medallion itself.
 //
-// WHAT IS DELIBERATELY NOT HERE: the years on the card are marks, not buttons.
-// Facets as navigation INSIDE an explorer is the fallback design for an upright
-// band (plan §11(f)); the ruled entry is the mirrored band, and building both
-// would leave the October testing comparing two navigations at once.
+// THE YEARS ON THE CARD ARE BUTTONS since 2026-09-18 — the user reversed plan
+// §11(f)'s ruling by name ("I cannot imagine that inter-explorer-navigation will
+// not be wanted"). They had been marks so the October testing would not be
+// comparing two navigations at once; that cost was accepted. A year opens the
+// by-year explorer on that concert, in this same half. The band remains the way
+// IN to an explorer; this is the way ACROSS.
 //
 // One conductor, ONE sitting, since 0.68.0: the portraits are freely-licensed
 // photographs and Commons holds one usable picture of a person, so the array that
@@ -38,8 +40,8 @@
 // geometry — spec 46 measures both.
 
 import { portraitAbout, resolveText, t } from "./strings.js";
-import { initials } from "./middle-band.js";
-import { createDyk } from "./dyk.js";
+import { acknowledgeThen, initials } from "./middle-band.js";
+import { createDyk, pulseStoryHint } from "./dyk.js";
 
 /**
  * @param {object} opts
@@ -52,11 +54,12 @@ import { createDyk } from "./dyk.js";
  * @param {object} opts.piece             the payload's piece (id, title map)
  * @param {(path: string) => string} opts.portraitUrl
  * @param {(file: string) => void} opts.onListen
+ * @param {(view: string, at: object) => void} [opts.onExplore]  the OTHER explorer, on a fact
  * @param {string|null} [opts.initialConductor]  a name the sidecar knows
  */
 export function createConductorsView({
-  viewport, language, concerts, piece, portraitUrl, onListen, initialConductor = null,
-  dyk = null, audienceStore = null, dykImages = true,
+  viewport, language, concerts, piece, portraitUrl, onListen, onExplore = null,
+  initialConductor = null, dyk = null, audienceStore = null, dykImages = true,
 }) {
   const el = document.createElement("div");
   el.className = "vp-view";
@@ -98,7 +101,11 @@ export function createConductorsView({
     audience: () => audienceStore?.get(viewport),
   });
   const unsubscribe = audienceStore?.subscribe((i) => {
-    if (i === viewport) story.refresh();
+    if (i !== viewport) return;
+    story.refresh();
+    // …and say what the switch was FOR, whether or not this card has a story to
+    // re-tell in the new register (dyk.js pulseStoryHint says why).
+    pulseStoryHint(el);
   });
 
   el.append(heading, roster.el, detail, about);
@@ -113,7 +120,8 @@ export function createConductorsView({
     roster.paint(name);
     story.setEntry(dyk?.forConductor(name));
     renderDetail(detail, c, {
-      language, pieceId: piece?.id, pieceTitle, portraitUrl, onListen, story: story.el,
+      language, pieceId: piece?.id, pieceTitle, portraitUrl, onListen, onExplore,
+      story: story.el,
     });
     // The credit follows the face: the card shows THIS conductor's portrait large,
     // so the foot names its photographer (strings.js, portraitAbout).
@@ -233,7 +241,7 @@ function buildRoster(concerts, language, portraitUrl, dyk) {
 // The card.
 // ---------------------------------------------------------------------------
 
-function renderDetail(root, c, { language, pieceId, pieceTitle, portraitUrl, onListen, story }) {
+function renderDetail(root, c, { language, pieceId, pieceTitle, portraitUrl, onListen, onExplore, story }) {
   root.textContent = "";
   root.dataset.conductor = c.name;
 
@@ -283,18 +291,35 @@ function renderDetail(root, c, { language, pieceId, pieceTitle, portraitUrl, onL
   head.append(medallion, names);
   root.appendChild(head);
 
-  // Their years: one small cell each, carrying the by-year grid's one mark —
-  // a dot where the exhibit can play that concert's recording. Marks, not
-  // buttons (see the header), and only the marks that earn their noise
-  // (user, 2026-09-18).
+  // Their years: one small cell each, carrying the by-year grid's one mark — a
+  // note where the exhibit can play that concert's recording, and only the marks
+  // that earn their noise (user, 2026-09-18).
+  //
+  // A BUTTON where the other explorer can be reached, a span where it cannot, so
+  // the DOM says which cells do something rather than every cell claiming to.
+  // Nothing is added to the cell to announce it: the exhibit's tappables are
+  // told apart by their frame, and a fourth mark on a 44 px cell that already
+  // carries a numeral and a note would be noise (§6.3's rule, kept).
   const strip = document.createElement("div");
   strip.className = "cv-years";
   for (const concert of c.concerts) {
-    const cell = document.createElement("span");
+    const cell = document.createElement(onExplore ? "button" : "span");
     cell.className = "cv-year";
     cell.dataset.year = String(concert.year);
     cell.textContent = String(concert.year);
     if ((concert.playable || []).length) cell.dataset.playable = "1";
+    if (onExplore) {
+      cell.type = "button";
+      // The numerals are the label a visitor reads; the aria-label says what the
+      // tap DOES, which numerals alone cannot.
+      cell.setAttribute(
+        "aria-label",
+        t("conductors.openYear", language).replace("{year}", String(concert.year)),
+      );
+      cell.addEventListener("click", () =>
+        acknowledgeThen(cell, () => onExplore("years", { year: concert.year })),
+      );
+    }
     strip.appendChild(cell);
   }
   root.appendChild(strip);
@@ -358,6 +383,7 @@ function fitRoster(root) {
   const overflows = () =>
     root.scrollHeight > root.clientHeight + 1 || root.scrollWidth > root.clientWidth + 1;
   const apply = () => {
+    sizeRows(root);
     for (let i = 0; i < STEPS.length; i++) {
       root.classList.remove("is-dense", "is-denser");
       if (STEPS[i]) root.classList.add(STEPS[i]);
@@ -367,4 +393,78 @@ function fitRoster(root) {
   };
   if (root.isConnected && root.clientHeight) apply();
   else requestAnimationFrame(apply);
+}
+
+/** A row never grows past this, however tall the overlay is. */
+const ROW_MAX = 84;
+/** Nor does a medallion — past it the name loses the width it needs. */
+const MEDALLION_MAX = 64;
+const MEDALLION_MIN = 30;
+
+/**
+ * Size the rows and their medallions to the height the roster actually has
+ * (user, 2026-09-18: the portraits were tiny and the rows all padding).
+ *
+ * The roster divides its height into `--cv-rows` equal tracks, so a row is as
+ * tall as the overlay makes it — 56 px at the kiosk's two-up geometry, but 127
+ * px at one viewport, where a fixed 44 px medallion sat in 83 px of air. Both
+ * numbers now come from the track:
+ *
+ *  * `--cv-track` CAPS the row, so a tall overlay gets a compact list centred in
+ *    it rather than nine rows stretched to twice the size of their contents.
+ *  * `--cv-med` fills what the row then has, and the two pictograms follow it
+ *    (exhibit.css derives their offsets from the same variable).
+ *
+ * The medallion is then given back whatever the NAMES turn out to need, because
+ * the real ceiling is horizontal and it is not the same on every screen — see
+ * widestOverflow.
+ *
+ * At the kiosk this is a no-op on the track (56 px is already under the cap) and
+ * takes the medallion 44 → 48, so spec 46.8's fit is unchanged.
+ */
+function sizeRows(root) {
+  const rows = Number(getComputedStyle(root).getPropertyValue("--cv-rows")) || 1;
+  const gap = parseFloat(getComputedStyle(root).rowGap) || 0;
+  const height = root.clientHeight;
+  if (!height || !rows) return;
+  const track = Math.floor((height - gap * (rows - 1)) / rows);
+  const capped = Math.min(track, ROW_MAX);
+  let medallion = Math.max(MEDALLION_MIN, Math.min(capped - 8, MEDALLION_MAX));
+  root.style.setProperty("--cv-track", `${capped}px`);
+  // `--cv-med-FIT`, not `--cv-med`: an inline custom property would outrank the
+  // density steps' own declaration, and a roster that had to go dense could
+  // then never shrink its medallion. The stylesheet resolves which wins.
+  root.style.setProperty("--cv-med-fit", `${medallion}px`);
+  // …then hand back whatever the NAMES need. Two passes, because giving the
+  // width back can only help: the deficit is exact, and the second pass is the
+  // check rather than a search.
+  for (let pass = 0; pass < 2; pass++) {
+    const over = widestOverflow(root);
+    if (over <= 0 || medallion <= MEDALLION_MIN) break;
+    medallion = Math.max(MEDALLION_MIN, medallion - over - 1);
+    root.style.setProperty("--cv-med-fit", `${medallion}px`);
+  }
+}
+
+/**
+ * How many pixels the longest name or year phrase is short of its column.
+ *
+ * THE OVERFLOW THIS CATCHES IS INVISIBLE TO `fitRoster`: `.cv-entry-name`
+ * ellipsises, so the roster's own `scrollWidth > clientWidth` check never fires
+ * and a truncated "Nikolaus Harnon…" ships looking deliberate. Found on the
+ * kiosk itself (user's photograph, 2026-09-18) after the medallion grew — the
+ * 1024 px test geometry had 10 px to spare and the real screen did not, which
+ * is exactly why the medallion is now measured against the names rather than
+ * capped at a number that happened to fit one device.
+ */
+function widestOverflow(root) {
+  let over = 0;
+  for (const text of root.querySelectorAll(".cv-entry-text")) {
+    const room = text.clientWidth;
+    if (!room) continue;
+    for (const line of text.children) {
+      if (line.scrollWidth > room) over = Math.max(over, line.scrollWidth - room);
+    }
+  }
+  return over;
 }

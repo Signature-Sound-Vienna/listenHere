@@ -201,3 +201,44 @@ export function createDyk({ language, images = true, audience = () => "adults" }
     hasEntry: () => Boolean(entry),
   };
 }
+
+/* ---------------------------------------------------------------------------
+ * THE SWITCH SAYS WHAT IT IS FOR (user, 2026-09-19).
+ *
+ * Inside an explorer the audience switch changes ONE thing: the register the
+ * museum's story is told in. If the selected year or conductor happens to have
+ * no story — twelve of the eighteen conductors do not — tapping Kids, Adults or
+ * Scholars appears to do nothing at all, and a visitor reasonably concludes the
+ * control is broken rather than that this card has nothing to re-tell.
+ *
+ * So the switch answers by pointing at its own subject: every BOOK mark on the
+ * screen pulses once, and so does the story's heading where there is one. The
+ * book already means "there is a story here" on the year grid, the roster row,
+ * and the heading itself (0.70.0), so the hint teaches the connection rather
+ * than introducing a new sign — and it needs no words, which matters because
+ * this is the one gesture that must read the same in all three registers.
+ * ------------------------------------------------------------------------- */
+
+/** As long as the CSS keyframes run, plus a frame. */
+const HINT_MS = 1000;
+const hintTimers = new WeakMap();
+
+/**
+ * Pulse the story marks under `root` — an explorer's `.vp-view`.
+ *
+ * Cleared by TIME rather than `animationend`, so reduced motion (where the
+ * marks brighten without moving, and there is no animation to end) clears it
+ * too; the reflow between remove and add is what replays it when a visitor taps
+ * twice through the registers.
+ */
+export function pulseStoryHint(root) {
+  // A cached explorer for the other view subscribes to the same store and would
+  // pulse in the dark: it is built once per viewport and kept, detached, while
+  // the reader is in the other one.
+  if (!root || !root.isConnected) return;
+  clearTimeout(hintTimers.get(root));
+  root.removeAttribute("data-dyk-hint");
+  void root.offsetWidth;
+  root.setAttribute("data-dyk-hint", "1");
+  hintTimers.set(root, setTimeout(() => root.removeAttribute("data-dyk-hint"), HINT_MS));
+}

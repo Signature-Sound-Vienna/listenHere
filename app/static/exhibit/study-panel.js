@@ -581,6 +581,26 @@ const STUDY_PRESET = {
 // panel reopens itself on the same tab.
 const TAB_KEY = "exhibitStudyTab";
 const OPEN_KEY = "exhibitStudyOpen";
+// …and WHERE IN THE TAB (user, 2026-09-19). The Band and Room tabs are longer
+// than the panel, and every option change reloads the page — so without this,
+// flipping one knob two thirds of the way down threw you back to the top and
+// you had to find your place again, every time.
+//
+// One position PER TAB rather than one for the panel: the tabs are different
+// lengths and hold different discussions, and coming back to a tab at the top
+// when you left it half way down is the same annoyance in miniature.
+const SCROLL_KEY = "exhibitStudyScroll";
+
+/** The saved scroll offsets, `{tabId: px}`. Never throws — a corrupt or absent
+ *  entry is simply no memory, which is the state this feature replaced. */
+function readScrolls() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SCROLL_KEY) || "{}");
+    return raw && typeof raw === "object" ? raw : {};
+  } catch {
+    return {};
+  }
+}
 
 /**
  * A param's value in a config object. Per-viewport fields (`views`, like
@@ -626,12 +646,39 @@ export function mountStudyPanel(config, actions = {}) {
     b.textContent = tab.label;
     if (tab.hint) b.title = tab.hint;
     b.addEventListener("click", () => {
+      // Bank where THIS tab was left before leaving it, so the two tabs do not
+      // trade places (the scroll listener only fires while a tab is scrolled).
+      rememberScroll();
       activeTab = tab.id;
       localStorage.setItem(TAB_KEY, activeTab);
       paint();
     });
     tabs.appendChild(b);
   }
+
+  /** Bank the body's offset against the tab now showing. */
+  function rememberScroll() {
+    clearTimeout(scrollTimer);
+    const scrolls = readScrolls();
+    scrolls[activeTab] = Math.round(body.scrollTop);
+    try {
+      localStorage.setItem(SCROLL_KEY, JSON.stringify(scrolls));
+    } catch {
+      /* a full or blocked store is not worth breaking the panel over */
+    }
+  }
+
+  // Coalesced, because a scroll fires per frame and this writes to disk. A
+  // TIMER, not rAF: the panel is often read on a screen whose tab is hidden or
+  // whose window is behind another, and rAF does not run there — the position
+  // would simply never be saved.
+  let scrollTimer = 0;
+  body.addEventListener("scroll", () => {
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(rememberScroll, 120);
+  });
+  // The reload a parameter change triggers can beat that 120 ms.
+  window.addEventListener("pagehide", rememberScroll);
 
   // The footer: the fit line, and the two buttons that carry the configuration
   // away. The URL used to be ECHOED here in full, selectable; it is not any
@@ -834,6 +881,13 @@ export function mountStudyPanel(config, actions = {}) {
       body.appendChild(row);
     }
     paintFit();
+    // BACK TO WHERE THIS TAB WAS LEFT (user, 2026-09-19). paint() empties the
+    // body and rebuilds it, which resets the offset to 0 — so the restore has to
+    // happen here, after the rows are in, and not once at mount.
+    //
+    // No clamping: a browser pins an over-long scrollTop to the new maximum by
+    // itself, which is the right answer when a tab has grown shorter.
+    body.scrollTop = readScrolls()[activeTab] || 0;
   }
 
   /**

@@ -746,13 +746,17 @@ test.describe('35. Week 2 — the study panel and themes', () => {
   });
 
   // 35.17 The band's shared play/pause: one large button in the middle of the
-  // band starts and stops the transport, and the current time renders TWICE
-  // below it — the far copy rotated 180° so each visitor reads one the right
-  // way up (numerals only; the no-labels rule holds).
+  // band starts and stops the transport, and — ON A MIRRORED BAND — the current
+  // time renders TWICE beside it, the far copy rotated 180° so each visitor
+  // reads one the right way up (numerals only; the no-labels rule holds).
+  //
+  // The SECOND readout is mirrored's alone (user, 2026-09-18): only there does
+  // the far reader have a right-way-up copy of the band for an upright clock to
+  // belong to. Every other orientation shows one, which 35.17b pins.
   test('35.17 the band play button toggles the transport and mirrors the time to both readers', async ({
     page,
   }) => {
-    await boot(page);
+    await boot(page, 'debug=1&bandOrientation=mirrored');
     const resting = await page.evaluate(() => {
       const times = [...document.querySelectorAll('.mb-time')];
       return {
@@ -797,6 +801,38 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.playing))
       .toBe(false);
     await expect(page.locator('.mb-play')).toHaveText('▶');
+  });
+
+  // 35.17b The turned readout is MIRRORED'S ALONE (user, 2026-09-18). Upright,
+  // flip, and rotated all show the far reader the near reader's band however it
+  // is turned; a single right-way-up numeral in an otherwise inverted row reads
+  // as a rendering fault, not as a courtesy. Asserted as the ELEMENT's absence
+  // rather than a style, because a `display: none` that a later rule undoes
+  // would still pass a computed-style check.
+  test('35.17b only a mirrored band carries the far reader\'s second, turned time readout', async ({
+    page,
+  }) => {
+    for (const [qs, expected] of [
+      ['debug=1', 1],
+      ['debug=1&viewports=1', 1],
+      ['debug=1&bandOrientation=flip', 1],
+      ['debug=1&bandOrientation=rotated', 1],
+      ['debug=1&bandOrientation=mirrored', 2],
+    ] as const) {
+      await boot(page, qs);
+      const seen = await page.evaluate(() => ({
+        orientation: (document.querySelector('.middle-band') as HTMLElement).dataset.orientation,
+        times: document.querySelectorAll('.mb-time').length,
+        flipped: document.querySelectorAll('.mb-time-flipped').length,
+        play: document.querySelectorAll('.mb-play').length,
+      }));
+      expect(seen, `?${qs}`).toMatchObject({
+        times: expected,
+        flipped: expected - 1,
+        // The one control both visitors own is in every orientation regardless.
+        play: 1,
+      });
+    }
   });
 
   // 35.14 Clicking a PRESET clears every per-category pin back to "follow" —
@@ -1518,7 +1554,9 @@ test.describe('35. Demo feedback — the band at a single viewport', () => {
     expect(single.bandBottom!).toBeLessThanOrEqual(single.vpTop);
     // The transport came with it — the reason this is a bug and not a cosmetic gap.
     expect(single.play, 'the only play/pause in the exhibit lives in the band').toBe(true);
-    expect(single.times).toBe(2);
+    // ONE readout: there is no second reader at one viewport, and since
+    // 2026-09-18 the turned copy is the mirrored band's alone (35.17b).
+    expect(single.times).toBe(1);
     expect(single.conductor).toBe(true);
 
     // …and it actually drives the clock from there.

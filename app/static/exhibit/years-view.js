@@ -32,8 +32,8 @@
 // if it ever overflows — spec 45 measures the longest one at the iPad geometry.
 
 import { portraitAbout, resolveText, t } from "./strings.js";
-import { initials } from "./middle-band.js";
-import { createDyk } from "./dyk.js";
+import { acknowledgeThen, initials } from "./middle-band.js";
+import { createDyk, pulseStoryHint } from "./dyk.js";
 
 /**
  * @param {object} opts
@@ -46,11 +46,12 @@ import { createDyk } from "./dyk.js";
  * @param {object} opts.piece             the payload's piece (id, title map)
  * @param {(path: string) => string} opts.portraitUrl
  * @param {(file: string) => void} opts.onListen
+ * @param {(view: string, at: object) => void} [opts.onExplore]  the OTHER explorer, on a fact
  * @param {number|null} [opts.initialYear]
  */
 export function createYearsView({
-  viewport, language, concerts, piece, portraitUrl, onListen, initialYear = null,
-  dyk = null, audienceStore = null, dykImages = true,
+  viewport, language, concerts, piece, portraitUrl, onListen, onExplore = null,
+  initialYear = null, dyk = null, audienceStore = null, dykImages = true,
 }) {
   const el = document.createElement("div");
   el.className = "vp-view";
@@ -89,7 +90,11 @@ export function createYearsView({
     audience: () => audienceStore?.get(viewport),
   });
   const unsubscribe = audienceStore?.subscribe((i) => {
-    if (i === viewport) story.refresh();
+    if (i !== viewport) return;
+    story.refresh();
+    // …and say what the switch was FOR, whether or not this card has a story to
+    // re-tell in the new register (dyk.js pulseStoryHint says why).
+    pulseStoryHint(el);
   });
 
   el.append(heading, grid.el, detail, about);
@@ -103,7 +108,7 @@ export function createYearsView({
     grid.paint(year);
     story.setEntry(dyk?.forYear(year));
     renderDetail(detail, concerts.get(year), {
-      year, language, pieceId: piece?.id, pieceTitle, portraitUrl, onListen,
+      year, language, pieceId: piece?.id, pieceTitle, portraitUrl, onListen, onExplore,
       story: story.el,
     });
     // The credit follows the face: this card shows THIS year's conductor, so the
@@ -216,7 +221,7 @@ function buildGrid(concerts, language, dyk) {
 // The card.
 // ---------------------------------------------------------------------------
 
-function renderDetail(root, c, { year, language, pieceId, pieceTitle, portraitUrl, onListen, story }) {
+function renderDetail(root, c, { year, language, pieceId, pieceTitle, portraitUrl, onListen, onExplore, story }) {
   root.textContent = "";
   root.dataset.year = String(year);
   root.dataset.state = c?.date ? "concert" : "gap";
@@ -263,6 +268,26 @@ function renderDetail(root, c, { year, language, pieceId, pieceTitle, portraitUr
   if (c.conductor) {
     const who = document.createElement("div");
     who.className = "yv-conductor";
+    // THE WAY ACROSS (user, 2026-09-18, reversing plan §11(f)): the face and the
+    // name are one button into the by-conductor explorer, opened on them. The
+    // medallion and the name TOGETHER, so the target is the 56 px face rather
+    // than a line of type — and "With …" stays OUTSIDE it, because those are the
+    // other performers and a tap there must not claim to be about the conductor.
+    // Every conductor the sidecar names is in that explorer's roster by
+    // construction (it is built by grouping these same concerts), so the link
+    // cannot point at nothing.
+    const face = document.createElement(onExplore ? "button" : "div");
+    face.className = "yv-conductor-face";
+    if (onExplore) {
+      face.type = "button";
+      face.setAttribute(
+        "aria-label",
+        t("years.openConductor", language).replace("{conductor}", c.conductor),
+      );
+      face.addEventListener("click", () =>
+        acknowledgeThen(face, () => onExplore("conductors", { conductor: c.conductor })),
+      );
+    }
     const medallion = document.createElement("div");
     medallion.className = "yv-medallion";
     if (c.portrait) {
@@ -279,7 +304,8 @@ function renderDetail(root, c, { year, language, pieceId, pieceTitle, portraitUr
     const name = document.createElement("div");
     name.className = "yv-conductor-name";
     name.textContent = c.conductor;
-    who.append(medallion, name);
+    face.append(medallion, name);
+    who.appendChild(face);
     if (c.alsoPerforming?.length) {
       const with_ = document.createElement("div");
       with_.className = "yv-with";

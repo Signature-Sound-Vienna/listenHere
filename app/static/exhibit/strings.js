@@ -128,9 +128,19 @@ const CATALOGUE = {
   "view.listen": { en: "Listen" },
   "view.years": { en: "Year by year" },
   "view.conductors": { en: "Conductors" },
-  // aria-label only: every explorer overlay's close control shows an × glyph
-  // (main.js) — the way back into the listening view, since the band is the
-  // way in (plan §11(f)) and the toolbar switch is only the fallback entry.
+  // The way out of an explorer, back into the listening view — since the band is
+  // the way IN (plan §11(f)) and the toolbar switch only the fallback entry.
+  //
+  // TWO STRINGS FOR ONE CONTROL, since 2026-09-19: the short word is what the
+  // button SHOWS, where it shares a strip with the audience switch and a title;
+  // the sentence is its aria-label, for a reader who cannot see what is behind
+  // the overlay. The short one is a substring of the long one on purpose — a
+  // visible label that is not part of the accessible name is a trap for anyone
+  // driving the glass by voice.
+  //
+  // It was an × until 2026-09-19 (user): an × says "dismiss", and this goes
+  // somewhere.
+  "view.back": { en: "Back" },
   "view.close": { en: "Back to listening" },
   // aria-labels only, for the band's tappable facts (?bandTap, mirrored
   // band): the facts themselves are a proper name and a year, so the glass
@@ -179,6 +189,13 @@ const CATALOGUE = {
   // The direct route from a conductor to their music: one button per recording
   // of the current piece the exhibit holds from their concerts.
   "conductors.listen": { en: "Listen to {piece} from {year}" },
+  // THE WAY ACROSS to the other explorer (user, 2026-09-18, reversing §11(f)).
+  // Neither string is ever DRAWN — the cells carry numerals and the card carries
+  // a name, and §6.3's wordless rule holds on both. They are the aria-labels,
+  // which is the one place the exhibit may say in words what a tap does: a
+  // screen reader hearing "2010" alone learns nothing about where it leads.
+  "conductors.openYear": { en: "See the New Year's Concert of {year}" },
+  "years.openConductor": { en: "See every New Year's Concert of {conductor}" },
   // THE ONE PLAIN SENTENCE the portraits need (plan §5.5, §11(d)) — this view is
   // the first surface allowed to carry text. It used to explain the AI mark; since
   // 0.68.0 the portraits are photographs and it carries their credit instead.

@@ -136,7 +136,7 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
     expect(f.buttonsInBand, 'only the shared play control is a button').toBe(1);
     expect(await series(page)).toEqual({ fetched: false });
     expect(fetched, 'the shipped mirrored band must not fetch the explorers or their data').toEqual([]);
-    expect(await page.locator('.view-close').count()).toBe(0);
+    expect(await page.locator('.view-back').count()).toBe(0);
 
     // Upright cannot attribute a tap, so the request resolves to "off" and says why.
     const warnings: string[] = [];
@@ -206,7 +206,7 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
       return {
         views: [T.view(0), T.view(1)],
         overlays: [0, 1].map((i) => document.querySelectorAll(`.vp[data-viewport="${i}"] .vp-view`).length),
-        closes: document.querySelectorAll('.vp-view .view-close').length,
+        closes: document.querySelectorAll('.vp-view .view-back').length,
         holder: T.turns.state().holder,
         pending: T.turns.state().pending,
         playing: T.transport.playing,
@@ -246,9 +246,15 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
     await awaitConcerts(page);
     await page.click(fact(1, 'conductor'));
     const ov = await overlay(page, 1, 'conductors');
-    const close = ov.locator('.view-close');
+    const close = ov.locator('.view-back');
     await expect(close).toHaveCount(1);
-    await expect(close).toHaveAttribute('aria-label', /.+/);
+    // A WORD, not an × (user, 2026-09-19): an × says "dismiss", and this goes
+    // somewhere. The accessible name is the longer sentence and CONTAINS the
+    // visible word, so voice control and the eye agree on what to call it.
+    await expect(close).toHaveText('Back');
+    const closeLabel = await close.getAttribute('aria-label');
+    expect(closeLabel).toMatch(/.+/);
+    expect(closeLabel!.toLowerCase()).toContain('back');
     // Behind the overlay the zoom control stands down and the audience switch
     // does not, like 45.2 — the explorer carries text in the reader's register.
     expect(
@@ -258,6 +264,35 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
       })),
     ).toEqual({ zoom: 'hidden', audience: 'visible' });
     expect(await page.locator('.view-switch').count()).toBe(0);
+    // THE KIOSK'S OWN SHAPE — band in, no fallback switch — so the toolbar is
+    // uncrowded and the explorer's title shares its strip rather than taking a
+    // row of its own: 27 px of card, measured by main.js's fitViewStrip rather
+    // than assumed. 46.8 pins the other side of that decision.
+    expect(
+      await page.evaluate(() => {
+        const ov = document.querySelector('.vp[data-viewport="1"] .vp-view') as HTMLElement;
+        const toolbar = document.querySelector('.vp[data-viewport="1"] .vp-toolbar') as HTMLElement;
+        const h = ov.querySelector('.cv-heading') as HTMLElement;
+        // LAYOUT OFFSETS, NOT PAINTED ONES. This is the FAR half: it is rotated
+        // 180°, so its painted left and right are each other's, and a
+        // `right <= left` comparison on client rects reports a collision that
+        // is not there. offsetLeft does not know about the rotation, which is
+        // exactly what makes it right — the same reason main.js measures the
+        // strip that way. Only the text's WIDTH comes from a rect, and a width
+        // survives being turned upside down.
+        const range = document.createRange();
+        range.selectNodeContents(h);
+        const textWidth = range.getBoundingClientRect().width;
+        const headingRight = ov.offsetLeft + h.offsetLeft + textWidth;
+        const first = Math.min(...[...toolbar.children].map((c) => (c as HTMLElement).offsetLeft));
+        return {
+          strip: ov.dataset.stripHeading ?? null,
+          clears: headingRight <= first,
+          // …and the title sits ON the controls' line rather than above or below.
+          sameLine: Math.abs((ov.offsetTop + h.offsetTop) - toolbar.offsetTop) <= 12,
+        };
+      }),
+    ).toEqual({ strip: '1', clears: true, sameLine: true });
     await close.click();
     await expect(page.locator('.vp[data-viewport="1"] .vp-view')).toHaveCount(0);
     expect(await page.evaluate(() => (window as any)._exhibitTest.view(1))).toBe('listen');
@@ -265,7 +300,40 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
     // Re-entering reuses the built explorer (no second close control, one overlay).
     await page.click(fact(1, 'conductor'));
     await overlay(page, 1, 'conductors');
-    expect(await page.locator('.vp[data-viewport="1"] .view-close').count()).toBe(1);
+    expect(await page.locator('.vp[data-viewport="1"] .view-back').count()).toBe(1);
+  });
+
+  // 46.3b The Back control shares the toolbar's strip but belongs to the OVERLAY,
+  // which is drawn under the toolbar — so a toolbar control that reaches that far
+  // paints straight over it. Reported from a kiosk running ?zoomControls=0
+  // (2026-09-19): without the zoom buttons the audience switch ran to the bar's
+  // edge and the Back button vanished underneath it. A count or a visibility
+  // check would have passed the whole time — the element was there, the right
+  // size, and completely covered — so this HIT-TESTS the middle of it.
+  test('46.3b the Back control is reachable however few controls the toolbar carries', async ({
+    page,
+  }) => {
+    for (const qs of [
+      'debug=1&bandOrientation=mirrored&bandTap=plain',
+      'debug=1&bandOrientation=mirrored&bandTap=plain&zoomControls=0',
+    ]) {
+      await boot(page, qs);
+      await awaitConcerts(page);
+      await page.click(fact(0, 'conductor'));
+      await overlay(page, 0, 'conductors');
+      const seen = await page.evaluate(() => {
+        const vp = document.querySelector('.vp[data-viewport="0"]') as HTMLElement;
+        const back = vp.querySelector('.view-back') as HTMLElement;
+        const box = back.getBoundingClientRect();
+        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+        return { onTop: hit?.classList.contains('view-back') ?? false, width: Math.round(box.width) };
+      });
+      expect(seen.onTop, `?${qs}: something is painted over the Back control`).toBe(true);
+      expect(seen.width).toBeGreaterThan(0);
+      // …and it still does its job from under whatever is up there.
+      await page.locator('.vp[data-viewport="0"] .view-back').click();
+      await expect(page.locator('.vp[data-viewport="0"] .vp-view')).toHaveCount(0);
+    }
   });
 
   // 46.4 Attribution is not a turn (turns.js bandTapViewport).
@@ -431,7 +499,13 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
       expect(cell.playable, `year ${cell.year}`).toBe(most.playable.some((p) => p.year === cell.year));
       // One mark on these cells since 0.66.0, like the by-year grid's: playable.
       expect(cell.programme, `year ${cell.year}`).toBe(false);
-      expect(cell.button, 'years on the card are marks, not navigation (plan §11(f))').toBe(false);
+      // REVERSED 2026-09-18 (user, by name: "I cannot imagine that
+      // inter-explorer-navigation will not be wanted"). Plan §11(f) had made
+      // these marks so the October testing would not compare two navigations at
+      // once; they are buttons into the by-year explorer now, and 46.15 walks
+      // the round trip. This line is left as an assertion rather than deleted so
+      // the reversal is recorded where the old ruling was.
+      expect(cell.button, 'years on the card are navigation (plan §11(f), reversed)').toBe(true);
     }
     expect(await card.locator('.cv-role').count()).toBe(most.roles.length ? 1 : 0);
     if (most.roles.length) await expect(card.locator('.cv-role')).toHaveText(most.roles.join(' · '));
@@ -526,10 +600,30 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
         cardOverflow: card.scrollHeight - card.clientHeight,
         overlayOverflow: ov.scrollHeight - ov.clientHeight,
         aboutVisible: about.offsetHeight > 0 && about.offsetTop + about.offsetHeight <= ov.clientHeight,
-        overlayTop: ov.offsetTop,
+        // The overlay FILLS the half since 2026-09-18 and keeps the toolbar's
+        // strip clear as padding, so what has to hold is that the CONTENT still
+        // starts below the toolbar — see 45.2, which pins the box itself.
+        contentTop: ov.offsetTop + parseFloat(getComputedStyle(ov).paddingTop),
         toolbarBottom: toolbar.offsetTop + toolbar.offsetHeight,
+        // THE HEADING SHARES THE TOOLBAR'S STRIP at this geometry (user,
+        // 2026-09-19), which is worth 27 px of card. It is a MEASURED decision
+        // (main.js fitViewStrip), so both halves are pinned: that it happened,
+        // and that the title actually clears the leftmost control rather than
+        // running under it — the failure mode is a title behind the audience
+        // chips, which no overflow check would ever report.
+        stripHeading: ov.dataset.stripHeading ?? null,
+        headingClears: (() => {
+          const h = vp.querySelector('.cv-heading') as HTMLElement;
+          const range = document.createRange();
+          range.selectNodeContents(h);
+          // Layout offsets, like 46.3 — see the note there about the far half's
+          // rotation. Only the width comes from a rect.
+          const right = ov.offsetLeft + h.offsetLeft + range.getBoundingClientRect().width;
+          const first = Math.min(...[...toolbar.children].map((c) => (c as HTMLElement).offsetLeft));
+          return ov.dataset.stripHeading !== '1' || right <= first;
+        })(),
         closeInside: (() => {
-          const c = ov.querySelector('.view-close') as HTMLElement;
+          const c = ov.querySelector('.view-back') as HTMLElement;
           return c.offsetTop >= 0 && c.offsetLeft + c.offsetWidth <= ov.clientWidth;
         })(),
       };
@@ -541,7 +635,15 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
     expect(fit.cardOverflow, 'the card overflows').toBeLessThanOrEqual(0);
     expect(fit.overlayOverflow, 'the overlay overflows').toBeLessThanOrEqual(0);
     expect(fit.aboutVisible).toBe(true);
-    expect(fit.overlayTop).toBeGreaterThanOrEqual(fit.toolbarBottom);
+    expect(fit.contentTop).toBeGreaterThanOrEqual(fit.toolbarBottom);
+    // THE NEGATIVE CASE, and it is the point of measuring rather than assuming:
+    // `?views=` forces the fallback switch on (a view you cannot leave is a
+    // trap), so this toolbar carries a THIRD control and there is no longer room
+    // beside it for a 329 px title. The heading keeps its own row, and the card
+    // gives back the 27 px. 46.3 pins the positive case, at the kiosk's own
+    // entry, where the band is the way in and the switch is absent.
+    expect(fit.stripHeading, 'a crowded toolbar must push the heading back to its own row').toBeNull();
+    expect(fit.headingClears, 'the heading runs under the toolbar’s controls').toBe(true);
     expect(fit.closeInside).toBe(true);
   });
 
@@ -558,7 +660,7 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
     await page.evaluate(() => (window as any)._exhibitTest.setView(0, 'conductors'));
     const ov = await overlay(page, 0, 'conductors');
     await expect(ov.locator('[data-state="unavailable"]')).toHaveCount(1);
-    await expect(ov.locator('.view-close')).toHaveCount(1);
+    await expect(ov.locator('.view-back')).toHaveCount(1);
     expect(await page.evaluate(() => (window as any)._exhibitTest.conductorsView(0))).toEqual({
       conductor: null, available: false,
     });
@@ -738,7 +840,7 @@ test.describe('46. The band is the interface — a single reader', () => {
     ).toBe('years');
 
     // The conductor opens the other explorer, from the same one cluster.
-    await page.locator('.vp[data-viewport="0"] .view-close').click();
+    await page.locator('.vp[data-viewport="0"] .view-back').click();
     await page.click(fact(0, 'conductor'));
     await overlay(page, 0, 'conductors');
     expect(await page.evaluate(() => (window as any)._exhibitTest.view(0))).toBe('conductors');
@@ -875,5 +977,68 @@ test.describe('46. The by-conductor explorer — "did you know?"', () => {
     const row = page.locator('.study-row').filter({ has: page.locator('.study-label', { hasText: 'Did-you-know images' }) });
     await expect(row).toHaveCount(1);
     await expect(row.locator('.study-option.is-on')).toHaveText('off');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 46.15 THE EXPLORERS INTERLINK (user, 2026-09-18) — plan §11(f)'s "the facets
+// are marks, not buttons" reversed by name. The band stays the way IN; this is
+// the way ACROSS, and it has to land on the RIGHT fact in the SAME half, or it
+// is worse than no link at all.
+// ---------------------------------------------------------------------------
+
+test.describe('46. The explorers interlink', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  test('46.15 a year on a conductor\'s card opens by-year on that concert, and its conductor opens by-conductor back on them', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&bandOrientation=mirrored&bandTap=shimmer');
+    await awaitConcerts(page);
+    const s = await series(page);
+    if (!s.available) throw new Error('sidecar unavailable');
+
+    // In through the band, as a visitor does — the NEAR reader's portrait, so
+    // everything that follows must stay in viewport 0.
+    await page.click(fact(0, 'portrait'));
+    const conductors = await overlay(page, 0, 'conductors');
+
+    // A conductor with more than one concert, so the year we tap is a CHOICE
+    // and not the only thing the link could possibly have landed on.
+    const many = s.conductors.find((c) => c.years.length > 1);
+    expect(many, 'fixture needs a conductor with two or more concerts').toBeTruthy();
+    await conductors.locator(`.cv-entry[data-conductor="${many!.name}"]`).click();
+    const wanted = many!.years[0];
+
+    const cell = conductors.locator(`.cv-year[data-year="${wanted}"]`);
+    // A real button with a real name: the numerals are all a sighted visitor
+    // needs, and all a screen reader would get without this.
+    await expect(cell).toHaveAttribute('aria-label', new RegExp(String(wanted)));
+    const box = await cell.boundingBox();
+    expect(box!.width, 'the year cell is a touch target now').toBeGreaterThanOrEqual(40);
+    expect(box!.height, 'the year cell is a touch target now').toBeGreaterThanOrEqual(40);
+    await cell.click();
+
+    const years = await overlay(page, 0, 'years');
+    await expect(years.locator('.yv-detail')).toHaveAttribute('data-year', String(wanted));
+    // THE OTHER HALF IS UNTOUCHED. A link that opened the far reader's screen
+    // would be the same bug the band's attribution exists to prevent.
+    expect(await page.locator('.vp[data-viewport="1"] .vp-view').count()).toBe(0);
+
+    // …and back the other way, onto the conductor we came from.
+    const face = years.locator('.yv-conductor-face');
+    await expect(face).toHaveAttribute('aria-label', new RegExp(many!.name.split(' ').pop()!));
+    expect(await face.evaluate((e) => e.tagName)).toBe('BUTTON');
+    await face.click();
+    const back = await overlay(page, 0, 'conductors');
+    await expect(back.locator('.cv-detail')).toHaveAttribute('data-conductor', many!.name);
+    expect(await page.locator('.vp[data-viewport="1"] .vp-view').count()).toBe(0);
+
+    // The "With …" line is NOT inside the conductor's button: those are the
+    // other performers, and a tap there must not claim to be about the
+    // conductor (years-view.js says so where the DOM is built).
+    await back.locator(`.cv-year[data-year="${wanted}"]`).click();
+    const again = await overlay(page, 0, 'years');
+    expect(await again.locator('.yv-conductor-face .yv-with').count()).toBe(0);
   });
 });

@@ -407,12 +407,85 @@ function concertConductorOf(file) {
 }
 
 function positionView(vp) {
-  // The overlay starts where the toolbar ends. Layout values, not painted
-  // ones: the far half is rotated 180°, and offsetTop/offsetHeight do not
-  // know that, which is exactly what makes them right here.
+  // THE OVERLAY FILLS THE HALF (user, 2026-09-18) and keeps a STRIP clear at the
+  // top for the audience switch, which is painted over it (exhibit.css).
+  //
+  // It used to START below the toolbar, which left the strap showing above it,
+  // below it, and down both sides — the overlay read as a panel that had landed
+  // there rather than as the half's own content. Now the box is the half and the
+  // strip is padding inside it, so the only thing above the overlay is the band.
+  //
+  // Layout values, not painted ones: the far half is rotated 180°, and
+  // offsetTop/offsetHeight do not know that, which is exactly what makes them
+  // right here.
   const bar = vp.el.querySelector(".vp-toolbar");
   if (!bar) return;
-  vp.el.style.setProperty("--vp-view-top", `${bar.offsetTop + bar.offsetHeight + 4}px`);
+  vp.el.style.setProperty("--vp-view-strip", `${bar.offsetTop + bar.offsetHeight + 4}px`);
+  reserveBack(vp, bar);
+  fitViewStrip(vp);
+}
+
+/**
+ * Keep the toolbar's controls clear of the explorer's Back button, which shares
+ * their strip but is not one of them — it belongs to the overlay, which is drawn
+ * UNDER the toolbar, so a control that reaches it simply paints over it.
+ *
+ * The first cut relied on the zoom control, standing down behind the overlay,
+ * holding 137 px at that end. That was an assumption and it was wrong: the zoom
+ * buttons are configurable (`?zoomControls=0`, spec 35.16), and without them the
+ * audience switch ran to the toolbar's edge and swallowed the Back button whole
+ * — reported from a kiosk where the control simply was not there.
+ *
+ * So the room is RESERVED, and measured from the button rather than guessed:
+ * its own width plus the gap, as padding on the bar. Set before fitViewStrip
+ * reads the controls' positions, because this moves them.
+ */
+function reserveBack(vp, bar) {
+  const back = vp.el.querySelector(".vp-view .view-back");
+  if (!back) return;
+  vp.el.style.setProperty("--vp-view-back", `${Math.ceil(back.offsetWidth) + 24}px`);
+}
+
+/**
+ * Lift the explorer's heading INTO the toolbar's strip when it fits beside the
+ * controls — reclaiming its own row, and the row-gap under it, for the content.
+ *
+ * WHAT IT IS WORTH, measured at the kiosk geometry: 28 px, which is the heading
+ * (22) plus the gap (6). Not the 56 px the strip is tall — the content still
+ * cannot start until the strip ends, or the card would slide under the audience
+ * switch painted over it. 28 px is close to what item 4's taller year cells took
+ * (30), so this returns roughly that and no more.
+ *
+ * WHETHER IT FITS IS MEASURED, NOT ASSUMED, because it does not always. The
+ * by-year heading is 424 px wide at the kiosk's 1 rem and the by-conductor one
+ * 329 — and with `?viewSwitch=1` the toolbar carries a third control that eats
+ * the room. Below roughly 730 px of half-width nothing fits either. So the
+ * heading only moves where there is a measured gap for it, and stays on its own
+ * row otherwise; a title is not a thing to truncate.
+ *
+ * A Range, not `scrollWidth`: the heading is a block filling the overlay, so its
+ * scrollWidth is the overlay's width and says nothing about the TEXT.
+ */
+function fitViewStrip(vp) {
+  const bar = vp.el.querySelector(".vp-toolbar");
+  const view = vp.el.querySelector(".vp-view");
+  if (!bar || !view) return;
+  delete view.dataset.stripHeading;
+  const heading = view.querySelector(".yv-heading, .cv-heading");
+  if (!heading) return;
+  // The leftmost control the heading has to clear. A control standing down
+  // behind the overlay (the zoom) is hidden but still holds its place, so it
+  // counts as an obstacle exactly as much as a visible one does.
+  let guard = Infinity;
+  for (const control of bar.children) guard = Math.min(guard, control.offsetLeft);
+  if (!Number.isFinite(guard)) return;
+  const range = document.createRange();
+  range.selectNodeContents(heading);
+  const text = range.getBoundingClientRect().width;
+  const padding = parseFloat(getComputedStyle(view).paddingLeft) || 0;
+  // 24 px of air between the title and the first control, so the two read as
+  // two things rather than one crowded line.
+  if (padding + text + 24 <= guard) view.dataset.stripHeading = "1";
 }
 
 function paintViewSwitch(vp) {
@@ -480,6 +553,16 @@ function buildView(name, m, vp, concerts, dyk, opening) {
       else data.turns?.request(vp.roomId, file, undefined);
       setView(vp, "listen");
     },
+    // THE EXPLORERS INTERLINK (user, 2026-09-18) — plan §11(f)'s "the facets
+    // are marks, not buttons" is REVERSED, deliberately and by name: "I cannot
+    // imagine that inter-explorer-navigation will not be wanted". A year on a
+    // conductor's card opens by-year on that concert; the conductor on a year's
+    // card opens by-conductor on them. Same viewport, replacing the overlay.
+    //
+    // Both explorers' modules are imported together the moment any entry is
+    // configured (viewModules), so the far side of a link can never be missing
+    // while the near side is on screen.
+    onExplore: (view, at) => setView(vp, view, at),
   };
   const at = openingFor(name, opening);
   const handle =
@@ -488,14 +571,28 @@ function buildView(name, m, vp, concerts, dyk, opening) {
       : m.createConductorsView({ ...common, initialConductor: at });
   // The way back, inside the overlay (plan §11(f)): the band is the way in and
   // the toolbar switch only the fallback, so the overlay itself must be
-  // leavable. An × like the side panel's, in the overlay's top-right corner.
-  const close = document.createElement("button");
-  close.type = "button";
-  close.className = "view-close";
-  close.textContent = "×";
-  close.setAttribute("aria-label", t("view.close", vp.language));
-  close.addEventListener("click", () => setView(vp, "listen"));
-  handle.el.appendChild(close);
+  // leavable.
+  //
+  // IT SAYS "BACK" RATHER THAN "×" (user, 2026-09-19). An × says "dismiss this
+  // thing" and leaves open what is underneath; this control returns to the
+  // listening view, which is a destination, so it names the move. The explorers
+  // are the surfaces ALLOWED to carry words — they live on one reader's half and
+  // may speak that reader's language, unlike the shared band (§6.3).
+  //
+  // The user weighed the obvious objection and accepted it: "Back" can be read
+  // as "the screen before", which since the explorers interlink might be the
+  // other explorer rather than the music. Their reasoning is that a visitor who
+  // wants the previous explorer has the reciprocal link right there on the card
+  // — 1987 back to Karajan — and would reach for that in preference.
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "view-back";
+  back.textContent = t("view.back", vp.language);
+  // The longer sentence for a screen reader, which cannot see what it returns
+  // to. It CONTAINS the visible word, so the two do not disagree.
+  back.setAttribute("aria-label", t("view.close", vp.language));
+  back.addEventListener("click", () => setView(vp, "listen"));
+  handle.el.appendChild(back);
   return handle;
 }
 
@@ -552,8 +649,12 @@ async function setView(vp, name, opening = {}) {
     const at = openingFor(name, opening);
     if (at != null) handle.select(at);
   }
-  positionView(vp);
+  // Append FIRST: positionView now also measures the overlay's own heading
+  // against the toolbar (fitViewStrip), which it cannot do before the overlay is
+  // in the document — and the strip it sets changes the height `refit` fits to,
+  // so refit goes last.
   vp.el.appendChild(handle.el);
+  positionView(vp);
   handle.refit?.();
 }
 

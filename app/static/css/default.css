@@ -3710,6 +3710,93 @@ body.marker-dragging * {
   margin: 0;
 }
 
+/* Open-ended alignment: the global toggle, the per-row override, the report */
+#align-open-ends-row {
+  margin: 0.7em 0 0.2em;
+  text-align: left;
+}
+
+#align-open-ends-hint {
+  font-size: 0.78em;
+  color: var(--color-text-subtle, #94a3b8);
+  margin: 0.2em 0 0 1.6em;
+}
+
+/* A row that has been clicked no longer follows the global setting. */
+.align-trim-checkbox.align-trim-explicit {
+  outline: 2px solid var(--color-link, #2563eb);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* The post-run report. Folded shut so twenty recordings cannot push the
+ * Save and Listen buttons out of view. */
+#align-open-ends-details {
+  margin: 0 0 1em;
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 8px;
+  background: var(--color-surface-subtle, rgba(148, 163, 184, 0.08));
+  text-align: left;
+  overflow: hidden;
+}
+
+#align-open-ends-details > summary {
+  padding: 0.55em 0.8em;
+  font-size: 0.87em;
+  font-weight: 600;
+  color: var(--color-text, #334155);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+#align-open-ends-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Own disclosure triangle, so it reads the same in both browsers. */
+#align-open-ends-details > summary::before {
+  content: "\25B8";
+  display: inline-block;
+  width: 1em;
+  color: var(--color-text-muted, #64748b);
+  transition: transform 0.15s ease;
+}
+
+#align-open-ends-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+#align-open-ends-details > summary:hover {
+  background: var(--color-surface-hover, rgba(148, 163, 184, 0.14));
+}
+
+#align-open-ends-list {
+  margin: 0;
+  padding: 0.1em 0.9em 0.7em 1.9em;
+  max-height: 14em;
+  overflow-y: auto;
+  font-size: 0.83em;
+  line-height: 1.45;
+  color: var(--color-text-muted, #64748b);
+  text-align: left;
+}
+
+#align-open-ends-list li {
+  margin-bottom: 0.3em;
+}
+
+#align-open-ends-list strong {
+  color: var(--color-text, #334155);
+  font-weight: 600;
+}
+
+#align-open-ends-none {
+  margin: 0 0 0.9em;
+  font-size: 0.85em;
+  color: var(--color-text-muted, #64748b);
+}
+
 /* Results */
 #align-results h3 {
   color: var(--color-success, #16a34a);

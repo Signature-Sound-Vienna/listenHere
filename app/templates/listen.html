@@ -118,9 +118,21 @@
           <div id="align-file-list-container" style="display:none">
             <h3>Selected files</h3>
             <table id="align-file-table">
-              <thead><tr><th>File</th><th style="text-align:right;">Duration</th><th>Ref</th></tr></thead>
+              <thead><tr><th>File</th><th style="text-align:right;">Duration</th><th>Ref</th>
+                <th title="Ignore audio at the start or end of this recording that has no counterpart in the reference. Follows the setting below until you change it here.">Trim ends</th></tr></thead>
               <tbody></tbody>
             </table>
+            <div id="align-open-ends-row">
+              <label>
+                <input type="checkbox" id="align-open-ends-checkbox" checked />
+                Ignore audio at the start or end that isn’t in the reference —
+                applause, announcements, or tuning
+              </label>
+              <p id="align-open-ends-hint">
+                Set a single recording differently in the <em>Trim ends</em>
+                column above.
+              </p>
+            </div>
           </div>
         </div>
 
@@ -245,6 +257,7 @@
           </div>
           <div id="align-results" style="display:none">
             <h3>Alignment complete!</h3>
+            <div id="align-open-ends-report"></div>
             <button id="align-download-btn">Save data</button>
             <button id="align-open-btn">Listen!</button>
           </div>

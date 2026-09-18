@@ -298,6 +298,7 @@ export const wavesurfers = session.view.wavesurfers; // filename -> WaveSurfer r
 // Owned by the DataSession (Wave A). Reference-stable: never rebound, so these
 // aliases stay valid for every call site and every importing module.
 export const waveformPeaks = session.waveformPeaks; // filename -> { peaks: number[], duration: number } when pre-computed
+export const alignedSpans = session.alignedSpans; // filename -> { from, to }: the stretch with a counterpart in the reference
 
 // Audio normalization + windowed-player lifecycle extracted to
 // ./engine/normalization.js (Phase 1 refactor). seekAnalysis is imported above
@@ -2721,6 +2722,7 @@ function _pruneWaveformsWithoutGrids() {
     delete wavesurfers[fn];
     delete wfBgCache[fn];
     delete waveformPeaks[fn];
+    delete alignedSpans[fn];
     delete _tempoRawCache[fn];
     delete _alignOriginalGrids[fn];
     loaded.delete(fn);
@@ -3033,6 +3035,15 @@ async function setGrids(grids) {
       for (const [key, val] of Object.entries(grids.body.audio)) {
         if (val && !Array.isArray(val) && Array.isArray(val.times)) {
           waveformPeaks[key] = { peaks: val.peaks, duration: val.duration };
+          // Audio the wizard found no counterpart for, at the head or tail
+          // (applause, announcements, tuning). Absent = the whole recording
+          // is aligned, which is what every older alignment means.
+          if (
+            Number.isFinite(val.alignedFrom) &&
+            Number.isFinite(val.alignedTo)
+          ) {
+            alignedSpans[key] = { from: val.alignedFrom, to: val.alignedTo };
+          }
           alignmentGrids[key] = val.times;
         } else {
           alignmentGrids[key] = val;
@@ -5276,6 +5287,13 @@ window._listenTest = {
   get renderedWaveforms() { return Object.keys(waveformViews).filter(isWaveformRendered); },
   /** Rows in the pane still waiting on the viewport (roadmap item L). */
   get deferredWaveforms() { return [..._deferred]; },
+  /** filename -> {from, to}: the stretch that has a counterpart in the reference. */
+  get alignedSpans() { return { ...alignedSpans }; },
+  /** No-counterpart bands painted on a waveform's last redraw, 0-2. Counts
+   *  only bands VISIBLE in the viewport, so read it at default zoom. */
+  noCounterpartBands(filename) {
+    return waveformViews[filename]?.noCounterpartBands ?? 0;
+  },
   /** Whether the loaded piece is big enough to defer off-screen waveforms. */
   get lazyWaveformsActive() { return _lazyWaveforms; },
   /** Deferred waveforms queued or mid-build; 0 means the build queue has settled. */

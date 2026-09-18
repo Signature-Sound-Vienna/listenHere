@@ -34,6 +34,7 @@
 
 import {
   alignmentGrids,
+  alignedSpans,
   wavesurfers,
   parseCssColor,
   wfBgCache,
@@ -249,6 +250,72 @@ export function updatePositionIndicator(filename) {
   });
 }
 
+/** Shorter than this (seconds) and a head or tail is rounding, not a gap. */
+const NO_COUNTERPART_MIN_SEC = 0.05;
+
+/** The no-counterpart band's diagonal hatch, cached per colour. */
+let _ncHatch = null;
+
+function _noCounterpartPattern(ctx, color) {
+  if (_ncHatch && _ncHatch.color === color) return _ncHatch.pattern;
+  const c = document.createElement("canvas");
+  c.width = 8;
+  c.height = 8;
+  const g = c.getContext("2d");
+  g.strokeStyle = color;
+  g.lineWidth = 1.5;
+  g.beginPath();
+  g.moveTo(-1, 9);
+  g.lineTo(9, -1);
+  g.moveTo(-1, 1);
+  g.lineTo(1, -1);
+  g.moveTo(7, 9);
+  g.lineTo(9, 7);
+  g.stroke();
+  _ncHatch = { color, pattern: ctx.createPattern(c, "repeat") };
+  return _ncHatch.pattern;
+}
+
+/**
+ * Hatch the head and tail this recording has no counterpart for.
+ *
+ * A trimmed head is otherwise indistinguishable from a mis-alignment: the
+ * waveform simply starts before the shared timeline does. Returns the number
+ * of bands painted (0, 1, or 2) — also the test surface.
+ */
+function drawNoCounterpartBands(ctx, filename, dur, fullW, scrollLeft, viewW, h) {
+  const span = alignedSpans[filename];
+  if (!span || !(dur > 0)) return 0;
+  const ranges = [];
+  if (span.from > NO_COUNTERPART_MIN_SEC) {
+    ranges.push([0, Math.min(span.from, dur)]);
+  }
+  if (dur - span.to > NO_COUNTERPART_MIN_SEC) {
+    ranges.push([Math.max(0, span.to), dur]);
+  }
+  if (!ranges.length) return 0;
+  const muted =
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--color-text-muted")
+      .trim() || "#94a3b8";
+  let painted = 0;
+  ctx.save();
+  for (const [t0, t1] of ranges) {
+    const x0 = Math.max(0, (t0 / dur) * fullW - scrollLeft);
+    const x1 = Math.min(viewW, (t1 / dur) * fullW - scrollLeft);
+    if (x1 <= x0) continue;
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = muted;
+    ctx.fillRect(x0, 0, x1 - x0, h);
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = _noCounterpartPattern(ctx, muted);
+    ctx.fillRect(x0, 0, x1 - x0, h);
+    painted++;
+  }
+  ctx.restore();
+  return painted;
+}
+
 /**
  * Draw (or redraw) one waveform's alignment grid, time ticks, and tempo curve.
  * At zoom, draws only the visible viewport portion, offset by scroll.
@@ -278,6 +345,13 @@ export function drawAlignmentGrid(filename) {
   ctx.clearRect(0, 0, viewW, h);
   const dur = wavesurfers[filename].getDuration();
   const scrollLeft = wavesurfers[filename].getScroll();
+
+  // Audio with no counterpart in the reference — the head and tail the
+  // wizard's open-ended alignment left out (applause, announcements, tuning).
+  // Painted first so the grid lines and time ticks still read on top.
+  view.noCounterpartBands = drawNoCounterpartBands(
+    ctx, filename, dur, fullW, scrollLeft, viewW, h,
+  );
 
   // Draw alignment grid lines first (so time ticks render on top)
   const visalignEl = document.getElementById("visalign");

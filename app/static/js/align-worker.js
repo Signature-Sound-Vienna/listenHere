@@ -115,6 +115,21 @@ ONSET_N_FFT = 1024       # short window (46 ms) for sharp onset detection
 COARSE = 4               # coarse pooling factor
 SLACK  = 80              # Sakoe-Chiba band half-width (fine frames)
 
+# Open-ended alignment — audio with no counterpart in the reference (applause,
+# announcements, tuning). The coarse DTW may enter and leave the TARGET
+# anywhere; the REFERENCE is always consumed in full, within its own usable
+# span. Asymmetry is deliberate: free ends on both sides turn the problem into
+# best-common-subsequence, whose degenerate answer is to align a confident
+# fragment and skip the rest.
+MUSIC_PEAKINESS   = 2.0    # chroma max/mean above this = tonal, i.e. music
+MUSIC_SMOOTH_SEC  = 1.0    # smoothing window for the peakiness curve
+MUSIC_MIN_RUN_SEC = 3.0    # window length over which music is declared
+MUSIC_RUN_FRACTION = 0.25  # ... and the share of that window that must be tonal
+MAX_TRIM_FRACTION = 0.5    # never discard more than this much of a file
+MIN_SPAN_RATIO    = 0.6    # aligned target span / reference span, lower bound
+MAX_SPAN_RATIO    = 1.667  # ... and upper bound; outside either = degenerate
+SPAN_REPORT_EPS   = 0.25   # seconds; below this a trim is not worth reporting
+
 
 def _apply_options():
     """Override module constants from JS _opt_* globals (if set)."""
@@ -363,24 +378,61 @@ def dtw_band(C, band):
     return np.array([path_i, path_j])
 
 
-def _dtw_f32(C):
+def _dtw_f32(C, open_ends=False, entry_max=None, exit_min=None):
     """Unconstrained DTW in float32 (lower memory than float64).
     Intended for small coarse cost matrices only.
     Returns warping path (2, L).
+
+    open_ends=False: corner-to-corner, pinned at (0, 0) and (N-1, M-1).
+    open_ends=True:  subsequence DTW, asymmetric. Every row is still
+      traversed (the reference is consumed in full), but the path may ENTER
+      at any column of row 0 up to entry_max and LEAVE at any column of row
+      N-1 from exit_min on, so material at the head or tail of the COLUMN
+      signal with no counterpart in the row signal is skipped rather than
+      stretched.
+
+    entry_max / exit_min are not an optimisation, they are the correctness
+    of the thing. A free end prefers SHORTER paths, because skipping columns
+    means fewer cells to pay for: measured on synthetic pairs with nothing
+    extra in them at all, unbounded free ends still cut 0.4-2.4 s off the
+    head and up to 1.6 s off the tail. The cost margin does not dominate the
+    way the accumulated-cost argument suggests. So the DTW is allowed to skip
+    only as far as detect_music_span found material that is not music: the
+    detector decides WHETHER there is anything to skip, the DTW decides
+    exactly WHERE, and on a clean recording the window is empty and the
+    result is the pinned path.
     """
     N, M = C.shape
     D = np.full((N, M), np.inf, dtype=np.float32)
-    D[0, 0] = C[0, 0]
-    for j in range(1, M):
-        D[0, j] = D[0, j - 1] + C[0, j]
+    emax = 0
+    if open_ends:
+        emax = M - 1 if entry_max is None else max(0, min(M - 1, int(entry_max)))
+        # Free start: entering at any allowed column of row 0 costs only that
+        # cell. Past the window, row 0 accumulates as usual — such a cell is a
+        # path that entered inside the window and ran horizontally to here.
+        D[0, :emax + 1] = C[0, :emax + 1]
+        for j in range(emax + 1, M):
+            D[0, j] = D[0, j - 1] + C[0, j]
+    else:
+        D[0, 0] = C[0, 0]
+        for j in range(1, M):
+            D[0, j] = D[0, j - 1] + C[0, j]
     for i in range(1, N):
         D[i, 0] = D[i - 1, 0] + C[i, 0]
     for i in range(1, N):
         for j in range(1, M):
             D[i, j] = C[i, j] + min(D[i-1, j-1], D[i-1, j], D[i, j-1])
-    i, j = N - 1, M - 1
+    if open_ends:
+        xmin = 0 if exit_min is None else max(0, min(M - 1, int(exit_min)))
+        i, j = N - 1, xmin + int(np.argmin(D[N - 1, xmin:]))
+    else:
+        i, j = N - 1, M - 1
     pi, pj = [i], [j]
-    while i > 0 or j > 0:
+    # The pinned variant walks row 0 back to the origin. The open one stops as
+    # soon as it reaches a legal entry cell — and walks left along row 0 to
+    # reach one, undoing the horizontal run that row 0 accumulated past emax.
+    stop_j = 0 if not open_ends else emax
+    while i > 0 or j > stop_j:
         if i == 0: j -= 1
         elif j == 0: i -= 1
         else:
@@ -537,7 +589,93 @@ def make_monotonic(wp):
     return wp[:, keep]
 
 
-def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
+def chroma_peakiness(chroma):
+    """Per-frame max/mean over the 12 pitch classes.
+
+    Tonal music concentrates energy in a few pitch classes and scores high;
+    applause, tuning, and speech spread it flat and score near 1. Measured
+    2026-09-18 over the first 50 s of VPO-1963-1979 (DVD 1), per second:
+    applause 1.1-1.6, quiet gap 1.2-1.8, music 2.3-8.4 — no overlap. Zero
+    crossing rate does NOT separate the same material (music reaches 0.086
+    against applause's 0.095), which is why this is the feature used.
+
+    Silent frames (all-zero chroma) score 0, i.e. not music.
+    """
+    col_sum = chroma.sum(axis=0)
+    col_max = chroma.max(axis=0)
+    out = np.zeros(chroma.shape[1], dtype=np.float64)
+    live = col_sum > 1e-8
+    out[live] = col_max[live] * 12.0 / col_sum[live]
+    return out
+
+
+def detect_music_span(chroma):
+    """Propose the frames [i0, i1] of chroma that carry music.
+
+    Head and tail only — never an interior cut, because an interior flat
+    stretch is a quiet passage, not an absence of counterpart. Refuses to trim
+    more than MAX_TRIM_FRACTION of the signal, so a bad proposal degrades to
+    the whole file rather than to a confident mistake.
+
+    A window counts as music when MUSIC_RUN_FRACTION of its frames are tonal,
+    NOT when all of them are. Requiring every frame was the first rule and it
+    cut real music off the tails, reported from the listen UI and then measured
+    over all twenty Fledermaus recordings at hq. Endings are dense and
+    percussive, and one cymbal or timpani frame flattens chroma long enough to
+    break an all-tonal window, so the rule stopped at the last CLEAN three
+    seconds rather than at the end of the music. Total tail over-trim across
+    the corpus, against where tonal content actually stops:
+
+        every frame tonal  424 s  (worst 60 s)   <- the first rule
+        50% of frames       52 s  (worst 13 s)
+        25% of frames       16 s  (worst  7 s)   <- shipped
+
+    Lowering it barely costs any detection — mean trim only falls from 21.6 s
+    to 18.7 s, so the applause is still found, and DVD 1's 27 s of it still is.
+    Worst of all was the REFERENCE: VPO-2010 came out as 5.0-493.4 s against
+    tonal content running to about 528 s, and since the reference's span bounds
+    every pair, those 35 lost seconds propagated to all twenty recordings.
+    Under-trimming is the safe error: a few seconds of applause aligned costs
+    far less than the end of the piece going missing.
+
+    Returns (i0, i1) inclusive frame indices; (0, n-1) when nothing is found.
+    """
+    n = chroma.shape[1]
+    full = (0, n - 1)
+    if n < 4:
+        return full
+    peak = chroma_peakiness(chroma)
+    smooth_w = max(1, int(round(FEATURE_RATE * MUSIC_SMOOTH_SEC)))
+    if smooth_w > 1 and n >= smooth_w:
+        kernel = np.ones(smooth_w, dtype=np.float64) / smooth_w
+        peak = np.convolve(peak, kernel, mode="same")
+    tonal = (peak >= MUSIC_PEAKINESS).astype(np.float64)
+    run = max(1, int(round(FEATURE_RATE * MUSIC_MIN_RUN_SEC)))
+    if n < run:
+        return full
+    # Windows of length run that are mostly tonal; index k covers [k, k+run-1]
+    sums = np.convolve(tonal, np.ones(run, dtype=np.float64), mode="valid")
+    solid = np.nonzero(sums >= run * MUSIC_RUN_FRACTION - 0.5)[0]
+    if len(solid) == 0:
+        return full
+    i0 = int(solid[0])
+    i1 = int(solid[-1]) + run - 1
+    if i1 >= n:
+        i1 = n - 1
+    # Refuse an implausible trim rather than acting on a weak detection.
+    max_trim = MAX_TRIM_FRACTION * n
+    if i0 > max_trim:
+        i0 = 0
+    if (n - 1 - i1) > max_trim:
+        i1 = n - 1
+    if i1 - i0 < run:
+        return full
+    return (i0, i1)
+
+
+def align_pair(ref_chroma, other_chroma, ref_duration, other_duration,
+               open_ends=False, ref_frame0=0, ref_frames_total=None,
+               target_span=None):
     """Two-level memory-efficient DTW alignment.
 
     Level 1 — Coarse (4× pool):
@@ -551,25 +689,87 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
       Rolling d_prev row: M float32      ≈ 33 KB for 8400 frames.
       Parent matrix: (N × band) int8    ≈ 1-4 MB.
       Tight Sakoe-Chiba band derived from coarse path ± SLACK frames.
+
+    open_ends — run the COARSE pass as subsequence DTW, then slice the target
+      to the span the path actually used and run the fine pass, unchanged,
+      over that slice. The fine pass is NOT itself open-ended: it seeds only
+      its origin cell and only when the band's first row starts at column 0
+      (see _guided_band_dtw), so an open coarse band would leave every
+      accumulated cost at inf and backtrack a silent diagonal. Slicing keeps
+      j_lo[0] == 0 by construction and leaves that verified code alone.
+      Endpoint precision is therefore one coarse frame (0.1 s at hq).
+
+    ref_chroma may be a SLICE of the reference (its usable span). ref_frame0
+      is that slice's offset and ref_frames_total the full reference frame
+      count, so times stay in the original reference file's seconds.
+
+    target_span — (first, last) FINE frame of the target that detect_music_span
+      found to be music. It bounds how much the open ends may skip; without it
+      they overshoot on clean recordings (see _dtw_f32). None = unbounded.
+
+    Returns {times, from, to, guard}: the transferred grid, the target's
+    aligned span in that file's seconds, and whether the span guard held.
     """
     N, M = ref_chroma.shape[1], other_chroma.shape[1]
+    if ref_frames_total is None:
+        ref_frames_total = N
+    ref_scale   = ref_duration   / max(ref_frames_total - 1, 1)
+    other_scale = other_duration / max(M - 1, 1)
 
-    # ── Level 1: coarse unconstrained DTW ────────────────────────────────
+    # ── Level 1: coarse DTW, pinned or open-ended ────────────────────────
     rc = _pool_features(ref_chroma, COARSE)
     oc = _pool_features(other_chroma, COARSE)
     Nc, Mc = rc.shape[1], oc.shape[1]
 
     Cc = (1.0 - rc.T @ oc).clip(0, 2).astype(np.float32)
     del rc, oc
-    wp_c = _dtw_f32(Cc)
+    # The detector's music span, in coarse columns: the DTW may enter at or
+    # before its first music frame and leave at or after its last.
+    entry_max, exit_min = None, None
+    if open_ends and target_span is not None:
+        entry_max = int(target_span[0]) // COARSE
+        exit_min = min(Mc - 1, int(target_span[1]) // COARSE)
+    wp_c = _dtw_f32(Cc, open_ends=bool(open_ends),
+                    entry_max=entry_max, exit_min=exit_min)
+
+    # ── Span guard, on the coarse path, before the expensive fine pass ───
+    # A free-ended path that covers an implausible stretch of the target is a
+    # failed alignment wearing a confident face. Only a failing pair pays for
+    # the second coarse DTW.
+    guard_ok = True
+    if open_ends:
+        a_c = int(wp_c[1][0])
+        b_c = int(wp_c[1][-1])
+        span_sec     = (b_c - a_c) * COARSE * other_scale
+        ref_span_sec = (N - 1) * ref_scale
+        head_sec     = a_c * COARSE * other_scale
+        tail_sec     = max(0.0, other_duration - (b_c * COARSE + COARSE - 1) * other_scale)
+        ratio = span_sec / ref_span_sec if ref_span_sec > 0 else 0.0
+        if (ratio < MIN_SPAN_RATIO or ratio > MAX_SPAN_RATIO
+                or (head_sec + tail_sec) > MAX_TRIM_FRACTION * other_duration):
+            guard_ok = False
+            wp_c = _dtw_f32(Cc)
     del Cc
+
+    # ── Slice the target to the span the coarse path used ────────────────
+    if open_ends and guard_ok:
+        j_offset = int(wp_c[1][0]) * COARSE
+        j_end    = min(M - 1, int(wp_c[1][-1]) * COARSE + COARSE - 1)
+    else:
+        j_offset, j_end = 0, M - 1
+    if j_end - j_offset < 1:
+        j_offset, j_end = 0, M - 1
+    other_slice = other_chroma[:, j_offset:j_end + 1]
+    Ms = other_slice.shape[1]
 
     # ── Build fine-resolution per-row band bounds from coarse path ───────
     # Linearly interpolate the coarse warping path to fine frames,
     # then expand by ±SLACK to give the fine DTW room to move.
     # Map every coarse path step to fine (row_i, col_j) coordinates
     fi_pts = wp_c[0].astype(np.float32) * COARSE   # fine row
-    fj_pts = wp_c[1].astype(np.float32) * COARSE   # fine col (centre of coarse block)
+    # fine col (centre of coarse block), relative to the slice
+    fj_pts = wp_c[1].astype(np.float32) * COARSE - np.float32(j_offset)
+    np.clip(fj_pts, 0, Ms - 1, out=fj_pts)
 
     # Interpolate centre column for every fine row
     if len(fi_pts) > 1:
@@ -580,8 +780,8 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
     else:
         fj_centre = np.full(N, fj_pts[0], dtype=np.float32)
 
-    j_lo = np.maximum(0,     (fj_centre - SLACK).astype(np.int32))
-    j_hi = np.minimum(M - 1, (fj_centre + SLACK + COARSE).astype(np.int32))
+    j_lo = np.maximum(0,      (fj_centre - SLACK).astype(np.int32))
+    j_hi = np.minimum(Ms - 1, (fj_centre + SLACK + COARSE).astype(np.int32))
 
     # Enforce monotonicity of band (required for streaming DTW correctness)
     for fi in range(1, N):
@@ -591,18 +791,27 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
     del wp_c, fj_centre, fi_pts, fj_pts
 
     # ── Level 2: guided band streaming DTW ───────────────────────────────
-    wp = _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi)
+    wp = _guided_band_dtw(ref_chroma, other_slice, j_lo, j_hi)
     wp = make_monotonic(wp)
+    del other_slice
 
     # ── Convert frame indices → times → transfer annotation grid ─────────
-    n_ref   = ref_chroma.shape[1]
-    n_other = other_chroma.shape[1]
-    ref_times   = wp[0].astype(np.float64) * ref_duration   / max(n_ref   - 1, 1)
-    other_times = wp[1].astype(np.float64) * other_duration / max(n_other - 1, 1)
+    ref_times   = (wp[0].astype(np.float64) + ref_frame0) * ref_scale
+    other_times = (wp[1].astype(np.float64) + j_offset)   * other_scale
 
     ref_grid   = np.arange(0, ref_duration, ANNOTATION_STEP)
     transferred = interp_linear_extrap(ref_times, other_times, ref_grid)
-    return transferred.tolist()
+    # Outside the warping path the grid is extrapolated, and make_monotonic
+    # can drop a leading vertical run, which used to push the first entries
+    # below zero (four files in the Fledermaus corpus, -0.04 to -0.55 s). A
+    # playhead cannot sit before the file starts or after it ends.
+    np.clip(transferred, 0.0, other_duration, out=transferred)
+    return {
+        "times": transferred.tolist(),
+        "from":  float(other_times[0]),
+        "to":    float(other_times[-1]),
+        "guard": bool(guard_ok),
+    }
 
 
 def compute_peaks(samples, n_peaks):
@@ -635,13 +844,25 @@ _batch_peak_count = 0
 _batch_score_mode = False
 _feature_count = 0
 _feature_total = 0
+_batch_open_ends = False     # global "ignore audio with no counterpart"
+_batch_open_by_file = {}     # per-file overrides; missing = follow the global
+_ref_span = None             # (from_sec, to_sec) of the reference's usable span
 
 
-def begin_batch(ref_name, peak_count, score_mode, feature_total):
+def _open_ends_for(name):
+    """Whether this file's head and tail may be left unaligned."""
+    if name in _batch_open_by_file:
+        return bool(_batch_open_by_file[name])
+    return bool(_batch_open_ends)
+
+
+def begin_batch(ref_name, peak_count, score_mode, feature_total,
+                open_ends=False, open_by_file=None):
     """Reset per-batch state at the start of a new alignment run."""
     global _chromas, _durations, _peaks_data, _ref_audio_copy
     global _batch_ref_name, _batch_peak_count, _batch_score_mode
     global _feature_count, _feature_total
+    global _batch_open_ends, _batch_open_by_file, _ref_span
     _chromas = {}
     _durations = {}
     _peaks_data = {}
@@ -651,6 +872,9 @@ def begin_batch(ref_name, peak_count, score_mode, feature_total):
     _batch_score_mode = bool(score_mode)
     _feature_count = 0
     _feature_total = int(feature_total)
+    _batch_open_ends = bool(open_ends)
+    _batch_open_by_file = dict(open_by_file or {})
+    _ref_span = None
     import gc
     gc.collect()
 
@@ -686,6 +910,7 @@ def align_all_from_features():
     peak heap usage at ref_chroma + one other_chroma + DTW scratch.
     """
     import gc
+    global _ref_span
     ref_name = _batch_ref_name
     if ref_name not in _chromas:
         raise RuntimeError(f"Reference '{ref_name}' missing from extracted features")
@@ -694,12 +919,33 @@ def align_all_from_features():
     filenames = list(_chromas.keys())
     n = len(filenames)
 
+    # ── The reference's usable span, decided once for the whole run ───────
+    # The reference may itself open with applause. One span fixes all N pairs
+    # and stays inspectable, where a per-pair outcome would not. Times stay in
+    # the ORIGINAL reference file's seconds; we simply do not align outside it.
+    ref_full = _chromas[ref_name]
+    ref_frames_total = ref_full.shape[1]
+    ref_scale = ref_duration / max(ref_frames_total - 1, 1)
+    ref_f0, ref_f1 = 0, ref_frames_total - 1
+    if _open_ends_for(ref_name):
+        ref_f0, ref_f1 = detect_music_span(ref_full)
+    ref_span_from = ref_f0 * ref_scale
+    ref_span_to   = ref_f1 * ref_scale
+    _ref_span = (ref_span_from, ref_span_to)
+    ref_trimmed = (ref_f0 > 0) or (ref_f1 < ref_frames_total - 1)
+    ref_slice = ref_full[:, ref_f0:ref_f1 + 1]
+
     result = {}
+    trimmed_files = []
+    guard_failed = []
     pair_count = 0
     total_pairs = max(1, n - 1)
     for name in filenames:
+        aligned = None
         if name == ref_name:
             times = ref_grid.tolist()
+            if ref_trimmed:
+                aligned = (ref_span_from, ref_span_to)
         else:
             pair_count += 1
             reportStep("align", "start", name, pair_count, total_pairs, None)
@@ -708,28 +954,61 @@ def align_all_from_features():
                 int(30 + 65 * pair_count / total_pairs)
             )
             t0 = _time.time()
-            times = align_pair(
-                _chromas[ref_name], _chromas[name],
-                ref_duration, _durations[name]
+            open_ends = _open_ends_for(name)
+            # What the DTW is ALLOWED to skip in this recording. Without this
+            # bound a free end trims a clean recording too (see _dtw_f32).
+            target_span = (
+                detect_music_span(_chromas[name]) if open_ends else None
             )
+            pair = align_pair(
+                ref_slice, _chromas[name],
+                ref_duration, _durations[name],
+                open_ends=open_ends,
+                ref_frame0=ref_f0,
+                ref_frames_total=ref_frames_total,
+                target_span=target_span,
+            )
+            times = pair["times"]
+            # Only an open-ended pair whose guard held makes a claim about
+            # where the counterpart begins and ends; a pinned pair covers the
+            # whole file by construction, and a guard failure fell back to one.
+            if open_ends and pair["guard"]:
+                aligned = (pair["from"], pair["to"])
+            if open_ends and not pair["guard"]:
+                guard_failed.append(name)
             elapsed = _time.time() - t0
             reportStep("align", "done", name, pair_count, total_pairs, elapsed)
-        if _peaks_data:
-            result[name] = {
-                "times": times,
-                "peaks": _peaks_data[name],
-                "duration": round(_durations[name], 6),
-            }
+        if _peaks_data or aligned is not None:
+            entry = {"times": times, "duration": round(_durations[name], 6)}
+            if _peaks_data:
+                entry["peaks"] = _peaks_data[name]
+            result[name] = entry
         else:
             result[name] = times
+        if aligned is not None:
+            a_from = round(max(0.0, aligned[0]), 6)
+            a_to   = round(min(_durations[name], aligned[1]), 6)
+            result[name]["alignedFrom"] = a_from
+            result[name]["alignedTo"]   = a_to
+            # "Trimmed" means there is really material with no counterpart —
+            # a span covering the whole file is not worth reporting.
+            if a_from > SPAN_REPORT_EPS or (_durations[name] - a_to) > SPAN_REPORT_EPS:
+                trimmed_files.append(name)
         # Free the non-ref chroma as soon as it's been consumed.
         if name != ref_name:
             del _chromas[name]
             gc.collect()
 
     reportProgress("Done!", 100)
+    header = {"ref": ref_name}
+    if _batch_open_ends or _batch_open_by_file:
+        header["openEnds"] = {
+            "enabled": bool(_batch_open_ends),
+            "trimmed": trimmed_files,
+            "guardFailed": guard_failed,
+        }
     return {
-        "header": {"ref": ref_name},
+        "header": header,
         "body": {"audio": result}
     }
 
@@ -876,6 +1155,19 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
     midi_dur = _tick_to_sec(max_tick, tpq, tcs) + 0.5
     ref_dur  = len(ref_audio) / SR
 
+    # The reference's usable span, decided once in align_all_from_features.
+    # Without this a reference that opens with applause drags the score's
+    # first note back to t=0, exactly as it did for the audio pairs.
+    span_from, span_to = 0.0, ref_dur
+    if _ref_span is not None:
+        span_from = max(0.0, float(_ref_span[0]))
+        span_to   = min(ref_dur, float(_ref_span[1]))
+    if span_to - span_from < 1.0:
+        span_from, span_to = 0.0, ref_dur
+    if span_from > 0.0 or span_to < ref_dur:
+        ref_audio = ref_audio[int(round(span_from * SR)):int(round(span_to * SR))]
+    span_dur = len(ref_audio) / SR
+
     reportProgress("Score alignment: synthesising MIDI audio...", None)
     synth_audio = synth_midi_audio(notes, tpq, tcs, midi_dur)
 
@@ -901,7 +1193,8 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
 
     # Coarse path → time mapping (each frame spans SCORE_DOWNSAMPLE * SCORE_HOP seconds)
     sc_times_c = wp_c[0].astype(np.float64) * midi_dur / max(n_sc_c - 1, 1)
-    rc_times_c = wp_c[1].astype(np.float64) * ref_dur  / max(n_rc_c - 1, 1)
+    rc_times_c = (wp_c[1].astype(np.float64) * span_dur / max(n_rc_c - 1, 1)
+                  + span_from)
     del wp_c
     wf = lambda xq: interp_linear_extrap(sc_times_c, rc_times_c, xq)
 
@@ -1517,6 +1810,8 @@ self.onmessage = async function (e) {
         scoreMode,
         featureTotal,
         options,
+        openEnds,
+        openEndsByFile,
       } = e.data;
 
       const opts = options || {};
@@ -1528,14 +1823,22 @@ self.onmessage = async function (e) {
       pyodide.globals.set("_peak_count_arg", peakCount || 0);
       pyodide.globals.set("_score_mode_arg", !!scoreMode);
       pyodide.globals.set("_feature_total_arg", featureTotal || 0);
+      pyodide.globals.set("_open_ends_arg", !!openEnds);
+      pyodide.globals.set(
+        "_open_by_file_json",
+        JSON.stringify(openEndsByFile || {}),
+      );
 
       await pyodide.runPythonAsync(`
+import json as _json
 _apply_options()
 begin_batch(
     str(_ref_name_arg),
     int(_peak_count_arg),
     bool(_score_mode_arg),
     int(_feature_total_arg),
+    bool(_open_ends_arg),
+    _json.loads(str(_open_by_file_json)),
 )
 `);
       self.postMessage({ type: "batch_ready" });

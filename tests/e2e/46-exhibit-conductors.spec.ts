@@ -431,7 +431,7 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
     if (most.roles.length) await expect(card.locator('.cv-role')).toHaveText(most.roles.join(' · '));
 
     // A conductor with a portrait: shown large, no label added to the medallion.
-    // Since 0.67.0 that is ONE sitting per conductor rather than one per
+    // Since 0.68.0 that is ONE sitting per conductor rather than one per
     // recording, and the year against it is the PHOTOGRAPH's — which is sometimes
     // not knowable at all (the BnF dates Boskovsky's plate 1936 while dating the
     // ensemble in it from 1948), so the attribute is absent rather than wrong.
@@ -451,7 +451,7 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
       expect(await card.locator('[data-ai-label]').count()).toBe(0);
       expect(await card.locator('.cv-sitting').count()).toBe(faced.portraits.length > 1 ? faced.portraits.length : 0);
     }
-    // The one portraits sentence, once per explorer (plan §11(d)) — since 0.67.0
+    // The one portraits sentence, once per explorer (plan §11(d)) — since 0.68.0
     // it carries the photograph's credit rather than explaining the AI mark.
     await expect(ov.locator('.cv-about')).toContainText('photographs from Wikimedia Commons');
     expect(await page.locator('.cv-about').count()).toBe(1);

@@ -667,7 +667,7 @@ test.describe('34. The exhibit loader', () => {
 test.describe('34. The conductor portraits', () => {
   test.use({ viewport: { width: 1024, height: 1366 } });
 
-  // 34.20 Since 0.67.0 the portraits are freely-licensed photographs keyed to the
+  // 34.20 Since 0.68.0 the portraits are freely-licensed photographs keyed to the
   // CONDUCTOR, not Gen-AI images commissioned per recording, so EVERY recording
   // whose conductor is known now has one — including the three whose conductor
   // has no free photograph, who get a placeholder medallion rather than nothing.

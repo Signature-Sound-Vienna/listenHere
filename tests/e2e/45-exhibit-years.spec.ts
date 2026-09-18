@@ -353,7 +353,7 @@ test.describe('45. The by-year explorer', () => {
   });
 
   // 45.8 The portraits sentence (plan §11(d)): present in the explorer, and
-  // nowhere else (45.1 covers the default exhibit). Since 0.67.0 the portraits
+  // nowhere else (45.1 covers the default exhibit). Since 0.68.0 the portraits
   // are photographs rather than Gen-AI impressions, so this line carries their
   // CREDIT instead of explaining a mark — and the credit is not decoration: CC BY
   // and CC BY-SA make it a condition of showing the picture at all. It names the

@@ -25,7 +25,7 @@
 // band (plan §11(f)); the ruled entry is the mirrored band, and building both
 // would leave the October testing comparing two navigations at once.
 //
-// One conductor, ONE sitting, since 0.67.0: the portraits are freely-licensed
+// One conductor, ONE sitting, since 0.68.0: the portraits are freely-licensed
 // photographs and Commons holds one usable picture of a person, so the array that
 // used to hold a sitting per recording normally holds a single entry. The year
 // against it is the PHOTOGRAPH's, not the concert's — Karajan is 1963 against a

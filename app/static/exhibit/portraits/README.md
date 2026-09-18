@@ -1,7 +1,7 @@
 # Conductor portraits
 
 One circular gold medallion per conductor of the New Year's Concert, sized to the
-band's `border-radius: 50%` frame. Since **0.67.0** these are **freely-licensed
+band's `border-radius: 50%` frame. Since **0.68.0** these are **freely-licensed
 photographs from Wikimedia Commons**, not Gen-AI impressions.
 
 ## Why they changed

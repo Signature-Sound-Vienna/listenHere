@@ -175,7 +175,7 @@ const CATALOGUE = {
   "conductors.listen": { en: "Listen to {piece} from {year}" },
   // THE ONE PLAIN SENTENCE the portraits need (plan §5.5, §11(d)) — this view is
   // the first surface allowed to carry text. It used to explain the AI mark; since
-  // 0.67.0 the portraits are photographs and it carries their credit instead.
+  // 0.68.0 the portraits are photographs and it carries their credit instead.
   // "Did you know?" (dyk.js) — the museum's authored text about six concerts
   // and six conductors, in the reader's own register. Only the chrome is here;
   // the text itself, and each year's hook, are Chanda's, and arrive as content
@@ -186,7 +186,7 @@ const CATALOGUE = {
   // Inside the placeholder frame that stands in for a picture the exhibit may
   // not yet show (licence unresolved — content/dyk/README.md).
   "dyk.imagePending": { en: "Picture to come" },
-  // THE PORTRAIT CREDIT (0.67.0). The Gen-AI portraits are gone — image models
+  // THE PORTRAIT CREDIT (0.68.0). The Gen-AI portraits are gone — image models
   // will no longer render living public figures — and freely-licensed photographs
   // replaced them. That swapped one obligation for another: the AI batch had to be
   // DISCLOSED, and a CC BY / CC BY-SA photograph has to be ATTRIBUTED, which is a

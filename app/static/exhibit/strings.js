@@ -169,6 +169,12 @@ const CATALOGUE = {
   "conductors.heading": { en: "The conductors of the New Year's Concerts" },
   "conductors.chooseConductor": { en: "Choose a conductor" },
   "conductors.summary": { en: "{n} New Year's Concerts, {first} to {last}" },
+  // The roster row's years. A conductor with three or fewer is listed by year —
+  // you can count three. Beyond that it is a span, and the count rides WITH it
+  // rather than in a badge of its own (user, 2026-09-18): one fact, one phrase.
+  // The whole phrase is the string, punctuation included, so a translation can
+  // reorder it rather than having brackets hardcoded around a number.
+  "conductors.yearsSpan": { en: "{first}–{last} ({n} concerts)" },
   "conductors.summaryOne": { en: "One New Year's Concert, in {year}" },
   // The direct route from a conductor to their music: one button per recording
   // of the current piece the exhibit holds from their concerts.

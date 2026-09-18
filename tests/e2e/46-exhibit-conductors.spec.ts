@@ -378,6 +378,8 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
       bs.map((b) => ({
         name: (b as HTMLElement).dataset.conductor,
         years: b.querySelector('.cv-entry-years')!.textContent,
+        // The count badge is gone since 0.70.0 — the number rides in the years
+        // phrase instead, so this asserts the badge is not merely empty but absent.
         count: b.querySelector('.cv-entry-count')?.textContent ?? null,
         playable: (b as HTMLElement).dataset.playable === '1',
         portrait: !!b.querySelector('.cv-entry-portrait'),
@@ -389,8 +391,12 @@ test.describe('46. The band is the interface — by-conductor, and the way in', 
     for (let i = 0; i < roster.length; i++) {
       const c = s.conductors[i];
       const r = roster[i];
-      expect(r.years, c.name).toBe(c.years.length <= 3 ? c.years.join(', ') : `${c.first}–${c.last}`);
-      expect(r.count, c.name).toBe(c.years.length > 3 ? String(c.years.length) : null);
+      expect(r.years, c.name).toBe(
+        c.years.length <= 3
+          ? c.years.join(', ')
+          : `${c.first}–${c.last} (${c.years.length} concerts)`,
+      );
+      expect(r.count, c.name).toBeNull();
       expect(r.playable, c.name).toBe(c.playable.length > 0);
       expect(r.portrait, c.name).toBe(c.portraits.length > 0);
     }

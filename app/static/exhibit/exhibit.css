@@ -1831,6 +1831,12 @@ html, body {
  * changing register is a thing to do INSIDE an explorer rather than a reason to
  * leave it (45.2 and 46.3 pin both halves of this). */
 .vp[data-view]:not([data-view="listen"]) .zoom-ctl { visibility: hidden; }
+/* ...and the union pseudo-audience is not offered in there at all (user,
+ * 2026-09-18): a story has no union to show. `display: none` rather than
+ * `visibility: hidden` so the three real registers close up into the space
+ * instead of leaving a gap where All was. main.js moves a reader who arrives on
+ * All to adults, so the switch is never left with nothing pressed. */
+.vp[data-view]:not([data-view="listen"]) .audience-btn[data-audience="all"] { display: none; }
 
 /* The way back, inside every explorer (plan §11(f)): the band is the way in
  * and the toolbar switch only the fallback, so the overlay itself must be
@@ -1920,13 +1926,15 @@ html, body {
   line-height: 1.2;
   color: var(--ex-accent-border);
 }
+/* The heading wears the very mark that led the visitor here. */
 .dyk-heading::before {
   content: "";
   flex: 0 0 auto;
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
+  width: 19px;
+  height: 14px;
   background: var(--ex-accent-border);
+  -webkit-mask: var(--ex-icon-book) center / contain no-repeat;
+  mask: var(--ex-icon-book) center / contain no-repeat;
 }
 /* The year's own hook, in Chanda's words ("the time the concert was first
  * televised"). Conductors have none, and it hides rather than leaving a gap. */
@@ -2084,26 +2092,38 @@ html, body {
 }
 .yv-cell-blank { border-color: transparent; background: none; cursor: default; }
 .yv-cell[data-state="gap"] { color: var(--ex-text-faint); border-style: dashed; background: none; }
-/* TWO CELL MARKS, AND ONLY TWO (user, 2026-09-18), TOLD APART BY SHAPE rather
- * than by colour: a HAIRLINE along the foot means the exhibit can play this
- * concert, a DOT at the top right means it has a story. Two dots in two corners
- * asked a visitor to remember which corner meant what; a line and a dot do not.
- * Language-free, like everything on the band. */
+/* TWO CELL MARKS, AND ONLY TWO (user, 2026-09-18), now as PICTOGRAMS: a MUSIC
+ * NOTE means the exhibit can play this concert, an OPEN BOOK means it has a
+ * story. They replace a hairline and a dot, which told the two apart by shape
+ * but said nothing about WHICH was which — a note and a book need no legend.
+ *
+ * Drawn as CSS MASKS over the mark's own ink rather than as glyphs, which is the
+ * attract band's logo idiom (--ab-mark-src): a Unicode ♪ or 📖 would render as
+ * platform emoji, in its own colours, ignoring the theme — and these have to
+ * take `--ex-mark`, `--ex-accent-border`, and `--ex-on-accent` on a selected
+ * cell. Inline in a data URI because two 200-byte shapes are not worth two more
+ * files to deploy. Language-free, like everything on the band. */
+:root {
+  --ex-icon-note: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2012%2014'%3E%3Cellipse%20cx='3.6'%20cy='10.5'%20rx='3.15'%20ry='2.45'%20transform='rotate%28-24%203.6%2010.5%29'/%3E%3Cpath%20d='M5.9%201.1h1.55v9.5H5.9z'/%3E%3Cpath%20d='M7.45%201.1c2.35.85%203.45%202.3%203.1%204.45-.6-1.7-1.7-2.6-3.1-3z'/%3E%3C/svg%3E");
+  --ex-icon-book: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2012'%3E%3Cpath%20d='M7.1%203.5C5.3%202.2%203.3%201.5%201%201.5v7.1c2.3%200%204.3.7%206.1%202z'/%3E%3Cpath%20d='M8.9%203.5C10.7%202.2%2012.7%201.5%2015%201.5v7.1c-2.3%200-4.3.7-6.1%202z'/%3E%3C/svg%3E");
+}
 .yv-cell[data-playable="1"]::after {
   content: "";
   position: absolute;
-  left: 9px; right: 9px; bottom: 5px;
-  height: 2px;
-  border-radius: 1px;
+  left: 2px; bottom: 1px;
+  width: 9px; height: 11px;
   background: var(--ex-mark);
+  -webkit-mask: var(--ex-icon-note) center / contain no-repeat;
+  mask: var(--ex-icon-note) center / contain no-repeat;
 }
 .yv-cell[data-dyk="1"]::before {
   content: "";
   position: absolute;
-  top: 4px; right: 4px;
-  width: 10px; height: 10px;
-  border-radius: 50%;
+  top: 2px; right: 2px;
+  width: 13px; height: 9.5px;
   background: var(--ex-accent-border);
+  -webkit-mask: var(--ex-icon-book) center / contain no-repeat;
+  mask: var(--ex-icon-book) center / contain no-repeat;
 }
 .yv-cell.is-selected {
   background: var(--ex-accent);
@@ -2219,6 +2239,9 @@ html, body {
  * than the prose around it, with a ▶ that says "this makes sound" before the
  * words are read, and a soft accent halo lifting it off the card. */
 .yv-listen, .cv-listen {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-height: 52px;
   padding: 0 22px;
   border: 1px solid var(--ex-accent-border);
@@ -2234,12 +2257,20 @@ html, body {
   -webkit-appearance: none;
   appearance: none;
 }
+/* The SAME note the marked cells wear (user, 2026-09-18), not a ▶: one symbol
+ * for "this makes sound" wherever a visitor meets it — on the year that has a
+ * recording, and on the button that plays it. `currentColor` so it follows the
+ * button's own ink through every theme. Decoration: the button's words carry
+ * the meaning, and the mask is invisible to a screen reader either way. */
 .yv-listen::before, .cv-listen::before {
-  content: "▶";
-  margin-right: 9px;
-  font-size: 0.8em;
-  /* The glyph is decoration; the button's own words carry the meaning. */
-  speak: never;
+  content: "";
+  flex: 0 0 auto;
+  width: 12px;
+  height: 14px;
+  margin-right: 10px;
+  background: currentColor;
+  -webkit-mask: var(--ex-icon-note) center / contain no-repeat;
+  mask: var(--ex-icon-note) center / contain no-repeat;
 }
 
 /* ===========================================================================
@@ -2293,7 +2324,7 @@ html, body {
 .cv-entry {
   position: relative;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-columns: 36px minmax(0, 1fr);
   column-gap: 10px;
   align-items: center;
   min-height: 40px;
@@ -2329,34 +2360,39 @@ html, body {
 }
 .cv-entry-medallion[data-portrait="1"] { background: transparent; }
 .cv-entry-portrait, .cv-portrait { width: 100%; height: 100%; object-fit: cover; display: block; }
-/* The same two marks in the same two shapes as the year grid: a HAIRLINE under
- * the medallion for a conductor the exhibit can play, a DOT at its top right
- * for one with a story. */
+/* The same two pictograms as the year grid, so a mark means one thing wherever
+ * a visitor meets it: the note below the medallion, the book at its top right. */
 .cv-entry[data-playable="1"]::after {
   content: "";
   position: absolute;
-  left: 8px;
-  right: auto;
-  width: 24px;
+  left: 6px;
   top: 50%;
-  margin-top: 16px;
-  height: 2px;
-  border-radius: 1px;
+  margin-top: 8px;
+  width: 10px;
+  height: 12px;
   background: var(--ex-mark);
+  -webkit-mask: var(--ex-icon-note) center / contain no-repeat;
+  mask: var(--ex-icon-note) center / contain no-repeat;
 }
 .cv-entry[data-dyk="1"]::before {
   content: "";
   position: absolute;
-  left: 30px;
+  left: 27px;
   top: 50%;
-  margin-top: -19px;
-  width: 10px;
+  margin-top: -20px;
+  width: 14px;
   height: 10px;
-  border-radius: 50%;
   background: var(--ex-accent-border);
+  -webkit-mask: var(--ex-icon-book) center / contain no-repeat;
+  mask: var(--ex-icon-book) center / contain no-repeat;
 }
-.cv-roster.is-dense .cv-entry[data-playable="1"]::after { left: 7px; width: 20px; margin-top: 13px; }
-.cv-roster.is-dense .cv-entry[data-dyk="1"]::before { left: 24px; margin-top: -16px; }
+/* The selected row is accent-FILLED, so the marks take the contrasting ink —
+ * the year grid's own rule, which the roster had never needed while its marks
+ * were dots: a dot only has to be seen, a pictogram has to be READ. Measured on
+ * parchment before this existed: the book sat at 1.43 against the fill. */
+.cv-entry.is-selected::before, .cv-entry.is-selected::after { background: var(--ex-on-accent); }
+.cv-roster.is-dense .cv-entry[data-playable="1"]::after { left: 5px; margin-top: 5px; }
+.cv-roster.is-dense .cv-entry[data-dyk="1"]::before { left: 21px; margin-top: -17px; }
 .cv-entry-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 .cv-entry-name {
   font-size: 0.9rem;
@@ -2372,21 +2408,7 @@ html, body {
   white-space: nowrap;
 }
 .cv-entry.is-selected .cv-entry-years { color: inherit; }
-.cv-entry-count {
-  min-width: 26px;
-  height: 22px;
-  padding: 0 7px;
-  border: 1px solid var(--ex-border);
-  border-radius: 11px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.72rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--ex-text-soft);
-}
-.cv-entry.is-selected .cv-entry-count { border-color: var(--ex-on-accent); color: inherit; }
-.cv-roster.is-dense .cv-entry { min-height: 34px; padding-top: 0; padding-bottom: 0; grid-template-columns: 30px minmax(0, 1fr) auto; }
+.cv-roster.is-dense .cv-entry { min-height: 34px; padding-top: 0; padding-bottom: 0; grid-template-columns: 30px minmax(0, 1fr); }
 .cv-roster.is-dense .cv-entry-medallion { width: 30px; height: 30px; }
 .cv-roster.is-denser .cv-entry-name { font-size: 0.8rem; }
 .cv-roster.is-denser .cv-entry-years { display: none; }
@@ -2444,15 +2466,17 @@ html, body {
   align-items: center;
   justify-content: center;
 }
-/* One mark here, in the grid's "can be played" shape so the symbol means the
- * same thing wherever a visitor meets it. */
+/* One mark here, the grid's own note — the cell is 44×30 with a four-digit year
+ * in it, so the pictogram sits small in the corner rather than beside the
+ * numerals. */
 .cv-year[data-playable="1"]::after {
   content: "";
   position: absolute;
-  left: 10px; right: 10px; bottom: 3px;
-  height: 2px;
-  border-radius: 1px;
+  right: 3px; bottom: 2px;
+  width: 8px; height: 10px;
   background: var(--ex-mark);
+  -webkit-mask: var(--ex-icon-note) center / contain no-repeat;
+  mask: var(--ex-icon-note) center / contain no-repeat;
 }
 /* Every sitting the exhibit has a face for, when there is more than one — the
  * per-recording naming showing (plan §11(d)), not a duplicate to tidy. */

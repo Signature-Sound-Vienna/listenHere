@@ -522,6 +522,17 @@ async function setView(vp, name, opening = {}) {
     }
     return;
   }
+  // THE UNION PSEUDO-AUDIENCE DOES NOT SURVIVE THE DOOR (user, 2026-09-18).
+  // "All" unions the annotation LISTS, which is a listening-view idea; a "did
+  // you know?" story has no union — the three registers are three tellings of
+  // one fact, and dyk.js has been quietly reading All as adults since 0.66.0.
+  // So the control is made to agree with the content: entering an explorer
+  // moves this reader to adults, and the position is hidden while they are in
+  // there (exhibit.css). It does NOT revert on the way out (user): silently
+  // restoring a control the reader can see would be the worse surprise.
+  if (name !== "listen" && data.audience?.get(vp.index) === "all") {
+    data.audience.set(vp.index, "adults");
+  }
   const leaving = vp.view;
   vp.view = name;
   vp.el.dataset.view = name;

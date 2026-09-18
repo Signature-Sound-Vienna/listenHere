@@ -200,16 +200,15 @@ function buildRoster(concerts, language, portraitUrl, dyk) {
     name.textContent = c.name;
     const years = document.createElement("span");
     years.className = "cv-entry-years";
-    years.textContent = c.years.length <= 3 ? c.years.join(", ") : `${c.first}–${c.last}`;
+    years.textContent =
+      c.years.length <= 3
+        ? c.years.join(", ")
+        : t("conductors.yearsSpan", language)
+            .replace("{first}", String(c.first))
+            .replace("{last}", String(c.last))
+            .replace("{n}", String(c.years.length));
     text.append(name, years);
     b.append(medallion, text);
-    if (c.years.length > 3) {
-      // A count beside the span: numerals only, like everything wordless here.
-      const count = document.createElement("span");
-      count.className = "cv-entry-count";
-      count.textContent = String(c.years.length);
-      b.appendChild(count);
-    }
     b.addEventListener("click", () => pick(c.name));
     root.appendChild(b);
     entries.set(c.name, b);

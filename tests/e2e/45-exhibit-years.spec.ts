@@ -489,6 +489,92 @@ test.describe('45. The by-year explorer', () => {
     await expect(story).toBeHidden();
   });
 
+  // 45.10b The marks are PICTOGRAMS (0.70.0): a music note for "can be played",
+  // an open book for "has a story", drawn as masks so they take the theme's ink.
+  // A mask whose data URI is malformed renders as NOTHING — the element is still
+  // there, still the right size, and the mark is simply gone — so this asserts
+  // the mask resolves and that the two are different, not merely present.
+  test('45.10b the year marks are a music note and an open book, and both actually render', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&views=years,listen');
+    const ov = await overlay(page, 0);
+    const shot = await page.evaluate(() => {
+      const pick = (sel: string, ps: string) => {
+        const el = document.querySelector(sel) as HTMLElement;
+        if (!el) return null;
+        const c = getComputedStyle(el, ps);
+        return { mask: c.maskImage || c.webkitMaskImage, w: c.width, h: c.height, ink: c.backgroundColor };
+      };
+      return {
+        note: pick('.vp[data-viewport="0"] .yv-cell[data-playable="1"]', '::after'),
+        book: pick('.vp[data-viewport="0"] .yv-cell[data-dyk="1"]', '::before'),
+        plain: pick('.vp[data-viewport="0"] .yv-cell:not([data-playable]):not([data-dyk])', '::after'),
+      };
+    });
+    for (const [name, m] of [['note', shot.note], ['book', shot.book]] as const) {
+      expect(m, `${name}: no marked cell to measure`).not.toBeNull();
+      expect(m!.mask, `${name}: the mask did not resolve`).toContain('data:image/svg+xml');
+      // A mask that failed to parse still reports its url, so check it drew
+      // something of a sensible size in the theme's ink.
+      expect(parseFloat(m!.w), `${name}: no width`).toBeGreaterThan(6);
+      expect(parseFloat(m!.h), `${name}: no height`).toBeGreaterThan(6);
+    }
+    expect(shot.note!.mask, 'the note and the book are the same drawing').not.toBe(shot.book!.mask);
+    // A year with neither wears neither.
+    expect(shot.plain?.mask ?? 'none').toBe('none');
+
+    // The Listen button wears the same note as the years that can be played,
+    // so one symbol means one thing across the explorer.
+    const playable = await page.evaluate(
+      () => [...(window as any)._exhibitTest.concerts.playableYears.values()][0],
+    );
+    await ov.locator(`.yv-cell[data-year="${playable}"]`).click();
+    const button = await page.evaluate(() => {
+      const b = document.querySelector('.vp[data-viewport="0"] .yv-listen') as HTMLElement;
+      if (!b) return null;
+      const c = getComputedStyle(b, '::before');
+      return { mask: c.maskImage || c.webkitMaskImage, content: c.content };
+    });
+    expect(button, 'that year has no Listen button to check').not.toBeNull();
+    expect(button!.mask).toBe(shot.note!.mask);
+    expect(button!.content, 'the play glyph is still there').not.toContain('▶');
+  });
+
+  // 45.10c The union pseudo-audience does not survive the door (0.70.0).
+  test('45.10c "All" is not offered inside an explorer, and a reader who enters on it is moved to Adults — and left there', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&viewSwitch=1&audienceAll=true&audiences=all,adults');
+    const vp0 = page.locator('.vp[data-viewport="0"]');
+    // In the listening view All is a real position, and the reader is on it.
+    await expect(vp0.locator('.audience-btn[data-audience="all"]')).toBeVisible();
+    expect(await page.evaluate(() => (window as any)._exhibitTest.audience.get(0))).toBe('all');
+
+    await vp0.locator('.view-btn[data-view="years"]').click();
+    await overlay(page, 0);
+    // The position is gone from the switch...
+    await expect(vp0.locator('.audience-btn[data-audience="all"]')).toBeHidden();
+    // ...and the reader is on adults, so the switch is never left unpressed.
+    expect(await page.evaluate(() => (window as any)._exhibitTest.audience.get(0))).toBe('adults');
+    expect(await vp0.locator('.audience-btn.is-on').textContent()).toBe('Adults');
+    // The story agrees with the control rather than quietly reinterpreting it.
+    const story = vp0.locator('.dyk');
+    const withStory = await page.evaluate(() => [...(window as any)._exhibitTest.dyk.years.keys()][0]);
+    await vp0.locator(`.yv-cell[data-year="${withStory}"]`).click();
+    await expect(story).toHaveAttribute('data-audience', 'adults');
+
+    // Leaving does NOT put them back on All (user, 2026-09-18): the control is
+    // theirs once it has moved, and restoring it silently would be the surprise.
+    await vp0.locator('.view-btn[data-view="listen"]').click();
+    await expect(vp0.locator('.vp-view')).toHaveCount(0);
+    await expect(vp0.locator('.audience-btn[data-audience="all"]')).toBeVisible();
+    expect(await page.evaluate(() => (window as any)._exhibitTest.audience.get(0))).toBe('adults');
+
+    // The other half was never touched by any of it.
+    expect(await page.evaluate(() => (window as any)._exhibitTest.audience.get(1))).toBe('adults');
+  });
+
   // 45.11 The two of them in one card. The story may scroll — it is the one
   // thing in the exhibit that may — and when it does it SAYS so, because a
   // kiosk has no scrollbar. The programme may not: it degrades its type

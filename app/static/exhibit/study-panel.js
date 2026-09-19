@@ -211,6 +211,46 @@ const TABS = [
         hint:
           "Offers each viewport a toolbar switch between the listening interface and the explorers of the whole New Year's Concert series — year by year, and conductor by conductor (plan §11). Off is the shipped exhibit; an explorer draws over this half's strips while the other half keeps listening. Since 0.52.0 this is the debug and fallback entry: the ruled entry is the band (Band tab, “Tappable facts”), and every explorer carries its own close control.",
       },
+      {
+        key: "dykImages",
+        label: "Did-you-know images",
+        options: ["on", "off"],
+        hint:
+          "Whether the “Did you know?” story shows the picture it refers to. The TEXT is content and always on — six concerts and six conductors, told in whichever register this half is set to (Kids, Adults, Scholars), reachable from the chip in the explorer's corner. Two of the twelve stories carry a picture, and both are photographs of unknown licence, so what is drawn today is a placeholder frame at the picture's own shape. Off hides the frame and keeps the text.",
+      },
+      {
+        key: "dykSkin",
+        label: "Did-you-know skin",
+        options: ["pad", "coil", "plain"],
+        hint:
+          "How the museum's story is drawn. Pad is a clipboard — paper with ruled lines, a sprung metal clip, a pad of pages under it and a degree of tilt. Coil is a spiral notepad: the same paper with wire loops across the head and punched holes down the left, which costs a little more text width. Plain is the accent rule down its side that the exhibit shipped with through 0.72.0. Nothing about the words changes either way.",
+      },
+      {
+        key: "dykWidth",
+        label: "Did-you-know width (%)",
+        // 94 is the shipped value and must stay in this list, or the panel
+        // cannot put the exhibit back the way it found it (the stripHeight
+        // lesson, 2026-09-01). The two narrow rungs are the user's ask of
+        // 2026-09-19 — a pad that is visibly a pad ON the card rather than the
+        // width of it.
+        options: [70, 80, 88, 94, 100],
+        hint:
+          "How much of the card's width the story's pad takes. It is the other half of the tilt: a rotated sheet needs room for its corners, and this is the room — at 100% any tilt has its corners clipped by the card. WATCH THE NARROW RUNGS with a story that carries a picture: the figure is a fixed 150 px beside the text, so at 70% the text column is squeezed hard, and at one viewport it all but disappears. Ignored when the skin is plain.",
+      },
+      {
+        key: "dykTilt",
+        label: "Did-you-know tilt (deg)",
+        options: [0, 0.6, 1.3, 2, 3],
+        hint:
+          "How far the pad is turned, anticlockwise. Nothing in a layout is ever off-square, so a fraction of a degree reads as “put there by a hand”. Each degree swings a tall sheet about 9 px wider, which the width has to cover — 94/1.3 is the shipped pair and clears at both geometries. Ignored when the skin is plain, and stood down entirely under reduced motion.",
+      },
+      {
+        key: "dykFont",
+        label: "Did-you-know face",
+        options: ["print", "hand"],
+        hint:
+          "Which face the museum's story is set in. Print is the card's own serif, like the archive data around it; hand is a researcher's handwriting on the notepad the story is drawn as. Handwriting is the riskier choice — harder to read at a glance, and harder again for a visitor with dyslexia or low vision — so print ships and this is here for the October testing to settle. System faces only, since the kiosk has no network.",
+      },
     ],
   },
   {
@@ -223,21 +263,14 @@ const TABS = [
         label: "Demo",
         button: "Start the attract loop now",
         unavailable: "Loop is off — set a timer first",
-        hint: "Raises the band and starts a pass at once, whatever the idle clock says (user, 2026-09-10). Needs the loop enabled: one of the two timers above 0. Taps on this panel never count as a visitor's, so the panel can stay open while the loop runs.",
+        hint: "Raises the band and starts a pass at once, whatever the idle clock says (user, 2026-09-10). Needs the loop enabled: the idle timer above 0. Taps on this panel never count as a visitor's, so the panel can stay open while the loop runs.",
       },
       {
         key: "attractAfterIdleMs",
-        label: "Start after idle (ms; 0 = off)",
-        options: [0, 30000, 60000, 90000, 120000],
+        label: "Screen idle after (ms; 0 = off)",
+        options: [0, 15000, 60000, 180000, 300000], // 15 s is for testing and demos
         hint:
-          "How long every viewport of the room must have gone untouched, with nothing playing, before the loop starts. Both screens agree over a channel. 0 is the shipped default until release; the staff preset carries 90 s.",
-      },
-      {
-        key: "attractDuringPlaybackMs",
-        label: "Take over during playback after (ms; 0 = off)",
-        options: [0, 15000, 120000, 180000, 300000], // 15 s is for testing and demos
-        hint:
-          "The second timer: the room untouched this long while music is playing, and the loop takes over from the current playhead — band up, table tidied, the pass carrying on from here with the audience as it is — instead of starting the piece again.",
+          "How long this screen must have gone untouched — touches only; music playing or stopping does not move the count — before its table is tidied and the band comes up. While the other screen is in use the screen rests under the band, mirroring the room; once both screens are past the window the loop plays: from the playhead if music is on the speakers, from the top if the room is silent. 0 is the shipped default until release; the staff preset carries 3 min.",
       },
       {
         key: "attractGapMs",
@@ -250,7 +283,7 @@ const TABS = [
         label: "Reload in the silence",
         options: [true, false],
         hint:
-          "Reload the page halfway through the silence: invisible, it flushes anything an eight-hour day accumulates, and it is how the pieces cycle. Needs the kiosk browser's autoplay policy opened, or the loop resumes as “tap to start”.",
+          "Reload the page in the silence: invisible, it flushes anything an eight-hour day accumulates, and it is how the pieces cycle. The leader reloads at the midpoint and the other window later, so the room's worker always keeps a window. Needs the kiosk browser's autoplay policy opened, or the loop resumes as “tap to start”.",
       },
       {
         key: "attractAudience",
@@ -348,7 +381,21 @@ const TABS = [
         label: "Audio arbiter",
         options: ["local", "broadcast"],
         hint:
-          "Room-level arbitration between multiple screens: broadcast pauses this screen when another same-profile window claims the room's audio, last claimant wins. local is inert single-screen behaviour.",
+          "Room-level arbitration between multiple screens: broadcast yields this screen's audio when another same-profile window claims the room's — a live table pauses, an idle one (attract band up) mutes and mirrors. Last claimant wins, except that a visitor always outranks the attract loop. local is inert single-screen behaviour. The two-screen attract loop needs broadcast; room=shared below implies it.",
+      },
+      {
+        key: "room",
+        label: "Room",
+        options: ["off", "shared"],
+        hint:
+          "The room machine (plan §4.4, 0.62.0): shared makes every non-audible window of this PC mirror the audible one — muted, in step — whether or not its attract band is up, so a take on any screen fades that screen in and the screen that loses the speakers mutes and follows instead of pausing; the arbiter is room-wide. off is the 0.60.0 behaviour: the mirror runs only under the band.",
+      },
+      {
+        key: "screen",
+        label: "This window's screen",
+        options: [0, 1],
+        hint:
+          "Which screen of the room this window is: room viewport ids are screen × viewports + the local index, 0–3 for two screens. Per window — set it in each window's URL; the Defaults reset keeps it.",
       },
     ],
   },
@@ -526,10 +573,15 @@ const STUDY_PRESET = {
   // The parchment ground (user, 2026-09-03): the staff table reads like the
   // hand-written concert diaries the palette was drawn from.
   theme: "parchment",
-  // The attract loop (user, 2026-09-07): 90 s of room-wide idle; the shipped
-  // default stays 0 until release.
-  attractAfterIdleMs: 90000,
-  attractDuringPlaybackMs: 180000,
+  // The attract loop (user, 2026-09-07; one per-screen timer since 2026-09-16):
+  // a screen untouched for 3 min; the shipped default stays 0 until release.
+  attractAfterIdleMs: 180000,
+  // Two screens of one PC share the speakers: the loop's muted mirror and the
+  // tap hand-off (ruling R7) ride on the broadcast arbiter (2026-09-10).
+  arbiter: "broadcast",
+  // The room machine (2026-09-11): every window mirrors the audible one, band
+  // or no band. Each window's URL adds its own `screen=`; the reset keeps it.
+  room: "shared",
   // The switch cue (alpha-tester feedback, 2026-09-10).
   switchCue: "arrow",
   annotationColors: "theme",
@@ -562,6 +614,26 @@ const STUDY_PRESET = {
 // panel reopens itself on the same tab.
 const TAB_KEY = "exhibitStudyTab";
 const OPEN_KEY = "exhibitStudyOpen";
+// …and WHERE IN THE TAB (user, 2026-09-19). The Band and Room tabs are longer
+// than the panel, and every option change reloads the page — so without this,
+// flipping one knob two thirds of the way down threw you back to the top and
+// you had to find your place again, every time.
+//
+// One position PER TAB rather than one for the panel: the tabs are different
+// lengths and hold different discussions, and coming back to a tab at the top
+// when you left it half way down is the same annoyance in miniature.
+const SCROLL_KEY = "exhibitStudyScroll";
+
+/** The saved scroll offsets, `{tabId: px}`. Never throws — a corrupt or absent
+ *  entry is simply no memory, which is the state this feature replaced. */
+function readScrolls() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SCROLL_KEY) || "{}");
+    return raw && typeof raw === "object" ? raw : {};
+  } catch {
+    return {};
+  }
+}
 
 /**
  * A param's value in a config object. Per-viewport fields (`views`, like
@@ -607,6 +679,9 @@ export function mountStudyPanel(config, actions = {}) {
     b.textContent = tab.label;
     if (tab.hint) b.title = tab.hint;
     b.addEventListener("click", () => {
+      // Bank where THIS tab was left before leaving it, so the two tabs do not
+      // trade places (the scroll listener only fires while a tab is scrolled).
+      rememberScroll();
       activeTab = tab.id;
       localStorage.setItem(TAB_KEY, activeTab);
       paint();
@@ -614,12 +689,37 @@ export function mountStudyPanel(config, actions = {}) {
     tabs.appendChild(b);
   }
 
-  // The footer: the current configuration as its URL — selectable against the
-  // kiosk's global user-select: none, because copying it IS the feature.
+  /** Bank the body's offset against the tab now showing. */
+  function rememberScroll() {
+    clearTimeout(scrollTimer);
+    const scrolls = readScrolls();
+    scrolls[activeTab] = Math.round(body.scrollTop);
+    try {
+      localStorage.setItem(SCROLL_KEY, JSON.stringify(scrolls));
+    } catch {
+      /* a full or blocked store is not worth breaking the panel over */
+    }
+  }
+
+  // Coalesced, because a scroll fires per frame and this writes to disk. A
+  // TIMER, not rAF: the panel is often read on a screen whose tab is hidden or
+  // whose window is behind another, and rAF does not run there — the position
+  // would simply never be saved.
+  let scrollTimer = 0;
+  body.addEventListener("scroll", () => {
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(rememberScroll, 120);
+  });
+  // The reload a parameter change triggers can beat that 120 ms.
+  window.addEventListener("pagehide", rememberScroll);
+
+  // The footer: the fit line, and the two buttons that carry the configuration
+  // away. The URL used to be ECHOED here in full, selectable; it is not any
+  // more (user, 2026-09-18) — the query string has grown past 300 characters
+  // and the echo was taking most of the panel's height to say what "Copy URL"
+  // already does.
   const footer = document.createElement("div");
   footer.className = "study-footer";
-  const url = document.createElement("code");
-  url.className = "study-url";
   // THE FIT LINE. Strip height, recording count, and the commentary panel are
   // one budget, and the panel is the residual — so a taller strip or an extra
   // recording is paid for out of the description text. The failure is silent:
@@ -633,14 +733,33 @@ export function mountStudyPanel(config, actions = {}) {
   copy.className = "study-copy";
   copy.textContent = "Copy URL";
   copy.addEventListener("click", async () => {
+    const say = (text, ms) => {
+      copy.textContent = text;
+      setTimeout(() => (copy.textContent = "Copy URL"), ms);
+    };
     try {
       await navigator.clipboard.writeText(location.href);
-      copy.textContent = "Copied";
-      setTimeout(() => (copy.textContent = "Copy URL"), 1200);
+      say("Copied", 1200);
     } catch (_) {
-      // No clipboard (e.g. plain-http LAN): the text is selectable, say so.
-      copy.textContent = "Select the text";
-      setTimeout(() => (copy.textContent = "Copy URL"), 2000);
+      // `navigator.clipboard` needs a SECURE CONTEXT, and the exhibit runs on
+      // plain http over the museum's LAN — so on the iPad this is the path that
+      // actually runs. It used to fall back to "select the text yourself" from
+      // the echo below; with the echo gone the button has to finish the job, so
+      // it copies from an off-screen textarea the old way.
+      const scratch = document.createElement("textarea");
+      scratch.value = location.href;
+      scratch.setAttribute("readonly", "");
+      scratch.style.cssText = "position:fixed;top:-1000px;opacity:0;";
+      document.body.appendChild(scratch);
+      scratch.select();
+      let ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch (__) {
+        ok = false;
+      }
+      scratch.remove();
+      say(ok ? "Copied" : "Copy failed", ok ? 1200 : 2000);
     }
   });
   // A RESET, not a merge: the button rewrites the whole query to the preset,
@@ -653,9 +772,13 @@ export function mountStudyPanel(config, actions = {}) {
   reset.addEventListener("click", () => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(STUDY_PRESET)) params.set(key, String(value));
+    // This window's place in the room is per WINDOW, not part of any preset:
+    // a reset that dropped it would make both windows screen 0.
+    const here = new URLSearchParams(location.search);
+    if (here.has("screen")) params.set("screen", here.get("screen"));
     location.href = location.pathname + `?${params.toString()}`;
   });
-  footer.append(url, fit, reset, copy);
+  footer.append(fit, reset, copy);
 
   /**
    * Measure what a visitor can actually READ, and say so.
@@ -687,6 +810,22 @@ export function mountStudyPanel(config, actions = {}) {
         clearTimeout(fitDebounce);
         fitDebounce = setTimeout(paintFit, 120);
       }).observe(detail, { childList: true, characterData: true, subtree: true });
+    }
+    // NOT ON SCREEN IS NOT ZERO (user asked what "commentary 0 px" meant,
+    // 2026-09-18, and the honest answer was "nothing"). This line was written
+    // for the below-layout, where the box is always shown; under
+    // `?sideSlot=annotations` the commentary moves into the side panel, which is
+    // CLOSED until a visitor opens it, and an explorer overlay hides it too. In
+    // both cases clientHeight is 0 with nothing wrong at all, and the line was
+    // reporting its loudest red for the whole session.
+    if (detail.offsetParent === null && !detail.getClientRects().length) {
+      fit.textContent = "commentary not on screen";
+      fit.dataset.level = "";
+      fit.title =
+        "There is nothing to measure right now: the commentary box is not being " +
+        "displayed. With ?sideSlot=annotations it lives in the side panel, which " +
+        "opens on a tap; an open explorer hides it too. Not a fault.";
+      return;
     }
     const box = detail.clientHeight;
     const text = detail.scrollHeight;
@@ -774,8 +913,14 @@ export function mountStudyPanel(config, actions = {}) {
       }
       body.appendChild(row);
     }
-    url.textContent = location.search || "(defaults)";
     paintFit();
+    // BACK TO WHERE THIS TAB WAS LEFT (user, 2026-09-19). paint() empties the
+    // body and rebuilds it, which resets the offset to 0 — so the restore has to
+    // happen here, after the rows are in, and not once at mount.
+    //
+    // No clamping: a browser pins an over-long scrollTop to the new maximum by
+    // itself, which is the right answer when a tab has grown shorter.
+    body.scrollTop = readScrolls()[activeTab] || 0;
   }
 
   /**

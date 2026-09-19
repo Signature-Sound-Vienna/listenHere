@@ -41,7 +41,7 @@ const ARROW_SVG =
  * @param {string[]} opts.files                     recordings, in strip order
  * @param {(file: string) => string} opts.labelFor  the short button text
  * @param {(file: string) => string} opts.titleFor  the accessible full name
- * @param {(file: string) => string} [opts.portraitFor]  the recording's Gen-AI
+ * @param {(file: string) => string} [opts.portraitFor]  the recording's conductor
  *   portrait URL, or "" — the medallion the initials were standing in for
  *   (plan §5.5; first batch 2026-09-01). The disc is the button's ::before, so
  *   the image arrives as a custom property rather than as an element

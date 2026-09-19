@@ -664,23 +664,27 @@ test.describe('34. The exhibit loader', () => {
   });
 });
 
-test.describe('34. The Gen-AI conductor portraits', () => {
+test.describe('34. The conductor portraits', () => {
   test.use({ viewport: { width: 1024, height: 1366 } });
 
-  // 34.20 The first batch of portraits landed 2026-09-01 and three of the shown
-  // ten have one. Two things are worth pinning, and the second is the one that
-  // would rot silently:
+  // 34.20 Since 0.68.0 the portraits are freely-licensed photographs keyed to the
+  // CONDUCTOR, not Gen-AI images commissioned per recording, so EVERY recording
+  // whose conductor is known now has one — including the three whose conductor
+  // has no free photograph, who get a placeholder medallion rather than nothing.
+  // Two things are worth pinning:
   //
-  //  * the FALLBACK still works — a recording without a portrait keeps the
-  //    conductor's initials, and the Warren recording (a decided-unknown
-  //    identity) keeps its "?" — because portraits arrive in batches over
-  //    months and most recordings will be without one for most of that time;
   //  * the URL is resolved against the EXHIBIT ROOT, not against whatever
   //    document is showing the band. The sidecar stores "portraits/x.webp", and
   //    a bare relative URL only works because the page happens to live in that
   //    directory — the very coincidence app/routes.py redirects /exhibit to
   //    preserve. Asserting the resolved href is what stops that regressing.
-  test('34.20 a portrait renders resolved against the exhibit root; initials still fall back', async ({
+  //  * the initials FALLBACK still works. It used to be exercised by recordings
+  //    awaiting a portrait; none are left, so what exercises it now is the Warren
+  //    recording — a decided-unknown identity, an invention of the budget trade
+  //    with no sitter to photograph. A face appearing there would be a bug, which
+  //    makes this the stronger version of the old assertion rather than a weaker
+  //    one: it is a claim about WHO MAY have a face, not about who has one yet.
+  test('34.20 every known conductor has a portrait under the exhibit root; an unknown identity keeps its ?', async ({
     page,
   }) => {
     await boot(page);
@@ -717,27 +721,25 @@ test.describe('34. The Gen-AI conductor portraits', () => {
       expect(s.text, 'a portrait replaces the initials placeholder').toBe('');
     }
 
-    // A recording with no portrait keeps the conductor's initials…
-    const bare: string | undefined = await page.evaluate(() => {
+    // Every recording whose conductor is known now has one — the portrait follows
+    // the person, so there is nothing left waiting for a batch.
+    const missing: string[] = await page.evaluate(() => {
       const T = (window as any)._exhibitTest;
       const recs = T.exhibit.metadata?.recordings ?? {};
-      return T.exhibit.order.find((f: string) => !recs[f]?.portrait && recs[f]?.conductor);
+      return T.exhibit.order.filter((f: string) => recs[f]?.conductor && !recs[f]?.portrait);
     });
-    expect(bare, 'fixture needs a recording without a portrait').toBeTruthy();
-    const fallback = await shot(bare!);
-    expect(fallback.background).toBe('none');
-    expect(fallback.text!.length).toBeGreaterThan(0);
+    expect(missing, 'a named conductor with no portrait').toEqual([]);
 
-    // …and a decided-unknown identity keeps its "?" rather than gaining a face.
+    // A decided-unknown identity keeps its "?" rather than gaining a face — and
+    // this is what still exercises the initials fallback.
     const unknown: string | undefined = await page.evaluate(() => {
       const T = (window as any)._exhibitTest;
       const recs = T.exhibit.metadata?.recordings ?? {};
       return T.exhibit.order.find((f: string) => recs[f]?.displayNote && !recs[f]?.conductor);
     });
-    if (unknown) {
-      const q = await shot(unknown);
-      expect(q.background).toBe('none');
-      expect(q.text).toBe('?');
-    }
+    expect(unknown, 'fixture needs a decided-unknown identity').toBeTruthy();
+    const q = await shot(unknown!);
+    expect(q.background).toBe('none');
+    expect(q.text).toBe('?');
   });
 });

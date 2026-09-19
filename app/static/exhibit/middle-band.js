@@ -80,6 +80,7 @@ export function createMiddleBand(
   {
     language = "en",
     orientation = "upright",
+    viewports = 2,
     turnIndicator = "off",
     flipMotion = "fade",
     onToggle,
@@ -137,12 +138,19 @@ export function createMiddleBand(
 
   // The shared transport control: one LARGE play/pause in the middle of the
   // band (the one place both visitors own equally), with the current playback
-  // time below it TWICE, the far copy rotated — numerals, so the no-labels
-  // rule holds, and mirrored so each reader has one the right way up. In
-  // mirrored mode it sits between the two clusters; otherwise it goes inside
-  // the cluster before the piece block, which is as close to the band's centre
-  // as the flex layout naturally puts it.
-  const play = buildPlayControl(language, onToggle);
+  // time beside it — numerals, so the no-labels rule holds. In mirrored mode it
+  // sits between the two clusters; otherwise it goes inside the cluster before
+  // the piece block, which is as close to the band's centre as the flex layout
+  // naturally puts it.
+  //
+  // THE SECOND, ROTATED READOUT IS MIRRORED'S ALONE (user, 2026-09-18). It was
+  // built for every orientation and that was the mistake: only a mirrored band
+  // gives the far reader a right-way-up COPY to read, so only there does an
+  // upright clock complete a set. In upright, flip, and rotated the far reader
+  // is reading the near reader's band however it is turned, and a single
+  // right-way-up numeral floating in an otherwise inverted row reads as a
+  // rendering fault rather than as a courtesy.
+  const play = buildPlayControl(language, onToggle, orientation === "mirrored");
   if (orientation === "mirrored") el.insertBefore(play.root, clusters[1].root);
   else if (flips) el.appendChild(play.root);
   else clusters[0].root.insertBefore(play.root, clusters[0].pieceEl);
@@ -242,14 +250,17 @@ export function createMiddleBand(
   /**
    * The view a reader's half is showing, so that half's copy can stand its cue
    * down on the fact that opened it (user, 2026-09-03): a shimmering year beside
-   * the by-year explorer it already opened would be asking again. Mirrored only
-   * — the one orientation where cluster = viewport (turns.js bandTapViewport);
-   * elsewhere the copy is shared and says nothing. `view` is "listen" | "years"
-   * | "conductors"; the CSS keys off the cluster's data-current-view. The fact
-   * stays tappable — a second tap re-selects — it is just quiet.
+   * the by-year explorer it already opened would be asking again. Wherever
+   * cluster = viewport, which is mirrored — or ANY orientation at a single
+   * viewport, where the one cluster is the one reader's (turns.js
+   * bandTapViewport, 2026-09-18). With two readers sharing one copy it says
+   * nothing, because standing down would answer for the reader who did not tap.
+   * `view` is "listen" | "years" | "conductors"; the CSS keys off the cluster's
+   * data-current-view. The fact stays tappable — a second tap re-selects — it
+   * is just quiet.
    */
   function setCurrentView(index, view) {
-    if (orientation !== "mirrored") return;
+    if (orientation !== "mirrored" && viewports !== 1) return;
     const c = clusters[index];
     if (!c) return;
     if (view && view !== "listen") c.root.dataset.currentView = view;
@@ -259,8 +270,13 @@ export function createMiddleBand(
   return { el, update, refresh, setTurn, setCurrentView, tick: play.tick };
 }
 
-/** The play/pause button plus the mirrored pair of time readouts. */
-function buildPlayControl(language, onToggle) {
+/**
+ * The play/pause button and the time readout — a PAIR of readouts, the far one
+ * rotated, only where there is a far reader's own copy to read (see the caller).
+ *
+ * @param {boolean} mirrored  whether the band renders a second, turned cluster
+ */
+function buildPlayControl(language, onToggle, mirrored) {
   const root = document.createElement("div");
   root.className = "mb-play-wrap";
   const button = document.createElement("button");
@@ -268,12 +284,14 @@ function buildPlayControl(language, onToggle) {
   button.className = "mb-play";
   const near = document.createElement("span");
   near.className = "mb-time";
-  const far = document.createElement("span");
-  far.className = "mb-time mb-time-flipped";
   // A sandwich: the times are the bread, the button is the filling — one
   // readout on each side of the button, the far one rotated for the far
-  // reader (user feedback, 2026-08-24).
-  root.append(near, button, far);
+  // reader (user feedback, 2026-08-24). Mirrored gets both slices; every other
+  // orientation gets the near one and the button beside it.
+  const far = mirrored ? document.createElement("span") : null;
+  if (far) far.className = "mb-time mb-time-flipped";
+  root.append(near, button);
+  if (far) root.appendChild(far);
   button.addEventListener("click", () => onToggle?.());
 
   let lastText = null;
@@ -284,7 +302,7 @@ function buildPlayControl(language, onToggle) {
     if (text !== lastText) {
       lastText = text;
       near.textContent = text;
-      far.textContent = text;
+      if (far) far.textContent = text;
     }
     if (playing !== lastPlaying) {
       lastPlaying = playing;
@@ -383,24 +401,15 @@ function buildCluster(data, language, index = 0, facts = null) {
         [year, "year"],
       ]
     : [];
-  // THE TAP ACKNOWLEDGED (user, 2026-09-03): the class runs the CSS bloom and
-  // dip (exhibit.css) and is cleared by TIME rather than animationend, so
-  // reduced motion — where nothing animates — clears it too; the reflow between
-  // remove and add restarts the animation on a quick second tap.
-  const ACK_MS = 450;
-  const ackTimers = new Map();
-  const acknowledge = (elm) => {
-    clearTimeout(ackTimers.get(elm));
-    elm.classList.remove("is-acknowledged");
-    void elm.offsetWidth;
-    elm.classList.add("is-acknowledged");
-    ackTimers.set(elm, setTimeout(() => elm.classList.remove("is-acknowledged"), ACK_MS));
-  };
+  // THE TAP ACKNOWLEDGED (user, 2026-09-03) — acknowledgeTap, above, and the
+  // bloom it runs in exhibit.css. The band opens its explorer AT ONCE rather
+  // than waiting the explorers' lead: the overlay lands on the reader's own
+  // half, so the acknowledged fact stays on the band, in view, animating.
   for (const [elm, fact] of factEls) {
     elm.dataset.fact = fact;
     const fire = () => {
       if (!elm.classList.contains("is-tappable")) return;
-      acknowledge(elm);
+      acknowledgeTap(elm);
       facts.onFact?.(index, fact, current.meta, current.file);
     };
     elm.addEventListener("click", fire);
@@ -456,7 +465,7 @@ function buildCluster(data, language, index = 0, facts = null) {
     // card colour behind it would ring the face. The initials still want it.
     portrait.classList.toggle("has-portrait", Boolean(portraitSrc));
     if (portraitSrc) {
-      // A generated portrait, once there is one. Set as a background rather than
+      // The conductor's portrait, once there is one. Set as a background rather than
       // an <img> so a missing file degrades to the placeholder circle instead of
       // a broken-image glyph on a museum wall. Resolved against the exhibit root
       // by payload.js, not left relative to whatever document is showing this.
@@ -469,6 +478,68 @@ function buildCluster(data, language, index = 0, facts = null) {
   }
 
   return { root, update, pieceEl: piece };
+}
+
+/* ---------------------------------------------------------------------------
+ * THE TAP ACKNOWLEDGED — the band's invention (user, 2026-09-03), now shared.
+ *
+ * A working control answers the finger AT ONCE, before whatever it opens has
+ * drawn: a hairline frame blooms round it and fades while the control dips a
+ * hair, like a key going down (exhibit.css). It lives here because this is where
+ * it was designed, and because both explorers already import from this module —
+ * one definition rather than three that drift.
+ * ------------------------------------------------------------------------- */
+
+/** How long the class stays on. Cleared by TIME, not `animationend`, so reduced
+ *  motion — where nothing animates — clears it too. */
+export const ACK_MS = 450;
+/**
+ * How long a NAVIGATING tap waits before it leaves.
+ *
+ * The band does not need this: its overlay opens elsewhere on the screen and the
+ * acknowledged fact stays where it is, so the bloom plays out regardless. A tap
+ * INSIDE an explorer is different — the element is in the overlay that is about
+ * to be replaced, and whatever of the animation has not run by now is never
+ * seen.
+ *
+ * 180 ms was tried first and REJECTED (user, 2026-09-18): the keyframe reaches
+ * full opacity at 30% and fades out over the remaining 70%, so leaving at 180
+ * cut it at its peak and read as a glitch rather than a gesture. The frame has
+ * to breathe out. So the explorers run the band's keyframe FASTER — 300 ms,
+ * exhibit.css — and this waits the whole of it plus a frame: the gesture is
+ * complete, and still quicker end to end than the band's own 400 ms.
+ *
+ * If it ever reads as slow, these two numbers are the lever, and they move
+ * together.
+ */
+export const ACK_LEAD_MS = 320;
+
+const ackTimers = new WeakMap();
+
+/** Run the bloom on `elm`, restarting it if it is already running. */
+export function acknowledgeTap(elm, ms = ACK_MS) {
+  clearTimeout(ackTimers.get(elm));
+  elm.classList.remove("is-acknowledged");
+  // The reflow between remove and add is what restarts the animation on a quick
+  // second tap; without it the class never changes and nothing replays.
+  void elm.offsetWidth;
+  elm.classList.add("is-acknowledged");
+  ackTimers.set(elm, setTimeout(() => elm.classList.remove("is-acknowledged"), ms));
+}
+
+/**
+ * Acknowledge a tap, then do the thing — for a control that is about to remove
+ * itself from the document.
+ *
+ * `isConnected` is the guard that matters: a visitor who taps a year and then
+ * closes the overlay inside the lead would otherwise have an explorer open
+ * itself on them 180 ms after they asked for the listening view.
+ */
+export function acknowledgeThen(elm, run, ms = ACK_LEAD_MS) {
+  acknowledgeTap(elm);
+  setTimeout(() => {
+    if (elm.isConnected) run();
+  }, ms);
 }
 
 /**

@@ -266,25 +266,11 @@
     "  eight names; performers never identified; first issued Intercord, P-1982.",
     "  Short form: 'Orchestra and conductor unidentified — a pseudonymous Alfred",
     "  Scholz production, first issued 1982.'",
-    "  No Gen-AI portrait for this recording (s5.5) — settled by these findings.",
+    "  No portrait for this recording (s5.5) — settled by these findings: the credited",
+    "  conductor is an invention, so there is no sitter to photograph.",
     "UPSTREAM (per the correct-at-source policy, for the user to file): MB",
     "  recordings 320f36ec / 62866812 are acoustically provable duplicates of the",
     "  Scholz cluster 48ca91d9, and Warren is a candidate addition to the MB Scholz",
     "  pseudonym lists."
-  ],
-  "VPO-1987.wav": {
-    "portrait": "portraits/vpo-1987-karajan.webp",
-    "_disposition": "editorial",
-    "_why": "PORTRAIT ONLY. A Gen-AI stylised portrait of Herbert von Karajan, from the first batch delivered 2026-09-01 (see portraits/README.md for provenance and the labelling obligation). Not an upstream fact and not derivable: portraits are commissioned per RECORDING, not per conductor, so that the sitter can be shown at the age they were at that concert."
-  },
-  "VPO-1989.wav": {
-    "portrait": "portraits/vpo-1989-kleiber.webp",
-    "_disposition": "editorial",
-    "_why": "PORTRAIT ONLY. A Gen-AI stylised portrait of Carlos Kleiber, from the first batch delivered 2026-09-01 (see portraits/README.md for provenance and the labelling obligation). Not an upstream fact and not derivable: portraits are commissioned per RECORDING, not per conductor, so that the sitter can be shown at the age they were at that concert."
-  },
-  "VPO-2022.wav": {
-    "portrait": "portraits/vpo-2022-barenboim.webp",
-    "_disposition": "editorial",
-    "_why": "PORTRAIT ONLY. A Gen-AI stylised portrait of Daniel Barenboim, from the first batch delivered 2026-09-01 (see portraits/README.md for provenance and the labelling obligation). Not an upstream fact and not derivable: portraits are commissioned per RECORDING, not per conductor, so that the sitter can be shown at the age they were at that concert."
-  }
+  ]
 }

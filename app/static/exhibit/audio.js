@@ -39,6 +39,11 @@ import { WindowedAudioPlayer } from "../js/windowed-audio-player.js";
 // kiosk can raise it (?playerCache=8) once the soak blesses the memory cost.
 const PLAYER_CACHE = 2;
 
+// How long a select that is meant to sound waits for a suspended AudioContext to
+// run before reporting the autoplay refusal (see _awaitRunning). Paid only when
+// the context is not running, i.e. exactly in the refused case.
+const RUNNING_WAIT_MS = 1000;
+
 export class Transport {
   /**
    * @param {object} opts
@@ -64,6 +69,11 @@ export class Transport {
     this._bytes = new Map(); // file -> {buf, type} warmed by preloadAll, consumed by _build
     this._listeners = new Set();
     this._raf = 0;
+    // The room's speakers are not this window's while it MIRRORS (attract.js,
+    // ruling R7): muted, it plays the same file at the same moment as the audible
+    // window, so a tap can unmute into a running performance. A transport fact,
+    // not a player's: a player built later inherits it.
+    this._muted = false;
 
     this.activeFile = null;
     /** Time in the ACTIVE file's timeline. Authoritative while nothing plays. */
@@ -92,6 +102,38 @@ export class Transport {
 
   get loadingFile() {
     return this._loading;
+  }
+
+  get muted() {
+    return this._muted;
+  }
+
+  /** On the speakers: playing AND not muted. A muted mirror is not audible. */
+  get audible() {
+    return this.playing && !this._muted;
+  }
+
+  /**
+   * Mute or unmute every player — at once, or over a short ramp on the active
+   * one. The ramp is the hand-off crossfade of ruling R7: the screen a visitor
+   * tapped fades in while the arbiter has the loop's window fade out, both on
+   * the same file at the same moment, so the room hears one performance move
+   * from one screen to the other rather than a cut. Ramps run on the app gain
+   * node (the windowed player's normalisation stage, unused by the exhibit), on
+   * the audio thread, so they are click-free and cost the main thread nothing.
+   *
+   * @param {boolean} muted
+   * @param {{fadeMs?: number}} [opts]
+   */
+  setMuted(muted, { fadeMs = 0 } = {}) {
+    muted = Boolean(muted);
+    if (this._muted === muted) return;
+    this._muted = muted;
+    const active = this.activeFile ? this._players.get(this.activeFile) : null;
+    for (const p of this._players.values()) {
+      setLevel(p, this._ctx, muted ? 0 : 1, p === active ? fadeMs : 0);
+    }
+    this._emit();
   }
 
   /** Subscribe to state changes; returns an unsubscribe. */
@@ -143,9 +185,54 @@ export class Transport {
     player.currentTime = this._time;
     if (play) {
       await player.play();
+      await this._awaitRunning(file);
       this._startTicking();
     }
     this._emit();
+  }
+
+  /**
+   * The autoplay policy, made visible. Web Audio never refuses: `play()` resolves
+   * while a context the browser has blocked — no user activation yet, the kiosk
+   * flag missing, iOS — stays "suspended", and the clock simply does not advance.
+   * The attract loop would then wait for a pass that never ends, band up,
+   * silent. So a select that is meant to sound waits, briefly, for the context to
+   * run, and rejects with a NotAllowedError when it does not; the loop's `lock()`
+   * shows "tap to get started", the ruled fallback (plan §4.4), and the first tap
+   * is the activation the next select resumes on. A WAIT, not a check: Firefox
+   * starts a context "suspended" and resumes it within milliseconds (measured
+   * 2026-09-10, working-docs tools/exhibit-autoplay-probe.mjs — headless browsers
+   * start every context, so the refusal itself is only observable headed). The
+   * kiosk with its flag pays nothing: its context is running already.
+   */
+  async _awaitRunning(file, timeoutMs = RUNNING_WAIT_MS) {
+    const ctx = this._ctx;
+    if (!ctx || ctx.state === "running" || ctx.state === "closed") return;
+    const running = await new Promise((resolve) => {
+      let timer = 0;
+      const done = (ok) => {
+        clearTimeout(timer);
+        ctx.removeEventListener("statechange", onChange);
+        resolve(ok);
+      };
+      const onChange = () => {
+        if (ctx.state === "running") done(true);
+      };
+      timer = setTimeout(() => done(ctx.state === "running"), timeoutMs);
+      ctx.addEventListener("statechange", onChange);
+    });
+    if (running) return;
+    // Not sounding, and not going to until a gesture: undo the play so the state
+    // the rest of the exhibit reads is honest.
+    const p = this._players.get(file);
+    if (p && this.activeFile === file) {
+      this._time = p.currentTime;
+      p.pause();
+    }
+    this._emit();
+    throw Object.assign(new Error(`audible playback of ${file} needs a user activation`), {
+      name: "NotAllowedError",
+    });
   }
 
   /**
@@ -320,6 +407,9 @@ export class Transport {
         label: file,
       });
       this._players.set(file, player);
+      // A mirroring window builds players muted: the mute is the transport's, and
+      // a switch to a new recording must not leak a second of sound.
+      if (this._muted) setLevel(player, this._ctx, 0, 0);
       while (this._players.size > this._cacheSize) {
         const [oldest, victim] = this._players.entries().next().value;
         if (oldest === file || oldest === this.activeFile) break;
@@ -360,6 +450,7 @@ export class Transport {
       file: this.activeFile,
       time: this.time,
       playing: this.playing,
+      muted: this._muted,
       loading: this._loading,
     };
     for (const fn of this._listeners) {
@@ -370,6 +461,30 @@ export class Transport {
         console.warn("exhibit transport: subscriber threw", e);
       }
     }
+  }
+}
+
+/**
+ * Set a player's output level — 0 (muted) or 1 — now or over a linear ramp.
+ *
+ * The windowed player's app gain node is the ramp's home: its own `muted` and
+ * `volume` set the gain by value (a step, and a click), while an AudioParam
+ * automation on the app gain runs on the audio thread and can be cancelled and
+ * re-anchored mid-ramp. The element fallback has no node, so it takes the flag.
+ */
+function setLevel(player, ctx, level, fadeMs = 0) {
+  const gain = player.getGainNode?.()?.gain;
+  if (gain && ctx) {
+    const now = ctx.currentTime;
+    gain.cancelScheduledValues(now);
+    if (fadeMs > 0) {
+      gain.setValueAtTime(gain.value, now);
+      gain.linearRampToValueAtTime(level, now + fadeMs / 1000);
+    } else {
+      gain.setValueAtTime(level, now);
+    }
+  } else if ("muted" in player) {
+    player.muted = level === 0;
   }
 }
 
@@ -429,6 +544,12 @@ class ElementPlayer {
   }
   set currentTime(t) {
     this._el.currentTime = t;
+  }
+  get muted() {
+    return this._el.muted;
+  }
+  set muted(m) {
+    this._el.muted = m;
   }
   play() {
     return this._el.play();

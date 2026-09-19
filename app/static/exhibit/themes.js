@@ -653,6 +653,10 @@ const CATEGORY_SLICES = {
   // invisible threads).
   controls: [
     "--ex-panel",
+    // The story sheet's paper (2026-09-19). OPTIONAL, like the strap and thread
+    // tokens below: unset, exhibit.css derives it from --ex-panel, so a palette
+    // only declares one when the derived sheet is wrong for it.
+    "--ex-dyk-paper",
     "--ex-border",
     "--ex-border-strong",
     "--ex-card",

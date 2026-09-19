@@ -16,40 +16,54 @@
 //     pure indexing of the series) plus two facts from the payload: the piece's
 //     title and which files are playable. Names and years are the archives'.
 //   * ALLOWED TO CARRY TEXT, like the by-year view, because it lives on one
-//     reader's half. So the AI-disclosure sentence (§11(d)) is at its foot too:
-//     this is where a portrait is shown LARGE, and the mark it carries is
-//     burned into the asset — nothing here labels it, one sentence explains it.
+//     reader's half. So the portraits sentence (§11(d)) is at its foot too: this
+//     is where a portrait is shown LARGE, and a CC BY / CC BY-SA photograph may
+//     not be shown without its credit — nothing labels the medallion itself.
 //
-// WHAT IS DELIBERATELY NOT HERE: the years on the card are marks, not buttons.
-// Facets as navigation INSIDE an explorer is the fallback design for an upright
-// band (plan §11(f)); the ruled entry is the mirrored band, and building both
-// would leave the October testing comparing two navigations at once.
+// THE YEARS ON THE CARD ARE BUTTONS since 2026-09-18 — the user reversed plan
+// §11(f)'s ruling by name ("I cannot imagine that inter-explorer-navigation will
+// not be wanted"). They had been marks so the October testing would not be
+// comparing two navigations at once; that cost was accepted. A year opens the
+// by-year explorer on that concert, in this same half. The band remains the way
+// IN to an explorer; this is the way ACROSS.
 //
-// One conductor, several sittings: the exhibit's portraits are named per
-// RECORDING (each shows the sitter at the age they were for that concert), so a
-// conductor with more than one portrait shows every sitting, by year. That is
-// the naming working as intended (§11(d)), not duplication.
+// One conductor, ONE sitting, since 0.68.0: the portraits are freely-licensed
+// photographs and Commons holds one usable picture of a person, so the array that
+// used to hold a sitting per recording normally holds a single entry. The year
+// against it is the PHOTOGRAPH's, not the concert's — Karajan is 1963 against a
+// 1987 concert — which is the honest reading, and sometimes there is no reliable
+// date at all (Boskovsky), in which case no year is shown.
 //
 // KIOSK RULE: nothing scrolls. The roster is two columns of finger-sized rows
 // filled down then across, stepped to denser rows if the series ever outgrows
 // the height (fitRoster); the card is a fixed stack that fits at the iPad
 // geometry — spec 46 measures both.
 
-import { resolveText, t } from "./strings.js";
-import { initials } from "./middle-band.js";
+import { portraitAbout, resolveText, t } from "./strings.js";
+import { acknowledgeThen, initials } from "./middle-band.js";
+import { createDyk, pulseStoryHint } from "./dyk.js";
 
 /**
  * @param {object} opts
  * @param {number} opts.viewport
  * @param {string} opts.language          resolved per viewport (plan §5.3)
  * @param {import("./concerts.js").Concerts|null} opts.concerts
+ * @param {import("./concerts.js").Dyk|null} [opts.dyk]  the museum's "did you know?" text
+ * @param {object} [opts.audienceStore]   AudienceStore; the story is told in THIS reader's register
+ * @param {boolean} [opts.dykImages]      `?dykImages` — whether the story's figure is drawn
+ * @param {string} [opts.dykFont]        `?dykFont` — the face the story is set in
+ * @param {string} [opts.dykSkin]        `?dykSkin` — how the story block is drawn
+ * @param {number} [opts.dykWidth]       `?dykWidth` — the pad's width, percent
+ * @param {number} [opts.dykTilt]        `?dykTilt` — the pad's rotation, degrees
  * @param {object} opts.piece             the payload's piece (id, title map)
  * @param {(path: string) => string} opts.portraitUrl
  * @param {(file: string) => void} opts.onListen
+ * @param {(view: string, at: object) => void} [opts.onExplore]  the OTHER explorer, on a fact
  * @param {string|null} [opts.initialConductor]  a name the sidecar knows
  */
 export function createConductorsView({
-  viewport, language, concerts, piece, portraitUrl, onListen, initialConductor = null,
+  viewport, language, concerts, piece, portraitUrl, onListen, onExplore = null,
+  initialConductor = null, dyk = null, audienceStore = null, dykImages = true, dykFont = "print", dykSkin = "pad", dykWidth = 94, dykTilt = 1.3,
 }) {
   const el = document.createElement("div");
   el.className = "vp-view";
@@ -58,7 +72,7 @@ export function createConductorsView({
 
   const about = document.createElement("p");
   about.className = "cv-about";
-  about.textContent = t("about.portraitsAi", language);
+  about.textContent = portraitAbout(language);
 
   if (!concerts) {
     // A degraded exhibit, said on the glass (the state.dataError precedent).
@@ -78,9 +92,29 @@ export function createConductorsView({
   heading.className = "cv-heading";
   heading.textContent = t("conductors.heading", language);
 
-  const roster = buildRoster(concerts, language, portraitUrl);
+  const roster = buildRoster(concerts, language, portraitUrl, dyk);
   const detail = document.createElement("section");
   detail.className = "cv-detail";
+
+  // The story, in the card under the conductor's own facts — the by-year
+  // explorer's arrangement, one card down (user, 2026-09-18; dyk.js carries why
+  // it is simply present rather than asked for).
+  const story = createDyk({
+    language,
+    images: dykImages,
+    font: dykFont,
+    skin: dykSkin,
+    width: dykWidth,
+    tilt: dykTilt,
+    audience: () => audienceStore?.get(viewport),
+  });
+  const unsubscribe = audienceStore?.subscribe((i) => {
+    if (i !== viewport) return;
+    story.refresh();
+    // …and say what the switch was FOR, whether or not this card has a story to
+    // re-tell in the new register (dyk.js pulseStoryHint says why).
+    pulseStoryHint(el);
+  });
 
   el.append(heading, roster.el, detail, about);
 
@@ -92,7 +126,14 @@ export function createConductorsView({
     if (!c) return;
     selected = name;
     roster.paint(name);
-    renderDetail(detail, c, { language, pieceId: piece?.id, pieceTitle, portraitUrl, onListen });
+    story.setEntry(dyk?.forConductor(name));
+    renderDetail(detail, c, {
+      language, pieceId: piece?.id, pieceTitle, portraitUrl, onListen, onExplore,
+      story: story.el,
+    });
+    // The credit follows the face: the card shows THIS conductor's portrait large,
+    // so the foot names its photographer (strings.js, portraitAbout).
+    about.textContent = portraitAbout(language, c.portraitCredit || null);
   }
   roster.onPick(select);
 
@@ -112,8 +153,14 @@ export function createConductorsView({
     state: () => ({ conductor: selected, available: true }),
     // Re-measure the roster's fit once the overlay is in the document (the
     // years view's refit precedent: a hidden tab never gets a frame).
-    refit: () => fitRoster(roster.el),
-    destroy: () => el.remove(),
+    refit: () => {
+      fitRoster(roster.el);
+      story.remeasure();
+    },
+    destroy: () => {
+      unsubscribe?.();
+      el.remove();
+    },
   };
 }
 
@@ -124,7 +171,7 @@ export function createConductorsView({
 // down the left and continues down the right.
 // ---------------------------------------------------------------------------
 
-function buildRoster(concerts, language, portraitUrl) {
+function buildRoster(concerts, language, portraitUrl, dyk) {
   const root = document.createElement("div");
   root.className = "cv-roster";
   root.setAttribute("role", "group");
@@ -142,6 +189,9 @@ function buildRoster(concerts, language, portraitUrl) {
     b.dataset.conductor = c.name;
     b.dataset.years = String(c.years.length);
     if (c.playable.length) b.dataset.playable = "1";
+    // The roster's second mark: this conductor has a story (dyk.js), like the
+    // by-year grid's third mark on the six years that have one.
+    if (dyk?.forConductor(c.name)) b.dataset.dyk = "1";
     b.setAttribute("aria-pressed", "false");
 
     const medallion = document.createElement("span");
@@ -166,16 +216,15 @@ function buildRoster(concerts, language, portraitUrl) {
     name.textContent = c.name;
     const years = document.createElement("span");
     years.className = "cv-entry-years";
-    years.textContent = c.years.length <= 3 ? c.years.join(", ") : `${c.first}–${c.last}`;
+    years.textContent =
+      c.years.length <= 3
+        ? c.years.join(", ")
+        : t("conductors.yearsSpan", language)
+            .replace("{first}", String(c.first))
+            .replace("{last}", String(c.last))
+            .replace("{n}", String(c.years.length));
     text.append(name, years);
     b.append(medallion, text);
-    if (c.years.length > 3) {
-      // A count beside the span: numerals only, like everything wordless here.
-      const count = document.createElement("span");
-      count.className = "cv-entry-count";
-      count.textContent = String(c.years.length);
-      b.appendChild(count);
-    }
     b.addEventListener("click", () => pick(c.name));
     root.appendChild(b);
     entries.set(c.name, b);
@@ -200,7 +249,7 @@ function buildRoster(concerts, language, portraitUrl) {
 // The card.
 // ---------------------------------------------------------------------------
 
-function renderDetail(root, c, { language, pieceId, pieceTitle, portraitUrl, onListen }) {
+function renderDetail(root, c, { language, pieceId, pieceTitle, portraitUrl, onListen, onExplore, story }) {
   root.textContent = "";
   root.dataset.conductor = c.name;
 
@@ -220,7 +269,7 @@ function renderDetail(root, c, { language, pieceId, pieceTitle, portraitUrl, onL
     img.src = portraitUrl(latest.path);
     medallion.appendChild(img);
     medallion.dataset.portrait = "1";
-    medallion.dataset.portraitYear = String(latest.year);
+    if (latest.year != null) medallion.dataset.portraitYear = String(latest.year);
   } else {
     medallion.textContent = initials(c.name);
   }
@@ -250,18 +299,35 @@ function renderDetail(root, c, { language, pieceId, pieceTitle, portraitUrl, onL
   head.append(medallion, names);
   root.appendChild(head);
 
-  // Their years: one small cell each, carrying the by-year grid's two marks
-  // (a dot: the exhibit plays that concert's recording; a hairline: the
-  // current piece was on the programme). Marks, not buttons — see the header.
+  // Their years: one small cell each, carrying the by-year grid's one mark — a
+  // note where the exhibit can play that concert's recording, and only the marks
+  // that earn their noise (user, 2026-09-18).
+  //
+  // A BUTTON where the other explorer can be reached, a span where it cannot, so
+  // the DOM says which cells do something rather than every cell claiming to.
+  // Nothing is added to the cell to announce it: the exhibit's tappables are
+  // told apart by their frame, and a fourth mark on a 44 px cell that already
+  // carries a numeral and a note would be noise (§6.3's rule, kept).
   const strip = document.createElement("div");
   strip.className = "cv-years";
   for (const concert of c.concerts) {
-    const cell = document.createElement("span");
+    const cell = document.createElement(onExplore ? "button" : "span");
     cell.className = "cv-year";
     cell.dataset.year = String(concert.year);
     cell.textContent = String(concert.year);
     if ((concert.playable || []).length) cell.dataset.playable = "1";
-    if (pieceId && concert.onProgramme?.includes(pieceId)) cell.dataset.programme = "1";
+    if (onExplore) {
+      cell.type = "button";
+      // The numerals are the label a visitor reads; the aria-label says what the
+      // tap DOES, which numerals alone cannot.
+      cell.setAttribute(
+        "aria-label",
+        t("conductors.openYear", language).replace("{year}", String(concert.year)),
+      );
+      cell.addEventListener("click", () =>
+        acknowledgeThen(cell, () => onExplore("years", { year: concert.year })),
+      );
+    }
     strip.appendChild(cell);
   }
   root.appendChild(strip);
@@ -285,6 +351,10 @@ function renderDetail(root, c, { language, pieceId, pieceTitle, portraitUrl, onL
     }
     root.appendChild(sittings);
   }
+
+  // The story, under everything the archives say about them (user, 2026-09-18)
+  // and above the way into their music, so the Listen buttons stay last.
+  if (story) root.appendChild(story);
 
   // The way into the music: one button per recording of the current piece
   // from their concerts (the newest first, like the portrait).
@@ -321,6 +391,7 @@ function fitRoster(root) {
   const overflows = () =>
     root.scrollHeight > root.clientHeight + 1 || root.scrollWidth > root.clientWidth + 1;
   const apply = () => {
+    sizeRows(root);
     for (let i = 0; i < STEPS.length; i++) {
       root.classList.remove("is-dense", "is-denser");
       if (STEPS[i]) root.classList.add(STEPS[i]);
@@ -330,4 +401,78 @@ function fitRoster(root) {
   };
   if (root.isConnected && root.clientHeight) apply();
   else requestAnimationFrame(apply);
+}
+
+/** A row never grows past this, however tall the overlay is. */
+const ROW_MAX = 84;
+/** Nor does a medallion — past it the name loses the width it needs. */
+const MEDALLION_MAX = 64;
+const MEDALLION_MIN = 30;
+
+/**
+ * Size the rows and their medallions to the height the roster actually has
+ * (user, 2026-09-18: the portraits were tiny and the rows all padding).
+ *
+ * The roster divides its height into `--cv-rows` equal tracks, so a row is as
+ * tall as the overlay makes it — 56 px at the kiosk's two-up geometry, but 127
+ * px at one viewport, where a fixed 44 px medallion sat in 83 px of air. Both
+ * numbers now come from the track:
+ *
+ *  * `--cv-track` CAPS the row, so a tall overlay gets a compact list centred in
+ *    it rather than nine rows stretched to twice the size of their contents.
+ *  * `--cv-med` fills what the row then has, and the two pictograms follow it
+ *    (exhibit.css derives their offsets from the same variable).
+ *
+ * The medallion is then given back whatever the NAMES turn out to need, because
+ * the real ceiling is horizontal and it is not the same on every screen — see
+ * widestOverflow.
+ *
+ * At the kiosk this is a no-op on the track (56 px is already under the cap) and
+ * takes the medallion 44 → 48, so spec 46.8's fit is unchanged.
+ */
+function sizeRows(root) {
+  const rows = Number(getComputedStyle(root).getPropertyValue("--cv-rows")) || 1;
+  const gap = parseFloat(getComputedStyle(root).rowGap) || 0;
+  const height = root.clientHeight;
+  if (!height || !rows) return;
+  const track = Math.floor((height - gap * (rows - 1)) / rows);
+  const capped = Math.min(track, ROW_MAX);
+  let medallion = Math.max(MEDALLION_MIN, Math.min(capped - 8, MEDALLION_MAX));
+  root.style.setProperty("--cv-track", `${capped}px`);
+  // `--cv-med-FIT`, not `--cv-med`: an inline custom property would outrank the
+  // density steps' own declaration, and a roster that had to go dense could
+  // then never shrink its medallion. The stylesheet resolves which wins.
+  root.style.setProperty("--cv-med-fit", `${medallion}px`);
+  // …then hand back whatever the NAMES need. Two passes, because giving the
+  // width back can only help: the deficit is exact, and the second pass is the
+  // check rather than a search.
+  for (let pass = 0; pass < 2; pass++) {
+    const over = widestOverflow(root);
+    if (over <= 0 || medallion <= MEDALLION_MIN) break;
+    medallion = Math.max(MEDALLION_MIN, medallion - over - 1);
+    root.style.setProperty("--cv-med-fit", `${medallion}px`);
+  }
+}
+
+/**
+ * How many pixels the longest name or year phrase is short of its column.
+ *
+ * THE OVERFLOW THIS CATCHES IS INVISIBLE TO `fitRoster`: `.cv-entry-name`
+ * ellipsises, so the roster's own `scrollWidth > clientWidth` check never fires
+ * and a truncated "Nikolaus Harnon…" ships looking deliberate. Found on the
+ * kiosk itself (user's photograph, 2026-09-18) after the medallion grew — the
+ * 1024 px test geometry had 10 px to spare and the real screen did not, which
+ * is exactly why the medallion is now measured against the names rather than
+ * capped at a number that happened to fit one device.
+ */
+function widestOverflow(root) {
+  let over = 0;
+  for (const text of root.querySelectorAll(".cv-entry-text")) {
+    const room = text.clientWidth;
+    if (!room) continue;
+    for (const line of text.children) {
+      if (line.scrollWidth > room) over = Math.max(over, line.scrollWidth - room);
+    }
+  }
+  return over;
 }

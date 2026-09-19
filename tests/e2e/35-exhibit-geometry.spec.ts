@@ -534,9 +534,13 @@ test.describe('35. Week 2 — the study panel and themes', () => {
   });
 
   // 35.11 ?theme= applies a token set and hands the strips their wave colours.
-  // The default stays byte-identical because the dark theme overrides nothing —
-  // the CSS token defaults ARE the shipped palette.
-  test('35.11 themes are opt-in token sets; the default overrides nothing', async ({ page }) => {
+  //
+  // THE SHIPPED PALETTE IS PARCHMENT since 2026-09-19 (user), but DARK is still
+  // the CSS baseline — the token defaults in exhibit.css are its values, and
+  // every palette including the default is applied as inline overrides. So the
+  // two facts this pins have come apart: the default now writes tokens, and the
+  // one palette that writes none is `?theme=dark`.
+  test('35.11 themes are opt-in token sets; dark is the baseline that overrides nothing', async ({ page }) => {
     // The INACTIVE wave colour, so read a strip that is not the preselected
     // reference — the ref boots with the active palette applied.
     const inactiveWave = () =>
@@ -546,14 +550,26 @@ test.describe('35. Week 2 — the study panel and themes', () => {
         return T.viewports[0].strips.get(other).ws.options.waveColor;
       });
 
+    // The DEFAULT boot: parchment, applied as a token set like any other.
     await boot(page);
+    const shipped = await page.evaluate(() => ({
+      inlineTokens: document.documentElement.style.length,
+      bg: getComputedStyle(document.body).backgroundColor,
+    }));
+    expect(shipped.inlineTokens, 'the shipped palette is applied, not assumed').toBeGreaterThan(0);
+    expect(shipped.bg).toBe('rgb(234, 223, 198)'); // parchment #eadfc6
+
+    // …and DARK, which is the baseline the CSS already carries, so asking for it
+    // writes nothing at all. This is the property that makes the token defaults
+    // meaningful rather than dead values.
+    await boot(page, 'debug=1&theme=dark');
     const dark = await page.evaluate(() => ({
       inlineTokens: document.documentElement.style.length,
       bg: getComputedStyle(document.body).backgroundColor,
     }));
     const darkWave = await inactiveWave();
     expect(dark.inlineTokens).toBe(0); // dark = no overrides at all
-    expect(dark.bg).toBe('rgb(11, 11, 12)'); // #0b0b0c, the shipped background
+    expect(dark.bg).toBe('rgb(11, 11, 12)'); // #0b0b0c
     expect(darkWave).toBe('#5c5c68');
 
     await boot(page, 'debug=1&theme=light');
@@ -746,13 +762,17 @@ test.describe('35. Week 2 — the study panel and themes', () => {
   });
 
   // 35.17 The band's shared play/pause: one large button in the middle of the
-  // band starts and stops the transport, and the current time renders TWICE
-  // below it — the far copy rotated 180° so each visitor reads one the right
-  // way up (numerals only; the no-labels rule holds).
+  // band starts and stops the transport, and — ON A MIRRORED BAND — the current
+  // time renders TWICE beside it, the far copy rotated 180° so each visitor
+  // reads one the right way up (numerals only; the no-labels rule holds).
+  //
+  // The SECOND readout is mirrored's alone (user, 2026-09-18): only there does
+  // the far reader have a right-way-up copy of the band for an upright clock to
+  // belong to. Every other orientation shows one, which 35.17b pins.
   test('35.17 the band play button toggles the transport and mirrors the time to both readers', async ({
     page,
   }) => {
-    await boot(page);
+    await boot(page, 'debug=1&bandOrientation=mirrored');
     const resting = await page.evaluate(() => {
       const times = [...document.querySelectorAll('.mb-time')];
       return {
@@ -797,6 +817,38 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.playing))
       .toBe(false);
     await expect(page.locator('.mb-play')).toHaveText('▶');
+  });
+
+  // 35.17b The turned readout is MIRRORED'S ALONE (user, 2026-09-18). Upright,
+  // flip, and rotated all show the far reader the near reader's band however it
+  // is turned; a single right-way-up numeral in an otherwise inverted row reads
+  // as a rendering fault, not as a courtesy. Asserted as the ELEMENT's absence
+  // rather than a style, because a `display: none` that a later rule undoes
+  // would still pass a computed-style check.
+  test('35.17b only a mirrored band carries the far reader\'s second, turned time readout', async ({
+    page,
+  }) => {
+    for (const [qs, expected] of [
+      ['debug=1', 1],
+      ['debug=1&viewports=1', 1],
+      ['debug=1&bandOrientation=flip', 1],
+      ['debug=1&bandOrientation=rotated', 1],
+      ['debug=1&bandOrientation=mirrored', 2],
+    ] as const) {
+      await boot(page, qs);
+      const seen = await page.evaluate(() => ({
+        orientation: (document.querySelector('.middle-band') as HTMLElement).dataset.orientation,
+        times: document.querySelectorAll('.mb-time').length,
+        flipped: document.querySelectorAll('.mb-time-flipped').length,
+        play: document.querySelectorAll('.mb-play').length,
+      }));
+      expect(seen, `?${qs}`).toMatchObject({
+        times: expected,
+        flipped: expected - 1,
+        // The one control both visitors own is in every orientation regardless.
+        play: 1,
+      });
+    }
   });
 
   // 35.14 Clicking a PRESET clears every per-category pin back to "follow" —
@@ -852,8 +904,9 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       // tappable facts wearing the shimmer cue (plan §10 note of that date).
       'bandTap=shimmer',
       'theme=parchment', // the staff ground (user, 2026-09-03)
-      'attractAfterIdleMs=90000', // the attract loop after 90 s of room-wide idle (user, 2026-09-07)
-      'attractDuringPlaybackMs=180000', // and taking over a playing, untouched table after 3 min
+      'attractAfterIdleMs=180000', // the attract loop: a screen untouched for 3 min (user, 2026-09-07; one timer since 2026-09-16)
+      'arbiter=broadcast', // two screens, one set of speakers: the loop's mirror and hand-off need it (2026-09-10)
+      'room=shared', // the room machine: every window of the PC mirrors the audible one (2026-09-11)
       'switchCue=arrow', // switches a side did not make are shown (alpha-tester feedback, 2026-09-10)
     ]) {
       expect(search).toContain(pair);
@@ -874,10 +927,19 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     await page.click('.study-cog');
     await page.click('.study-tab[data-tab="views"]');
     const rows = page.locator('.study-row');
-    await expect(rows).toHaveCount(3);
+    // The explorers' own knobs arrive on this tab as they are built, so the
+    // COUNT is a moving number and the three positions that matter are pinned by
+    // name instead. What must hold is that the two half-selectors come first and
+    // the story's knobs after them — a reader reaching for "which view does this
+    // half start in" should not have to read past four ways to draw a notepad.
+    await expect(rows).toHaveCount(8);
     await expect(rows.nth(0).locator('.study-label')).toHaveText(/Near half/);
     await expect(rows.nth(1).locator('.study-label')).toHaveText(/Far half/);
     await expect(rows.nth(2).locator('.study-label')).toHaveText(/View switch/);
+    const labels = await rows.locator('.study-label').allTextContents();
+    for (const want of ['Did-you-know images', 'Did-you-know skin', 'Did-you-know width', 'Did-you-know tilt', 'Did-you-know face']) {
+      expect(labels.some((l) => l.includes(want)), `the Views tab lost "${want}"`).toBe(true);
+    }
     // Listen is the default in both halves, and marked as such.
     await expect(rows.nth(1).locator('.study-option.is-on')).toHaveText(/Listen •/);
 
@@ -1515,7 +1577,9 @@ test.describe('35. Demo feedback — the band at a single viewport', () => {
     expect(single.bandBottom!).toBeLessThanOrEqual(single.vpTop);
     // The transport came with it — the reason this is a bug and not a cosmetic gap.
     expect(single.play, 'the only play/pause in the exhibit lives in the band').toBe(true);
-    expect(single.times).toBe(2);
+    // ONE readout: there is no second reader at one viewport, and since
+    // 2026-09-18 the turned copy is the mirrored band's alone (35.17b).
+    expect(single.times).toBe(1);
     expect(single.conductor).toBe(true);
 
     // …and it actually drives the clock from there.

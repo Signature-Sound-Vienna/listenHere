@@ -128,9 +128,19 @@ const CATALOGUE = {
   "view.listen": { en: "Listen" },
   "view.years": { en: "Year by year" },
   "view.conductors": { en: "Conductors" },
-  // aria-label only: every explorer overlay's close control shows an × glyph
-  // (main.js) — the way back into the listening view, since the band is the
-  // way in (plan §11(f)) and the toolbar switch is only the fallback entry.
+  // The way out of an explorer, back into the listening view — since the band is
+  // the way IN (plan §11(f)) and the toolbar switch only the fallback entry.
+  //
+  // TWO STRINGS FOR ONE CONTROL, since 2026-09-19: the short word is what the
+  // button SHOWS, where it shares a strip with the audience switch and a title;
+  // the sentence is its aria-label, for a reader who cannot see what is behind
+  // the overlay. The short one is a substring of the long one on purpose — a
+  // visible label that is not part of the accessible name is a trap for anyone
+  // driving the glass by voice.
+  //
+  // It was an × until 2026-09-19 (user): an × says "dismiss", and this goes
+  // somewhere.
+  "view.back": { en: "Back" },
   "view.close": { en: "Back to listening" },
   // aria-labels only, for the band's tappable facts (?bandTap, mirrored
   // band): the facts themselves are a proper name and a year, so the glass
@@ -154,10 +164,6 @@ const CATALOGUE = {
     en: "As listed in the concert archives. Encores were often not recorded.",
   },
   "years.programmeUnknown": { en: "The programme is not in our archives." },
-  // Legend for the per-item source marks: an item one archive lists and the
-  // other does not is shown, and marked, rather than dropped or trusted.
-  "years.legendPhilharmoniker": { en: "listed by the orchestra's archive only" },
-  "years.legendMusikverein": { en: "listed by the Musikverein's archive only" },
   "years.with": { en: "With" },
   "years.inLibrary": { en: "On disc in the project's collection" },
   // The direct route from a concert to its music: switches the transport to
@@ -173,16 +179,54 @@ const CATALOGUE = {
   "conductors.heading": { en: "The conductors of the New Year's Concerts" },
   "conductors.chooseConductor": { en: "Choose a conductor" },
   "conductors.summary": { en: "{n} New Year's Concerts, {first} to {last}" },
+  // The roster row's years. A conductor with three or fewer is listed by year —
+  // you can count three. Beyond that it is a span, and the count rides WITH it
+  // rather than in a badge of its own (user, 2026-09-18): one fact, one phrase.
+  // The whole phrase is the string, punctuation included, so a translation can
+  // reorder it rather than having brackets hardcoded around a number.
+  "conductors.yearsSpan": { en: "{first}–{last} ({n} concerts)" },
   "conductors.summaryOne": { en: "One New Year's Concert, in {year}" },
   // The direct route from a conductor to their music: one button per recording
   // of the current piece the exhibit holds from their concerts.
   "conductors.listen": { en: "Listen to {piece} from {year}" },
-  // THE ONE PLAIN SENTENCE that the AI mark on the portraits needs (plan §5.5,
-  // §11(d)) — release-blocking for December, and this view is the first
-  // surface allowed to carry text. The glyph itself is burned into every
-  // portrait asset, so no view adds a label; this sentence explains it once.
-  "about.portraitsAi": {
-    en: "The conductor portraits are AI-generated impressions, not photographs; the small gold spark marks each one.",
+  // THE WAY ACROSS to the other explorer (user, 2026-09-18, reversing §11(f)).
+  // Neither string is ever DRAWN — the cells carry numerals and the card carries
+  // a name, and §6.3's wordless rule holds on both. They are the aria-labels,
+  // which is the one place the exhibit may say in words what a tap does: a
+  // screen reader hearing "2010" alone learns nothing about where it leads.
+  "conductors.openYear": { en: "See the New Year's Concert of {year}" },
+  "years.openConductor": { en: "See every New Year's Concert of {conductor}" },
+  // THE ONE PLAIN SENTENCE the portraits need (plan §5.5, §11(d)) — this view is
+  // the first surface allowed to carry text. It used to explain the AI mark; since
+  // 0.68.0 the portraits are photographs and it carries their credit instead.
+  // "Did you know?" (dyk.js) — the museum's authored text about six concerts
+  // and six conductors, in the reader's own register. Only the chrome is here;
+  // the text itself, and each year's hook, are Chanda's, and arrive as content
+  // from data/dyk.json (content/dyk/). German for the heading now, because the
+  // heading is OURS — her text is English until the in-house translation lands,
+  // and falls back like the attract band's title.
+  "dyk.heading": { de: "Wussten Sie schon?", en: "Did you know?" },
+  // Inside the placeholder frame that stands in for a picture the exhibit may
+  // not yet show (licence unresolved — content/dyk/README.md).
+  "dyk.imagePending": { en: "Picture to come" },
+  // THE PORTRAIT CREDIT (0.68.0). The Gen-AI portraits are gone — image models
+  // will no longer render living public figures — and freely-licensed photographs
+  // replaced them. That swapped one obligation for another: the AI batch had to be
+  // DISCLOSED, and a CC BY / CC BY-SA photograph has to be ATTRIBUTED, which is a
+  // licence condition rather than a courtesy.
+  //
+  // The band carries no labels (plan §6.3), so the credit lives here, at the foot
+  // of the explorers, where the AI sentence used to. It names the photographer of
+  // the picture CURRENTLY on the glass rather than listing all eighteen: eighteen
+  // lines do not fit a kiosk that must not scroll, and a credit beside its own
+  // image is the stronger reading of the licence anyway.
+  "about.portraitsPhoto": {
+    en: "The conductor portraits are photographs from Wikimedia Commons.",
+    de: "Die Dirigentenporträts sind Fotografien von Wikimedia Commons.",
+  },
+  "about.portraitCredit": {
+    en: "Photo: {artist} ({licence}).",
+    de: "Foto: {artist} ({licence}).",
   },
 };
 
@@ -217,6 +261,36 @@ export function t(key, lang = FALLBACK_LANGUAGE) {
   if (entry[lang] != null) return entry[lang];
   _warnOnce(`key "${key}" has no "${lang}" translation`);
   return entry[FALLBACK_LANGUAGE] ?? key;
+}
+
+/**
+ * The portraits line for an explorer's foot: the standing sentence, plus the
+ * photographer and licence of the portrait CURRENTLY shown when there is one.
+ *
+ * One line rather than a credits list, for two reasons. The kiosk must not scroll
+ * (plan §6.3), and eighteen credits do not fit under a card; and a credit next to
+ * the picture it belongs to is a better discharge of CC BY / CC BY-SA than a
+ * roll-call somewhere else on the screen.
+ *
+ * EVERY picture we can name is credited, including the public-domain ones the
+ * licence does not compel a credit for (user, 2026-09-18) — the entry's
+ * `attribution` flag records which were obligatory, and is not what decides what
+ * is shown. What does decide it is whether anyone is NAMED: some archive scans
+ * record no photographer at all, and "Photo: unknown" is worse than silence. A
+ * placeholder medallion depicts nobody, so it is credited to nobody.
+ *
+ * @param {string} language
+ * @param {{artist?: string, licence?: string, attribution?: boolean,
+ *          placeholder?: boolean}|null} credit
+ */
+export function portraitAbout(language, credit = null) {
+  const general = t("about.portraitsPhoto", language);
+  if (!credit || credit.placeholder) return general;
+  if (!credit.artist || !credit.licence) return general;
+  const line = t("about.portraitCredit", language)
+    .replace("{artist}", credit.artist)
+    .replace("{licence}", credit.licence);
+  return `${general} ${line}`;
 }
 
 /**

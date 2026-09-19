@@ -67,6 +67,22 @@ test-results/
 # scripts apply them LAST and never rewrite them. The glob is deliberate, so a
 # future third override file is committed by default rather than silently ignored.
 !/app/static/exhibit/data/*overrides.json
+# ...and so is dyk.json, for the same reason by another route: it is Chanda's
+# authored museum text, derived from content/dyk/*.md by tools/prep_exhibit_dyk.py.
+# The tool exists so her markdown stays the source of truth, but the exhibit must
+# ship the content whether or not anyone re-runs it, and unlike concerts.json it
+# has no scraped input to regenerate from.
+!/app/static/exhibit/data/dyk.json
+
+# The two press photographs embedded in Chanda's conductors export (Boskovsky with
+# his violin; Karajan with Kathleen Battle, 1987). Licence unknown, so they are kept
+# locally and never committed; the exhibit shows placeholder figures in their place.
+# See content/dyk/README.md.
+/content/dyk/images/
+# Chanda's exports exactly as they arrived, base64 images and all (~1 MB). Kept
+# locally so the stripped copies can always be checked against the originals,
+# never committed.
+/content/dyk/original-export/
 
 # Cached MusicBrainz JSON-LD, fetched by tools/prep_exhibit_metadata.py. Purely a
 # dev convenience so a re-run is offline and the API is asked once per entity;

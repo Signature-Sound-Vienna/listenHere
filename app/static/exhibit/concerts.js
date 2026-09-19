@@ -18,6 +18,7 @@
 // ZERO imports, by rule (see ENGINE-WANTS.md).
 
 export const CONCERTS_SCHEMA = "lh-exhibit-concerts/1";
+export const DYK_SCHEMA = "lh-exhibit-dyk/1";
 
 const EXHIBIT_BASE = new URL("./", import.meta.url);
 
@@ -98,8 +99,10 @@ export function buildConcerts(json, { debug = false } = {}) {
         concerts: [],
         first: c.year,
         last: c.year,
-        // Every sitting the exhibit has a portrait of, by year — one conductor
-        // legitimately has several (the per-recording naming, plan §11(d)).
+        // Every sitting the exhibit has a portrait of, by year. Under the Gen-AI
+        // batch a conductor legitimately had several, one per recording; the
+        // freely-licensed photographs that replaced them are one per PERSON, so
+        // this is normally a single entry — see the loop after this one.
         portraits: [],
         // The payload recordings the exhibit can play, with their concert year.
         playable: [],
@@ -118,6 +121,19 @@ export function buildConcerts(json, { debug = false } = {}) {
       if (role && role !== "Dirigent" && !e.roles.includes(role)) e.roles.push(role);
     }
   }
+  // ONE portrait per conductor, and the year against it is the PHOTOGRAPH's, not
+  // the concert's. The per-concert scan above would otherwise give Boskovsky 25
+  // identical sittings, because the sidecar now stamps the same picture on every
+  // year a conductor worked. A conductor with a portrait but no free photograph
+  // gets a placeholder medallion, which is still a path and still renders.
+  const portraitCredits = new Map(Object.entries(json.conductorPortraits || {}));
+  for (const e of byConductor.values()) {
+    const credit = portraitCredits.get(e.name);
+    if (!credit) continue;
+    e.portraits = [{ year: credit.photoYear ?? null, path: credit.path }];
+    e.portraitCredit = credit;
+  }
+
   const data = {
     json,
     series,
@@ -133,6 +149,12 @@ export function buildConcerts(json, { debug = false } = {}) {
     get: (year) => byYear.get(year) || null,
     /** The year a payload recording was played at, or null. */
     yearOf: (file) => playableYears.get(file) ?? null,
+    /**
+     * The photographer and licence for a conductor's portrait, or null. CC BY and
+     * CC BY-SA make this a condition of showing the picture at all, so both
+     * explorers ask for it whenever they put a face on the glass.
+     */
+    portraitCredit: (name) => portraitCredits.get(name) || null,
   };
   if (debug) {
     const dated = [...byYear.values()].filter((c) => c.date).length;
@@ -151,6 +173,114 @@ export function buildConcerts(json, { debug = false } = {}) {
   }
   return data;
 }
+
+// ---------------------------------------------------------------------------
+// "Did you know?" — the museum's authored text about six of these concerts and
+// six of these conductors (content/dyk/, tools/prep_exhibit_dyk.py).
+//
+// It lives beside the sidecar rather than inside it because the two have
+// opposite natures: concerts.json is a SCRAPE, gitignored and regenerable, and
+// dyk.json is AUTHORED CONTENT that is committed. Folding one into the other
+// would let a re-run of the concerts tool delete the museum's text.
+//
+// Same rules as the sidecar otherwise: optional, pinned schema, a 404 resolves
+// to null with a warning, and the shipped listening kiosk never asks for it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch and index the "Did you know?" content, or resolve null when it is
+ * absent or unusable — the explorers then simply carry no cards.
+ *
+ * @param {{debug?: boolean}} [opts]
+ * @returns {Promise<Dyk|null>}
+ */
+export async function loadDyk({ debug = false } = {}) {
+  const url = new URL("./data/dyk.json", EXHIBIT_BASE);
+  let res;
+  try {
+    res = await fetch(url);
+  } catch (e) {
+    console.warn(`exhibit: cannot reach ${url} — ${e.message}`);
+    return null;
+  }
+  if (!res.ok) {
+    // Committed, unlike the sidecar, so a 404 here means a deployment lost a
+    // tracked file rather than "nobody ran the prep tool".
+    console.warn(`exhibit: ${url} returned ${res.status} — the explorers will carry no "did you know?" cards`);
+    return null;
+  }
+  let json;
+  try {
+    json = await res.json();
+  } catch (e) {
+    console.warn(`exhibit: ${url} is not JSON — ${e.message}`);
+    return null;
+  }
+  return buildDyk(json, { debug });
+}
+
+/**
+ * Index already-parsed content. Split from the fetch like buildConcerts, so the
+ * indexing is testable without a network.
+ *
+ * @param {object} json
+ * @returns {Dyk|null}
+ */
+export function buildDyk(json, { debug = false } = {}) {
+  if (!json || json.schema !== DYK_SCHEMA) {
+    console.warn(
+      `exhibit "did you know?" content is "${json?.schema}", expected "${DYK_SCHEMA}" — ` +
+        "ignoring it; re-run tools/prep_exhibit_dyk.py",
+    );
+    return null;
+  }
+  // Years arrive keyed by the JSON's string year; the explorers hold numbers.
+  const years = new Map();
+  for (const [y, entry] of Object.entries(json.years || {})) years.set(Number(y), entry);
+  const conductors = new Map(Object.entries(json.conductors || {}));
+  const data = {
+    json,
+    years,
+    conductors,
+    /** The entry for a concert year, or null. */
+    forYear: (year) => years.get(Number(year)) || null,
+    /** The entry for a conductor, by the name the archives spell — or null. */
+    forConductor: (name) => conductors.get(name) || null,
+  };
+  if (debug) {
+    console.log(
+      `exhibit: "did you know?" — ${years.size} year(s), ${conductors.size} conductor(s), ` +
+        `${(json.warnings || []).length} warning(s)`,
+    );
+    for (const w of json.warnings || []) console.warn(`exhibit dyk warning: ${w}`);
+  }
+  return data;
+}
+
+/**
+ * @typedef {object} DykEntry
+ * @property {Record<string, Record<string, string>>} text   audience id -> language -> text
+ * @property {Record<string, string>} [subtitle]             the year's hook, per language
+ * @property {DykImage|null} image
+ */
+
+/**
+ * @typedef {object} DykImage
+ * @property {string} id
+ * @property {[number, number]} aspect
+ * @property {Record<string, string>} caption
+ * @property {"placeholder"|"licensed"} status
+ * @property {string|null} src
+ */
+
+/**
+ * @typedef {object} Dyk
+ * @property {object} json
+ * @property {Map<number, DykEntry>} years
+ * @property {Map<string, DykEntry>} conductors
+ * @property {(year: number) => DykEntry|null} forYear
+ * @property {(name: string) => DykEntry|null} forConductor
+ */
 
 /**
  * @typedef {object} Concerts

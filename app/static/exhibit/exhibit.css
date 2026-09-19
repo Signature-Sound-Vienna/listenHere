@@ -27,6 +27,12 @@
   --ex-border: #26262c;
   --ex-border-strong: #3a3a44;
   --ex-card: #26262c;
+  /* The "Did you know?" sheet's paper (user, 2026-09-19). OPTIONAL, like the
+   * strap and thread tokens: a palette may declare its own, and the default
+   * lifts the panel towards white so every one of the fifteen gets a sheet that
+   * reads as paper rather than as another control. On the dark palettes that is
+   * the whole difference between a page and a panel. */
+  --ex-dyk-paper: color-mix(in srgb, var(--ex-panel) 84%, white);
   --ex-text-body: #d8d8e2;
   --ex-text-soft: #a9a9b4;
   --ex-text-dim: #8d8d99;
@@ -628,9 +634,9 @@ html, body {
   stroke-dasharray: 3 3;
 }
 
-/* The other side's marker, mirrored — their glass seen from across the table.
- * Interactive only while THIS side's glass is in hand (is-engaged), so a
- * resting visitor cannot press the other side's marker by accident. */
+/* Another reader's marker — their glass seen from where I sit. Interactive
+ * only while THIS side's glass is in hand (is-engaged), so a resting visitor
+ * cannot press another reader's marker by accident. */
 .marker-ghost {
   position: absolute; /* sized by marker.js, like the glass */
   z-index: 2;
@@ -638,12 +644,15 @@ html, body {
   pointer-events: none;
   transition: opacity 250ms ease;
 }
-/* Mirrored about the LENS CENTRE, not the box centre: the ghost is positioned
+/* Turned about the LENS CENTRE, not the box centre: the ghost is positioned
  * by the same anchor math as the glass (the lens centre sits at 31.1% of the
  * box), so a default-origin rotation would paint the lens ~38% of the box
- * BELOW the row it is anchored to — the handle simply points up instead. */
+ * BELOW the row it is anchored to. The angle is each ghost's own
+ * (--ghost-angle, set by marker.js from room.js ghostAngleFor): the hilt
+ * points at the source viewport — 180° for the reader across the table, a
+ * diagonal for the far table's two readers (the room machine, 2026-09-11). */
 .marker-ghost svg {
-  transform: rotate(180deg);
+  transform: rotate(var(--ghost-angle, 180deg));
   transform-origin: 50% 31.1%;
 }
 .marker-ghost.is-engaged {
@@ -705,7 +714,10 @@ html, body {
  * Repurposing `outline` eats the UA focus ring, so :focus-visible restores
  * one below. */
 .audience-btn, .zoom-btn, .ann-jump, .ann-mark, .side-close, .mb-play,
-.vp-turn button, .study-cog, .study-tab, .study-option, .study-copy {
+.vp-turn button, .study-cog, .study-tab, .study-option, .study-copy,
+/* …and the explorers' Back control (user, 2026-09-19), which sits on the same
+ * strip as the audience chips and has to be sewn on like them. */
+.view-back {
   outline: 1px dashed var(--ex-thread, transparent);
   outline-offset: -4px;
 }
@@ -1403,9 +1415,9 @@ html, body {
 .middle-band[data-orientation="mirrored"] .mb-flipped { transform: rotate(180deg); }
 .middle-band[data-orientation="mirrored"] .mb-cluster { gap: 10px; }
 .middle-band[data-orientation="mirrored"] .mb-portrait {
-  /* -36px, not -44px: the same 8 px the upright band gained, for the same
+  /* -32px, not -44px: the same 12 px the upright band gained, for the same
    * reason. Two clusters still fit the width. */
-  width: calc(var(--middle-band-height, 96px) - 36px);
+  width: calc(var(--middle-band-height, 96px) - 32px);
   font-size: calc(var(--middle-band-height, 96px) / 5);
 }
 .middle-band[data-orientation="mirrored"] .mb-conductor,
@@ -1419,7 +1431,9 @@ html, body {
  * mirrored below it — one readout per reader, numerals only, so the band's
  * no-labels rule holds. Accent-coloured: it is the one control both visitors
  * own equally, and the thing a first-time visitor should see first. */
-/* time · button · time — the times sandwich the button, one per reader. */
+/* time · button — and time · button · time on a mirrored band, where the far
+ * reader has a copy of their own and the turned readout completes it
+ * (middle-band.js buildPlayControl says why the other orientations get one). */
 .mb-play-wrap {
   display: flex;
   align-items: center;
@@ -1456,11 +1470,35 @@ html, body {
   border-bottom: 1px solid var(--ex-band-border);
 }
 
+/* THE MEDALLION FILLS ITS BOX AGAIN (user, 2026-09-18: the band's portrait out
+ * to the shimmer's radius).
+ *
+ * Every portrait asset is a 340 px square holding a circular medallion of 293 px
+ * — measured, all eighteen identical — so 13.8% of every face's diameter was
+ * transparent margin. That margin was DELIBERATE while the assets carried the
+ * AI mark, which straddled the medallion's rim and needed room inside the
+ * circular clip (tools/split_portraits.py). 0.68.0 replaced those assets with
+ * freely-licensed photographs and deleted the mark; the margin survived the
+ * thing it was cut for, and went on costing every face a sixth of its diameter
+ * — on the band, in both explorers' rosters, and on the conductor card.
+ *
+ * Scaling the IMAGE rather than the box is what makes this a fix and not a
+ * resize: the layout boxes stay exactly where they were, the round clip is
+ * already in place at each site, and the overshoot lands on transparent pixels.
+ * 1.16 rather than 340/293 = 1.1604, which is under a tenth of a pixel at the
+ * 150 px card portrait and saves a division in the reading.
+ *
+ * NOT the strap's discs: those compensate for the same margin by GROWING the
+ * box (--ex-strap-disc-portrait), because their medallions have to line up with
+ * the paper discs beside them. Two compensations would double the crop. */
+:root { --ex-portrait-bleed: 1.16; }
+
 .mb-portrait {
-  /* Grown from -24px to make room for the marked asset's transparent margin
-   * (see --ex-strap-disc-portrait): 80 px of box gives 69 px of medallion,
-   * within a few percent of the 72 px the unmarked JPEGs filled. */
-  width: calc(var(--middle-band-height, 96px) - 16px);
+  /* The box IS the medallion now that the bleed above crops the asset's dead
+   * margin away: 84 px upright, 64 px per cluster mirrored, with the shimmer's
+   * rim light immediately outside it. (It was -16px/-36px while the box had to
+   * carry a transparent margin; the medallion was then 69 px and 52 px.) */
+  width: calc(var(--middle-band-height, 96px) - 12px);
   aspect-ratio: 1;
   border-radius: 50%;
   background: var(--ex-band-card) center / cover no-repeat;
@@ -1475,10 +1513,16 @@ html, body {
   color: var(--ex-band-faint);
   letter-spacing: 0.02em;
 }
-/* The card colour is the PLACEHOLDER's disc, and a marked portrait is
+/* The card colour is the PLACEHOLDER's disc, and a portrait asset is
  * transparent around its medallion — so leaving it would ring every face with
- * a pale circle. Only the initials still want a disc behind them. */
-.mb-portrait.has-portrait { background-color: transparent; }
+ * a pale circle. Only the initials still want a disc behind them.
+ * A velvet ground was tried here on 2026-09-18 and REMOVED the same day (user):
+ * the medallion wants nothing behind it. */
+.mb-portrait.has-portrait {
+  background-color: transparent;
+  /* The asset is square, so one value crops both axes (the second is `auto`). */
+  background-size: calc(100% * var(--ex-portrait-bleed));
+}
 
 /* Numerals and a proper name: the two things that need no translation. */
 /* Conductor over orchestra, as one column: the conductor is the interpretation's
@@ -1585,6 +1629,18 @@ html, body {
   border-color: var(--ex-accent-border);
   color: var(--ex-bg);
 }
+/* The grant ring (main.js paintTurn; 0.64.0): the "Keep reading…" ring's twin,
+ * depleting over the grant window on the holder's prompt and the requester's
+ * wait alike, so neither side is surprised by the auto-grant. */
+.vp-turn .turn-ring {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: conic-gradient(var(--ex-accent) calc(var(--turn-frac, 1) * 360deg), transparent 0);
+  -webkit-mask: radial-gradient(circle at center, transparent 55%, #000 56%);
+  mask: radial-gradient(circle at center, transparent 55%, #000 56%);
+}
 
 /* --------------------------------------------------------------------------
  * The study panel (?studyPanel=true, study-panel.js): staff tooling for
@@ -1629,9 +1685,18 @@ html, body {
   right: 10px;
   bottom: 62px;
   z-index: 50;
-  width: 400px;
+  /* Wide enough for the tab row on ONE line: seven tabs measured 454 px at
+   * 0.82 rem, and at 400 px they wrapped to two rows (user, 2026-09-18). A new
+   * tab means measuring again rather than assuming this still holds. */
+  width: 500px;
   max-width: calc(100vw - 20px);
-  max-height: min(70vh, 640px);
+  /* PINNED, not "up to" (user, 2026-09-18): as a max-height the panel took its
+   * tab's natural height and jumped 273 px between Views (367) and Layout, Misc
+   * or Theme (640, the cap) every time the staff switched tab. A fixed height
+   * makes the frame stand still and `.study-body` below do the scrolling — which
+   * three of the seven tabs already needed at any height, since Misc alone wants
+   * 1259 px. Measured 2026-09-18; the 70vh keeps it sane on a short window. */
+  height: min(70vh, 640px);
   display: flex;
   flex-direction: column;
   background: var(--ex-panel);
@@ -1716,17 +1781,11 @@ html, body {
   padding: 8px 12px;
   border-top: 1px solid var(--ex-border);
 }
-.study-url {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-size: 0.72rem;
-  color: var(--ex-text-dim);
-  /* Copying the configuration URL is the point — override the kiosk's global
-   * user-select: none for exactly this element. */
-  -webkit-user-select: text;
-  user-select: text;
-}
+/* The configuration URL used to be echoed here in full and selectable. It is
+ * not any more (user, 2026-09-18): past 300 characters it took most of the
+ * panel's height to repeat what "Copy URL" does in one tap, and that button now
+ * falls back to an off-screen textarea where the clipboard API is unavailable
+ * (plain http over the museum's LAN), so nothing is lost with it gone. */
 /* The fit line: how much of the commentary a visitor can read at the current
  * geometry. Neutral while the text fits, amber under half, red once the box is
  * too short to hold a line at all — the state that ships silently, because the
@@ -1739,7 +1798,9 @@ html, body {
  * tooling, exempt from the palette like its English labels, so adding two
  * tokens to eight themes to serve one debug line would be the wrong trade. */
 .study-fit {
-  flex: 0 0 auto;
+  /* Takes the width the URL used to, so the two buttons stay hard right. */
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
   color: var(--ex-text-dim);
@@ -1803,39 +1864,683 @@ html, body {
   border-color: var(--ex-accent-border);
   color: var(--ex-on-accent);
 }
-.vp[data-view]:not([data-view="listen"]) .audience-switch,
+/* Behind an overlay the zoom control stands down — there is no waveform to
+ * zoom. The AUDIENCE switch does NOT, since 0.66.0: the explorers now carry
+ * authored text in the reader's own register ("did you know?", dyk.js), so
+ * changing register is a thing to do INSIDE an explorer rather than a reason to
+ * leave it (45.2 and 46.3 pin both halves of this). */
 .vp[data-view]:not([data-view="listen"]) .zoom-ctl { visibility: hidden; }
+/* THE TOOLBAR IS RAISED OVER THE OVERLAY, which now fills the half underneath it
+ * (user, 2026-09-18). Its controls keep their places rather than being
+ * re-parented into the explorer: nothing should JUMP as a reader crosses the
+ * door, and the toolbar is the one thing on the half that means the same in both
+ * views. `visibility: hidden` on the zoom control is what holds those places —
+ * the toolbar keeps its width and height whichever view is up.
+ *
+ * THE WHOLE TOOLBAR, not just the audience switch: raising that alone buried the
+ * `?viewSwitch=1` fallback under the overlay, which is the one control whose
+ * whole job is to be the way out when the band is not the way in. 45.10c caught
+ * it by timing out on a click the overlay was intercepting.
+ *
+ * `pointer-events: none` on the bar and `auto` on its controls, because the bar
+ * is a full-width box with nothing in most of it: left solid it would swallow
+ * every tap along that strip, including the overlay's own close control, which
+ * sits at the same height and cannot out-rank it (the × is INSIDE the overlay,
+ * so its z-index is spent within the overlay's own stacking context). */
+.vp[data-view]:not([data-view="listen"]) .vp-toolbar {
+  position: relative;
+  z-index: 6;
+  pointer-events: none;
+  /* PACKED RIGHT, to clear the strip's left for the explorer's heading (user,
+   * 2026-09-18: reclaim the heading's row). This is the one thing that DOES move
+   * as a reader crosses the door, and it is a deliberate exception to the rule
+   * above: the alternative was leaving the title on a row of its own, and the
+   * 28 px that row costs is a paragraph of the museum's text. */
+  justify-content: flex-end;
+  /* …stopping short of the overlay's Back button, which shares this strip but
+   * belongs to the overlay UNDERNEATH and cannot defend itself (main.js
+   * reserveBack measures it). The fallback is generous on purpose: a missing
+   * variable should crowd the strip, not hide a control. */
+  padding-right: var(--vp-view-back, 104px);
+}
+/* A HAIRLINE BETWEEN THE TWO KINDS OF CONTROL (user, 2026-09-19). The chips to
+ * its left belong to the half and mean the same in both views; the Back button
+ * to its right belongs to the explorer and is the way out of it. They share a
+ * strip by geometry, not by kind, and the rule says so.
+ *
+ * Drawn as a 1 px rule rather than a typed "|", so it takes the theme's border
+ * ink and keeps its weight at any font size.
+ *
+ * The reservation is the button's width plus 24, and the button keeps 12 of
+ * those to its own left — so the gap between the last chip and the button is the
+ * other 12, and the rule sits half way along it. At `right: var(…)` exactly it
+ * would sit flush against the chip, which reads as that chip's edge. */
+.vp[data-view]:not([data-view="listen"]) .vp-toolbar::after {
+  content: "";
+  position: absolute;
+  right: calc(var(--vp-view-back, 104px) - 12px);
+  top: 11px;
+  bottom: 11px;
+  width: 1px;
+  background: var(--ex-border-strong);
+  pointer-events: none;
+}
+.vp[data-view]:not([data-view="listen"]) .vp-toolbar > * { pointer-events: auto; }
+/* ...and the union pseudo-audience is not offered in there at all (user,
+ * 2026-09-18): a story has no union to show. `display: none` rather than
+ * `visibility: hidden` so the three real registers close up into the space
+ * instead of leaving a gap where All was. main.js moves a reader who arrives on
+ * All to adults, so the switch is never left with nothing pressed. */
+.vp[data-view]:not([data-view="listen"]) .audience-btn[data-audience="all"] { display: none; }
 
 /* The way back, inside every explorer (plan §11(f)): the band is the way in
  * and the toolbar switch only the fallback, so the overlay itself must be
  * leavable. Top-right corner of the overlay, 44 px like every control here;
  * the explorers' headings leave it room. */
-.view-close {
+/* A WORD, not an × (user, 2026-09-19; main.js says why) — so it is shaped like
+ * the exhibit's other worded controls, `.view-btn` and the audience chips, and
+ * sits on their line at the right end of the strip. */
+.view-back {
   position: absolute;
-  top: 0;
-  right: 0;
+  /* An absolutely positioned child is laid out against the PADDING box, so once
+   * the overlay grew to fill the half (2026-09-18) `top: 0; right: 0` put the
+   * control hard into the screen's corner. These put it back where it reads:
+   * level with the audience switch in the strip above the heading, and off the
+   * edge by the overlay's own side margin. It clears the switch because the zoom
+   * control, standing down behind the overlay, still holds 137 px at that end. */
+  top: 8px;
+  right: 12px;
   z-index: 1;
-  width: 44px;
-  height: 44px;
+  min-height: 44px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
   border: 1px solid var(--ex-border-strong);
   border-radius: 22px;
   background: var(--ex-panel);
-  color: var(--ex-text-soft);
+  color: var(--ex-text-body);
   font: inherit;
-  font-size: 1.1rem;
+  font-size: 0.85rem;
   line-height: 1;
   cursor: pointer;
   -webkit-appearance: none;
   appearance: none;
 }
-.view-close:focus-visible { outline: 2px solid var(--ex-accent-border); outline-offset: 2px; }
+/* THE NOTE, as on the Listen buttons and the marked cells (user, 2026-09-19).
+ * One symbol for "this makes sound" wherever a visitor meets it — so the note
+ * here says WHERE this goes back TO: the music. It is what stops "Back" from
+ * having to mean "the screen before", which is the reading the user weighed and
+ * accepted when they asked for the word. `currentColor`, so it follows the
+ * button's ink through every theme. Decoration: the word carries the meaning
+ * for anyone reading, and the aria-label carries it for anyone listening. */
+.view-back::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 12px;
+  height: 14px;
+  margin-right: 10px;
+  background: currentColor;
+  -webkit-mask: var(--ex-icon-note) center / contain no-repeat;
+  mask: var(--ex-icon-note) center / contain no-repeat;
+}
+.view-back:focus-visible { outline: 2px solid var(--ex-accent-border); outline-offset: 2px; }
+
+/* ===========================================================================
+ * "Did you know?" (dyk.js) — the museum's authored text, IN the card: under the
+ * programme in the by-year explorer, under the conductor's own facts in the
+ * by-conductor one. It is simply present whenever the selected year or
+ * conductor has a story (user, 2026-09-18, having tried the alternative).
+ *
+ * THIS IS THE ONE THING IN THE EXHIBIT THAT SCROLLS, and it is a considered
+ * exception rather than a lapse. The kiosk rule exists because a clipped LIST
+ * reads as a complete list — a programme missing its last encore looks finished
+ * — so the programme steps its type down and the roster steps its rows. Prose
+ * cuts visibly, and a reader who wants the rest can reach for it. The block
+ * says there is more (`data-scroll`, and the fade below) rather than hoping.
+ *
+ * The heights, measured at the kiosk geometry (1024×1366, two viewports → an
+ * overlay 571 px tall, a card 521): the story wants 121–210 px and the by-year
+ * card has 4–113 px spare, so the two give way to each other — the story is
+ * capped at a share of the card and scrolls past it, and `fitProgramme` steps
+ * the list denser against what is left. The programme must never be the one to
+ * clip: a lost encore is invisible, a cut-off paragraph is not.
+ * ======================================================================== */
+.dyk {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  /* THE LIST FITS FIRST, THE STORY TAKES WHAT IS LEFT. `flex-basis: 0` means
+   * the story asks for nothing and grows into the space the card has spare, so
+   * the programme keeps its own content height and `fitProgramme` steps its type
+   * against what remains — rather than the two shrinking proportionally, which
+   * let the list run out of density steps and CLIP (45.11 caught exactly that).
+   * The floor is what makes it a paragraph rather than a tease; past it, the
+   * story scrolls, because a cut paragraph is visible and a lost encore is not. */
+  flex: 1 1 0;
+  min-height: 88px;
+  min-width: 0;
+  /* The base block is the ORIGINAL look (user, 2026-09-19): an accent rule down
+   * its side, which is what `?dykSkin=plain` restores. Everything the clipboard
+   * skin adds is under [data-skin="pad"] below, so "off" is a real absence of
+   * rules rather than a pile of overrides undoing them. */
+  padding: 2px 0 2px 11px;
+  border-left: 3px solid var(--ex-accent-border);
+}
+
+/* ---------------------------------------------------------------------------
+ * `?dykSkin=pad` — THE STORY AS A CLIPBOARD (user, 2026-09-18 and 2026-09-19).
+ *
+ * The museum's own voice, drawn as the object a researcher's note arrives on, so
+ * it joins the exhibit's family of physical things — the leather strap, the
+ * stitched chips, the gold medallions — as the one made of paper. The user's
+ * reference is a clipboard: a board, a sheet on it, a metal clip across the top.
+ *
+ * A PARAMETER, not a decision. The whole skin hangs off one attribute, and
+ * `plain` above is the accent rule the exhibit shipped with — so the October
+ * testing can put the two side by side instead of arguing from memory, and a
+ * technician can turn it off from the URL if it reads badly in the room.
+ *
+ * IT HAS TO STRETCH. The block is a flex item taking the card's leftover space
+ * (88 px floor; ~90–190 px at the kiosk's two-up geometry, 200–420 px at one
+ * viewport), so nothing here may be a fixed-size graphic. The paper is a colour,
+ * the margin rule and the ruled lines are gradients, the clip is two boxes, and
+ * the pad underneath is a stack of hard box-shadows. All of it resizes for
+ * nothing.
+ *
+ * THE PAPER HAS ITS OWN TOKEN, `--ex-dyk-paper`. It began as plain `--ex-panel`,
+ * which was right on parchment and far too dim on the dark palettes — a sheet
+ * the same value as the controls around it is a panel, not paper. The default
+ * lifts the panel towards white, so all fifteen palettes get a sheet that reads
+ * as one; themes.js lists it in the `controls` slice, so a palette may declare
+ * its own and a ?themeControls pin carries it.
+ * ------------------------------------------------------------------------- */
+/* THE PAPER, shared by both bound skins. Only the BINDING differs between them
+ * — a clipboard's sprung clip, or a spiral coil with holes punched down the left
+ * — so everything that is "a sheet of paper on the card" lives here once. */
+.dyk[data-skin="pad"],
+.dyk[data-skin="coil"] {
+  border: 1px solid color-mix(in srgb, var(--ex-text) 22%, transparent);
+  border-radius: 2px 2px 8px 8px;
+  background-color: var(--ex-dyk-paper);
+  /* THE PAD UNDERNEATH: two hard offset shadows are the pages below this one,
+   * and the soft one is the shadow the whole block casts on the card. Hard
+   * offsets rather than a picture of a stack, so it costs nothing at any
+   * height — and the block is a flex item whose height is the card's leftover
+   * (88 px floor; ~90–190 px at the kiosk, 200–420 px at one viewport). */
+  box-shadow:
+    2px 3px 0 -1px var(--ex-dyk-paper),
+    2px 3px 0 0 color-mix(in srgb, var(--ex-text) 18%, transparent),
+    4px 6px 0 -1px var(--ex-dyk-paper),
+    4px 6px 0 0 color-mix(in srgb, var(--ex-text) 12%, transparent),
+    0 7px 14px -4px color-mix(in srgb, var(--ex-text) 30%, transparent);
+  /* LAID DOWN SLIGHTLY CROOKED, which is the cheapest thing that makes it paper
+   * rather than a panel: nothing in a layout is ever off-square, so a degree or
+   * so reads as "put there by a hand" before it is consciously seen.
+   *
+   * BOTH NUMBERS ARE PARAMETERS (`?dykWidth`, `?dykTilt`; dyk.js writes them),
+   * and they are ONE decision in two halves: a rotated box needs room for its
+   * corners or the card clips them, and the width is what gives that room. At
+   * the single viewport each degree costs about 9 px of swing on a 540 px sheet.
+   *
+   * THE ORIGIN IS THE CENTRE, and that is a correction — pivoting at the top
+   * keeps the heading still but throws the whole foot one way, which overhung
+   * the card by 2 px and was clipped. About the centre the swing is halved on
+   * each side and symmetric. Measured, after the first version was not. */
+  width: var(--dyk-width, 94%);
+  align-self: center;
+  transform: rotate(calc(-1 * var(--dyk-tilt, 1.3deg)));
+  transform-origin: 50% 50%;
+  /* ROOM FOR THE CORNERS VERTICALLY, as the width gives it horizontally. A
+   * turned box grows in BOTH directions and the card clips: measured, the sheet
+   * fitted its 192 px share exactly while the card's scrollable overflow read 5
+   * px too tall — the rotated bounding box, not the content. The bottom corners
+   * were being cut by the card's edge, and 46.8 was right to complain even
+   * though nothing about the fit was wrong.
+   *
+   * The inset is DERIVED rather than guessed, because the tilt is a parameter:
+   * half the sheet's width times the sine of the angle is exactly how far a
+   * corner rises. A percentage margin resolves against the container's WIDTH,
+   * which is what the width percentage resolves against too — so the whole
+   * expression stays in percentages and needs no pixel measurement from JS.
+   *
+   * Where `sin()` is unsupported the calc is invalid, the margin is dropped, and
+   * the corners clip by a few pixels as they did before: the degradation is the
+   * old behaviour rather than a broken layout. */
+  margin-block: calc(var(--dyk-width, 94%) * sin(var(--dyk-tilt, 1.3deg)) / 2);
+}
+
+/* ---------------------------------------------------------------------------
+ * `?dykSkin=pad` — A CLIPBOARD (user's reference photograph, 2026-09-19): a bar
+ * across the head of the board with a sprung metal clip on it.
+ * ------------------------------------------------------------------------- */
+.dyk[data-skin="pad"] {
+  /* Top padding clears the clip bar; the rest is measured against the story,
+   * because every pixel here is a pixel of text the card stops showing. */
+  padding: 22px 12px 2px 20px;
+  /* The margin rule: the notepad's own vertical line, which is the accent rule
+   * the user disliked given a reason to be there. */
+  background-image: linear-gradient(
+    to right,
+    transparent 10px,
+    color-mix(in srgb, var(--ex-accent-border) 75%, transparent) 10px 11.5px,
+    transparent 11.5px
+  );
+}
+.dyk[data-skin="pad"] .dyk-bind {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 13px;
+  border-radius: 2px 2px 0 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--ex-accent-border) 82%, white),
+    var(--ex-accent-border) 55%,
+    color-mix(in srgb, var(--ex-accent-border) 78%, black)
+  );
+}
+/* The sprung clip itself, centred on the bar and standing a little proud of it. */
+.dyk[data-skin="pad"] .dyk-bind::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 46px;
+  height: 15px;
+  margin-left: -23px;
+  border-radius: 3px 3px 5px 5px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--ex-text) 22%, white),
+    color-mix(in srgb, var(--ex-text) 52%, white) 45%,
+    color-mix(in srgb, var(--ex-text) 30%, white)
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 70%, transparent),
+    0 1px 2px color-mix(in srgb, var(--ex-text) 45%, transparent);
+}
+/* …and the shadow it throws down the page, which is what makes it sit ON TOP of
+ * the sheet rather than in it. */
+.dyk[data-skin="pad"] .dyk-bind::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--ex-text) 22%, transparent),
+    transparent
+  );
+}
+
+/* ---------------------------------------------------------------------------
+ * `?dykSkin=coil` — A SPIRAL PAD (user's second reference, 2026-09-19): wire
+ * loops across the head and a column of punched holes down the left margin.
+ *
+ * The wire sits ENTIRELY ABOVE the sheet rather than crossing its edge. Drawing
+ * loops that pass behind the paper would mean clipping them against a box they
+ * are a child of, which CSS will not do without a second stacking layer — and
+ * the read is the same: a row of wire above a sheet IS a spiral pad.
+ * ------------------------------------------------------------------------- */
+.dyk[data-skin="coil"] {
+  /* The left padding clears the holes AND the margin rule beyond them, which is
+   * why this skin is the more expensive of the two in text width. */
+  padding: 16px 12px 2px 32px;
+  background-image: linear-gradient(
+    to right,
+    transparent 24px,
+    color-mix(in srgb, var(--ex-accent-border) 70%, transparent) 24px 25.5px,
+    transparent 25.5px
+  );
+}
+/* The punched holes, showing the CARD through them rather than a painted dot —
+ * a repeating column, so a taller sheet simply gets more of them, which is the
+ * whole reason this is a gradient and not a graphic. */
+.dyk[data-skin="coil"]::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 26px;
+  bottom: 12px;
+  width: 11px;
+  pointer-events: none;
+  background:
+    radial-gradient(
+        circle at 5.5px 5.2px,
+        color-mix(in srgb, var(--ex-text) 30%, transparent) 5px,
+        transparent 5.2px
+      )
+      0 0 / 11px 42px repeat-y,
+    radial-gradient(circle at 5.5px 5.5px, var(--ex-bg) 4.6px, transparent 4.8px)
+      0 0 / 11px 42px repeat-y;
+}
+/* The wire: rounded loops on a repeating gradient, standing above the head of
+ * the sheet, with a hairline of shadow where they meet the paper. */
+.dyk[data-skin="coil"] .dyk-bind {
+  position: absolute;
+  top: -9px;
+  left: 10px;
+  right: 10px;
+  height: 11px;
+  pointer-events: none;
+  border-radius: 4px 4px 0 0;
+  background: repeating-linear-gradient(
+    to right,
+    transparent 0 4px,
+    color-mix(in srgb, var(--ex-text) 30%, white) 4px 5px,
+    color-mix(in srgb, var(--ex-text) 62%, white) 5px 8px,
+    color-mix(in srgb, var(--ex-text) 30%, white) 8px 9px,
+    transparent 9px 13px
+  );
+}
+.dyk[data-skin="coil"] .dyk-bind::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: -4px;
+  right: -4px;
+  height: 4px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--ex-text) 20%, transparent),
+    transparent
+  );
+}
+
+/* Straight, for a reader who has asked for less movement: a tilt is not motion,
+ * but it is the same class of decoration, and the setting is the closest thing
+ * the platform gives us to "plainer, please" until the accessible viewing mode
+ * on the roadmap arrives. */
+@media (prefers-reduced-motion: reduce) {
+  .dyk[data-skin="pad"],
+  .dyk[data-skin="coil"] { transform: none; width: 100%; margin-block: 0; }
+}
+}
+/* The tear: a row of punched holes along the top edge, showing the CARD through
+ * them rather than a painted-on dot, so they read as holes in a sheet lying on
+ * it. Repeating, so a wider card simply gets more of them; each one carries a
+ * hairline of shadow along its lower edge, which is what makes it a hole rather
+ * than a dot of the wrong colour. */
+.dyk::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 12px;
+  right: 12px;
+  height: 8px;
+  pointer-events: none;
+  background:
+    radial-gradient(
+        circle at 4px 3.4px,
+        color-mix(in srgb, var(--ex-text) 30%, transparent) 4px,
+        transparent 4.2px
+      )
+      0 0 / 19px 8px repeat-x,
+    radial-gradient(circle at 4px 4px, var(--ex-bg) 3.6px, transparent 3.8px) 0 0 / 19px 8px repeat-x;
+}
+/* An explicit display beats the UA's [hidden] rule — the study panel's own
+ * lesson, and the chip that preceded this block learned it the hard way. */
+.dyk[hidden] { display: none; }
+
+/* The heading wears the same dot the grid cell and the roster row wear for a
+ * year or conductor with a story, so the mark and the thing it promises match.
+ * Sized like the card's other section heads (.yv-programme-head) but in the
+ * accent, because this is the one section that is not archive data. */
+/* Sentence case at a real heading size, not the small caps the card's data
+ * sections wear: this one is meant to be noticed from a step back. Upper case
+ * at this size reads as shouting, which is the "annoying" half of the ask. */
+.dyk-heading {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  color: var(--ex-accent-border);
+}
+/* THE AUDIENCE SWITCH POINTS AT ITS OWN SUBJECT (user, 2026-09-19; dyk.js
+ * pulseStoryHint says why). Every book on the half beats once — the grid cell's,
+ * the roster row's, and the story heading's — so a reader who taps Scholars on a
+ * card with no story sees WHAT they just changed rather than nothing at all.
+ *
+ * The marks are masked pseudo-elements at fixed offsets, so they scale about
+ * their own centres and nothing in the layout moves.
+ *
+ * THE BOOK BEATS, THE HEADING DOES NOT (user, 2026-09-19). Pulsing the whole
+ * heading was tried and rejected the same day: the words are the one piece of
+ * museum voice on the card and jogging them reads as a fault in the text rather
+ * than as an answer to a tap. The mark alone carries it, and the mark is the
+ * thing the hint is actually about.
+ *
+ * Two beats rather than one: a single pulse on a 14 px shape at the edge of
+ * vision is easy to miss, and this fires only on a deliberate tap. */
+.vp-view[data-dyk-hint="1"] .yv-cell[data-dyk="1"]::before,
+.vp-view[data-dyk-hint="1"] .cv-entry[data-dyk="1"]::before,
+.vp-view[data-dyk-hint="1"] .dyk-heading::before {
+  animation: ex-dyk-hint 460ms ease-in-out 2;
+}
+@keyframes ex-dyk-hint {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  45% { transform: scale(1.65); opacity: 0.75; }
+}
+/* Reduced motion keeps the ANSWER and drops the movement: the marks still say
+ * "these are the things that just changed", by fading rather than growing. */
+@media (prefers-reduced-motion: reduce) {
+  .vp-view[data-dyk-hint="1"] .yv-cell[data-dyk="1"]::before,
+  .vp-view[data-dyk-hint="1"] .cv-entry[data-dyk="1"]::before,
+  .vp-view[data-dyk-hint="1"] .dyk-heading::before {
+    animation: ex-dyk-hint-fade 460ms ease-in-out 2;
+  }
+}
+@keyframes ex-dyk-hint-fade {
+  0%, 100% { opacity: 1; }
+  45% { opacity: 0.3; }
+}
+
+/* The heading wears the very mark that led the visitor here. */
+.dyk-heading::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 19px;
+  height: 14px;
+  background: var(--ex-accent-border);
+  -webkit-mask: var(--ex-icon-book) center / contain no-repeat;
+  mask: var(--ex-icon-book) center / contain no-repeat;
+}
+/* The year's own hook, in Chanda's words ("the time the concert was first
+ * televised"). Conductors have none, and it hides rather than leaving a gap. */
+.dyk-eyebrow {
+  margin: 0;
+  font-size: 0.78rem;
+  font-style: italic;
+  color: var(--ex-text-soft);
+}
+.dyk-eyebrow[hidden] { display: none; }
+
+/* Only the prose scrolls: the heading and the hook stay put, so a reader half
+ * way down still knows what they are reading. */
+.dyk-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* A BLOCK, not a flex row (user, 2026-09-19: "can we make the text flow around
+   * the image?"). Side by side, the figure was a rigid 150 px column and the
+   * text took the whole loss when the pad narrowed — at ?dykWidth=70 the story
+   * came out two words wide. Floated, the words close under the picture and use
+   * the full column below it, which is what a note with a photograph on it
+   * actually looks like. */
+  display: block;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+.dyk-text {
+  margin: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+  /* 0.88rem, up from 0.8 (user, 2026-09-19). The story is the one thing on the
+   * card a visitor READS rather than scans, and it was set at the size of the
+   * archive data around it. It costs scroll, not content: the block is designed
+   * to scroll past its floor, and the programme's fit is unaffected because the
+   * story's 88 px floor is a height, not a line count.
+   *
+   * THE LINE-HEIGHT IS AN EXACT PIXEL COUNT, not a ratio, because the ruled
+   * lines below are a repeating gradient of the same period: a fractional
+   * line-height rounds differently per line and the rules would walk off the
+   * text a few lines down. */
+  font-size: 0.88rem;
+  line-height: var(--dyk-line, 21px);
+  color: var(--ex-text-body);
+}
+/* RULED PAPER (user, 2026-09-19: "lines along the font baseline", then "continue
+ * the lines evenly down the page even where there is no more text").
+ *
+ * TWO WRONG ANSWERS CAME FIRST, and both are worth recording because the third
+ * is not obvious:
+ *
+ *  1. Rules on the SHEET. Ruled out on the grounds that this block scrolls and
+ *     fixed rules would slide off the words — right about the box, and the
+ *     reason the sheet is not where they go.
+ *  2. Rules on `.dyk-text`. They travel with the words, which fixed that, but
+ *     the element is only as tall as its content and only as wide as the column
+ *     beside the figure — so the page ruled itself exactly as far as the story
+ *     went and then stopped, which is not what paper does.
+ *
+ * `background-attachment: local` is the answer to both at once: the background
+ * belongs to the SCROLLER and moves with its content, so the rules stay under
+ * the lines they belong to at any offset, AND they paint across the full width
+ * and the full scrollable height — down the empty page below a short story, and
+ * on past the fold under a long one.
+ *
+ * The period is `--dyk-line` exactly, and the line-height is an exact pixel
+ * count rather than a ratio for the same reason: a fractional line-height rounds
+ * differently line by line and the rules would walk off the baseline a few
+ * lines down. */
+.dyk[data-skin="pad"] .dyk-body,
+.dyk[data-skin="coil"] .dyk-body {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--dyk-line, 21px) - 1px),
+    color-mix(in srgb, var(--ex-accent-border) 17%, transparent) calc(var(--dyk-line, 21px) - 1px),
+    color-mix(in srgb, var(--ex-accent-border) 17%, transparent) var(--dyk-line, 21px)
+  );
+  background-attachment: local;
+  /* NO OFFSET, and none is wanted: the gradient puts its 1 px rule in the last
+   * pixel of each period, so the rules land exactly on the line-box boundaries —
+   * which is two or three pixels under the baseline, where a ruled line belongs.
+   * The 0.18em fudge that was here resolved against the BODY's font size rather
+   * than the text's, so it was a different nudge for each face. */
+  background-position: 0 0;
+}
+/* THE HAND (`?dykFont=hand`, user 2026-09-19): the notepad's own writing. SYSTEM
+ * FACES ONLY, like the parchment serif — the kiosk has no network and nothing
+ * here is licensed; on the iPad this lands on Bradley Hand, on a Mac Noteworthy,
+ * and anywhere else on whatever `cursive` resolves to.
+ *
+ * BIGGER AND LOOSER, because a handwriting face at the serif's size reads
+ * smaller and runs together: 0.95rem against 0.8, and the line-height up with
+ * it. That costs the story roughly a fifth of its lines, which is the honest
+ * price of the charm and one reason this is a parameter rather than a decision.
+ * The heading and the hook keep the card's own face — the museum's voice writes
+ * the story, not the furniture around it. */
+/* THE RULING IS DECLARED ON `.dyk`, NOT ON THE TEXT — and that is the whole bug
+ * the user caught on 2026-09-19 ("note the drift as we proceed vertically").
+ *
+ * The rules are painted on `.dyk-body` and the line-height is consumed by
+ * `.dyk-text`, which are SIBLING branches of the tree. Setting the hand face's
+ * `--dyk-line` on `.dyk-text` therefore reached the text and not the rules: the
+ * words ran on 25 px lines while the paper was ruled every 21, so they agreed on
+ * the first line and were 4 px apart by the fifth. Declared on their common
+ * ancestor, both read the same number and cannot drift by construction. */
+.dyk[data-font="hand"] {
+  --dyk-line: 25px;
+}
+.dyk[data-font="hand"] .dyk-text {
+  font-family: "Bradley Hand", "Noteworthy", "Segoe Print", "Comic Sans MS", cursive;
+  font-size: 1.05rem;
+}
+/* There is more below. No scrollbar on a kiosk and no wheel, so a full-looking
+ * box reads as finished — the fade is the only thing saying otherwise. */
+.dyk[data-scroll="1"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 20px;
+  pointer-events: none;
+  background: linear-gradient(to top, var(--ex-bg), transparent);
+}
+/* On the clipboard the fade is the PAPER's, and inside its border and radius —
+ * the text runs out under the page, not off the card. */
+.dyk[data-skin="pad"][data-scroll="1"]::after,
+.dyk[data-skin="coil"][data-scroll="1"]::after {
+  left: 1px;
+  right: 1px;
+  bottom: 1px;
+  height: 22px;
+  border-radius: 0 0 6px 6px;
+  background: linear-gradient(to top, var(--ex-dyk-paper), transparent);
+}
+
+/* The figure: a frame at the picture's own aspect, standing in for a photograph
+ * the exhibit may not yet show (content/dyk/README.md). Nothing derives a fact
+ * from it — the portraits README's rule 3 holds here too. Narrow, because it
+ * shares a 440–496 px card column with the text rather than a whole overlay. */
+/* TOP RIGHT, with the text running round it. The width is capped as a FRACTION
+ * as well as in pixels, so a narrow pad shrinks the picture instead of strangling
+ * the column beside it — the failure the flex row had. */
+.dyk-figure {
+  margin: 0 0 8px 14px;
+  float: right;
+  width: min(150px, 42%);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dyk-frame {
+  width: 100%;
+  border: 1px dashed var(--ex-border-strong);
+  border-radius: 6px;
+  background: var(--ex-surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.dyk-figure[data-status="licensed"] .dyk-frame { border-style: solid; }
+.dyk-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.dyk-pending {
+  font-size: 0.68rem;
+  text-align: center;
+  color: var(--ex-text-dim);
+}
+.dyk-figure figcaption {
+  font-size: 0.68rem;
+  line-height: 1.3;
+  color: var(--ex-text-soft);
+}
 
 .vp-view {
   position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 8px;
-  top: var(--vp-view-top, 68px);
+  /* THE WHOLE HALF, band to floor (user, 2026-09-18). The inset used to be
+   * 12/12/8 with the top below the toolbar, so a frame of strap showed on four
+   * sides and the overlay read as something that had landed on the half rather
+   * than as the half itself. The box is now the half; the same 12/8 survives as
+   * PADDING, so the content sits where it did and only the ground changed. */
+  inset: 0;
+  /* …except at the top, where the padding also clears the toolbar's strip: the
+   * audience switch is painted over the overlay there (main.js positionView
+   * measures it, and the rule below raises it). */
+  padding: var(--vp-view-strip, 56px) 12px 8px;
   z-index: 5;
   background: var(--ex-bg);
   color: var(--ex-text);
@@ -1849,6 +2554,30 @@ html, body {
   column-gap: 22px;
   row-gap: 6px;
   overflow: hidden;   /* the kiosk rule: nothing scrolls; spec 45 measures the fit */
+}
+/* THE HEADING IN THE STRIP, when main.js's fitViewStrip measured room for it
+ * beside the toolbar's controls: the top padding shrinks to the toolbar's own
+ * inset and the heading's row grows to the controls' height, so the title sits
+ * on their line instead of on a row of its own underneath. Worth 27 px at the
+ * kiosk geometry, measured.
+ *
+ * ROWS AND PADDING ONLY — the AREAS are left alone deliberately. The
+ * by-conductor explorer re-declares `grid-template-areas` further down this file
+ * at the same specificity, so an areas rule here silently loses to it by source
+ * order, which is how the first attempt ended up with two declared rows against
+ * three named ones and a roster 18 px SHORTER than before.
+ *
+ * `[data-strip-heading]` is set per OVERLAY, not per viewport: the two explorers
+ * have headings of different lengths (329 px and 424 px at the kiosk), so one
+ * can fit where the other does not, on the same half, at the same width. */
+.vp-view[data-strip-heading="1"] {
+  padding-top: 8px;
+  grid-template-rows: 44px minmax(0, 1fr) auto;
+}
+.vp-view[data-strip-heading="1"] .yv-heading,
+.vp-view[data-strip-heading="1"] .cv-heading {
+  align-self: center;
+  padding-right: 0;   /* the close control's corner is far away now */
 }
 .yv-heading {
   grid-area: heading;
@@ -1908,31 +2637,47 @@ html, body {
 }
 .yv-cell-blank { border-color: transparent; background: none; cursor: default; }
 .yv-cell[data-state="gap"] { color: var(--ex-text-faint); border-style: dashed; background: none; }
-/* The two cell marks — a filled dot for a concert the exhibit can PLAY, a
- * hairline underline for a concert whose programme carried the current piece.
- * Language-free, like everything on the band. */
-.yv-cell[data-programme="1"]::after {
-  content: "";
-  position: absolute;
-  left: 9px; right: 9px; bottom: 5px;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--ex-text-dim);
+/* TWO CELL MARKS, AND ONLY TWO (user, 2026-09-18), now as PICTOGRAMS: a MUSIC
+ * NOTE means the exhibit can play this concert, an OPEN BOOK means it has a
+ * story. They replace a hairline and a dot, which told the two apart by shape
+ * but said nothing about WHICH was which — a note and a book need no legend.
+ *
+ * Drawn as CSS MASKS over the mark's own ink rather than as glyphs, which is the
+ * attract band's logo idiom (--ab-mark-src): a Unicode ♪ or 📖 would render as
+ * platform emoji, in its own colours, ignoring the theme — and these have to
+ * take `--ex-mark`, `--ex-accent-border`, and `--ex-on-accent` on a selected
+ * cell. Inline in a data URI because two 200-byte shapes are not worth two more
+ * files to deploy. Language-free, like everything on the band. */
+:root {
+  --ex-icon-note: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2012%2014'%3E%3Cellipse%20cx='3.6'%20cy='10.5'%20rx='3.15'%20ry='2.45'%20transform='rotate%28-24%203.6%2010.5%29'/%3E%3Cpath%20d='M5.9%201.1h1.55v9.5H5.9z'/%3E%3Cpath%20d='M7.45%201.1c2.35.85%203.45%202.3%203.1%204.45-.6-1.7-1.7-2.6-3.1-3z'/%3E%3C/svg%3E");
+  --ex-icon-book: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2016%2012'%3E%3Cpath%20d='M7.1%203.5C5.3%202.2%203.3%201.5%201%201.5v7.1c2.3%200%204.3.7%206.1%202z'/%3E%3Cpath%20d='M8.9%203.5C10.7%202.2%2012.7%201.5%2015%201.5v7.1c-2.3%200-4.3.7-6.1%202z'/%3E%3C/svg%3E");
 }
-.yv-cell[data-playable="1"]::before {
+.yv-cell[data-playable="1"]::after {
   content: "";
   position: absolute;
-  top: 4px; right: 4px;
-  width: 8px; height: 8px;
-  border-radius: 50%;
+  left: 2px; bottom: 1px;
+  width: 9px; height: 11px;
   background: var(--ex-mark);
+  -webkit-mask: var(--ex-icon-note) center / contain no-repeat;
+  mask: var(--ex-icon-note) center / contain no-repeat;
+}
+.yv-cell[data-dyk="1"]::before {
+  content: "";
+  position: absolute;
+  top: 2px; right: 2px;
+  width: 13px; height: 9.5px;
+  background: var(--ex-accent-border);
+  -webkit-mask: var(--ex-icon-book) center / contain no-repeat;
+  mask: var(--ex-icon-book) center / contain no-repeat;
 }
 .yv-cell.is-selected {
   background: var(--ex-accent);
   border-color: var(--ex-accent-border);
   color: var(--ex-on-accent);
 }
-.yv-cell.is-selected::after { background: var(--ex-on-accent); }
+/* On the accent-filled cell both marks take the contrasting ink; they stay
+ * distinguishable because they differ in SHAPE, not in colour. */
+.yv-cell.is-selected::after, .yv-cell.is-selected::before { background: var(--ex-on-accent); }
 
 /* The card. */
 .yv-detail {
@@ -1947,15 +2692,48 @@ html, body {
 .yv-year { margin: 0; font-size: 1.6rem; font-weight: 600; line-height: 1.1; }
 .yv-date { color: var(--ex-text-soft); font-size: 0.9rem; }
 .yv-note { margin: 0; color: var(--ex-text-dim); font-size: 0.85rem; }
+/* The face and the name are one target into the by-conductor explorer, and the
+ * "With …" line is deliberately not part of it (years-view.js says why) — so the
+ * block is a column of two, and the second one is indented to the width of the
+ * medallion column it used to sit in as a grid row. */
 .yv-conductor {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+.yv-conductor-face {
+  position: relative;   /* the tap acknowledgement's frame hangs off it */
   display: grid;
   grid-template-columns: 56px minmax(0, 1fr);
-  grid-template-rows: auto auto;
   column-gap: 12px;
   align-items: center;
+  max-width: 100%;
+  /* Button reset, for the half of the time this IS one. */
+  margin: 0;
+  padding: 4px 10px 4px 0;
+  border: 1px solid transparent;
+  border-radius: 34px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
 }
+/* NO FRAME AT REST (user, 2026-09-19). A hairline was tried here for one day, on
+ * the reasoning that the explorers already say "tappable" with a bordered chip —
+ * every cell of the by-year grid is one. It was wrong at this size: a chip round
+ * a 56 px face and a name is a box round the card's subject rather than a cue,
+ * and it fought the portrait's own gold rim. The tap is still answered, by the
+ * bloom that blooms when it is touched; the affordance is carried by the face
+ * being a face, which is the same bet the band's portrait makes.
+ *
+ * The transparent border stays so nothing shifts by a pixel when it is not
+ * there — and so the focus ring below has an edge to sit against. */
+.yv-conductor-face:focus-visible { outline: 2px solid var(--ex-accent-border); outline-offset: 2px; }
 .yv-medallion {
-  grid-row: 1 / 3;
   width: 56px;
   height: 56px;
   border-radius: 50%;
@@ -1968,9 +2746,15 @@ html, body {
   font-size: 1rem;
   font-weight: 600;
 }
-.yv-portrait { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Scaled inside the medallion's round clip — see --ex-portrait-bleed. */
+.yv-portrait {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+  transform: scale(var(--ex-portrait-bleed));
+}
 .yv-conductor-name { font-size: 1.1rem; font-weight: 600; }
-.yv-with { font-size: 0.78rem; color: var(--ex-text-soft); }
+/* The medallion column, its gap, and the button's 1 px border: the line reads
+ * flush under the NAME, as it did when it was the grid's second row. */
+.yv-with { padding-left: 69px; font-size: 0.78rem; color: var(--ex-text-soft); }
 .yv-programme-head {
   margin: 4px 0 0;
   font-size: 0.78rem;
@@ -1992,23 +2776,27 @@ html, body {
 }
 /* The two denser steps years-view.js's fitProgramme walks when the list would
  * otherwise spill a third column off the right edge. */
-.yv-programme.is-dense  { font-size: 0.72rem; line-height: 1.22; }
-.yv-programme.is-denser { font-size: 0.66rem; line-height: 1.16; }
+.yv-programme.is-dense   { font-size: 0.72rem; line-height: 1.22; }
+.yv-programme.is-denser  { font-size: 0.66rem; line-height: 1.16; }
+/* A FOURTH rung, added when the story began sharing the card (2026-09-18): at
+ * three steps 2005's 22 items spilled a third column 249 px off the right edge,
+ * losing the Radetzky March — on the one year whose whole story is that the
+ * Radetzky March was left out. */
+.yv-programme.is-densest { font-size: 0.60rem; line-height: 1.12; }
+/* A FIFTH, added when PARCHMENT became the shipped palette (2026-09-19): the
+ * theme carries a serif, and the same 22 items set in Iowan Old Style instead of
+ * the system sans overran the fourth rung by ONE pixel at the kiosk geometry.
+ * 45.11 caught it, which is what it is for — a one-pixel overrun clips the last
+ * item as completely as a hundred would. */
+.yv-programme.is-finest { font-size: 0.55rem; line-height: 1.1; }
 .yv-item { break-inside: avoid; padding-right: 1em; position: relative; }
 .yv-item-composer { color: var(--ex-text-soft); }
 .yv-item-composer::after { content: ": "; }
-/* The source marks (years.legend*): one archive lists it, the other does not. */
-.yv-item[data-source="philharmoniker"]::after,
-.yv-item[data-source="musikverein"]::after {
-  position: absolute;
-  right: 0;
-  top: 0.1em;
-  font-size: 0.85em;
-  color: var(--ex-text-soft);
-}
-.yv-item[data-source="philharmoniker"]::after { content: "◆"; }
-.yv-item[data-source="musikverein"]::after { content: "◇"; }
-.yv-programme-empty, .yv-caveat, .yv-legend {
+/* The per-item ◆/◇ source marks are GONE (user, 2026-09-18): which of the two
+ * archives vouches for an encore is the museum's bookkeeping, not a visitor's
+ * reading. `data-source` survives on the element — nothing is dropped or chosen
+ * silently, which is the half of that contract that mattered (45.6). */
+.yv-programme-empty, .yv-caveat {
   margin: 0;
   font-size: 0.72rem;
   color: var(--ex-text-dim);
@@ -2016,16 +2804,18 @@ html, body {
 .yv-foot {
   margin-top: auto;
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 8px 16px;
 }
-/* One row: the collection line yields to the button and ellipsises, so the
- * foot costs the programme a single line whatever the release title's length. */
+/* The collection line used to share one row with the button and ellipsise
+ * against it. Since the button grew (user, 2026-09-18) that left it reading
+ * "On di…", so it now takes its own row when there is not 180 px for it — and
+ * still ellipsises there, so a long release title costs one line, not three. */
 .yv-library, .yv-on-programme {
   margin: 0;
-  flex: 1 1 0;
+  flex: 1 1 180px;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -2034,18 +2824,43 @@ html, body {
   color: var(--ex-text-soft);
 }
 .yv-listen { flex: 0 0 auto; }
+/* THE ONE TAP OUT OF THE EXPLORER AND INTO THE MUSIC, so it is the loudest
+ * thing on the card (user, 2026-09-18). Bigger than a 44 px minimum and bolder
+ * than the prose around it, with a ▶ that says "this makes sound" before the
+ * words are read, and a soft accent halo lifting it off the card. */
 .yv-listen, .cv-listen {
-  min-height: 44px;
-  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 52px;
+  padding: 0 22px;
   border: 1px solid var(--ex-accent-border);
-  border-radius: 22px;
+  border-radius: 26px;
   background: var(--ex-accent);
   color: var(--ex-on-accent);
   font: inherit;
-  font-size: 0.85rem;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
   cursor: pointer;
+  box-shadow: 0 2px 10px -2px var(--ex-accent-border);
   -webkit-appearance: none;
   appearance: none;
+}
+/* The SAME note the marked cells wear (user, 2026-09-18), not a ▶: one symbol
+ * for "this makes sound" wherever a visitor meets it — on the year that has a
+ * recording, and on the button that plays it. `currentColor` so it follows the
+ * button's own ink through every theme. Decoration: the button's words carry
+ * the meaning, and the mask is invisible to a screen reader either way. */
+.yv-listen::before, .cv-listen::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 12px;
+  height: 14px;
+  margin-right: 10px;
+  background: currentColor;
+  -webkit-mask: var(--ex-icon-note) center / contain no-repeat;
+  mask: var(--ex-icon-note) center / contain no-repeat;
 }
 
 /* ===========================================================================
@@ -2089,23 +2904,55 @@ html, body {
   grid-area: roster;
   display: grid;
   grid-auto-flow: column;
-  grid-template-rows: repeat(var(--cv-rows, 9), minmax(0, 1fr));
+  /* `--cv-track` is the height fitRoster measured, CAPPED — 1fr until it has
+   * run, and at the kiosk it lands on the same 56 px the 1fr gave. Where the
+   * overlay is taller than nine capped rows the list is a compact block in the
+   * middle of it, which is what `align-content` is for: nine rows stretched to
+   * 127 px each read as padding, not as a list. */
+  grid-template-rows: repeat(var(--cv-rows, 9), minmax(0, var(--cv-track, 1fr)));
+  /* START, not centre: the card beside the roster is top-aligned, and a centred
+   * list floats its first name half way down the overlay while the card's head
+   * sits at the top. At the kiosk the tracks fill the height exactly and this
+   * has nothing to do. */
+  align-content: start;
+  /* The medallion fitRoster measured, or the kiosk's own number until it has. */
+  --cv-med: var(--cv-med-fit, 48px);
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: 12px;
   row-gap: 2px;
   min-height: 0;
   overflow: hidden;
 }
+/* SIZED UP, PADDING SACRIFICED (user, 2026-09-18). The rows are grid tracks of
+ * `1fr`, so their HEIGHT is the roster's height divided by the rows — at the
+ * kiosk's two-up geometry that is 56 px a row, and a 36 px medallion with 0.9rem
+ * type was leaving 20 px of it as air. The medallion, the name, and the years
+ * all step up into that air; the row box does not move, so nothing below it
+ * does either. `--cv-med` exists so the two pictograms follow the medallion
+ * instead of being re-tuned by hand at each density — which is also how the
+ * dense step's two hand-placed overrides stopped being needed. */
 .cv-entry {
   position: relative;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
+  grid-template-columns: var(--cv-med) minmax(0, 1fr);
   column-gap: 10px;
   align-items: center;
-  min-height: 40px;
+  /* THE PILL HUGS ITS CONTENT (user, 2026-09-18). The selected row is the only
+   * painted one, and stretched to the full track it was mostly empty ground —
+   * worst at one viewport, where the track is 84 px tall and a name like "Seiji
+   * Ozawa / 2002" fills neither dimension.
+   *
+   * `max-width: 100%` is what keeps this compatible with fitRoster: a row that
+   * WOULD outgrow its column is pinned back to it and ellipsises as before, so
+   * widestOverflow still sees the deficit and still hands the width back. Drop
+   * the cap and the row would simply grow past the column instead. */
+  justify-self: start;
+  max-width: 100%;
+  align-self: center;
+  min-height: 48px;
   padding: 2px 10px 2px 4px;
   border: 1px solid transparent;
-  border-radius: 24px;
+  border-radius: 26px;
   background: none;
   color: var(--ex-text-body);
   font: inherit;
@@ -2115,14 +2962,14 @@ html, body {
   appearance: none;
 }
 .cv-entry.is-selected {
-  background: var(--ex-accent);
   border-color: var(--ex-accent-border);
   color: var(--ex-on-accent);
+  /* …and the lit face, from the shared recipe at the foot of this file. */
 }
 .cv-entry:focus-visible { outline: 2px solid var(--ex-accent-border); outline-offset: 2px; }
 .cv-entry-medallion {
-  width: 36px;
-  height: 36px;
+  width: var(--cv-med);
+  height: var(--cv-med);
   border-radius: 50%;
   overflow: hidden;
   background: var(--ex-band-card, var(--ex-surface));
@@ -2134,52 +2981,81 @@ html, body {
   font-weight: 600;
 }
 .cv-entry-medallion[data-portrait="1"] { background: transparent; }
-.cv-entry-portrait, .cv-portrait { width: 100%; height: 100%; object-fit: cover; display: block; }
-/* The year grid's dot: a conductor the exhibit can play, at the medallion's
- * upper right. */
+/* Scaled inside the medallion's round clip — see --ex-portrait-bleed. */
+.cv-entry-portrait, .cv-portrait {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+  transform: scale(var(--ex-portrait-bleed));
+}
+/* The same two pictograms as the year grid, so a mark means one thing wherever
+ * a visitor meets it: the note below the medallion, the book at its top right.
+ *
+ * THEY SIT ON TOP OF THE FACE, and since 2026-09-18 that has to be said out
+ * loud. Both marks are positioned pseudo-elements and used to paint over the
+ * medallion for free, because the medallion is in normal flow. Then the portrait
+ * inside it gained `transform: scale()` for --ex-portrait-bleed — and a
+ * transform promotes an element into the same painting layer as the positioned
+ * ones, where tree order decides. The pseudos come first in tree order, so the
+ * face began covering them (user, 2026-09-19: "they're behind"). `z-index`
+ * settles it explicitly instead of relying on flow, and `isolation` on the row
+ * keeps that ranking inside the row where it belongs. */
+.cv-entry { isolation: isolate; }
 .cv-entry[data-playable="1"]::after {
   content: "";
   position: absolute;
-  left: 32px;
+  z-index: 1;
+  left: 6px;
   top: 50%;
-  margin-top: -19px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+  /* Derived from the medallion, so one number moves both marks when the row's
+   * density changes — the two hand-tuned `.is-dense` offsets this replaced had
+   * to be re-measured every time, and were the reason a resized row could put a
+   * pictogram over a face. */
+  margin-top: calc(var(--cv-med) / 2 - 10px);
+  width: 10px;
+  height: 12px;
   background: var(--ex-mark);
+  -webkit-mask: var(--ex-icon-note) center / contain no-repeat;
+  mask: var(--ex-icon-note) center / contain no-repeat;
 }
+.cv-entry[data-dyk="1"]::before {
+  content: "";
+  position: absolute;
+  z-index: 1;   /* over the face — see the note above */
+  left: calc(var(--cv-med) - 9px);
+  top: 50%;
+  margin-top: calc(var(--cv-med) / -2 - 2px);
+  width: 14px;
+  height: 10px;
+  background: var(--ex-accent-border);
+  -webkit-mask: var(--ex-icon-book) center / contain no-repeat;
+  mask: var(--ex-icon-book) center / contain no-repeat;
+}
+/* The selected row is accent-FILLED, so the marks take the contrasting ink —
+ * the year grid's own rule, which the roster had never needed while its marks
+ * were dots: a dot only has to be seen, a pictogram has to be READ. Measured on
+ * parchment before this existed: the book sat at 1.43 against the fill. */
+.cv-entry.is-selected::before, .cv-entry.is-selected::after { background: var(--ex-on-accent); }
 .cv-entry-text { display: flex; flex-direction: column; min-width: 0; gap: 1px; }
 .cv-entry-name {
-  font-size: 0.9rem;
+  font-size: 1rem;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .cv-entry-years {
-  font-size: 0.72rem;
+  font-size: 0.8rem;
   color: var(--ex-text-soft);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .cv-entry.is-selected .cv-entry-years { color: inherit; }
-.cv-entry-count {
-  min-width: 26px;
-  height: 22px;
-  padding: 0 7px;
-  border: 1px solid var(--ex-border);
-  border-radius: 11px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.72rem;
-  font-variant-numeric: tabular-nums;
-  color: var(--ex-text-soft);
-}
-.cv-entry.is-selected .cv-entry-count { border-color: var(--ex-on-accent); color: inherit; }
-.cv-roster.is-dense .cv-entry { min-height: 34px; padding-top: 0; padding-bottom: 0; grid-template-columns: 30px minmax(0, 1fr) auto; }
-.cv-roster.is-dense .cv-entry-medallion { width: 30px; height: 30px; }
-.cv-roster.is-dense .cv-entry[data-playable="1"]::after { left: 26px; margin-top: -16px; }
+/* The two density fallbacks, for a series that outgrows the roster's height —
+ * one number each now that the medallion, the columns, and the marks all read
+ * `--cv-med`. */
+.cv-roster.is-dense { --cv-med: 32px; }
+.cv-roster.is-dense .cv-entry { min-height: 34px; padding-top: 0; padding-bottom: 0; }
+.cv-roster.is-dense .cv-entry-name { font-size: 0.9rem; }
+.cv-roster.is-dense .cv-entry-years { font-size: 0.72rem; }
 .cv-roster.is-denser .cv-entry-name { font-size: 0.8rem; }
 .cv-roster.is-denser .cv-entry-years { display: none; }
 
@@ -2194,15 +3070,26 @@ html, body {
 }
 .cv-head {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
+  grid-template-columns: var(--cv-face, 180px) minmax(0, 1fr);
   column-gap: 16px;
   align-items: center;
 }
 /* The portrait LARGE (plan §11(d)): the mark is in the asset, so the surface
- * adds nothing. 150 px of a 340 px medallion. */
+ * adds nothing. The whole 340 px medallion, since --ex-portrait-bleed crops the
+ * asset's dead margin — where 150 px of box used to show 130 px of face.
+ *
+ * 180, not 150 (user, 2026-09-18: by-conductor sized up). WHAT IT COSTS, since
+ * it is not free: the head's height IS the portrait's, and the card's height is
+ * fixed, so the 30 px comes off the story — which at the kiosk's two-up
+ * geometry is the only block that can give. Measured across all eighteen:
+ * twelve conductors have no story and 258–320 px of dead space, so they pay
+ * nothing; of the six that do, two (Karajan, Boskovsky) already scroll in the
+ * scholars' register and now scroll 30 px sooner. The story is the one thing in
+ * the exhibit designed to scroll, and item 5 (the overlay filling the under-band
+ * area) hands the height straight back. */
 .cv-medallion-large {
-  width: 150px;
-  height: 150px;
+  width: var(--cv-face, 180px);
+  height: var(--cv-face, 180px);
   border-radius: 50%;
   overflow: hidden;
   background: var(--ex-band-card, var(--ex-surface));
@@ -2214,43 +3101,56 @@ html, body {
   font-weight: 600;
 }
 .cv-medallion-large[data-portrait="1"] { background: transparent; }
-.cv-name { margin: 0; font-size: 1.5rem; font-weight: 600; line-height: 1.1; }
-.cv-summary { margin: 4px 0 0; color: var(--ex-text-soft); font-size: 0.9rem; }
+.cv-name { margin: 0; font-size: 1.7rem; font-weight: 600; line-height: 1.1; }
+.cv-summary { margin: 4px 0 0; color: var(--ex-text-soft); font-size: 0.95rem; }
 .cv-role { margin: 2px 0 0; font-size: 0.78rem; font-style: italic; color: var(--ex-text-dim); }
-/* Their years, one small cell each, carrying the year grid's two marks (a dot:
- * the exhibit plays that concert's recording; a hairline: the current piece
- * was on the programme). Marks, NOT buttons — facets as navigation inside an
- * explorer is the upright fallback (plan §11(f)); the band is the way in. */
+/* Their years, one small cell each, carrying the year grid's own note mark. Since
+ * 2026-09-18 these are BUTTONS into the by-year explorer (user, reversing plan
+ * §11(f); conductors-view.js has the ruling).
+ *
+ * 44 × 40, up from 44 × 30: a 30 px target was defensible for a mark and is not
+ * for a button. 40 rather than 44 because the by-year GRID's own cells are
+ * 40 × 40 — these two now do the same job, so they should be the same size, and
+ * that is the height the iPad spike already passed with. The 4 px of width is
+ * the difference between a four-digit year and a two-digit one.
+ *
+ * WHAT IT COSTS, measured: the 10 px lands on every row of the strip, so the
+ * conductor with the most concerts (Boskovsky, 25, three rows) gives up 30 px of
+ * story. Item 5 returns it. */
 .cv-years { display: flex; flex-wrap: wrap; gap: 4px; }
 .cv-year {
   position: relative;
   width: 44px;
-  height: 30px;
+  height: 40px;
   border: 1px solid var(--ex-border);
   border-radius: 6px;
   background: var(--ex-surface);
   color: var(--ex-text-body);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
+  font-family: inherit;
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Button reset for the half of the time it is one — see .yv-conductor-face. */
+  padding: 0;
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
 }
-.cv-year[data-programme="1"]::after {
+button.cv-year { cursor: pointer; }
+.cv-year:focus-visible { outline: 2px solid var(--ex-accent-border); outline-offset: 2px; }
+/* One mark here, the grid's own note — the cell is 44×30 with a four-digit year
+ * in it, so the pictogram sits small in the corner rather than beside the
+ * numerals. */
+.cv-year[data-playable="1"]::after {
   content: "";
   position: absolute;
-  left: 10px; right: 10px; bottom: 3px;
-  height: 2px;
-  border-radius: 1px;
-  background: var(--ex-text-dim);
-}
-.cv-year[data-playable="1"]::before {
-  content: "";
-  position: absolute;
-  top: 3px; right: 3px;
-  width: 6px; height: 6px;
-  border-radius: 50%;
+  right: 3px; bottom: 2px;
+  width: 8px; height: 10px;
   background: var(--ex-mark);
+  -webkit-mask: var(--ex-icon-note) center / contain no-repeat;
+  mask: var(--ex-icon-note) center / contain no-repeat;
 }
 /* Every sitting the exhibit has a face for, when there is more than one — the
  * per-recording naming showing (plan §11(d)), not a duplicate to tidy. */
@@ -2264,7 +3164,20 @@ html, body {
   font-size: 0.72rem;
   color: var(--ex-text-soft);
 }
-.cv-sitting img { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; display: block; }
+/* The one portrait with no round wrapper to clip a scaled image inside, so the
+ * bleed is taken on the BOX: the image grows, negative margins hand the layout
+ * its 56 px back, and the clip keeps the visible medallion at 56 px like every
+ * other. (A plain transform here would have grown the figure and shoved its
+ * neighbours along the row.) */
+.cv-sitting img {
+  --cv-sitting: 56px;
+  width: calc(var(--cv-sitting) * var(--ex-portrait-bleed));
+  height: calc(var(--cv-sitting) * var(--ex-portrait-bleed));
+  margin: calc(var(--cv-sitting) * (1 - var(--ex-portrait-bleed)) / 2);
+  clip-path: circle(calc(var(--cv-sitting) / 2));
+  object-fit: cover;
+  display: block;
+}
 .cv-foot { margin-top: auto; display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ===========================================================================
@@ -2346,7 +3259,13 @@ html, body {
 .middle-band[data-tap="shimmer"] .mb-portrait.is-tappable::after {
   content: "";
   position: absolute;
-  inset: -4px;
+  /* -3px, not -4px (user, 2026-09-18: the light should sit ON the medallion's
+   * gold rim, not a pixel outside it). The mask below paints the OUTER 3 px of
+   * this box, so an inset of -3 puts the light's inner edge exactly on the box
+   * the medallion now fills — where -4 left a pixel of ground showing between
+   * the gold and the light. Growing the portrait cannot close that gap: this
+   * ::after is inset from the portrait, so the clearance travels with it. */
+  inset: -3px;
   border-radius: 50%;
   background: conic-gradient(
     from 0deg,
@@ -2432,6 +3351,52 @@ html, body {
   0% { opacity: 0; scale: 0.94; }
   30% { opacity: 1; }
   100% { opacity: 0; scale: 1.04; }
+}
+
+/* THE SAME ANSWER INSIDE THE EXPLORERS (user, 2026-09-18), on the two controls
+ * that cross from one explorer to the other. The band's own rules are scoped
+ * under `.middle-band[data-tap]`, so these are their own — but the keyframe and
+ * the 0.97 dip are shared, because a visitor should not be able to tell that two
+ * different bits of the exhibit drew them.
+ *
+ * The one difference is TIMING: these elements sit in the overlay the tap
+ * replaces, so the bloom has to FINISH before the switch or it is never seen
+ * fading — 300 ms rather than the band's 400, and middle-band.js's ACK_LEAD_MS
+ * waits the whole of it. Quicker than the band end to end, and complete, which
+ * the first attempt (leaving at the keyframe's peak) was not.
+ *
+ * In the ACCENT rather than the band's ink: inside an explorer the accent is
+ * what "this one" means — it is the selected roster row's fill and the selected
+ * year cell's — and the band's border colour would be nearly invisible on the
+ * card's ground. */
+button.cv-year,
+.yv-conductor-face {
+  isolation: isolate;
+  transition: scale 160ms ease-out;
+}
+button.cv-year.is-acknowledged,
+.yv-conductor-face.is-acknowledged { scale: 0.96; }
+button.cv-year.is-acknowledged::before,
+.yv-conductor-face.is-acknowledged::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 1px solid var(--ex-accent-border);
+  background: color-mix(in srgb, var(--ex-accent-border) 14%, transparent);
+  z-index: -1;
+  pointer-events: none;
+  animation: band-ack-frame 300ms ease-out forwards;
+}
+button.cv-year.is-acknowledged::before { border-radius: 9px; }
+/* The face's own 34 px pill plus the 3 px the frame stands off it. */
+.yv-conductor-face.is-acknowledged::before { border-radius: 37px; }
+@media (prefers-reduced-motion: reduce) {
+  button.cv-year,
+  .yv-conductor-face { transition: none; }
+  button.cv-year.is-acknowledged,
+  .yv-conductor-face.is-acknowledged { scale: none; }
+  button.cv-year.is-acknowledged::before,
+  .yv-conductor-face.is-acknowledged::before { animation: none; opacity: 1; }
 }
 /* Reduced motion: the frame appears and goes, nothing moves. */
 @media (prefers-reduced-motion: reduce) {
@@ -2614,11 +3579,25 @@ html, body {
   0%, 100% { transform: scale(0.85); opacity: 0.35; }
   50% { transform: scale(1.15); opacity: 0.8; }
 }
-/* Playback refused (no activation yet): the invitation is the whole point. */
-.attract-band.is-locked .ab-tap { font-weight: 600; }
+/* Playback refused (no activation yet): the invitation is the whole point —
+ * the tap line breathes (user, 2026-09-15), from its left end so the row does
+ * not drift, and the glyph's ring quickens in the accent. */
+.attract-band.is-locked .ab-tap {
+  font-weight: 600;
+  transform-origin: left center;
+  animation: ab-tap-pulse 1.6s ease-in-out infinite;
+}
 .attract-band.is-locked .ab-tap-glyph { stroke: var(--ex-accent-border); }
+.attract-band.is-locked .ab-tap-ring {
+  stroke: var(--ex-accent);
+  animation-duration: 1.2s;
+}
+@keyframes ab-tap-pulse {
+  0%, 100% { opacity: 0.72; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.04); }
+}
 @media (prefers-reduced-motion: reduce) {
-  .ab-waved, .ab-body, .ab-tap-ring { animation: none; }
+  .ab-waved, .ab-body, .ab-tap-ring, .attract-band.is-locked .ab-tap { animation: none; }
   .attract-band { transition: none; }
 }
 
@@ -2667,4 +3646,69 @@ html, body {
 .switch-cue .cue-dot { fill: var(--cue-halo); stroke: var(--cue); stroke-width: 2; }
 @media (prefers-reduced-motion: reduce) {
   .strip-live i { animation: none !important; height: 7px; }
+}
+
+/* ===========================================================================
+ * THE LIT OBJECT — one recipe for every filled control (user, 2026-09-19).
+ *
+ * The exhibit's controls are meant to read as THINGS: the medallions are discs,
+ * the strap is leather, the chips are sewn on. A filled control was the one
+ * member of that family still drawn as a flat rectangle of accent, and the
+ * by-conductor roster's selected row was where it showed most. Tried there
+ * first, liked, and now shared.
+ *
+ * The recipe is four statements about light, and nothing else:
+ *   · a gradient down the face, so the surface is curved rather than printed;
+ *   · a bright hairline along the top edge and a shaded one along the foot, so
+ *     it has a thickness;
+ *   · a shadow beneath, so it sits ON its ground rather than in it;
+ *   · a soft halo of its own colour, so a filled control reads as lit rather
+ *     than merely coloured.
+ *
+ * `--lit` is the fill, `--lit-halo` the glow, and every other colour is MIXED
+ * from them — so all eleven palettes get their own version of one object, and a
+ * control on a pale ground (the Back button) takes the same treatment in its own
+ * colour by setting two variables. `background-color` stays under the gradient
+ * as the fallback, which is what these rules painted before.
+ *
+ * LAST IN THE FILE ON PURPOSE. Each of these controls declares its own
+ * `background` where it is defined, at the same specificity this block has, so
+ * source order is what lets one recipe override all of them without a pile of
+ * `!important` or invented classes.
+ *
+ * THE CONTRAST IS MEASURED, not eyeballed: the gradient's lightest stop is where
+ * the ink is most at risk, and this surface has form — the roster's book mark
+ * sat at 1.43 against this same fill in 0.70.0 before anyone measured it. At 8%
+ * white the top stop reads 4.72 on parchment and 6.98 on dark against
+ * `--ex-on-accent`; at the 14% first tried it was 4.19, under AA for a 16 px
+ * name. If the mix changes, measure it again.
+ * =========================================================================== */
+.cv-entry.is-selected,
+.audience-btn.is-on,
+.yv-listen, .cv-listen,
+.mb-play,
+.view-back {
+  --lit: var(--ex-accent);
+  --lit-halo: var(--lit);
+  --lit-edge: var(--ex-accent-border);
+  background-color: var(--lit);
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--lit) 92%, white),
+    var(--lit) 58%,
+    color-mix(in srgb, var(--lit) 92%, black)
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 30%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, black 16%, transparent),
+    0 1px 3px color-mix(in srgb, var(--lit-edge) 45%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--lit-halo) 20%, transparent);
+}
+/* The Back control is not accent-filled — it is the pale one on the explorer's
+ * strip — so it takes the light and skips the glow: a halo the colour of the
+ * panel it sits on is a smudge, not a glow. */
+.view-back {
+  --lit: var(--ex-panel);
+  --lit-halo: transparent;
+  --lit-edge: var(--ex-border-strong);
 }

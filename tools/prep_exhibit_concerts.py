@@ -632,8 +632,24 @@ def load_playable(data_dir: str, warnings: list) -> tuple:
 # Assembly.
 # ---------------------------------------------------------------------------
 
+def load_portrait_credits(portrait_dir: str, warnings: list) -> dict:
+    """Conductor name -> the credit line for their portrait, from credits.json.
+
+    COMMITTED and read at prep time rather than fetched: the kiosk has no network,
+    and a CC BY / CC BY-SA photograph may not be shown without its credit, so the
+    credit has to be in the sidecar the exhibit already loads.
+    """
+    path = os.path.join(portrait_dir, "credits.json")
+    if not os.path.exists(path):
+        warnings.append({"kind": "no-portrait-credits", "year": None,
+                         "detail": f"{path} missing — run tools/fetch_conductor_portraits.py build"})
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh).get("conductors", {})
+
+
 def build(philharmoniker: dict, musikverein: dict, library: dict, playable: dict, portraits: dict,
-          through: int, warnings: list) -> list:
+          portraits_by_name: dict, through: int, warnings: list) -> list:
     P = list(philharmoniker.values())
     M = list(musikverein.values())
     years_p = {int(p["date"][:4]) for p in P if p["date"][5:] == "01-01"}
@@ -708,6 +724,14 @@ def build(philharmoniker: dict, musikverein: dict, library: dict, playable: dict
                 r.pop("uri", None)
             if (m and m["comment"]) and not (p and p["comment"]):
                 entry["archiveComment"] = m["comment"]
+        # The portrait follows the CONDUCTOR, not the recording. Under the Gen-AI
+        # batch a face was commissioned per recording, so only the three years the
+        # exhibit could play had one; a freely-licensed photograph is one per
+        # person, so every year this conductor worked shows the same face. That is
+        # why `portraits` is keyed by name here and by year above — the year-keyed
+        # map is still the fallback, for a recording whose conductor has no entry.
+        if entry["conductor"] and entry["conductor"] in portraits_by_name:
+            entry["portrait"] = portraits_by_name[entry["conductor"]]["path"]
         for pid in PIECES:
             if any(piece_matches(pid, it["title"]) for it in entry["programme"]):
                 entry.setdefault("onProgramme", []).append(pid)
@@ -1087,8 +1111,11 @@ def main():
     log("reading the exhibit payload(s):")
     playable, portraits = load_playable(args.data_dir, warnings)
     log(f"  {sum(len(v) for v in playable.values())} playable recording(s) across {len(playable)} year(s)")
+    portraits_by_name = load_portrait_credits(
+        os.path.join(os.path.dirname(args.data_dir), "portraits"), warnings)
+    log(f"  {len(portraits_by_name)} conductor portrait(s) with credits")
 
-    concerts = build(P, M, library, playable, portraits, args.through, warnings)
+    concerts = build(P, M, library, playable, portraits, portraits_by_name, args.through, warnings)
 
     ov_path = os.path.join(args.data_dir, OVERRIDES_FILE)
     if not args.dry_run:
@@ -1122,6 +1149,7 @@ def main():
     out = {"schema": SCHEMA, "source": sources,
            "series": {"first": have[0]["year"], "lastInArchives": have[-1]["year"], "through": args.through,
                       "orchestra": "Wiener Philharmoniker"},
+           "conductorPortraits": portraits_by_name,
            "concerts": concerts, "warnings": warnings}
     path = os.path.join(args.data_dir, "concerts.json")
     with open(path, "w", encoding="utf-8") as fh:

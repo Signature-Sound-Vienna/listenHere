@@ -51,6 +51,10 @@ import { createDyk, pulseStoryHint } from "./dyk.js";
  * @param {import("./concerts.js").Dyk|null} [opts.dyk]  the museum's "did you know?" text
  * @param {object} [opts.audienceStore]   AudienceStore; the story is told in THIS reader's register
  * @param {boolean} [opts.dykImages]      `?dykImages` — whether the story's figure is drawn
+ * @param {string} [opts.dykFont]        `?dykFont` — the face the story is set in
+ * @param {string} [opts.dykSkin]        `?dykSkin` — how the story block is drawn
+ * @param {number} [opts.dykWidth]       `?dykWidth` — the pad's width, percent
+ * @param {number} [opts.dykTilt]        `?dykTilt` — the pad's rotation, degrees
  * @param {object} opts.piece             the payload's piece (id, title map)
  * @param {(path: string) => string} opts.portraitUrl
  * @param {(file: string) => void} opts.onListen
@@ -59,7 +63,7 @@ import { createDyk, pulseStoryHint } from "./dyk.js";
  */
 export function createConductorsView({
   viewport, language, concerts, piece, portraitUrl, onListen, onExplore = null,
-  initialConductor = null, dyk = null, audienceStore = null, dykImages = true,
+  initialConductor = null, dyk = null, audienceStore = null, dykImages = true, dykFont = "print", dykSkin = "pad", dykWidth = 94, dykTilt = 1.3,
 }) {
   const el = document.createElement("div");
   el.className = "vp-view";
@@ -98,6 +102,10 @@ export function createConductorsView({
   const story = createDyk({
     language,
     images: dykImages,
+    font: dykFont,
+    skin: dykSkin,
+    width: dykWidth,
+    tilt: dykTilt,
     audience: () => audienceStore?.get(viewport),
   });
   const unsubscribe = audienceStore?.subscribe((i) => {

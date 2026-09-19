@@ -239,11 +239,53 @@ const DEFAULTS = {
   // licence, so the exhibit draws a placeholder frame at the right aspect in
   // their place. "on" shows those frames, "off" hides them and leaves the text.
   dykImages: "on",
+  // THE HAND (user, 2026-09-19). Which face the museum's story is set in:
+  // "print" is the card's own serif, as the archive data around it; "hand" is a
+  // researcher's handwriting on the notepad the story is drawn as, which is the
+  // reading the sheet invites.
+  //
+  // A PARAMETER RATHER THAN A DECISION, per the A/B rule: handwriting is the
+  // riskier choice for a museum audience — lower legibility at a glance, and
+  // worse for a reader with dyslexia or low vision — so it is opt-in and the
+  // October testing can say whether the charm is worth it. SYSTEM FACES ONLY,
+  // like the parchment serif: the kiosk has no network, and nothing here is
+  // licensed. On the iPad the stack lands on Bradley Hand or Noteworthy.
+  dykFont: "print",
+  // HOW the story is DRAWN: "pad" is the clipboard — paper, ruled lines, a metal
+  // clip, a pad of pages under it and a degree of tilt; "plain" is the accent
+  // rule down its side that the exhibit shipped with through 0.72.0.
+  //
+  // PAD IS THE DEFAULT, which is a deliberate exception to the A/B rule that the
+  // shipped behaviour stays default (user, 2026-09-19: they asked for the object
+  // and then for more of it, three rounds running). `plain` is one word away,
+  // and the October testing can still put the two side by side — which is the
+  // part of the rule that was actually load-bearing.
+  dykSkin: "pad",
+  // THE PAD'S GEOMETRY, as two numbers rather than two opinions (user,
+  // 2026-09-19). Both only mean anything when `dykSkin` draws an object.
+  //
+  // THEY INTERACT, and the study panel's hints say so: a rotated box needs room
+  // for its corners, and the room is what the width gives up. At the single
+  // viewport the sheet is ~540 px tall, so each degree of tilt swings it about
+  // 9 px wider — 3° against a 100% width will have its corners clipped by the
+  // card. 94/1.3 is the shipped pair and clears at both geometries, measured.
+  dykWidth: 94,   // percent of the card's width
+  dykTilt: 1.3,   // degrees, anticlockwise
 
   // --- appearance ---
-  // Palette preset (exhibit/themes.js): "dark" is the shipped look; the others
-  // are study-panel discussion placeholders, not candidate finals.
-  theme: "dark",
+  // Palette preset (exhibit/themes.js). PARCHMENT IS THE SHIPPED LOOK since
+  // 2026-09-19 (user: "it's what I'll lead with anyway") — the aged cream,
+  // iron-gall ink and bronze accent of a hand-written concert diary, which is
+  // also the palette the exhibit's physical-object family was drawn for: the
+  // leather strap, the stitched chips, the gold medallions, and now the story's
+  // notepad all say what they are on parchment and merely tint on the others.
+  //
+  // NOTE FOR ANYONE READING A DIFF: "dark" is still the CSS BASELINE — the
+  // token defaults in exhibit.css are its values, and every other palette is
+  // applied as inline overrides on :root. So the default boot now writes a
+  // token set where it used to write none, which is what 35.11 checks; the
+  // zero-override case moved to `?theme=dark`.
+  theme: "parchment",
   // Per-category pins on top of the preset — empty means "follow the preset".
   // Eight categories so museum-staff discussions can bikeshed one component at
   // a time and every outcome is still just a URL: ?theme=nord&themeWaves=amber.

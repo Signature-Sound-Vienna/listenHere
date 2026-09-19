@@ -43,6 +43,10 @@ import { createDyk, pulseStoryHint } from "./dyk.js";
  * @param {import("./concerts.js").Dyk|null} [opts.dyk]  the museum's "did you know?" text
  * @param {object} [opts.audienceStore]   AudienceStore; the story is told in THIS reader's register
  * @param {boolean} [opts.dykImages]      `?dykImages` — whether the story's figure is drawn
+ * @param {string} [opts.dykFont]        `?dykFont` — the face the story is set in
+ * @param {string} [opts.dykSkin]        `?dykSkin` — how the story block is drawn
+ * @param {number} [opts.dykWidth]       `?dykWidth` — the pad's width, percent
+ * @param {number} [opts.dykTilt]        `?dykTilt` — the pad's rotation, degrees
  * @param {object} opts.piece             the payload's piece (id, title map)
  * @param {(path: string) => string} opts.portraitUrl
  * @param {(file: string) => void} opts.onListen
@@ -51,7 +55,7 @@ import { createDyk, pulseStoryHint } from "./dyk.js";
  */
 export function createYearsView({
   viewport, language, concerts, piece, portraitUrl, onListen, onExplore = null,
-  initialYear = null, dyk = null, audienceStore = null, dykImages = true,
+  initialYear = null, dyk = null, audienceStore = null, dykImages = true, dykFont = "print", dykSkin = "pad", dykWidth = 94, dykTilt = 1.3,
 }) {
   const el = document.createElement("div");
   el.className = "vp-view";
@@ -87,6 +91,10 @@ export function createYearsView({
   const story = createDyk({
     language,
     images: dykImages,
+    font: dykFont,
+    skin: dykSkin,
+    width: dykWidth,
+    tilt: dykTilt,
     audience: () => audienceStore?.get(viewport),
   });
   const unsubscribe = audienceStore?.subscribe((i) => {
@@ -412,14 +420,25 @@ function renderDetail(root, c, { year, language, pieceId, pieceTitle, portraitUr
  * a longer one degrades to smaller type rather than to a missing encore.
  */
 function fitProgramme(ol) {
-  const STEPS = ["", "is-dense", "is-denser", "is-densest"];
-  const overflows = () => ol.scrollWidth > ol.clientWidth + 1 || ol.scrollHeight > ol.clientHeight + 1;
+  const STEPS = ["", "is-dense", "is-denser", "is-densest", "is-finest"];
+  // NO TOLERANCE VERTICALLY (2026-09-19). The `+ 1` that was here on both axes
+  // let a list that overran by exactly one pixel count as fitting — and one
+  // pixel of `overflow: hidden` takes a sliver off the last item, which is the
+  // one failure this whole ladder exists to prevent: a clipped list reads as a
+  // complete list. Parchment becoming the shipped palette put 2012's 24 items
+  // squarely in that one-pixel band, and 45.7 was right that it was clipping.
+  //
+  // Erring the other way costs a step of type on a list that would have JUST
+  // fitted, which is visible and harmless; the alternative is invisible and
+  // not. The horizontal tolerance stays, because `columns` spills a whole
+  // column rather than a pixel and sub-pixel widths there are noise.
+  const overflows = () => ol.scrollWidth > ol.clientWidth + 1 || ol.scrollHeight > ol.clientHeight;
   const apply = () => {
     // Cleared first, because this now runs TWICE (see below) and a verdict from
     // a half-settled layout must not outlive the settled one.
     delete ol.dataset.overflow;
     for (let i = 0; i < STEPS.length; i++) {
-      ol.classList.remove("is-dense", "is-denser", "is-densest");
+      ol.classList.remove("is-dense", "is-denser", "is-densest", "is-finest");
       if (STEPS[i]) ol.classList.add(STEPS[i]);
       if (!overflows()) return;
     }

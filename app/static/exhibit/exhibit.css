@@ -27,6 +27,12 @@
   --ex-border: #26262c;
   --ex-border-strong: #3a3a44;
   --ex-card: #26262c;
+  /* The "Did you know?" sheet's paper (user, 2026-09-19). OPTIONAL, like the
+   * strap and thread tokens: a palette may declare its own, and the default
+   * lifts the panel towards white so every one of the fifteen gets a sheet that
+   * reads as paper rather than as another control. On the dark palettes that is
+   * the whole difference between a page and a panel. */
+  --ex-dyk-paper: color-mix(in srgb, var(--ex-panel) 84%, white);
   --ex-text-body: #d8d8e2;
   --ex-text-soft: #a9a9b4;
   --ex-text-dim: #8d8d99;
@@ -2014,12 +2020,268 @@ html, body {
   flex: 1 1 0;
   min-height: 88px;
   min-width: 0;
-  /* An accent rule down its side rather than a hairline above it (user,
-   * 2026-09-18: "bigger and more salient, but not annoying"). The card's other
-   * sections are archive data; this is the one editorial voice on it, and a
-   * pull-quote's rule says so without shouting. */
+  /* The base block is the ORIGINAL look (user, 2026-09-19): an accent rule down
+   * its side, which is what `?dykSkin=plain` restores. Everything the clipboard
+   * skin adds is under [data-skin="pad"] below, so "off" is a real absence of
+   * rules rather than a pile of overrides undoing them. */
   padding: 2px 0 2px 11px;
   border-left: 3px solid var(--ex-accent-border);
+}
+
+/* ---------------------------------------------------------------------------
+ * `?dykSkin=pad` — THE STORY AS A CLIPBOARD (user, 2026-09-18 and 2026-09-19).
+ *
+ * The museum's own voice, drawn as the object a researcher's note arrives on, so
+ * it joins the exhibit's family of physical things — the leather strap, the
+ * stitched chips, the gold medallions — as the one made of paper. The user's
+ * reference is a clipboard: a board, a sheet on it, a metal clip across the top.
+ *
+ * A PARAMETER, not a decision. The whole skin hangs off one attribute, and
+ * `plain` above is the accent rule the exhibit shipped with — so the October
+ * testing can put the two side by side instead of arguing from memory, and a
+ * technician can turn it off from the URL if it reads badly in the room.
+ *
+ * IT HAS TO STRETCH. The block is a flex item taking the card's leftover space
+ * (88 px floor; ~90–190 px at the kiosk's two-up geometry, 200–420 px at one
+ * viewport), so nothing here may be a fixed-size graphic. The paper is a colour,
+ * the margin rule and the ruled lines are gradients, the clip is two boxes, and
+ * the pad underneath is a stack of hard box-shadows. All of it resizes for
+ * nothing.
+ *
+ * THE PAPER HAS ITS OWN TOKEN, `--ex-dyk-paper`. It began as plain `--ex-panel`,
+ * which was right on parchment and far too dim on the dark palettes — a sheet
+ * the same value as the controls around it is a panel, not paper. The default
+ * lifts the panel towards white, so all fifteen palettes get a sheet that reads
+ * as one; themes.js lists it in the `controls` slice, so a palette may declare
+ * its own and a ?themeControls pin carries it.
+ * ------------------------------------------------------------------------- */
+/* THE PAPER, shared by both bound skins. Only the BINDING differs between them
+ * — a clipboard's sprung clip, or a spiral coil with holes punched down the left
+ * — so everything that is "a sheet of paper on the card" lives here once. */
+.dyk[data-skin="pad"],
+.dyk[data-skin="coil"] {
+  border: 1px solid color-mix(in srgb, var(--ex-text) 22%, transparent);
+  border-radius: 2px 2px 8px 8px;
+  background-color: var(--ex-dyk-paper);
+  /* THE PAD UNDERNEATH: two hard offset shadows are the pages below this one,
+   * and the soft one is the shadow the whole block casts on the card. Hard
+   * offsets rather than a picture of a stack, so it costs nothing at any
+   * height — and the block is a flex item whose height is the card's leftover
+   * (88 px floor; ~90–190 px at the kiosk, 200–420 px at one viewport). */
+  box-shadow:
+    2px 3px 0 -1px var(--ex-dyk-paper),
+    2px 3px 0 0 color-mix(in srgb, var(--ex-text) 18%, transparent),
+    4px 6px 0 -1px var(--ex-dyk-paper),
+    4px 6px 0 0 color-mix(in srgb, var(--ex-text) 12%, transparent),
+    0 7px 14px -4px color-mix(in srgb, var(--ex-text) 30%, transparent);
+  /* LAID DOWN SLIGHTLY CROOKED, which is the cheapest thing that makes it paper
+   * rather than a panel: nothing in a layout is ever off-square, so a degree or
+   * so reads as "put there by a hand" before it is consciously seen.
+   *
+   * BOTH NUMBERS ARE PARAMETERS (`?dykWidth`, `?dykTilt`; dyk.js writes them),
+   * and they are ONE decision in two halves: a rotated box needs room for its
+   * corners or the card clips them, and the width is what gives that room. At
+   * the single viewport each degree costs about 9 px of swing on a 540 px sheet.
+   *
+   * THE ORIGIN IS THE CENTRE, and that is a correction — pivoting at the top
+   * keeps the heading still but throws the whole foot one way, which overhung
+   * the card by 2 px and was clipped. About the centre the swing is halved on
+   * each side and symmetric. Measured, after the first version was not. */
+  width: var(--dyk-width, 94%);
+  align-self: center;
+  transform: rotate(calc(-1 * var(--dyk-tilt, 1.3deg)));
+  transform-origin: 50% 50%;
+  /* ROOM FOR THE CORNERS VERTICALLY, as the width gives it horizontally. A
+   * turned box grows in BOTH directions and the card clips: measured, the sheet
+   * fitted its 192 px share exactly while the card's scrollable overflow read 5
+   * px too tall — the rotated bounding box, not the content. The bottom corners
+   * were being cut by the card's edge, and 46.8 was right to complain even
+   * though nothing about the fit was wrong.
+   *
+   * The inset is DERIVED rather than guessed, because the tilt is a parameter:
+   * half the sheet's width times the sine of the angle is exactly how far a
+   * corner rises. A percentage margin resolves against the container's WIDTH,
+   * which is what the width percentage resolves against too — so the whole
+   * expression stays in percentages and needs no pixel measurement from JS.
+   *
+   * Where `sin()` is unsupported the calc is invalid, the margin is dropped, and
+   * the corners clip by a few pixels as they did before: the degradation is the
+   * old behaviour rather than a broken layout. */
+  margin-block: calc(var(--dyk-width, 94%) * sin(var(--dyk-tilt, 1.3deg)) / 2);
+}
+
+/* ---------------------------------------------------------------------------
+ * `?dykSkin=pad` — A CLIPBOARD (user's reference photograph, 2026-09-19): a bar
+ * across the head of the board with a sprung metal clip on it.
+ * ------------------------------------------------------------------------- */
+.dyk[data-skin="pad"] {
+  /* Top padding clears the clip bar; the rest is measured against the story,
+   * because every pixel here is a pixel of text the card stops showing. */
+  padding: 22px 12px 2px 20px;
+  /* The margin rule: the notepad's own vertical line, which is the accent rule
+   * the user disliked given a reason to be there. */
+  background-image: linear-gradient(
+    to right,
+    transparent 10px,
+    color-mix(in srgb, var(--ex-accent-border) 75%, transparent) 10px 11.5px,
+    transparent 11.5px
+  );
+}
+.dyk[data-skin="pad"] .dyk-bind {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 13px;
+  border-radius: 2px 2px 0 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--ex-accent-border) 82%, white),
+    var(--ex-accent-border) 55%,
+    color-mix(in srgb, var(--ex-accent-border) 78%, black)
+  );
+}
+/* The sprung clip itself, centred on the bar and standing a little proud of it. */
+.dyk[data-skin="pad"] .dyk-bind::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 50%;
+  width: 46px;
+  height: 15px;
+  margin-left: -23px;
+  border-radius: 3px 3px 5px 5px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--ex-text) 22%, white),
+    color-mix(in srgb, var(--ex-text) 52%, white) 45%,
+    color-mix(in srgb, var(--ex-text) 30%, white)
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 70%, transparent),
+    0 1px 2px color-mix(in srgb, var(--ex-text) 45%, transparent);
+}
+/* …and the shadow it throws down the page, which is what makes it sit ON TOP of
+ * the sheet rather than in it. */
+.dyk[data-skin="pad"] .dyk-bind::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--ex-text) 22%, transparent),
+    transparent
+  );
+}
+
+/* ---------------------------------------------------------------------------
+ * `?dykSkin=coil` — A SPIRAL PAD (user's second reference, 2026-09-19): wire
+ * loops across the head and a column of punched holes down the left margin.
+ *
+ * The wire sits ENTIRELY ABOVE the sheet rather than crossing its edge. Drawing
+ * loops that pass behind the paper would mean clipping them against a box they
+ * are a child of, which CSS will not do without a second stacking layer — and
+ * the read is the same: a row of wire above a sheet IS a spiral pad.
+ * ------------------------------------------------------------------------- */
+.dyk[data-skin="coil"] {
+  /* The left padding clears the holes AND the margin rule beyond them, which is
+   * why this skin is the more expensive of the two in text width. */
+  padding: 16px 12px 2px 32px;
+  background-image: linear-gradient(
+    to right,
+    transparent 24px,
+    color-mix(in srgb, var(--ex-accent-border) 70%, transparent) 24px 25.5px,
+    transparent 25.5px
+  );
+}
+/* The punched holes, showing the CARD through them rather than a painted dot —
+ * a repeating column, so a taller sheet simply gets more of them, which is the
+ * whole reason this is a gradient and not a graphic. */
+.dyk[data-skin="coil"]::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 26px;
+  bottom: 12px;
+  width: 11px;
+  pointer-events: none;
+  background:
+    radial-gradient(
+        circle at 5.5px 5.2px,
+        color-mix(in srgb, var(--ex-text) 30%, transparent) 5px,
+        transparent 5.2px
+      )
+      0 0 / 11px 42px repeat-y,
+    radial-gradient(circle at 5.5px 5.5px, var(--ex-bg) 4.6px, transparent 4.8px)
+      0 0 / 11px 42px repeat-y;
+}
+/* The wire: rounded loops on a repeating gradient, standing above the head of
+ * the sheet, with a hairline of shadow where they meet the paper. */
+.dyk[data-skin="coil"] .dyk-bind {
+  position: absolute;
+  top: -9px;
+  left: 10px;
+  right: 10px;
+  height: 11px;
+  pointer-events: none;
+  border-radius: 4px 4px 0 0;
+  background: repeating-linear-gradient(
+    to right,
+    transparent 0 4px,
+    color-mix(in srgb, var(--ex-text) 30%, white) 4px 5px,
+    color-mix(in srgb, var(--ex-text) 62%, white) 5px 8px,
+    color-mix(in srgb, var(--ex-text) 30%, white) 8px 9px,
+    transparent 9px 13px
+  );
+}
+.dyk[data-skin="coil"] .dyk-bind::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: -4px;
+  right: -4px;
+  height: 4px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--ex-text) 20%, transparent),
+    transparent
+  );
+}
+
+/* Straight, for a reader who has asked for less movement: a tilt is not motion,
+ * but it is the same class of decoration, and the setting is the closest thing
+ * the platform gives us to "plainer, please" until the accessible viewing mode
+ * on the roadmap arrives. */
+@media (prefers-reduced-motion: reduce) {
+  .dyk[data-skin="pad"],
+  .dyk[data-skin="coil"] { transform: none; width: 100%; margin-block: 0; }
+}
+}
+/* The tear: a row of punched holes along the top edge, showing the CARD through
+ * them rather than a painted-on dot, so they read as holes in a sheet lying on
+ * it. Repeating, so a wider card simply gets more of them; each one carries a
+ * hairline of shadow along its lower edge, which is what makes it a hole rather
+ * than a dot of the wrong colour. */
+.dyk::before {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 12px;
+  right: 12px;
+  height: 8px;
+  pointer-events: none;
+  background:
+    radial-gradient(
+        circle at 4px 3.4px,
+        color-mix(in srgb, var(--ex-text) 30%, transparent) 4px,
+        transparent 4.2px
+      )
+      0 0 / 19px 8px repeat-x,
+    radial-gradient(circle at 4px 4px, var(--ex-bg) 3.6px, transparent 3.8px) 0 0 / 19px 8px repeat-x;
 }
 /* An explicit display beats the UA's [hidden] rule — the study panel's own
  * lesson, and the chip that preceded this block learned it the hard way. */
@@ -2107,9 +2369,13 @@ html, body {
 .dyk-body {
   flex: 1 1 auto;
   min-height: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
+  /* A BLOCK, not a flex row (user, 2026-09-19: "can we make the text flow around
+   * the image?"). Side by side, the figure was a rigid 150 px column and the
+   * text took the whole loss when the pad narrowed — at ?dykWidth=70 the story
+   * came out two words wide. Floated, the words close under the picture and use
+   * the full column below it, which is what a note with a photograph on it
+   * actually looks like. */
+  display: block;
   overflow-y: auto;
   overscroll-behavior: contain;
   touch-action: pan-y;
@@ -2119,9 +2385,87 @@ html, body {
   margin: 0;
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 0.8rem;
-  line-height: 1.45;
+  /* 0.88rem, up from 0.8 (user, 2026-09-19). The story is the one thing on the
+   * card a visitor READS rather than scans, and it was set at the size of the
+   * archive data around it. It costs scroll, not content: the block is designed
+   * to scroll past its floor, and the programme's fit is unaffected because the
+   * story's 88 px floor is a height, not a line count.
+   *
+   * THE LINE-HEIGHT IS AN EXACT PIXEL COUNT, not a ratio, because the ruled
+   * lines below are a repeating gradient of the same period: a fractional
+   * line-height rounds differently per line and the rules would walk off the
+   * text a few lines down. */
+  font-size: 0.88rem;
+  line-height: var(--dyk-line, 21px);
   color: var(--ex-text-body);
+}
+/* RULED PAPER (user, 2026-09-19: "lines along the font baseline", then "continue
+ * the lines evenly down the page even where there is no more text").
+ *
+ * TWO WRONG ANSWERS CAME FIRST, and both are worth recording because the third
+ * is not obvious:
+ *
+ *  1. Rules on the SHEET. Ruled out on the grounds that this block scrolls and
+ *     fixed rules would slide off the words — right about the box, and the
+ *     reason the sheet is not where they go.
+ *  2. Rules on `.dyk-text`. They travel with the words, which fixed that, but
+ *     the element is only as tall as its content and only as wide as the column
+ *     beside the figure — so the page ruled itself exactly as far as the story
+ *     went and then stopped, which is not what paper does.
+ *
+ * `background-attachment: local` is the answer to both at once: the background
+ * belongs to the SCROLLER and moves with its content, so the rules stay under
+ * the lines they belong to at any offset, AND they paint across the full width
+ * and the full scrollable height — down the empty page below a short story, and
+ * on past the fold under a long one.
+ *
+ * The period is `--dyk-line` exactly, and the line-height is an exact pixel
+ * count rather than a ratio for the same reason: a fractional line-height rounds
+ * differently line by line and the rules would walk off the baseline a few
+ * lines down. */
+.dyk[data-skin="pad"] .dyk-body,
+.dyk[data-skin="coil"] .dyk-body {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(var(--dyk-line, 21px) - 1px),
+    color-mix(in srgb, var(--ex-accent-border) 17%, transparent) calc(var(--dyk-line, 21px) - 1px),
+    color-mix(in srgb, var(--ex-accent-border) 17%, transparent) var(--dyk-line, 21px)
+  );
+  background-attachment: local;
+  /* NO OFFSET, and none is wanted: the gradient puts its 1 px rule in the last
+   * pixel of each period, so the rules land exactly on the line-box boundaries —
+   * which is two or three pixels under the baseline, where a ruled line belongs.
+   * The 0.18em fudge that was here resolved against the BODY's font size rather
+   * than the text's, so it was a different nudge for each face. */
+  background-position: 0 0;
+}
+/* THE HAND (`?dykFont=hand`, user 2026-09-19): the notepad's own writing. SYSTEM
+ * FACES ONLY, like the parchment serif — the kiosk has no network and nothing
+ * here is licensed; on the iPad this lands on Bradley Hand, on a Mac Noteworthy,
+ * and anywhere else on whatever `cursive` resolves to.
+ *
+ * BIGGER AND LOOSER, because a handwriting face at the serif's size reads
+ * smaller and runs together: 0.95rem against 0.8, and the line-height up with
+ * it. That costs the story roughly a fifth of its lines, which is the honest
+ * price of the charm and one reason this is a parameter rather than a decision.
+ * The heading and the hook keep the card's own face — the museum's voice writes
+ * the story, not the furniture around it. */
+/* THE RULING IS DECLARED ON `.dyk`, NOT ON THE TEXT — and that is the whole bug
+ * the user caught on 2026-09-19 ("note the drift as we proceed vertically").
+ *
+ * The rules are painted on `.dyk-body` and the line-height is consumed by
+ * `.dyk-text`, which are SIBLING branches of the tree. Setting the hand face's
+ * `--dyk-line` on `.dyk-text` therefore reached the text and not the rules: the
+ * words ran on 25 px lines while the paper was ruled every 21, so they agreed on
+ * the first line and were 4 px apart by the fifth. Declared on their common
+ * ancestor, both read the same number and cannot drift by construction. */
+.dyk[data-font="hand"] {
+  --dyk-line: 25px;
+}
+.dyk[data-font="hand"] .dyk-text {
+  font-family: "Bradley Hand", "Noteworthy", "Segoe Print", "Comic Sans MS", cursive;
+  font-size: 1.05rem;
 }
 /* There is more below. No scrollbar on a kiosk and no wheel, so a full-looking
  * box reads as finished — the fade is the only thing saying otherwise. */
@@ -2135,14 +2479,29 @@ html, body {
   pointer-events: none;
   background: linear-gradient(to top, var(--ex-bg), transparent);
 }
+/* On the clipboard the fade is the PAPER's, and inside its border and radius —
+ * the text runs out under the page, not off the card. */
+.dyk[data-skin="pad"][data-scroll="1"]::after,
+.dyk[data-skin="coil"][data-scroll="1"]::after {
+  left: 1px;
+  right: 1px;
+  bottom: 1px;
+  height: 22px;
+  border-radius: 0 0 6px 6px;
+  background: linear-gradient(to top, var(--ex-dyk-paper), transparent);
+}
 
 /* The figure: a frame at the picture's own aspect, standing in for a photograph
  * the exhibit may not yet show (content/dyk/README.md). Nothing derives a fact
  * from it — the portraits README's rule 3 holds here too. Narrow, because it
  * shares a 440–496 px card column with the text rather than a whole overlay. */
+/* TOP RIGHT, with the text running round it. The width is capped as a FRACTION
+ * as well as in pixels, so a narrow pad shrinks the picture instead of strangling
+ * the column beside it — the failure the flex row had. */
 .dyk-figure {
-  margin: 0;
-  flex: 0 0 150px;
+  margin: 0 0 8px 14px;
+  float: right;
+  width: min(150px, 42%);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -2363,12 +2722,16 @@ html, body {
   -webkit-appearance: none;
   appearance: none;
 }
-/* A HAIRLINE FRAME WHERE IT NAVIGATES, and nothing where it does not. The
- * explorers already say "tappable" this way — every cell of the by-year grid is
- * a bordered, rounded chip, and the year cells on a conductor's card are the
- * same shape — so a face and a name inside the same frame needs no new
- * vocabulary and no words. Wordless, per §6.3. */
-button.yv-conductor-face { border-color: var(--ex-border); }
+/* NO FRAME AT REST (user, 2026-09-19). A hairline was tried here for one day, on
+ * the reasoning that the explorers already say "tappable" with a bordered chip —
+ * every cell of the by-year grid is one. It was wrong at this size: a chip round
+ * a 56 px face and a name is a box round the card's subject rather than a cue,
+ * and it fought the portrait's own gold rim. The tap is still answered, by the
+ * bloom that blooms when it is touched; the affordance is carried by the face
+ * being a face, which is the same bet the band's portrait makes.
+ *
+ * The transparent border stays so nothing shifts by a pixel when it is not
+ * there — and so the focus ring below has an edge to sit against. */
 .yv-conductor-face:focus-visible { outline: 2px solid var(--ex-accent-border); outline-offset: 2px; }
 .yv-medallion {
   width: 56px;
@@ -2420,6 +2783,12 @@ button.yv-conductor-face { border-color: var(--ex-border); }
  * losing the Radetzky March — on the one year whose whole story is that the
  * Radetzky March was left out. */
 .yv-programme.is-densest { font-size: 0.60rem; line-height: 1.12; }
+/* A FIFTH, added when PARCHMENT became the shipped palette (2026-09-19): the
+ * theme carries a serif, and the same 22 items set in Iowan Old Style instead of
+ * the system sans overran the fourth rung by ONE pixel at the kiosk geometry.
+ * 45.11 caught it, which is what it is for — a one-pixel overrun clips the last
+ * item as completely as a hundred would. */
+.yv-programme.is-finest { font-size: 0.55rem; line-height: 1.1; }
 .yv-item { break-inside: avoid; padding-right: 1em; position: relative; }
 .yv-item-composer { color: var(--ex-text-soft); }
 .yv-item-composer::after { content: ": "; }
@@ -2593,9 +2962,9 @@ button.yv-conductor-face { border-color: var(--ex-border); }
   appearance: none;
 }
 .cv-entry.is-selected {
-  background: var(--ex-accent);
   border-color: var(--ex-accent-border);
   color: var(--ex-on-accent);
+  /* …and the lit face, from the shared recipe at the foot of this file. */
 }
 .cv-entry:focus-visible { outline: 2px solid var(--ex-accent-border); outline-offset: 2px; }
 .cv-entry-medallion {
@@ -3277,4 +3646,69 @@ button.cv-year.is-acknowledged::before { border-radius: 9px; }
 .switch-cue .cue-dot { fill: var(--cue-halo); stroke: var(--cue); stroke-width: 2; }
 @media (prefers-reduced-motion: reduce) {
   .strip-live i { animation: none !important; height: 7px; }
+}
+
+/* ===========================================================================
+ * THE LIT OBJECT — one recipe for every filled control (user, 2026-09-19).
+ *
+ * The exhibit's controls are meant to read as THINGS: the medallions are discs,
+ * the strap is leather, the chips are sewn on. A filled control was the one
+ * member of that family still drawn as a flat rectangle of accent, and the
+ * by-conductor roster's selected row was where it showed most. Tried there
+ * first, liked, and now shared.
+ *
+ * The recipe is four statements about light, and nothing else:
+ *   · a gradient down the face, so the surface is curved rather than printed;
+ *   · a bright hairline along the top edge and a shaded one along the foot, so
+ *     it has a thickness;
+ *   · a shadow beneath, so it sits ON its ground rather than in it;
+ *   · a soft halo of its own colour, so a filled control reads as lit rather
+ *     than merely coloured.
+ *
+ * `--lit` is the fill, `--lit-halo` the glow, and every other colour is MIXED
+ * from them — so all eleven palettes get their own version of one object, and a
+ * control on a pale ground (the Back button) takes the same treatment in its own
+ * colour by setting two variables. `background-color` stays under the gradient
+ * as the fallback, which is what these rules painted before.
+ *
+ * LAST IN THE FILE ON PURPOSE. Each of these controls declares its own
+ * `background` where it is defined, at the same specificity this block has, so
+ * source order is what lets one recipe override all of them without a pile of
+ * `!important` or invented classes.
+ *
+ * THE CONTRAST IS MEASURED, not eyeballed: the gradient's lightest stop is where
+ * the ink is most at risk, and this surface has form — the roster's book mark
+ * sat at 1.43 against this same fill in 0.70.0 before anyone measured it. At 8%
+ * white the top stop reads 4.72 on parchment and 6.98 on dark against
+ * `--ex-on-accent`; at the 14% first tried it was 4.19, under AA for a 16 px
+ * name. If the mix changes, measure it again.
+ * =========================================================================== */
+.cv-entry.is-selected,
+.audience-btn.is-on,
+.yv-listen, .cv-listen,
+.mb-play,
+.view-back {
+  --lit: var(--ex-accent);
+  --lit-halo: var(--lit);
+  --lit-edge: var(--ex-accent-border);
+  background-color: var(--lit);
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--lit) 92%, white),
+    var(--lit) 58%,
+    color-mix(in srgb, var(--lit) 92%, black)
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 30%, transparent),
+    inset 0 -1px 0 color-mix(in srgb, black 16%, transparent),
+    0 1px 3px color-mix(in srgb, var(--lit-edge) 45%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--lit-halo) 20%, transparent);
+}
+/* The Back control is not accent-filled — it is the pale one on the explorer's
+ * strip — so it takes the light and skips the glow: a halo the colour of the
+ * panel it sits on is a smudge, not a glow. */
+.view-back {
+  --lit: var(--ex-panel);
+  --lit-halo: transparent;
+  --lit-edge: var(--ex-border-strong);
 }

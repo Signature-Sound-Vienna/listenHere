@@ -542,6 +542,10 @@ function buildView(name, m, vp, concerts, dyk, opening) {
     dyk,
     audienceStore: data.audience,
     dykImages: config.dykImages !== "off",
+    dykFont: config.dykFont,
+    dykSkin: config.dykSkin,
+    dykWidth: config.dykWidth,
+    dykTilt: config.dykTilt,
     piece: exhibit.piece,
     portraitUrl: (path) => portraitUrl({ portrait: path }),
     // The way from a concert into its music: the BARE aligned switch a strip

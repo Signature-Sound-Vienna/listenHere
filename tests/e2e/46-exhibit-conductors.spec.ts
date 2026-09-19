@@ -898,8 +898,16 @@ test.describe('46. The by-conductor explorer — "did you know?"', () => {
       const d = (window as any)._exhibitTest.dyk;
       const [w, h] = d.forConductor(name).image.aspect;
       const frame = document.querySelector('.vp[data-viewport="0"] .dyk-frame') as HTMLElement;
-      const box = frame.getBoundingClientRect();
-      return { want: w / h, got: box.width / box.height };
+      // LAYOUT SIZE, NOT THE PAINTED RECT. Since 2026-09-19 the story sits on a
+      // pad that is turned a degree or so (`?dykTilt`), and a rotated ancestor
+      // inflates every descendant's client rect into an axis-aligned BOUNDING
+      // box — Boskovsky's 150x70 frame measures 151.6x73.6 that way, which reads
+      // as an aspect of 2.06 against the picture's 2.137 and fails a test about
+      // the frame's shape for a reason that has nothing to do with its shape.
+      // offsetWidth/offsetHeight do not know about the transform, which is
+      // exactly what makes them right here (the same instrument, for the same
+      // reason, as positionView and 46.3's far-half measurement).
+      return { want: w / h, got: frame.offsetWidth / frame.offsetHeight };
     }, withPic);
     expect(Math.abs(shape.got - shape.want), 'the frame is not at the picture’s aspect').toBeLessThan(0.05);
     // Conductors have no subtitle to be an eyebrow — that is a year's hook.

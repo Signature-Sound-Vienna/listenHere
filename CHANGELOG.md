@@ -1,5 +1,18 @@
 # Listen Here! CHANGELOG.md
 
+### 0.74.0 -- Parchment ships, and the museum's story is a notepad you can turn
+
+* PARCHMENT IS THE SHIPPED PALETTE. The aged cream, iron-gall ink and bronze accent of a hand-written concert diary, which is the palette the exhibit's physical-object family was drawn for. Dark remains the CSS baseline, so it is the one palette that still writes no tokens at all.
+* Every filled control is a LIT OBJECT rather than a rectangle of accent: a gradient down the face, a bright hairline along the top edge and a shaded one at the foot, a shadow beneath, and a soft halo. One recipe, parameterised by two colours, so the roster's selected row, the audience chips, the Listen buttons, the band's play button and the Back control are all the same object in their own colour. Contrast measured at every stop, in both themes; the first cut put the lightest one at 4.19 against white ink, under AA for a 16 px name.
+* "Did you know?" is drawn as a PAD OF PAPER (`?dykSkin`): a clipboard with a sprung metal clip, or a spiral notepad with wire loops and punched holes down the left, or the accent rule the exhibit shipped with. Ruled lines that stay on the baseline at any scroll offset and continue down the empty page, a margin rule, a pad of pages underneath, and a degree or so of tilt. Everything is drawn rather than drawn on, because the block's height is whatever the card has left.
+* The pad's geometry is two parameters: `?dykWidth` (70–100%) and `?dykTilt` (0–3°). They are one decision in two halves — a turned box needs room for its corners in BOTH directions, and the width and a derived vertical inset are that room.
+* `?dykFont=hand` sets the story in a system handwriting face. Opt-in, because handwriting is harder to read at a glance and harder again with dyslexia or low vision, and the October testing can say whether the charm is worth it.
+* A story's picture floats top right and the words run round it, instead of standing in a rigid 150 px column beside them. Its width is capped as a fraction as well as in pixels, so a narrow pad shrinks the picture rather than strangling the text.
+* `--ex-dyk-paper`, a new optional theme token: the paper lifts the panel towards white, so every palette gets a sheet that reads as paper rather than as another control. On the dark palettes that is the whole difference between a page and a panel.
+* The programme list no longer tolerates a one-pixel overrun. A pixel of `overflow: hidden` takes a sliver off the last item, which is the failure the density ladder exists to prevent — and the serif put 2012's 24 items squarely in that band.
+* The study panel remembers where each tab was scrolled to, so the reload every option change triggers no longer loses your place.
+* Testing: 45.7 and 45.11 catch the one-pixel clip; 46.8 and 46.13 measure the card in LAYOUT values, since a tilted sheet inflates every client rect into an axis-aligned bounding box and reads as an overflow that is not there; 35.11 follows the palette default, 35.29 the Views tab's new rows.
+
 ### 0.72.0 -- The faces fill their medallions, the explorers link to each other, and the overlay fills the half
 
 * Every portrait in the exhibit is a sixth wider. The assets carry a transparent margin cut for the AI mark that 0.68.0 deleted, so 13.8% of each face's diameter was empty: the medallion is 293 px of a 340 px square, measured, on all eighteen. The image is now cropped to its own edge (`--ex-portrait-bleed`) rather than the box grown, so no layout moves — the band's medallion goes 52 to 64 px, the roster's 31 to 48, the conductor card's 130 to 180. The band's shimmer now sits on the gold rim rather than a pixel outside it.

@@ -218,6 +218,39 @@ const TABS = [
         hint:
           "Whether the “Did you know?” story shows the picture it refers to. The TEXT is content and always on — six concerts and six conductors, told in whichever register this half is set to (Kids, Adults, Scholars), reachable from the chip in the explorer's corner. Two of the twelve stories carry a picture, and both are photographs of unknown licence, so what is drawn today is a placeholder frame at the picture's own shape. Off hides the frame and keeps the text.",
       },
+      {
+        key: "dykSkin",
+        label: "Did-you-know skin",
+        options: ["pad", "coil", "plain"],
+        hint:
+          "How the museum's story is drawn. Pad is a clipboard — paper with ruled lines, a sprung metal clip, a pad of pages under it and a degree of tilt. Coil is a spiral notepad: the same paper with wire loops across the head and punched holes down the left, which costs a little more text width. Plain is the accent rule down its side that the exhibit shipped with through 0.72.0. Nothing about the words changes either way.",
+      },
+      {
+        key: "dykWidth",
+        label: "Did-you-know width (%)",
+        // 94 is the shipped value and must stay in this list, or the panel
+        // cannot put the exhibit back the way it found it (the stripHeight
+        // lesson, 2026-09-01). The two narrow rungs are the user's ask of
+        // 2026-09-19 — a pad that is visibly a pad ON the card rather than the
+        // width of it.
+        options: [70, 80, 88, 94, 100],
+        hint:
+          "How much of the card's width the story's pad takes. It is the other half of the tilt: a rotated sheet needs room for its corners, and this is the room — at 100% any tilt has its corners clipped by the card. WATCH THE NARROW RUNGS with a story that carries a picture: the figure is a fixed 150 px beside the text, so at 70% the text column is squeezed hard, and at one viewport it all but disappears. Ignored when the skin is plain.",
+      },
+      {
+        key: "dykTilt",
+        label: "Did-you-know tilt (deg)",
+        options: [0, 0.6, 1.3, 2, 3],
+        hint:
+          "How far the pad is turned, anticlockwise. Nothing in a layout is ever off-square, so a fraction of a degree reads as “put there by a hand”. Each degree swings a tall sheet about 9 px wider, which the width has to cover — 94/1.3 is the shipped pair and clears at both geometries. Ignored when the skin is plain, and stood down entirely under reduced motion.",
+      },
+      {
+        key: "dykFont",
+        label: "Did-you-know face",
+        options: ["print", "hand"],
+        hint:
+          "Which face the museum's story is set in. Print is the card's own serif, like the archive data around it; hand is a researcher's handwriting on the notepad the story is drawn as. Handwriting is the riskier choice — harder to read at a glance, and harder again for a visitor with dyslexia or low vision — so print ships and this is here for the October testing to settle. System faces only, since the kiosk has no network.",
+      },
     ],
   },
   {

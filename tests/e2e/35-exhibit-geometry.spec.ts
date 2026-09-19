@@ -534,9 +534,13 @@ test.describe('35. Week 2 — the study panel and themes', () => {
   });
 
   // 35.11 ?theme= applies a token set and hands the strips their wave colours.
-  // The default stays byte-identical because the dark theme overrides nothing —
-  // the CSS token defaults ARE the shipped palette.
-  test('35.11 themes are opt-in token sets; the default overrides nothing', async ({ page }) => {
+  //
+  // THE SHIPPED PALETTE IS PARCHMENT since 2026-09-19 (user), but DARK is still
+  // the CSS baseline — the token defaults in exhibit.css are its values, and
+  // every palette including the default is applied as inline overrides. So the
+  // two facts this pins have come apart: the default now writes tokens, and the
+  // one palette that writes none is `?theme=dark`.
+  test('35.11 themes are opt-in token sets; dark is the baseline that overrides nothing', async ({ page }) => {
     // The INACTIVE wave colour, so read a strip that is not the preselected
     // reference — the ref boots with the active palette applied.
     const inactiveWave = () =>
@@ -546,14 +550,26 @@ test.describe('35. Week 2 — the study panel and themes', () => {
         return T.viewports[0].strips.get(other).ws.options.waveColor;
       });
 
+    // The DEFAULT boot: parchment, applied as a token set like any other.
     await boot(page);
+    const shipped = await page.evaluate(() => ({
+      inlineTokens: document.documentElement.style.length,
+      bg: getComputedStyle(document.body).backgroundColor,
+    }));
+    expect(shipped.inlineTokens, 'the shipped palette is applied, not assumed').toBeGreaterThan(0);
+    expect(shipped.bg).toBe('rgb(234, 223, 198)'); // parchment #eadfc6
+
+    // …and DARK, which is the baseline the CSS already carries, so asking for it
+    // writes nothing at all. This is the property that makes the token defaults
+    // meaningful rather than dead values.
+    await boot(page, 'debug=1&theme=dark');
     const dark = await page.evaluate(() => ({
       inlineTokens: document.documentElement.style.length,
       bg: getComputedStyle(document.body).backgroundColor,
     }));
     const darkWave = await inactiveWave();
     expect(dark.inlineTokens).toBe(0); // dark = no overrides at all
-    expect(dark.bg).toBe('rgb(11, 11, 12)'); // #0b0b0c, the shipped background
+    expect(dark.bg).toBe('rgb(11, 11, 12)'); // #0b0b0c
     expect(darkWave).toBe('#5c5c68');
 
     await boot(page, 'debug=1&theme=light');
@@ -911,12 +927,19 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     await page.click('.study-cog');
     await page.click('.study-tab[data-tab="views"]');
     const rows = page.locator('.study-row');
-    await expect(rows).toHaveCount(4);
+    // The explorers' own knobs arrive on this tab as they are built, so the
+    // COUNT is a moving number and the three positions that matter are pinned by
+    // name instead. What must hold is that the two half-selectors come first and
+    // the story's knobs after them — a reader reaching for "which view does this
+    // half start in" should not have to read past four ways to draw a notepad.
+    await expect(rows).toHaveCount(8);
     await expect(rows.nth(0).locator('.study-label')).toHaveText(/Near half/);
     await expect(rows.nth(1).locator('.study-label')).toHaveText(/Far half/);
     await expect(rows.nth(2).locator('.study-label')).toHaveText(/View switch/);
-    // The explorers' own knobs arrive on this tab as they are built (0.66.0).
-    await expect(rows.nth(3).locator('.study-label')).toHaveText(/Did-you-know images/);
+    const labels = await rows.locator('.study-label').allTextContents();
+    for (const want of ['Did-you-know images', 'Did-you-know skin', 'Did-you-know width', 'Did-you-know tilt', 'Did-you-know face']) {
+      expect(labels.some((l) => l.includes(want)), `the Views tab lost "${want}"`).toBe(true);
+    }
     // Listen is the default in both halves, and marked as such.
     await expect(rows.nth(1).locator('.study-option.is-on')).toHaveText(/Listen •/);
 

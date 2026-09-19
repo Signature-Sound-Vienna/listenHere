@@ -86,13 +86,48 @@ export function renderMarkup(target, text) {
  * @param {object} opts
  * @param {string} opts.language        resolved per viewport (plan §5.3)
  * @param {boolean} opts.images         `?dykImages` — whether the figure is drawn
+ * @param {string} [opts.font]          `?dykFont` — "print" (the card's serif) or "hand"
+ * @param {string} [opts.skin]          `?dykSkin` — "pad", "coil", or "plain"
+ * @param {number} [opts.width]         `?dykWidth` — the pad's width, percent
+ * @param {number} [opts.tilt]          `?dykTilt` — the pad's rotation, degrees
  * @param {() => string} opts.audience  the viewport's current audience id
  * @returns {{el: HTMLElement, setEntry: Function, refresh: Function, hasEntry: () => boolean}}
  */
-export function createDyk({ language, images = true, audience = () => "adults" }) {
+export function createDyk({
+  language, images = true, font = "print", skin = "pad",
+  width = 94, tilt = 1.3, audience = () => "adults",
+}) {
   const el = document.createElement("section");
   el.className = "dyk";
+  // The face the story is set in (`?dykFont`). On the ELEMENT rather than in a
+  // class, so the study panel's value and the DOM say the same word — and so
+  // exhibit.css can key both the family and the size off it, which a handwriting
+  // face needs: the same nominal size reads smaller by eye.
+  el.dataset.font = font === "hand" ? "hand" : "print";
+  // How it is DRAWN (`?dykSkin`): the clipboard, or the accent rule the exhibit
+  // shipped with. On the element for the same reason as the face — the whole
+  // skin hangs off one attribute in exhibit.css, so "off" is an absence of rules
+  // rather than a pile of overrides undoing them.
+  el.dataset.skin = SKINS.has(skin) ? skin : "pad";
+  // The pad's geometry, as two numbers the study panel can turn (`?dykWidth`,
+  // `?dykTilt`). Written as custom properties rather than as width/transform,
+  // so exhibit.css keeps the rules and this keeps only the values — and so the
+  // reduced-motion branch can override the tilt without fighting an inline
+  // style, which it could not do if this wrote `transform` directly.
+  el.style.setProperty("--dyk-width", `${Number(width) || 0}%`);
+  el.style.setProperty("--dyk-tilt", `${Number(tilt) || 0}deg`);
   el.hidden = true;
+
+  // THE BINDING is a real element, not a pseudo: `.dyk` has spent both of its
+  // own on the scroll fade and the punched holes, and the binding needs two of
+  // its own — the sprung metal and the shadow it throws on the paper for the
+  // clipboard, the wire and its shadow for the coil.
+  if (el.dataset.skin !== "plain") {
+    const bind = document.createElement("div");
+    bind.className = "dyk-bind";
+    bind.setAttribute("aria-hidden", "true");
+    el.appendChild(bind);
+  }
 
   const heading = document.createElement("h4");
   heading.className = "dyk-heading";
@@ -151,7 +186,12 @@ export function createDyk({ language, images = true, audience = () => "adults" }
       const cap = document.createElement("figcaption");
       cap.textContent = resolveText(img.caption, { language });
       fig.append(frame, cap);
-      body.appendChild(fig);
+      // BEFORE the text, not after it (user, 2026-09-19: the picture sits top
+      // right and the words run round it). A float is placed at the line it
+      // appears on, so a figure appended after the paragraph would drop below
+      // the whole of it — the DOM order IS the layout here, which is the one
+      // thing a float asks of its markup.
+      body.insertBefore(fig, text);
     }
     markScroll();
   }
@@ -220,6 +260,9 @@ export function createDyk({ language, images = true, audience = () => "adults" }
  * ------------------------------------------------------------------------- */
 
 /** As long as the CSS keyframes run, plus a frame. */
+/** The skins `?dykSkin` offers; anything else falls back to the clipboard. */
+const SKINS = new Set(["pad", "coil", "plain"]);
+
 const HINT_MS = 1000;
 const hintTimers = new WeakMap();
 

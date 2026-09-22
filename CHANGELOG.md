@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.78.0 -- The switch strap on its own switch
+
+* `?strap=auto|on|off` (alpha testing): the column of conductor medallions no longer comes only with direct waveform taps. `on` mounts it in either tap mode; a medallion always does the aligned carry-the-moment switch, and the waveform keeps whatever `tapMode` says. `auto` is the shipped coupling, `off` never mounts it. The staff preset carries `on`.
+* The marker's hook hangs below the strap's down arrow whenever there is a strap, not only under direct taps; under `strap=on` with aligned taps it sat on the arrow.
+* Testing: 34.21 the strap under aligned taps and its absence under `strap=off`; 35.25 follows the preset.
+
 ### 0.76.0 -- The switch cue leaves cleanly on the iPad, and a marked annotation follows the reading
 
 * The switch cue's wipe animates its dash offset from twice the path length down to the length, never below zero: iOS WebKit paints a negative dash phase wrongly (the whole line vanished at once, redrew itself towards the head, then left), while macOS Safari and Firefox render it correctly. The arrowhead now holds until the line has fully arrived, then fades over the ghost's lag.

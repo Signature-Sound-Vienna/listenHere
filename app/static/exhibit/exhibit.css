@@ -295,11 +295,12 @@ html, body {
 }
 .strip.is-active .strip-label { color: var(--ex-label-active); }
 
-/* The switch strap (?tapMode=direct — alpha-tester feedback, 2026-08-26). In
- * direct mode a waveform tap is taken literally on both axes, so the ALIGNED
- * switch — the exhibit's carry-the-moment comparison — moves to this column of
- * per-recording buttons left of the waveforms. The strips column reserves the
- * width as padding BEFORE any strip mounts (main.js sets data-tap-mode at
+/* The switch strap (?tapMode=direct — alpha-tester feedback, 2026-08-26; its
+ * own ?strap switch since 2026-09-22). In direct mode a waveform tap is taken
+ * literally on both axes, so the ALIGNED switch — the exhibit's carry-the-moment
+ * comparison — moves to this column of per-recording buttons left of the
+ * waveforms; with ?strap=on the column is there in aligned mode too. The strips
+ * column reserves the width as padding BEFORE any strip mounts (main.js sets data-strap at
  * viewport creation, the side-slot precedent), and the strap itself is
  * absolutely positioned inside that padding: mounting it never re-measures a
  * waveform. Its rows copy the strip stack's own height and gap, so each button
@@ -311,8 +312,10 @@ html, body {
  * padding, kept): the strap runs the viewport's FULL height, so the toolbar
  * and the commentary sit beside it, not over it. */
 /* The marker's hook rail (?marker=glass) shares the strap's reserved column,
- * so either feature — or both — reserves it exactly once. */
-.vp[data-tap-mode="direct"],
+ * so either feature — or both — reserves it exactly once. Keyed on data-strap,
+ * not the tap mode: since 2026-09-22 the strap has its own switch (?strap) and
+ * mounts in aligned mode too. */
+.vp[data-strap="on"],
 .vp[data-marker="glass"] {
   padding-left: calc(12px + var(--ex-strap-w, 52px) + 6px);
 }
@@ -521,7 +524,9 @@ html, body {
 /* The empty hook doubles as the affordance: a stitched ring saying something
  * belongs here — and, after a placement, where to put it back. It sits at the
  * rail's OUTER end (each viewport's local bottom faces its own visitor), and
- * in direct mode it hangs below the strap's down arrow. Centred with a margin,
+ * under a strap it hangs below the strap's down arrow — keyed on data-strap,
+ * not the tap mode, since the strap has its own switch (2026-09-22): under
+ * ?strap=on with aligned taps the hook sat on the arrow. Centred with a margin,
  * NOT translateX — the glass's resting anchor is computed from offsetLeft,
  * which never sees a transform (that mismatch shipped as a 19px offset). The
  * ring is sized so the LENS sits inside it; the handle sticks out past it. */
@@ -538,7 +543,7 @@ html, body {
   border: 2px dashed var(--ex-accent);
   opacity: 0.45;
 }
-.vp[data-tap-mode="direct"] .marker-hook { top: calc(100% + 54px); }
+.vp[data-strap="on"] .marker-hook { top: calc(100% + 54px); }
 /* While the glass is in hand the hook becomes the "put it away" target —
  * tapping it removes any marker and rests the glass. */
 .marker-layer.is-engaged .marker-hook {

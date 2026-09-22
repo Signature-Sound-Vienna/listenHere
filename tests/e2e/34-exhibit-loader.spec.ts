@@ -662,6 +662,64 @@ test.describe('34. The exhibit loader', () => {
     await up.click(); // off the top end: wraps to the bottom strip
     await expect.poll(active).toBe(order[order.length - 1]);
   });
+  // 34.21 THE STRAP ON ITS OWN SWITCH (alpha testing, 2026-09-22). ?strap=on
+  // mounts the medallion column under ALIGNED waveform taps too: a medallion
+  // does the aligned carry, and the waveform keeps its aligned meaning — the
+  // far-right tap 34.8 requires to be ignored is still ignored. ?strap=off
+  // under direct taps mounts nothing, the staff experiment.
+  test('34.21 ?strap=on mounts the strap under aligned taps; ?strap=off removes it under direct taps', async ({
+    page,
+  }) => {
+    const { order } = await boot(page, 'strap=on');
+    const [fileA, fileB] = order;
+    expect(await page.locator('.vp-strap-band').count(), 'one leather band per viewport').toBe(2);
+    await expect(page.locator('.vp[data-viewport="0"] .vp-strap .strap-btn')).toHaveCount(order.length);
+    expect(await page.locator('.vp[data-viewport="0"]').getAttribute('data-tap-mode'), 'aligned mode is not direct').toBeNull();
+
+    // A far-right waveform tap on another strip: still the aligned carry.
+    await page.evaluate(
+      ({ fileA }) => (window as any)._exhibitTest.transport.select(fileA, 42, /* play */ false),
+      { fileA },
+    );
+    const strip = page.locator(`.vp[data-viewport="0"] .strip[data-file="${fileB}"] .strip-ws`);
+    const box = (await strip.boundingBox())!;
+    await strip.click({ position: { x: Math.round(box.width * 0.8), y: 10 } });
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.activeFile))
+      .toBe(fileB);
+    const carried = await page.evaluate(
+      ({ fileA, fileB }) => {
+        const T = (window as any)._exhibitTest;
+        return { time: T.transport._time, expected: T.positionsFor(42, fileA)[fileB], literal: 0.8 * T.exhibit.durations[fileB] };
+      },
+      { fileA, fileB },
+    );
+    expect(Math.abs(carried.time - carried.expected), 'the waveform tap carried the moment').toBeLessThan(5);
+    expect(Math.abs(carried.time - carried.literal), 'the waveform tap was not taken literally').toBeGreaterThan(60);
+
+    // A medallion: the same aligned carry, back to A.
+    await page.evaluate(
+      ({ fileB }) => (window as any)._exhibitTest.transport.select(fileB, 100, /* play */ false),
+      { fileB },
+    );
+    const expectedA = await page.evaluate(
+      ({ fileA, fileB }) => (window as any)._exhibitTest.positionsFor(100, fileB)[fileA],
+      { fileA, fileB },
+    );
+    await page.click(`.vp[data-viewport="0"] .vp-strap .strap-btn[data-file="${fileA}"]`);
+    await expect
+      .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.activeFile))
+      .toBe(fileA);
+    const timeA = await page.evaluate(() => (window as any)._exhibitTest.transport._time);
+    expect(Math.abs(timeA - expectedA), 'the medallion carried the moment').toBeLessThan(5);
+
+    // Off under direct taps: no strap, no band, and the column is not reserved.
+    await boot(page, 'tapMode=direct&strap=off');
+    expect(await page.locator('.vp-strap').count()).toBe(0);
+    expect(await page.locator('.vp-strap-band').count()).toBe(0);
+    expect(await page.locator('.vp[data-viewport="0"]').getAttribute('data-strap')).toBeNull();
+  });
+
 });
 
 test.describe('34. The conductor portraits', () => {

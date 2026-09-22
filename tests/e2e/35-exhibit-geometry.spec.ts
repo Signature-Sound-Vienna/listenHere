@@ -896,6 +896,7 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       // entitlement rather than attribution.
       'turnPolicy=request',
       'tapMode=direct',
+      'strap=on',
       'marker=glass',
       'audienceAll=true',
       'pinExpiry=auto',

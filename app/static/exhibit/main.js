@@ -218,14 +218,17 @@ function buildScreen(root) {
     // later (absolutely positioned, so it costs no re-measure); the leather
     // BAND — viewport-tall, sliding under the middle band — is pure paint
     // and mounts here.
-    if (config.tapMode === "direct") {
-      vp.dataset.tapMode = "direct";
+    if (config.tapMode === "direct") vp.dataset.tapMode = "direct";
+    // The strap has its own switch (config.strap, 2026-09-22): "auto" keeps
+    // it coupled to direct mode, "on" mounts it in either tap mode.
+    if (hasStrap(config)) {
+      vp.dataset.strap = "on";
       const strapBand = document.createElement("div");
       strapBand.className = "vp-strap-band";
       vp.appendChild(strapBand);
     }
     // The marker's hook rail lives in the same reserved column as the strap,
-    // and aligned mode has no strap — so the marker reserves the column
+    // and a configuration may have no strap — so the marker reserves the column
     // itself (the CSS unions the two selectors into one padding), and it must
     // do so HERE for the same canvas-sizing reason as the strap above.
     if (config.marker === "glass") vp.dataset.marker = "glass";
@@ -1160,11 +1163,12 @@ async function boot() {
     vp.strips = mounted.strips;
     stripsReady.push(mounted.ready);
 
-    // The switch strap (?tapMode=direct — alpha-tester feedback, 2026-08-26):
-    // one button per recording, beside its strip, doing the aligned
-    // carry-the-moment switch that direct mode removed from the strips. A
-    // button tap is a request with no time — exactly what a strip tap was.
-    if (config.tapMode === "direct") {
+    // The switch strap (?tapMode=direct — alpha-tester feedback, 2026-08-26;
+    // its own ?strap switch, 2026-09-22): one button per recording, beside its
+    // strip, doing the aligned carry-the-moment switch — the one direct mode
+    // removed from the strips, and in aligned mode the same switch a strip tap
+    // makes, offered on the faces. A button tap is a request with no time.
+    if (hasStrap(config)) {
       // A strap pick or arrow step is exactly the BARE switch the marker
       // ruling names, so a standing marker catches both (markerSnapSwitch);
       // without one they stay the aligned carry they always were.
@@ -2032,6 +2036,13 @@ function stripLabel(exhibit, file, language) {
  * not the ensemble. The filename fallback keeps a missing sidecar visible, the
  * stripLabel precedent.
  */
+/** Whether this configuration mounts the switch strap (config.js: `strap`). */
+function hasStrap(config) {
+  if (config.strap === "on") return true;
+  if (config.strap === "off") return false;
+  return config.tapMode === "direct";
+}
+
 function strapLabel(exhibit, file) {
   const meta = metadataFor(exhibit, file);
   // A YEAR THAT IS NOT A PLAIN FOUR DIGITS gets no apostrophe-year: the medallion

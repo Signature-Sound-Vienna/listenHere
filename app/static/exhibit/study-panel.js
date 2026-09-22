@@ -490,6 +490,15 @@ const TABS = [
         hint:
           "What a tap on a NON-active waveform means: aligned switches recording and carries the musical moment across, ignoring the tap's x-position; direct takes the tap literally on both axes and moves the aligned switch onto the strap of medallion buttons.",
       },
+      // The strap on its own switch (alpha testing, 2026-09-22): the faces are
+      // wanted whatever the waveform tap means. See config.js's strap.
+      {
+        key: "strap",
+        label: "Switch strap",
+        options: ["auto", "on", "off"],
+        hint:
+          "The column of conductor medallions left of the waveforms; a medallion always does the aligned switch, carrying the musical moment across. auto shows it only under direct waveform taps (shipped); on shows it in either tap mode; off never — in direct mode that leaves no aligned switch at all.",
+      },
       // The week-4 listening marker (ruled 2026-08-27; marker.js).
       {
         key: "marker",
@@ -597,6 +606,8 @@ const STUDY_PRESET = {
   // (sideSlot: "annotations" above is the fourth, and it predates them.)
   turnPolicy: "request",
   tapMode: "direct",
+  // The faces whatever the tap mode (alpha testing, user, 2026-09-22).
+  strap: "on",
   marker: "glass",
   audienceAll: true,
   pinExpiry: "auto",

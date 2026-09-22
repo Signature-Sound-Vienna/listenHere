@@ -406,6 +406,15 @@ const DEFAULTS = {
   //               STRAP (strap.js): a per-recording button column left of the
   //               waveforms whose buttons do the aligned switch instead.
   tapMode: "aligned",
+  // THE SWITCH STRAP ON ITS OWN SWITCH (alpha testing, user, 2026-09-22): the
+  // medallion column with the conductors' faces is wanted whatever the
+  // waveform tap means. Its buttons ALWAYS do the aligned carry-the-moment
+  // switch; the waveform keeps whatever tapMode says.
+  //   "auto" — the shipped coupling: the strap comes with tapMode=direct only.
+  //   "on"   — the strap in either tap mode.
+  //   "off"  — never; in direct mode that leaves no aligned switch at all,
+  //            which is a staff experiment, not a visitor configuration.
+  strap: "auto",
 
   // --- the listening marker (week 4, ruled 2026-08-27; marker.js) ---
   // "glass" mounts one magnifying-glass marker per viewport, resting on a hook

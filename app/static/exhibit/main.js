@@ -1043,9 +1043,16 @@ async function boot() {
       vp.marker?.setGhosts(list);
     }
   };
-  const placeMarker = (vp, file, time) => {
+  // `fromAnnotation` records HOW the marker got here (user, 2026-09-21): a
+  // marker the Mark button put at an annotation's start follows the reader's
+  // chip taps to the next annotation's start (onChipTap below); a marker the
+  // reader placed by hand on the waveform is a moment they chose, and a chip
+  // tap leaves it standing. Any hand placement, adoption, or removal ends the
+  // following.
+  const placeMarker = (vp, file, time, { fromAnnotation = false } = {}) => {
     vp.markerIx = getClosestAlignmentIx(exhibit.grids, time, file);
     vp.markerFile = file;
+    vp.markerFromAnnotation = fromAnnotation;
     vp.marker.setMarker(vp.markerIx, file);
     publishMarker(vp);
     syncGhosts();
@@ -1065,6 +1072,7 @@ async function boot() {
     if (!other) return vp.marker.setMarker(vp.markerIx, vp.markerFile);
     vp.markerIx = other.ix;
     vp.markerFile = other.file;
+    vp.markerFromAnnotation = false;
     vp.marker.setMarker(vp.markerIx, vp.markerFile);
     publishMarker(vp);
     syncGhosts();
@@ -1074,6 +1082,7 @@ async function boot() {
   const removeMarker = (vp) => {
     vp.markerIx = null;
     vp.markerFile = null;
+    vp.markerFromAnnotation = false;
     vp.marker.setMarker(null, null);
     publishMarker(vp);
     syncGhosts();
@@ -1290,7 +1299,7 @@ async function boot() {
           vp.currentAnnotations?.find((a) => a.id === annId),
           vp,
         );
-        if (spot) placeMarker(vp, spot.file, spot.time);
+        if (spot) placeMarker(vp, spot.file, spot.time, { fromAnnotation: true });
       },
       // What a chip tap MEANS depends on the layout, so the machine lives
       // here, not in the component. Below the strips (default): a plain focus
@@ -1329,6 +1338,23 @@ async function boot() {
           setPanelOpen(vp, !vp.panelOpen);
         }
         renderAnnotations(vp, store);
+        // A marker the Mark button placed follows the reading (user,
+        // 2026-09-21): showing another annotation moves it to that one's
+        // start, through the same landing and the same placement as the
+        // button, so the audio follows too. A hand-placed marker stays put,
+        // and an unfocus (below-strips toggle-off) moves nothing.
+        if (
+          vp.marker &&
+          vp.markerIx != null &&
+          vp.markerFromAnnotation &&
+          vp.shownId === annId
+        ) {
+          const spot = jumpTarget(
+            vp.currentAnnotations?.find((a) => a.id === annId),
+            vp,
+          );
+          if (spot) placeMarker(vp, spot.file, spot.time, { fromAnnotation: true });
+        }
         // Any tap is engagement: a pin (re-)arms its expiry clock, an
         // unfocus cancels it.
         armPinExpiry(vp);
@@ -2540,17 +2566,26 @@ function drawSwitchArrow(vp, fromStrip, fromTime, toStrip, toTime) {
   // The arrow leaves the way it came: the line retreats from A towards B (the
   // dash slides forward along the path), the dot going first and the head last
   // (user, 2026-09-10). Reduced motion fades it as one instead.
+  //
+  // THE OFFSETS STAY POSITIVE (iPad, 2026-09-21). The dash pattern is `len`
+  // on, `len` off, so sliding the offset from 2·len to len is the same motion
+  // as 0 to −len — but iOS WebKit paints a negative dash phase wrongly: the
+  // whole line vanished at once, redrew itself towards the head, and only then
+  // left. macOS Safari and Firefox rendered the negative form correctly, so a
+  // desktop check does not cover this; it was found on the device.
   const linger = reduced ? 1600 : 1100;
   const wipe = 240; // twice the speed it appeared at (user, 2026-09-10: 160 felt aggressive)
   const tail = 40; // the ghost lags this much: the fading edge
   setTimeout(() => {
     if (g.animate && !reduced) {
       for (const p of [under, path]) {
-        p.animate([{ strokeDashoffset: 0 }, { strokeDashoffset: -len }], { duration: wipe, easing: "ease-in", fill: "forwards" });
+        p.animate([{ strokeDashoffset: 2 * len }, { strokeDashoffset: len }], { duration: wipe, easing: "ease-in", fill: "forwards" });
       }
-      ghost.animate([{ strokeDashoffset: 0 }, { strokeDashoffset: -len }], { duration: wipe, delay: tail, easing: "ease-in", fill: "forwards" });
+      ghost.animate([{ strokeDashoffset: 2 * len }, { strokeDashoffset: len }], { duration: wipe, delay: tail, easing: "ease-in", fill: "forwards" });
       dot.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 60, fill: "forwards" });
-      head.animate([{ opacity: 1 }, { opacity: 1, offset: 0.75 }, { opacity: 0 }], { duration: wipe, fill: "forwards" });
+      // The head holds until the line has fully arrived at it, then fades over
+      // the ghost's lag — "last" means after the line, not during its final quarter.
+      head.animate([{ opacity: 1 }, { opacity: 1, offset: wipe / (wipe + tail) }, { opacity: 0 }], { duration: wipe + tail, fill: "forwards" });
     } else if (g.animate) {
       g.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 400, fill: "forwards" });
     }

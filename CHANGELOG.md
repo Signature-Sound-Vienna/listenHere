@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.76.0 -- The switch cue leaves cleanly on the iPad, and a marked annotation follows the reading
+
+* The switch cue's wipe animates its dash offset from twice the path length down to the length, never below zero: iOS WebKit paints a negative dash phase wrongly (the whole line vanished at once, redrew itself towards the head, then left), while macOS Safari and Firefox render it correctly. The arrowhead now holds until the line has fully arrived, then fades over the ghost's lag.
+* A marker the Mark button placed follows the reader's chip taps: showing another annotation moves it to that annotation's start, through the same landing and placement as the button, so the audio follows too. A hand-placed marker stays put, and a hand placement, adoption, or removal ends the following.
+* Data: in the adults' "Die Glocke" (the bell), the Wiener Volksopernorchester (Bauer-Theussl, 1985) moves from the Vienna Philharmonic group to Other Orchestras, where its behaviour puts it. Corrected in the Adults source set (`ExhibitAnnots/`, outside version control) and the payload rebuilt; the authoring copy still needs the same move.
+* The per-recording note sits directly under the annotation's text instead of at the foot of the column, where the "Keep reading…" pill covered it (kids' "Clapping Detective"). The description no longer grows to fill the column; a long one still shrinks and scrolls as before.
+* Testing: 37.30 the following marker and the hand-placed one that stays.
+
 ### 0.75.0 -- Merge: the exhibit meets open-ended alignment; the museum's grids come from the new HQ run
 * Third merge of `develop-exhibit` into `develop-alignment-correction`. From the exhibit: parchment, the "Did you know?" notepad, the conductor portraits, the linked explorers, and the room's per-screen idle loop (0.64.0-0.74.0). From alignment correction: audio-to-audio correction and its chooser, the legacy marker-drag mode's removal, and open-ended alignment (0.59.0-0.63.0).
 * `tools/prep_exhibit_data.py` took both sides of `step_payload`: the overrides block stays guarded by `if AUDIENCES:` for pieces with no annotation sets, and `apply_overrides` keeps the `corrections` argument, so a corrected alignment is still summarised into `source.corrections`.

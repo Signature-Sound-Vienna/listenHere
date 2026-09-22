@@ -1017,7 +1017,13 @@ html, body {
 
 .ann-detail {
   margin: 0;
-  flex: 1 1 auto;
+  /* 0 1 auto, NOT 1 1 auto (user, 2026-09-21): the description takes its own
+   * height and SHRINKS when the column is short, but never grows to fill it —
+   * growing pushed the per-recording note to the column's foot, where the
+   * "Keep reading…" pill (anchored to the body's corner) sat on top of it. Now
+   * the note follows the text directly and the empty space falls below both.
+   * A long description still shrinks and scrolls exactly as before. */
+  flex: 0 1 auto;
   /* Two lines, so the per-recording note below can never take the shared
    * description to nothing (see .ann-target). Two rather than one because a
    * single visible line of a 1,247-character description reads as a rendering

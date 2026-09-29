@@ -1,8 +1,14 @@
 app/static/wav
 app/static/npm/node_modules
-app/__pycache__
-tools/__pycache__
+__pycache__/
 venv
+.venv/
+# One developer's local uv setup, not yet the project's; drop these when the
+# project switches to uv officially (and commit pyproject.toml + uv.lock then)
+/pyproject.toml
+/uv.lock
+/.python-version
+/src/
 .DS_STORE
 tests/.env
 node_modules

@@ -818,6 +818,8 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     // one-shot read is green on Chromium and racy on Firefox).
     await expect(page.locator('#skip-end .icon-fix-mode')).toBeVisible();
     await expect(page.locator('#skip-end .icon-listen-mode')).toBeHidden();
+    // Markers are listen mode's: the mark button stands down while correcting.
+    await expect(page.locator('#mark')).toBeHidden();
     // The outer pair turn pages…
     const p0 = (await fixState(page)).page;
     await page.click('#skip-end');
@@ -852,6 +854,7 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await expect(page.locator('#skip-end .icon-listen-mode')).toBeVisible();
     await expect(page.locator('#skip-end .icon-fix-mode')).toBeHidden();
     await expect(page.locator('#playpause')).toBeEnabled();
+    await expect(page.locator('#mark')).toBeVisible();
   });
 
   test('42.13 the bootstrap posts fix_begin with decoded samples, the MIDI, and the stored params', async ({

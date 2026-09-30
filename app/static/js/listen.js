@@ -2008,8 +2008,8 @@ export function updateDirtyState() {
 export function updateMarkBtnTooltip() {
   const btn = document.getElementById("mark");
   if (!btn) return;
-  // Fix mode owns the button while a session is open (session marks, not
-  // markers); this would overwrite its title, icon, and mode behind its back.
+  // Fix mode hides the button while a session is open; updating it then
+  // would change its title, icon, and mode behind the session's back.
   if (isFixModeActive()) return;
   let atMarker = false;
   const ws =
@@ -4216,9 +4216,10 @@ document.addEventListener("DOMContentLoaded", () => {
     .catch((err) => console.warn("Couldn't load colormap:", err));
   // --- Transport controls ---
   // While a fix session is open these same buttons drive the CORRECTION
-  // screen — the audition, onset stepping, page turns, session marks — since
-  // every one of them would otherwise act on the hidden waveform pane. The
-  // mapping is fixTransport's, and matches fix mode's own keyboard exactly.
+  // screen — the audition, onset stepping, page turns — since every one of
+  // them would otherwise act on the hidden waveform pane (the mark button is
+  // hidden there instead). The mapping is fixTransport's, and matches fix
+  // mode's own keyboard exactly.
   // Play/pause
   document.getElementById("playpause").addEventListener("click", function () {
     if (fixTransport("playpause")) return;

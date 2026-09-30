@@ -7140,6 +7140,10 @@ body.fix-mode-open .icon-listen-mode {
 body.fix-mode-open .icon-fix-mode {
   display: inline;
 }
+/* Markers are a listening-mode tool; the correction screen has none. */
+body.fix-mode-open #mark {
+  display: none;
+}
 .fix-chip {
   align-self: flex-start;
   max-width: 100%;

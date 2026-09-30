@@ -1614,7 +1614,7 @@ def pick_onset_peaks(env, hop, pre_max=0.05, post_max=0.05, pre_avg=0.10,
         times.append(((i + off) * hop + ONSET_N_FFT / 2.0) / SR)
     return times
 
-PAT_DB = 6.0        # the perceived attack: where the envelope's RISE passes this many dB below its crest
+PAT_DB = 6.0        # the perceived attack: the fraction 10^(-PAT_DB/20) of the envelope's LINEAR rise (0.5 at 6 dB)
 PAT_ENV_HOP = 0.005 # s — the RMS envelope's resolution
 PAT_ENV_WIN = 0.010 # s
 PAT_BACK = 0.15     # s searched before a flux peak for the attack's foot
@@ -1623,10 +1623,12 @@ PAT_FWD = 0.20      # s searched after it for the attack's crest
 def perceptual_attack_times(audio, peaks, hop):
     """A perceived-attack estimate per detected onset (the P-centre /
     perceptual attack time, after Vos & Rasch 1981 and Gordon 1987): the moment
-    the RMS envelope, rising from its foot before the flux peak to its crest
-    after it, passes PAT_DB below the crest (half the rise at 6 dB). A sharp
-    attack puts it on the flux peak; a slow string entry puts it later, where
-    the ear hears the note begin. Linear sub-frame interpolation."""
+    the RMS envelope, rising from its foot (the minimum up to PAT_BACK before
+    the flux peak) to its crest (the maximum up to PAT_FWD after it), crosses
+    foot + (crest - foot) * 10^(-PAT_DB/20), i.e. half the linear rise. It
+    usually falls a little BEFORE the flux peak, which sits late in the rise:
+    on the Fledermaus corpus 82 % of onsets, median 24 ms (2026-09-29).
+    Linear sub-frame interpolation."""
     audio = np.asarray(audio, dtype=np.float32)
     n = len(audio)
     eh = max(1, int(round(PAT_ENV_HOP * SR)))

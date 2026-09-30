@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.81.0 -- Fix mode: session marks removed; the perceived-attack tooltip corrected
+* Remove fix-mode session mark functionality. Markers in listening mode and in the exhibit are unchanged.
+* The perceived-attack snap target is usually a little earlier than the detected onset, not later as the tooltip said (82 % of the Fledermaus corpus's onsets, median 24 ms). The worker's docstring now states the rule as implemented: half the linear rise from foot to crest.
+* Testing: 43.11 now pins the absence (keys inert, a click on the hidden button swallowed, markers placed again after exit); 43.23 dropped; 42.23 checks the button's hiding.
+
 ### 0.75.0 -- Merge: the exhibit meets open-ended alignment; the museum's grids come from the new HQ run
 * Third merge of `develop-exhibit` into `develop-alignment-correction`. From the exhibit: parchment, the "Did you know?" notepad, the conductor portraits, the linked explorers, and the room's per-screen idle loop (0.64.0-0.74.0). From alignment correction: audio-to-audio correction and its chooser, the legacy marker-drag mode's removal, and open-ended alignment (0.59.0-0.63.0).
 * `tools/prep_exhibit_data.py` took both sides of `step_payload`: the overrides block stays guarded by `if AUDIENCES:` for pieces with no annotation sets, and `apply_overrides` keeps the `corrections` argument, so a corrected alignment is still summarised into `source.corrections`.

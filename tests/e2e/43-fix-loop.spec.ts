@@ -5,8 +5,7 @@
 // selection with page turns, seek-to-selected-note, tick DRAGS that lay hard
 // anchors (auto-realign of the flanking segments on release + auto-replay
 // from just before the previous anchor), the Enter APPROVE (zero-drag
-// anchor), session MARKS (M / N), fix-anchor entries on listen.js's unified
-// undo stack (snapshot semantics, off-screen hops announce themselves), the
+// anchor), fix-anchor entries on listen.js's unified undo stack (snapshot semantics, off-screen hops announce themselves), the
 // header.corrections durable record, and Revert-all integration.
 //
 // The worker is STUBBED via _listenTest.fixWorkerFactory (the spec-42 seam):
@@ -690,37 +689,37 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await expect(page.locator('#fix-toast')).toHaveClass(/fix-toast-show/);
   });
 
-  test('43.11 marks: M lays and lifts them, N skips the loop through them', async ({
+  test('43.11 fix mode has no session marks: M, N, and Delete are inert there, and the mark button places markers again after exit', async ({
     page,
   }) => {
     await gotoFixMode(page);
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
+    const markers = () => page.locator('.ws-marker').count();
+    const before = await markers();
     await page.evaluate(() => (window as any)._listenTest.fixCtl.seek(10));
-    await page.keyboard.press('m');
-    await page.evaluate(() => (window as any)._listenTest.fixCtl.seek(20));
-    await page.keyboard.press('m');
-    let st = await fixState(page);
-    expect(st.marks).toEqual([10, 20]);
-    // N from the top of the piece: first mark, selection lands at/before it,
-    // playhead parks in its preroll.
-    await page.evaluate(() => (window as any)._listenTest.fixCtl.seek(0));
-    await page.keyboard.press('n');
-    st = await fixState(page);
-    expect(st.aud.time).toBeCloseTo(9.5, 3);
-    expect(st.selT).toBeLessThanOrEqual(10.001);
-    // N again steps to the SECOND mark (the preroll does not re-target the
-    // first), and wraps from the end.
-    await page.keyboard.press('n');
-    st = await fixState(page);
-    expect(st.aud.time).toBeCloseTo(19.5, 3);
-    await page.keyboard.press('n');
-    expect((await fixState(page)).aud.time).toBeCloseTo(9.5, 3);
-    // M near an existing mark removes it.
-    await page.evaluate(() => (window as any)._listenTest.fixCtl.seek(10.2));
-    await page.keyboard.press('m');
-    expect((await fixState(page)).marks).toEqual([20]);
+    const st0 = await fixState(page);
+    for (const key of ['m', 'n', 'Shift+N', 'Delete']) await page.keyboard.press(key);
+    // A click that reaches the hidden button is swallowed, not turned into a
+    // marker on the hidden waveform pane.
+    await page.evaluate(() => (document.getElementById('mark') as HTMLElement).click());
+    const st = await fixState(page);
+    expect(st.active).toBe(true);
+    expect(st).not.toHaveProperty('marks');
+    expect(st.aud.time).toBeCloseTo(st0.aud.time, 3);
+    expect(st.selGroup).toBe(st0.selGroup);
+    expect(await markers()).toBe(before);
+    // Markers stay listen mode's: back there, the button places one.
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    // (The loadedPage fixture's way to make a recording current.)
+    await page
+      .locator(`#waveforms .waveform[data-ix="${REF_ROW}"]`)
+      .click({ position: { x: 10, y: 10 }, force: true });
+    await page.waitForFunction(() => !!(window as any)._listenTest.currentAudioIx);
+    await page.evaluate(() => (document.getElementById('mark') as HTMLElement).click());
+    await expect.poll(markers).toBeGreaterThan(before);
   });
 
   test('43.12 a failed realign rolls the fix back wholesale', async ({
@@ -1182,44 +1181,6 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(rms.before).toBeLessThan(rms.early / 4);
   });
 
-  test('43.23 N activates the jumped-to mark, Delete removes it, Escape deactivates first', async ({
-    page,
-  }) => {
-    await gotoFixMode(page);
-    await installWorkerStub(page);
-    await enterFix(page);
-    await waitLoopReady(page);
-    // Two marks at different times; laying does NOT activate.
-    await page.keyboard.press('m');
-    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
-    await page.keyboard.press('m');
-    let st = await fixState(page);
-    expect(st.marks).toHaveLength(2);
-    expect(st.activeMark).toBeNull();
-    // N jumps to a mark and activates it; Delete removes exactly that one.
-    await page.keyboard.press('n');
-    st = await fixState(page);
-    const victim = st.activeMark;
-    expect(victim).not.toBeNull();
-    expect(st.marks).toContain(victim);
-    await page.keyboard.press('Delete');
-    st = await fixState(page);
-    expect(st.marks).toHaveLength(1);
-    expect(st.marks).not.toContain(victim);
-    expect(st.activeMark).toBeNull();
-    // Delete with nothing active is inert.
-    await page.keyboard.press('Delete');
-    expect((await fixState(page)).marks).toHaveLength(1);
-    // Escape deactivates before it exits: the first Escape only deselects.
-    await page.keyboard.press('n');
-    expect((await fixState(page)).activeMark).not.toBeNull();
-    await page.keyboard.press('Escape');
-    st = await fixState(page);
-    expect(st.active).toBe(true);
-    expect(st.activeMark).toBeNull();
-    expect(st.marks).toHaveLength(1);
-  });
-
   test('43.24 the speed slider slows playback pitch-preserved; the % button resets to 100', async ({
     page,
   }) => {
@@ -1487,7 +1448,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     const middle = ph.out.filter((r) => r.y >= 14 && r.y <= ph.h - 14);
     expect(middle).toEqual([]);
     // The top arrowhead is INSIDE the strip (the strip's top edge is where
-    // every connector lands and the mark diamonds fly), and it tapers
+    // every connector lands), and it tapers
     // downward: base at the edge, apex pointing at the position.
     expect(Math.min(...top.map((r) => r.y))).toBeGreaterThanOrEqual(0);
     expect(top[0].n).toBeGreaterThan(top[top.length - 1].n);

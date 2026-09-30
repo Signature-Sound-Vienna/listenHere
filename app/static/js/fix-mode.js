@@ -22,8 +22,7 @@
 //   - the EDIT gestures: dragging a strip tick lays a hard anchor
 //     (auto-realign of the flanking segments on release via the worker's
 //     fix_realign, then auto-replay from just before the previous anchor),
-//     Enter APPROVEs the selected onset as a zero-drag anchor, and M lays
-//     session-local MARKS on the audio timeline (N skips to the next one);
+//     and Enter APPROVEs the selected onset as a zero-drag anchor;
 //   - GLOBAL undo: fix-anchor entries ride listen.js's unified stack with
 //     snapshot semantics (before/after values stored — undo and redo never
 //     need the alignment worker).
@@ -137,15 +136,13 @@ const DRAG_THRESHOLD_PX = 3;
  *
  * The TOP arrowhead sits just inside the strip's top edge rather than above
  * it: every onset group's score connector terminates exactly at the strip
- * top and the session marks draw as diamond flags along that same line, so
- * above the strip is the busiest region on the screen. The bottom edge is
- * clear, and the waveform stops short of it (`--fix-strip-gutter`) so the
- * lower arrowhead sits outside the waveform entirely.
+ * top, so above the strip is the busiest region on the screen. The bottom
+ * edge is clear, and the waveform stops short of it (`--fix-strip-gutter`)
+ * so the lower arrowhead sits outside the waveform entirely.
  *
  * Shape vocabulary, which does more disambiguating work than colour:
- * hairline = alignment tick, diamond = session mark, filled triangle =
- * playhead. That is also why the selected tick's own cap is a bar, not the
- * triangle it used to be.
+ * hairline = alignment tick, filled triangle = playhead. That is also why
+ * the selected tick's own cap is a bar, not the triangle it used to be.
  */
 const PH_ARROW_HALF_W = 5.5;
 const PH_ARROW_H = 8;
@@ -160,8 +157,6 @@ const NUDGE_FINE_SEC = 0.02;
 const _heldArrows = new Set();
 /** Anchor times clamp this far inside the neighbouring anchors' times. */
 const ANCHOR_EPS_SEC = 0.01;
-/** M within this distance of an existing mark removes it instead of adding. */
-const MARK_HIT_SEC = 0.35;
 
 // The v2 lanes (plan §14 Layout Q2): the strip is a LANE STACK under the
 // waveform's one time→x mapping. The worker computes both lanes from the
@@ -233,24 +228,16 @@ let _prewarmTimer = null;
 /** How the last entry went (test + telemetry surface). */
 let _lastEntry = { usedPrewarm: false, spinnerShown: false, ms: 0 };
 /**
- * Piece-scoped correction state (plan §14 cluster B): the anchor/gap model,
- * the as-loaded ref tables for Revert (captured lazily at the first commit),
- * and the session MARKS (flagged misalignments on the audio timeline — QA
- * aids, deliberately neither persisted nor undoable). All of it outlives a
- * fix-mode exit and dies with the piece (fixModePrewarm resets it per load).
+ * Piece-scoped correction state (plan §14 cluster B): the anchor/gap model
+ * and the as-loaded ref tables for Revert (captured lazily at the first
+ * commit). All of it outlives a fix-mode exit and dies with the piece
+ * (fixModePrewarm resets it per load).
  */
 let _corrections = createCorrections();
 let _pristine = null; // { on: number[], off: number[] } — as-loaded ref tables
-let _marks = []; // sorted times on the strip's timeline
-/** Whose timeline the marks are on: a session on another recording starts
- *  with none, since a time in one recording means nothing in another. */
-let _marksFile = null;
 /** Recordings whose grids an audio-to-audio session changed and the main
  *  view has not redrawn yet (cluster C: once, at exit). */
 const _dirtyGridFiles = new Set();
-/** The mark the last N-jump landed on, recoloured as ACTIVE; Delete removes
- *  it (M's hit test misses after a jump — the preroll parks 0.5 s away). */
-let _activeMarkT = null;
 /** Base-alignment provenance for header.corrections (item-T's data). */
 let _correctionsBase = null;
 /** The as-loaded correction record, for Revert and dirtiness (JSON of
@@ -754,7 +741,7 @@ export async function enterFixMode(entryFile) {
     realignBusy: false,
     soundingGroupIx: null,
     followFloor: null, // { ix, untilT } — holds the follower after a seek
-    pageOnlyPassUntilT: null, // a replay/mark jump may cross pages until here
+    pageOnlyPassUntilT: null, // a replay may cross pages until here
     keydownHandler: null,
     keyupHandler: null,
     blurHandler: null,
@@ -816,13 +803,6 @@ export async function enterFixMode(entryFile) {
   f.groups = _derived.groups;
   f.pageSvgCache = _derived.svgCache; // shared: survives exit for re-entry
   if (f.mode === "audio") _recomputeProjection(f);
-  // Session marks belong to ONE recording's timeline.
-  if (_marksFile !== f.stripFile) {
-    _marks = [];
-    _activeMarkT = null;
-    _lastMarkJumpT = null;
-    _marksFile = f.stripFile;
-  }
 
   if (!usePrewarm || !_derived.pageCount) {
     // Layout for THIS pane size (the expensive part prewarm normally covers).
@@ -1009,10 +989,6 @@ export function fixModePrewarm() {
   // A (re)loaded piece invalidates the piece-scoped correction state too.
   _corrections = createCorrections();
   _pristine = null;
-  _marks = [];
-  _marksFile = null;
-  _activeMarkT = null;
-  _lastMarkJumpT = null;
   _lastAnnounce = null;
   _correctionsBase = null;
   _dirtyGridFiles.clear();
@@ -1527,7 +1503,8 @@ function _buildDom(contentEl, waveformsEl) {
   };
 
   // What a snap lands on: the detected (spectral-flux) onset, or the perceived
-  // attack — later on a slow attack, where the ear hears the note begin.
+  // attack — usually a little EARLIER, since the flux peaks late in the rise
+  // (82 % of the Fledermaus corpus's onsets, median 24 ms; measured 2026-09-29).
   // Radios in the listening interface's own shape (user, round 2), on their
   // own row under the switch.
   const snapTargetRow = document.createElement("span");
@@ -1538,7 +1515,7 @@ function _buildDom(contentEl, waveformsEl) {
     [
       "perceived",
       "perceived",
-      "Snap to the perceived attack — later than the detected onset on a slow attack",
+      "Snap to the perceived attack — usually a little earlier than the detected onset",
     ],
   ]) {
     const r = document.createElement("input");
@@ -1963,11 +1940,6 @@ function _buildDom(contentEl, waveformsEl) {
     getComputedStyle(document.documentElement)
       .getPropertyValue("--color-playhead")
       .trim() || "#2563eb";
-  // The active mark borrows close-listening's active-marker colour.
-  f.markActiveColor =
-    getComputedStyle(document.documentElement)
-      .getPropertyValue("--color-marker-active")
-      .trim() || "#8b0000";
 }
 
 // ---------------------------------------------------------------------------
@@ -1989,7 +1961,6 @@ const FIX_TRANSPORT_TITLES = {
     "Play audition (left ear: the recording, right ear: the aligned synth) — Space",
   "seek-fwd": "Next onset (Right arrow)",
   "skip-end": "Next page (Down arrow)",
-  mark: "Place or remove a session mark at the playhead (M)",
 };
 
 /** Titles displaced by the takeover, restored verbatim at exit. */
@@ -2054,8 +2025,9 @@ export function fixTransport(action) {
       _turnPage(1);
       break;
     case "mark":
-      _commitPendingNudge();
-      _toggleMark();
+      // The mark button is hidden while correcting (CSS, on
+      // body.fix-mode-open); a click that reaches here anyway is swallowed,
+      // or listen mode would lay a marker on the hidden waveform pane.
       break;
     default:
       return false;
@@ -3640,26 +3612,6 @@ function _redrawOverlays() {
     ctx.globalAlpha = 1;
   }
   f.freeAnchorsDrawn = freeAnchors;
-  // MARKS: flagged misalignments on the audio timeline (diamond flags along
-  // the strip top). They survive refills by living in time, not in events.
-  // The ACTIVE mark (the last N-jump's target, Delete's victim) draws larger
-  // in the close-listening active-marker colour.
-  ctx.globalAlpha = 0.9;
-  for (const mt of _marks) {
-    const x = _timeToStripX(mt);
-    if (x === null || x < -8 || x > w + 8) continue;
-    const active = mt === _activeMarkT;
-    ctx.fillStyle = active ? f.markActiveColor : "#d97706";
-    const rx = active ? 7 : 5;
-    const ry = active ? 8 : 6;
-    ctx.beginPath();
-    ctx.moveTo(x, 8 - ry);
-    ctx.lineTo(x + rx, 8);
-    ctx.lineTo(x, 8 + ry);
-    ctx.lineTo(x - rx, 8);
-    ctx.closePath();
-    ctx.fill();
-  }
   // A marquee in progress: the span it will select, over the lanes.
   if (f.marquee) {
     const a = Math.min(f.marquee.x0, f.marquee.x1);
@@ -3715,7 +3667,6 @@ function _select(ix, { seek = false } = {}) {
       // yank the user's choice away.
       f.followFloor = { ix, untilT: t };
       f.pageOnlyPassUntilT = null; // an explicit selection ends any pass
-      _activeMarkT = null; // …and moves attention off the active mark
       _audSeek(Math.max(0, t - SEEK_PREROLL_SEC));
     }
   }
@@ -4779,7 +4730,7 @@ function _followPlayback() {
     f.pageOnlyPassUntilT = null;
   }
   // Page-only playback: pause at the page boundary instead of turning the
-  // page — unless a commit replay or mark jump is deliberately crossing.
+  // page — unless a commit replay is deliberately crossing.
   if (
     _pageOnly &&
     f.pageOnlyPassUntilT === null &&
@@ -6086,76 +6037,8 @@ export function fixRevertCorrections() {
 }
 
 // ---------------------------------------------------------------------------
-// Marks (session QA flags on the audio timeline) + the fix-mode keyboard
+// The fix-mode keyboard
 // ---------------------------------------------------------------------------
-
-/** M: lay a mark at the playhead (or the selected onset before the audition
- *  is up); M near an existing mark clears it instead. */
-function _toggleMark() {
-  const f = _fix;
-  const g = f.groups[f.selGroupIx];
-  const t = f.aud?.ready ? _audPos() : g ? _groupStripTime(g) : null;
-  if (!Number.isFinite(t)) return;
-  const near = _marks.findIndex((m) => Math.abs(m - t) <= MARK_HIT_SEC);
-  if (near !== -1) {
-    if (_marks[near] === _activeMarkT) _activeMarkT = null;
-    _marks.splice(near, 1);
-  } else {
-    _marks.push(t);
-    _marks.sort((a, b) => a - b);
-    _activeMarkT = null; // attention moved to the new mark; N activates
-  }
-  _scheduleRedraw();
-}
-
-/** The mark the last N-jump landed on (its preroll parks the playhead BEFORE
- *  the mark, so the next N must step from the mark itself, not the preroll). */
-let _lastMarkJumpT = null;
-
-/** Delete/Backspace on the ACTIVE mark (the last N-jump's target). */
-function _removeActiveMark() {
-  const at = _marks.indexOf(_activeMarkT);
-  if (at !== -1) _marks.splice(at, 1);
-  if (_lastMarkJumpT === _activeMarkT) _lastMarkJumpT = null;
-  _activeMarkT = null;
-  _scheduleRedraw();
-}
-
-/** N / Shift+N: skip to the next / previous mark (wrapping), selecting the
- *  onset there and seeking just before it — the fix → replay → next-mark
- *  loop's navigation half. */
-function _jumpMark(dir) {
-  const f = _fix;
-  if (!_marks.length) return;
-  const g = f.groups[f.selGroupIx];
-  const pos = f.aud?.ready ? _audPos() : g ? _groupStripTime(g) : 0;
-  let t = pos;
-  if (
-    _lastMarkJumpT !== null &&
-    pos >= _lastMarkJumpT - SEEK_PREROLL_SEC - 0.05 &&
-    pos <= _lastMarkJumpT + 0.05
-  ) {
-    t = _lastMarkJumpT;
-  }
-  let target;
-  if (dir > 0) {
-    target = _marks.find((m) => m > t + 0.05) ?? _marks[0];
-  } else {
-    const before = _marks.filter((m) => m < t - 0.05);
-    target = before.length ? before[before.length - 1] : _marks[_marks.length - 1];
-  }
-  _lastMarkJumpT = target;
-  _activeMarkT = target;
-  const ix = _groupIxAtTime(target);
-  if (ix !== -1) _select(ix, { seek: false });
-  if (f.aud?.ready) {
-    f.followFloor = null;
-    // Mark jumps may cross pages; the pass expires at the mark itself.
-    f.pageOnlyPassUntilT = target;
-    _audSeek(Math.max(0, target - SEEK_PREROLL_SEC));
-  }
-  _scheduleRedraw();
-}
 
 /**
  * Fix mode's keyboard (listen.js's global handler stands down while a fix
@@ -6279,38 +6162,10 @@ function _onFixKeydown(e) {
       _commitPendingNudge();
       _toggleGap();
       break;
-    case "KeyM":
-      if (e.altKey) {
-        handled = false;
-        break;
-      }
-      _commitPendingNudge();
-      _toggleMark();
-      break;
-    case "KeyN":
-      if (e.altKey) {
-        handled = false;
-        break;
-      }
-      _commitPendingNudge();
-      _jumpMark(e.shiftKey ? -1 : 1);
-      break;
-    case "Delete":
-    case "Backspace":
-      if (e.altKey || _activeMarkT === null) {
-        handled = false;
-        break;
-      }
-      _commitPendingNudge();
-      _removeActiveMark();
-      break;
     case "Escape":
       if (hadPendingNudge) _cancelPendingNudge();
       else if (f.multiSel.size) {
         f.multiSel.clear(); // first Escape drops the multi-selection…
-        _scheduleRedraw();
-      } else if (_activeMarkT !== null) {
-        _activeMarkT = null; // first Escape deselects the mark…
         _scheduleRedraw();
       } else exitFixMode(); // …a bare one exits
       break;
@@ -6576,7 +6431,6 @@ export function fixTestState() {
       lastEntry: { ..._lastEntry },
       corrections,
       chooser,
-      marks: [..._marks],
       lastAnnounce: _lastAnnounce,
     };
   }
@@ -6635,8 +6489,6 @@ export function fixTestState() {
     chipText: f.els.chip?.title || f.els.chip?.textContent || null,
     groupStats: _lastGroupStats ? { ..._lastGroupStats } : null,
     corrections,
-    marks: [..._marks],
-    activeMark: _activeMarkT,
     lastAnnounce: _lastAnnounce,
     engineReady: f.engineReady,
     realignBusy: f.realignBusy,

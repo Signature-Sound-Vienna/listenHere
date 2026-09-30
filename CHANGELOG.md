@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.83.0 -- Fix mode: nothing behind a fix moves; re-alignment reaches a horizon, or waits for a button
+* A fix no longer refills the span before it, only the previous notes' offsets follow, and a tick cannot be dragged before the previous one.
+* The refill ahead stops at the next anchor or at the new "Reach" horizon, whichever comes first (10 s, 30 s by default, 60 s, 2 min, or to the next anchor). The note there keeps its time. On the HQ Fledermaus alignment one fix now moves ~150 later notes instead of ~99 % of the piece.
+* With no anchor ahead, the refill ends where the aligned music ends (`alignedTo`), not at the file's end, which had pulled the last notes +4.4 s into the applause.
+* "Re-align automatically" (on by default) can be turned off. A fix then only pins its tick, which moves only between its neighbours, and the span ahead waits, banded, for Re-align (Shift+R, or the button). Exit and Save data re-align whatever still waits first. Undo takes a Re-align back in one step, then the pins.
+* Audio-to-audio correction follows the same rules on the recording's grid.
+* Testing: 43.44–43.48 are new (nothing behind moves, the horizon and the `alignedTo` corner, manual re-align with undo and the exit refill, audio mode, Save). Eight tests of the old two-sided refill are updated (43.6, 43.13, 43.17, 43.19, 43.27, 43.36, 43.41, 43.43).
+
 ### 0.81.0 -- Fix mode: session marks removed; the perceived-attack tooltip corrected
 * Remove fix-mode session mark functionality. Markers in listening mode and in the exhibit are unchanged.
 * The perceived-attack snap target is usually a little earlier than the detected onset, not later as the tooltip said (82 % of the Fledermaus corpus's onsets, median 24 ms). The worker's docstring now states the rule as implemented: half the linear rise from foot to crest.

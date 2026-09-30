@@ -7058,6 +7058,11 @@ body.fix-mode-open #region-waveforms {
   flex: 1 1 0;
   min-width: 0;
 }
+/* The re-alignment reach: a label and its select sharing one row. */
+.fix-horizon-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
 /* The correction buttons sit in the same column as the nav's own (Save data,
    Undo, Redo, Revert), so they carry the same metrics: full width, the nav's
    padding and radius, no shrunken header sizing. Colour is deliberately left

@@ -555,9 +555,12 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(a.i).toBe(i);
     expect(a.kind).toBe('drag');
     expect(a.t).toBeGreaterThan(before.selT + 0.2);
-    expect(st.lastCommit).toMatchObject({ kind: 'drag', i, realigned: 2 });
-    // The event itself moved to the anchor time and the flanking interiors
-    // were refilled (the stub fills linearly — values must have changed).
+    // ONE worker refill, ahead of the fix; behind it only a local follow
+    // (Werner Goebl's feedback: nothing behind a fix moves).
+    expect(st.lastCommit).toMatchObject({ kind: 'drag', i, realigned: 1, local: 1 });
+    // The event itself moved to the anchor time, the interior ahead was
+    // refilled (the stub fills linearly — values must have changed), and the
+    // onset behind it did not move.
     const after = await page.evaluate((ev) => {
       const sc = (window as any)._listenTest.session.scoreAlignment;
       return {
@@ -569,20 +572,22 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     }, i);
     expect(after.self).toBeCloseTo(a.t, 6);
     expect(after.selfOff).toBeCloseTo(a.t + 0.02, 6); // stub's anchor_a_offset
-    expect(after.prev).not.toBeCloseTo(neighboursBefore.prev, 6);
+    expect(after.prev).toBe(neighboursBefore.prev);
     expect(after.next).not.toBeCloseTo(neighboursBefore.next, 6);
     // The durable record and the unified undo stack both carry it.
     expect(st.corrections.headerPresent).toBe(true);
     await expect(page.locator('#undo-btn')).toHaveText('Undo: alignment anchor');
-    // The audition re-rendered the changed span and auto-replay started at
-    // the run-up ceiling: there is no anchor to the left here, so the
-    // segment's left edge is the piece start and MAX_RUNUP_SEC is what
-    // decides the start (see 43.27 for the clamp itself).
+    // The audition re-rendered the changed span, which now starts at the
+    // PREVIOUS TICK, and the auto-replay opened half a second before it —
+    // or at the run-up ceiling, whichever is later (see 43.27).
+    expect(st.lastReplay.t0).toBeCloseTo(neighboursBefore.prev, 6);
     expect(st.aud.renderWindow).not.toBeNull();
-    expect(st.aud.renderWindow.t0).toBeLessThanOrEqual(0.1);
+    expect(st.aud.renderWindow.t0).toBeLessThanOrEqual(neighboursBefore.prev + 1e-6);
+    expect(st.aud.renderWindow.t0).toBeGreaterThan(neighboursBefore.prev - 0.2);
     expect(st.aud.playing).toBe(true);
-    expect(st.aud.time).toBeGreaterThanOrEqual(a.t - 2 - 0.05);
-    expect(st.aud.time).toBeLessThan(a.t - 2 + 1.5);
+    const start = Math.max(0, neighboursBefore.prev - 0.5, a.t - 2);
+    expect(st.aud.time).toBeGreaterThanOrEqual(start - 0.05);
+    expect(st.aud.time).toBeLessThan(start + 1.5);
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
   });
 
@@ -742,7 +747,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await expect(page.locator('#undo-btn')).toBeDisabled();
   });
 
-  test('43.13 the fix_realign payload contract: both flanking segments, prior values along', async ({
+  test('43.13 the fix_realign payload contract: ONE segment, ahead of the fix, to the horizon, prior values along', async ({
     page,
   }) => {
     await gotoFixMode(page);
@@ -752,7 +757,10 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     for (let k = 0; k < 5; k++) await page.click('.fix-onset-next');
     const before = await fixState(page);
     const i = before.selEventIx;
-    const dur = before.aud.duration;
+    expect(before.horizonSec).toBe(30);
+    const onBefore: number[] = await page.evaluate(() =>
+      (window as any)._listenTest.session.scoreAlignment.ref_onset.slice(),
+    );
     await dragSelectedTick(page, 40);
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
     const realigns = await page.evaluate(() =>
@@ -760,17 +768,19 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
         (p: any) => p.type === 'fix_realign',
       ),
     );
-    expect(realigns).toHaveLength(2);
+    // Nothing behind the fix goes to the worker any more.
+    expect(realigns).toHaveLength(1);
     const t = (await fixState(page)).corrections.anchors[0].t;
-    // Left: piece-start corner → the anchor; interior = the events before it.
-    expect(realigns[0]).toMatchObject({ iA: -1, tA: 0, iB: i });
-    expect(realigns[0].tB).toBeCloseTo(t, 6);
-    expect(realigns[0].priorLen).toBe(i);
-    // Right: the anchor → the piece-end corner.
-    expect(realigns[1]).toMatchObject({ iA: i, iB: before.nEvents });
-    expect(realigns[1].tA).toBeCloseTo(t, 6);
-    expect(realigns[1].tB).toBeCloseTo(dur, 1);
-    expect(realigns[1].priorLen).toBe(before.nEvents - i - 1);
+    // The anchor → the first onset at or past the horizon, whose CURRENT time
+    // is the corner (it and everything after it keep their values).
+    const r = realigns[0];
+    expect(r.iA).toBe(i);
+    expect(r.tA).toBeCloseTo(t, 6);
+    expect(r.iB).toBeLessThan(before.nEvents);
+    expect(onBefore[r.iB]).toBeGreaterThanOrEqual(t + 30);
+    expect(onBefore[r.iB - 1]).toBeLessThan(t + 30);
+    expect(r.tB).toBe(onBefore[r.iB]);
+    expect(r.priorLen).toBe(r.iB - i - 1);
   });
 
   test('43.14 listen.js\'s global shortcuts stand down while fix mode is open', async ({
@@ -822,10 +832,11 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await dragSelectedTick(page, 40);
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
     const st = await fixState(page);
-    // The gesture succeeded despite the worker's refusal on both segments.
+    // The gesture succeeded despite the worker's refusal on the span ahead
+    // (the span behind never asks it: it follows locally).
     expect(st.chipState).toBe('ready');
     expect(st.corrections.anchors).toHaveLength(1);
-    expect(st.lastCommit).toMatchObject({ kind: 'drag', i, realigned: 0, linear: 2 });
+    expect(st.lastCommit).toMatchObject({ kind: 'drag', i, realigned: 0, linear: 1, local: 1 });
     const t = st.corrections.anchors[0].t;
     const vals = await page.evaluate((ev) => {
       const sc = (window as any)._listenTest.session.scoreAlignment;
@@ -901,7 +912,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(st.corrections.anchors).toHaveLength(0);
     expect(st.pendingNudge).not.toBeNull();
     expect(st.pendingNudge.curT).toBeCloseTo(before.selT + 0.22, 6);
-    // Full release IS the commit: one anchor, one realign pair, one undo entry.
+    // Full release IS the commit: one anchor, one realign, one undo entry.
     await page.keyboard.up('Shift');
     await page.waitForFunction(
       () => {
@@ -915,7 +926,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     st = await fixState(page);
     expect(st.corrections.anchors[0].t).toBeCloseTo(before.selT + 0.22, 6);
     expect(st.corrections.anchors[0].kind).toBe('drag');
-    expect(st.lastCommit).toMatchObject({ kind: 'drag', realigned: 2 });
+    expect(st.lastCommit).toMatchObject({ kind: 'drag', realigned: 1 });
     expect(st.pendingNudge).toBeNull();
     // Three presses were ONE history entry: a single undo clears the anchor.
     await page.click('#undo-btn');
@@ -1277,25 +1288,45 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await expect(page.locator('#undo-btn')).toBeDisabled();
   });
 
-  test('43.27 the replay start is clamped to the run-up ceiling, not the previous anchor', async ({
+  test('43.27 the replay opens half a second before the PREVIOUS TICK, and never more than the run-up ceiling before the fix', async ({
     page,
   }) => {
     await gotoFixMode(page);
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    // The first fix of a session has NO anchor to its left, so the segment's
-    // own left edge is 0 and the unclamped start would be the top of the
-    // recording — a page and a half of run-up for a fix at ~3 s.
+    // No auto-replay, so the playback follower cannot move the selection
+    // between the two fixes; the replay span is still recorded.
+    await page.click('#fix-replay-off');
+    // An onset whose previous tick lies far behind (the fixture has a 5.6 s
+    // jump): the span starts at that tick, and MAX_RUNUP_SEC = 2 decides.
+    // First, while the jump is still there — the stub's linear refill evens
+    // out everything ahead of a fix.
+    const prevTickT = () =>
+      page.evaluate(() => {
+        const t = (window as any)._listenTest;
+        return t.session.scoreAlignment.ref_onset[t.fix.selEventIx - 1];
+      });
+    let st = await fixState(page);
+    for (let k = 0; k < 12; k++) {
+      await page.click('.fix-onset-next');
+      st = await fixState(page);
+      if (st.selT - (await prevTickT()) > 2.5) break;
+    }
+    const prevT = await prevTickT();
+    expect(st.selT - prevT).toBeGreaterThan(2.5);
     await dragSelectedTick(page, 12);
-    const st = await fixState(page);
+    st = await fixState(page);
     expect(st.lastReplay).not.toBeNull();
-    expect(st.lastReplay.t0).toBeCloseTo(0, 6);
-    // MAX_RUNUP_SEC = 2: the start sits exactly that far before the fix, and
-    // strictly after the top of the recording (which is what proves the
-    // ceiling bit rather than the preroll).
+    expect(st.lastReplay.t0).toBeCloseTo(prevT, 6);
     expect(st.lastReplay.startT).toBeCloseTo(st.lastReplay.fixedT - 2, 6);
-    expect(st.lastReplay.startT).toBeGreaterThan(0.5);
+    // The first onset has no tick behind it: the changed span starts at the
+    // fix itself, and the replay half a second before it.
+    while ((await fixState(page)).selGroup > 0) await page.click('.fix-onset-prev');
+    await dragSelectedTick(page, 12);
+    st = await fixState(page);
+    expect(st.lastReplay.t0).toBeCloseTo(st.lastReplay.fixedT, 6);
+    expect(st.lastReplay.startT).toBeCloseTo(st.lastReplay.fixedT - 0.5, 6);
   });
 
   test('43.28 Replay off suppresses the auto-replay but still commits; R replays on demand', async ({
@@ -1977,7 +2008,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(st.corrections.anchors.map((a: any) => a.kind)).toEqual(['gap', 'gap']);
   });
 
-  test('43.36 dragging a gap endpoint keeps the gap and moves that boundary: the outer flank realigns, the gap span is never refilled, the last note keeps its length; Approve and S on an endpoint keep it too', async ({
+  test('43.36 dragging a gap endpoint keeps the gap and moves that boundary: only the span AHEAD realigns, the gap span is never refilled, the last note keeps its length; Approve and S on an endpoint keep it too', async ({
     page,
   }) => {
     await gotoFixMode(page);
@@ -2005,11 +2036,11 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     // The last note before the gap keeps its length rather than being
     // stretched across the gap by the zero-interior fill.
     expect(t1.off[2] - t1.on[2]).toBeCloseTo(dur2, 6);
-    // Exactly one realign — the left flank (the piece start to event 2). The
-    // gap span (2 → 3) was not sent anywhere.
+    // No realign at all: behind the left endpoint nothing moves (only the
+    // previous note's offset follows, locally), and the gap span (2 → 3)
+    // ahead of it is never sent anywhere.
     let posted = await realignsPosted(page);
-    expect(posted).toHaveLength(1);
-    expect(posted[0]).toMatchObject({ iA: -1, iB: 2 });
+    expect(posted).toHaveLength(0);
     // The RIGHT endpoint, 20 px later.
     await selectEvent(page, 3);
     await dragSelectedTick(page, 20);
@@ -2023,8 +2054,8 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(st.corrections.gaps[0].tEnd).toBeCloseTo(t1.on[2], 9);
     expect(t2.off[2] - t2.on[2]).toBeCloseTo(dur2, 6);
     posted = await realignsPosted(page);
-    expect(posted).toHaveLength(2);
-    expect(posted[1].iA).toBe(3); // the right flank only
+    expect(posted).toHaveLength(1);
+    expect(posted[0].iA).toBe(3); // the span ahead only
     // Approve (Enter) on an endpoint keeps the gap.
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => (window as any)._listenTest.fix.lastCommit?.realigned === 0);
@@ -2252,7 +2283,9 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(st.chipState, st.chipText ?? '').not.toBe('error');
     expect(errors).toEqual([]);
     expect(st.lastCommit).toMatchObject({ kind: 'drag', file: TARGET_ROW, linear: 0 });
-    expect(st.lastCommit.realigned).toBe(2); // both flanks had interior raster samples
+    // The worker refilled the span AHEAD; the raster behind followed locally.
+    expect(st.lastCommit.realigned).toBe(1);
+    expect(st.lastCommit.local).toBe(1);
     expect(st.gridAnchors).toHaveLength(1);
     const a = st.gridAnchors[0];
     expect(a.kind).toBe('drag');
@@ -2260,23 +2293,23 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(a.i).toBe(pre.selEventIx);
     // The tick moved by the drag (no lanes in this stub, so no magnet) …
     expect(a.t - pre.selT).toBeCloseTo(30 / pre.stripPps, 1);
-    // … and now shows the anchor through the grid's own interpolation.
-    expect(st.selT).toBeCloseTo(a.t, 2);
-    expect(await projectInPage(page, a.refT)).toBeCloseTo(a.t, 2);
-    // The worker refilled the two flanks, each ending / starting at the anchor.
+    // … and now shows the anchor through the grid's own interpolation. Since
+    // nothing behind a fix moves, a large drag puts a KINK in the grid at the
+    // anchor (the slope behind follows the drag, the one ahead the refill),
+    // and a kink between two 20 ms raster samples is interpolated across:
+    // off by at most |Δslope| × 5 ms — here ~1, so within one raster step.
+    expect(Math.abs(st.selT - a.t)).toBeLessThan(0.02);
+    expect(Math.abs((await projectInPage(page, a.refT)) - a.t)).toBeLessThan(0.02);
+    // The worker refilled ONE span, starting at the anchor.
     const posted = await page.evaluate(() =>
       (window as any).__fixStub.posted.filter((p: any) => p.type === 'fix_target_realign'),
     );
-    expect(posted).toHaveLength(2);
-    for (const p of posted) {
-      expect(p.refA).toBeLessThan(p.refB);
-      expect(p.tA).toBeLessThan(p.tB);
-      expect(p.n).toBeGreaterThan(0);
-    }
-    expect(posted[0].refB).toBeCloseTo(a.refT, 9);
-    expect(posted[0].tB).toBeCloseTo(a.t, 9);
-    expect(posted[1].refA).toBeCloseTo(a.refT, 9);
-    expect(posted[1].tA).toBeCloseTo(a.t, 9);
+    expect(posted).toHaveLength(1);
+    expect(posted[0].refA).toBeLessThan(posted[0].refB);
+    expect(posted[0].tA).toBeLessThan(posted[0].tB);
+    expect(posted[0].n).toBeGreaterThan(0);
+    expect(posted[0].refA).toBeCloseTo(a.refT, 9);
+    expect(posted[0].tA).toBeCloseTo(a.t, 9);
     // The grid changed IN PLACE: the same array, still aliased by the JSON,
     // corners frozen, values moved.
     const after = await gridSnapshot(page);
@@ -2367,38 +2400,269 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await page.click('#fix-replay-off');
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
+    const pre = await page.evaluate((file) => {
+      const t = (window as any)._listenTest;
+      return {
+        grid: t.session.alignmentGrids[file].slice(),
+        refPrev: t.session.scoreAlignment.ref_onset[t.fix.selEventIx - 1],
+      };
+    }, TARGET_ROW);
     await dragSelectedTick(page, 25);
     const st = await fixState(page);
-    expect(st.lastCommit).toMatchObject({ kind: 'drag', file: TARGET_ROW, realigned: 0, linear: 2 });
+    // The worker refused the span ahead (linear fallback); the raster behind
+    // never asks it (it follows locally).
+    expect(st.lastCommit).toMatchObject({ kind: 'drag', file: TARGET_ROW, realigned: 0, linear: 1, local: 1 });
     expect(st.gridAnchors).toHaveLength(1);
     const a = st.gridAnchors[0];
-    // Every raster sample of the left flank lies on the line from the corner
-    // to the anchor; every sample of the right flank on the line from the
-    // anchor to the far corner.
+    // BEHIND: up to and including the first sample past the previous tick,
+    // nothing moved; between that sample and the anchor, the line to the
+    // anchor. AHEAD: the line from the anchor to the horizon corner (the
+    // first sample 30 s on), and nothing moved from there.
     const lines = await page.evaluate(
-      ({ refT, t, file, REF }) => {
+      ({ refT, t, file, REF, before, refPrev }) => {
         const s = (window as any)._listenTest.session;
         const rg: number[] = s.alignmentGrids[REF];
         const tg: number[] = s.alignmentGrids[file];
         const n = rg.length;
+        const k0 = rg.findIndex((v) => v > refPrev + 1e-6); // kept
         const kA = rg.findIndex((v) => v > refT + 1e-6); // first sample after the anchor
+        let kH = before.findIndex((v: number, k: number) => k >= kA && v >= t + 30);
+        if (kH === -1) kH = n - 1;
+        let movedBehind = 0;
+        for (let k = 0; k <= k0; k++) if (tg[k] !== before[k]) movedBehind++;
         let worstL = 0;
-        for (let k = 1; k < kA; k++) {
-          const want = tg[0] + ((rg[k] - rg[0]) / (refT - rg[0])) * (t - tg[0]);
+        for (let k = k0 + 1; k < kA; k++) {
+          if (rg[k] >= refT - 1e-6) continue;
+          const want = before[k0] + ((rg[k] - rg[k0]) / (refT - rg[k0])) * (t - before[k0]);
           worstL = Math.max(worstL, Math.abs(tg[k] - want));
         }
         let worstR = 0;
-        for (let k = kA; k < n - 1; k++) {
-          const want = t + ((rg[k] - refT) / (rg[n - 1] - refT)) * (tg[n - 1] - t);
+        for (let k = kA; k < kH; k++) {
+          const want = t + ((rg[k] - refT) / (rg[kH] - refT)) * (before[kH] - t);
           worstR = Math.max(worstR, Math.abs(tg[k] - want));
         }
-        return { worstL, worstR, kA, n };
+        let movedAfter = 0;
+        for (let k = kH; k < n; k++) if (tg[k] !== before[k]) movedAfter++;
+        return { worstL, worstR, kA, n, movedBehind, movedAfter, k0 };
       },
-      { refT: a.refT, t: a.t, file: TARGET_ROW, REF: REF_ROW },
+      { refT: a.refT, t: a.t, file: TARGET_ROW, REF: REF_ROW, before: pre.grid, refPrev: pre.refPrev },
     );
-    expect(lines.kA).toBeGreaterThan(1);
+    expect(lines.k0).toBeGreaterThan(0);
+    expect(lines.kA).toBeGreaterThan(lines.k0);
     expect(lines.kA).toBeLessThan(lines.n - 1);
+    expect(lines.movedBehind).toBe(0);
+    expect(lines.movedAfter).toBe(0);
     expect(lines.worstL).toBeLessThan(1e-6);
     expect(lines.worstR).toBeLessThan(1e-6);
+  });
+
+  /** The whole live ref tables (the 43.35 helper reads only eight events). */
+  const fullTables = (page: Page) =>
+    page.evaluate(() => {
+      const sc = (window as any)._listenTest.session.scoreAlignment;
+      return { on: sc.ref_onset.slice() as number[], off: sc.ref_offset.slice() as number[] };
+    });
+
+  /** The first event of the onset group after event i (by onset time). */
+  const nextGroupEvent = (on: number[], i: number) => {
+    let e = i + 1;
+    while (e < on.length && on[e] <= on[i]) e++;
+    return e;
+  };
+
+  test('43.44 nothing behind a fix moves: every earlier onset keeps its exact value, only the previous note\'s offset follows, and a drag cannot cross the previous tick', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 6; k++) await page.click('.fix-onset-next');
+    const i = (await fixState(page)).selEventIx;
+    const t0 = await fullTables(page);
+    // A drag well past the previous tick stops just after it.
+    await dragSelectedTick(page, -150);
+    const st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    const a = st.corrections.anchors[0];
+    expect(a.i).toBe(i);
+    expect(a.t).toBeGreaterThan(t0.on[i - 1]);
+    expect(a.t).toBeLessThan(t0.on[i - 1] + 0.05);
+    const t1 = await fullTables(page);
+    for (let e = 0; e < i; e++) expect(t1.on[e], `onset ${e}`).toBe(t0.on[e]);
+    for (let e = 0; e < i - 1; e++) expect(t1.off[e], `offset ${e}`).toBe(t0.off[e]);
+    expect(t1.off[i - 1]).toBeGreaterThan(t1.on[i - 1]);
+    // Nothing behind the fix went to the worker.
+    const posted = await realignsPosted(page);
+    expect(posted).toHaveLength(1);
+    expect(posted[0].iA).toBe(i);
+  });
+
+  test('43.45 the refill ahead stops at the horizon (10 s here, or to the next anchor), and with nothing ahead its corner is where the aligned music ends, not the file\'s end', async ({
+    page,
+  }) => {
+    // The reference's aligned music ends at 290 s; the file runs to 304.6 s.
+    await gotoFixMode(page, (json) => {
+      json.body.audio[REF_ROW].alignedTo = 290;
+    });
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    await page.selectOption('#fix-horizon', '10');
+    expect((await fixState(page)).horizonSec).toBe(10);
+    const t0 = await fullTables(page);
+    await dragSelectedTick(page, 20);
+    let st = await fixState(page);
+    const a = st.corrections.anchors[0];
+    let posted = await realignsPosted(page);
+    let r = posted[posted.length - 1];
+    expect(r.iA).toBe(a.i);
+    expect(t0.on[r.iB]).toBeGreaterThanOrEqual(a.t + 10);
+    expect(t0.on[r.iB - 1]).toBeLessThan(a.t + 10);
+    expect(r.tB).toBe(t0.on[r.iB]);
+    // The horizon's onset and everything after it keep their values.
+    const t1 = await fullTables(page);
+    for (let e = r.iB; e < t0.on.length; e++) expect(t1.on[e], `onset ${e}`).toBe(t0.on[e]);
+    // To the next anchor: with none ahead, the corner is alignedTo.
+    await page.selectOption('#fix-horizon', 'Infinity');
+    expect((await fixState(page)).horizonSec).toBe(Infinity);
+    await page.click('.fix-onset-next');
+    await dragSelectedTick(page, 20);
+    st = await fixState(page);
+    posted = await realignsPosted(page);
+    r = posted[posted.length - 1];
+    expect(r.iB).toBe(st.nEvents);
+    expect(r.tB).toBeCloseTo(290, 9);
+  });
+
+  test('43.46 with automatic re-alignment off a fix only pins its tick: its group follows, the span ahead waits (banded) for Re-align (Shift+R), undo takes the refill back and then the pin, and exit refills what still waits', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-realign');
+    await expect(page.locator('#fix-auto-realign')).not.toBeChecked();
+    expect((await fixState(page)).autoRealign).toBe(false);
+    await expect(page.locator('#fix-realign-btn')).toBeDisabled();
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    const i = (await fixState(page)).selEventIx;
+    const t0 = await fullTables(page);
+    const n = nextGroupEvent(t0.on, i);
+    // A drag well past the next tick stops just before it.
+    await dragSelectedTick(page, 150);
+    let st = await fixState(page);
+    const a = st.corrections.anchors[0];
+    expect(a.i).toBe(i);
+    expect(a.t).toBeLessThan(t0.on[n]);
+    expect(a.t).toBeGreaterThan(t0.on[n] - 0.05);
+    // No worker call; from the next tick on, nothing moved.
+    expect(await realignsPosted(page)).toHaveLength(0);
+    const t1 = await fullTables(page);
+    for (let e = n; e < t0.on.length; e++) expect(t1.on[e], `onset ${e}`).toBe(t0.on[e]);
+    expect(t1.on[i]).toBeCloseTo(a.t, 9);
+    // The span waits, banded, and the button counts it.
+    expect(st.pending).toEqual([{ i }]);
+    await page.waitForFunction(() => (window as any)._listenTest.fix.pendingSpans.length === 1);
+    await expect(page.locator('#fix-realign-btn')).toBeEnabled();
+    await expect(page.locator('#fix-realign-btn')).toHaveText('Re-align 1 (Shift+R)');
+    // Shift+R: ONE refill, from the pinned tick.
+    await page.keyboard.press('Shift+R');
+    await page.waitForFunction(() => {
+      const f = (window as any)._listenTest.fix;
+      return f.pending.length === 0 && !f.realignBusy;
+    });
+    let posted = await realignsPosted(page);
+    expect(posted).toHaveLength(1);
+    expect(posted[0].iA).toBe(i);
+    expect(posted[0].tA).toBeCloseTo(a.t, 9);
+    st = await fixState(page);
+    expect(st.lastRealign).toMatchObject({ spans: 1, realigned: 1 });
+    await expect(page.locator('#fix-realign-btn')).toBeDisabled();
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: re-alignment');
+    expect((await fullTables(page)).on[n]).not.toBe(t0.on[n]);
+    // Undo takes the refill back (the span waits again), then the pin.
+    await page.click('#undo-btn');
+    st = await fixState(page);
+    expect(st.pending).toEqual([{ i }]);
+    expect((await fullTables(page)).on).toEqual(t1.on);
+    await page.click('#undo-btn');
+    st = await fixState(page);
+    expect(st.pending).toEqual([]);
+    expect(st.corrections.anchors).toHaveLength(0);
+    expect((await fullTables(page)).on).toEqual(t0.on);
+    // Redo the pin; exit refills the waiting span before it closes.
+    await page.click('#redo-btn');
+    expect((await fixState(page)).pending).toEqual([{ i }]);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    posted = await realignsPosted(page);
+    expect(posted).toHaveLength(2);
+    expect(posted[1].iA).toBe(i);
+  });
+
+  test('43.47 audio mode with automatic re-alignment off: a fix pins its tick without the worker, and Re-align refills the grid ahead of it', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-realign');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const pre = await fixState(page);
+    await dragSelectedTick(page, 10);
+    let st = await fixState(page);
+    expect(st.chipState, st.chipText ?? '').not.toBe('error');
+    const targetRealigns = () =>
+      page.evaluate(() =>
+        (window as any).__fixStub.posted.filter((p: any) => p.type === 'fix_target_realign'),
+      );
+    expect(await targetRealigns()).toHaveLength(0);
+    expect(st.gridAnchors).toHaveLength(1);
+    expect(st.pending).toHaveLength(1);
+    expect(st.pending[0].refT).toBeCloseTo(pre.selRefT, 9);
+    await page.keyboard.press('Shift+R');
+    await page.waitForFunction(() => {
+      const f = (window as any)._listenTest.fix;
+      return f.pending.length === 0 && !f.realignBusy;
+    });
+    const posted = await targetRealigns();
+    expect(posted).toHaveLength(1);
+    expect(posted[0].refA).toBeCloseTo(pre.selRefT, 9);
+    expect(posted[0].tA).toBeCloseTo(st.gridAnchors[0].t, 9);
+    st = await fixState(page);
+    expect(st.lastRealign).toMatchObject({ spans: 1, realigned: 1 });
+    await expect(page.locator('#undo-btn')).toContainText('re-alignment');
+  });
+
+  test('43.48 Save refills the spans still waiting for Re-align before it writes the file', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-realign');
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    await dragSelectedTick(page, 10);
+    expect((await fixState(page)).pending).toHaveLength(1);
+    expect(await realignsPosted(page)).toHaveLength(0);
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.evaluate(() => (document.getElementById('download-json-btn') as HTMLElement).click()),
+    ]);
+    expect(download).toBeTruthy();
+    expect(await realignsPosted(page)).toHaveLength(1);
+    expect((await fixState(page)).pending).toEqual([]);
   });
 });

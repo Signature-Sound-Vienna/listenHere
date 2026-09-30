@@ -70,6 +70,9 @@ import {
   setTargetAnchor,
   applyGridSegment,
   applyTargetAnchorValue,
+  rasterAfter,
+  rasterBefore,
+  REF_T_EPS,
   serialize as serializeCorrections,
   deserialize as deserializeCorrections,
 } from "./engine/correction-model.js";
@@ -284,6 +287,21 @@ let _specCfg = {
 let _scoreZoom = { mode: "fit", pct: 100 };
 /** What a snap lands on: the detected onset ("flux") or the perceived attack. */
 let _snapTarget = "flux";
+/**
+ * Re-alignment after a fix (Werner Goebl's feedback, 2026-09-29). NOTHING
+ * BEHIND A FIX MOVES: a fix never refills the span before it — only the
+ * previous notes' offsets follow, linearly — and a tick cannot be dragged
+ * before the previous one. The refill runs AHEAD, to the next anchor or the
+ * HORIZON, whichever comes first; the note at the horizon keeps its current
+ * time as the refill's corner (unsaved). Measured on the HQ corpus before the
+ * rule: an unbounded refill ran to the piece end at a ~96 ms hop and moved
+ * ~99 % of all later events. Both settings sticky, like the ones above.
+ */
+let _autoRealign = true;
+let _horizonSec = 30;
+/** The horizon select's choices, seconds of the strip's audio (∞ = up to the
+ *  next anchor or the end of the aligned music, the pre-2026-09-29 reach). */
+const HORIZON_CHOICES = [10, 30, 60, 120, Infinity];
 /** A user-resized strip (px) and lane weights; null = the CSS defaults. Both
  *  sticky, and both part of what the prewarm probe must reproduce. */
 let _stripHeightPx = null;
@@ -753,6 +771,11 @@ export async function enterFixMode(entryFile) {
     marquee: null, // an in-progress marquee drag on the strip
     resizing: null, // an in-progress strip or lane resize drag
     lastBatch: null, // test surface: the last "move to nearest onset" run
+    /** Fixes whose span AHEAD still waits for Re-align (auto re-align off):
+     *  {i} (score↔ref) or {refT} (audio). Session-scoped: exit refills them. */
+    pending: [],
+    exitFlushTried: false, // an exit whose refill failed lets the next one through
+    lastRealign: null, // test surface: the last Re-align of pending spans
     lastGap: null, // test surface: the last G (lay / remove)
     gapBands: 0, // test surface: gap bands painted on the last redraw
     epochAtEntry: _correctionsEpoch, // the exit recompute's baseline
@@ -930,9 +953,26 @@ function _teardownFixDom(f) {
  * is what makes exit and re-entry cost milliseconds instead of a full
  * relayout each way. Without ?fixMode this module never touches the toolkit.
  */
-export function exitFixMode() {
+export function exitFixMode({ discardPending = false } = {}) {
   if (!_fix) return;
   const f = _fix;
+  // Spans still waiting for Re-align are refilled first, so the session never
+  // closes half-applied (user ruling, 2026-09-29). Should that refill fail, the
+  // screen stays open with the error, and the next exit goes through.
+  if (!discardPending && f.pending.length && !f.exitFlushTried) {
+    f.exitFlushTried = true;
+    _realignPending().then((ok) => {
+      if (_fix !== f) return;
+      if (ok) exitFixMode();
+      else {
+        _announce(
+          "Re-align failed, so the correction screen stays open; close it again " +
+            "to leave the spans ahead as they are.",
+        );
+      }
+    });
+    return;
+  }
   // The replay span belongs to THIS session's recording: a re-entry (or a
   // different reference row) must not let R seek to times that no longer
   // mean anything. The suppression MODE is deliberately sticky, unlike this.
@@ -954,12 +994,22 @@ export function exitFixMode() {
 }
 
 /**
+ * Save data's hook (listen.js): Re-align any spans still pending first, so a
+ * saved file is never half-applied. Resolves false when that failed — the
+ * save should not go ahead.
+ */
+export async function fixFlushPending() {
+  if (!_fix || !_fix.pending.length) return true;
+  return _realignPending();
+}
+
+/**
  * Piece teardown hook, called from listen.js's resetSession: a new piece
  * invalidates the fix session, the derived caches, AND the worker's resident
  * audio wholesale.
  */
 export function fixModeOnPieceReset() {
-  exitFixMode();
+  exitFixMode({ discardPending: true });
   _closeChooser();
   _derived = null;
   clearTimeout(_prewarmTimer);
@@ -1799,7 +1849,54 @@ function _buildDom(contentEl, waveformsEl) {
     gapBtn.title = "Unscored-audio gaps are laid in the score ↔ reference correction.";
   }
   gapRow.appendChild(gapBtn);
-  fsEdits.body.append(undoRow, gapRow);
+  // Re-alignment: at once or on demand, and how far
+  // ahead. Nothing behind a fix moves either way (see _autoRealign).
+  const [autoRow] = _navCheckbox(
+    "fix-auto-realign",
+    "Re-align automatically",
+    "Re-align the span ahead of each fix at once. Off: a fix only pins its tick, " +
+      "which then moves only between its neighbours, and the span ahead waits for " +
+      "Re-align (Shift+R). Nothing behind a fix ever moves.",
+    _autoRealign,
+    (on) => {
+      _autoRealign = on;
+      _syncRealignUi();
+    },
+  );
+  const realignRow = document.createElement("div");
+  realignRow.className = "fix-nav-row";
+  const realignBtn = document.createElement("button");
+  realignBtn.type = "button";
+  realignBtn.id = "fix-realign-btn";
+  realignBtn.title =
+    "Re-align the spans ahead of the fixes pinned since the last re-alignment (Shift+R)";
+  realignBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  realignBtn.addEventListener("click", () => {
+    _realignPending().catch((err) => console.error("fix mode: re-align failed:", err));
+  });
+  const horizonSel = mkSelect(
+    "fix-horizon",
+    "How far ahead of a fix the re-alignment reaches: to the next anchor or this " +
+      "far, whichever comes first — the note there keeps its time",
+    HORIZON_CHOICES.map((s) => [
+      String(s),
+      !Number.isFinite(s) ? "to next anchor" : s >= 60 ? `${s / 60} min ahead` : `${s} s ahead`,
+    ]),
+    _horizonSec,
+    (v) => {
+      _horizonSec = Number(v);
+      _scheduleRedraw();
+    },
+  );
+  realignRow.appendChild(realignBtn);
+  const horizonRow = document.createElement("div");
+  horizonRow.className = "fix-nav-row fix-horizon-row";
+  const horizonLabel = document.createElement("label");
+  horizonLabel.htmlFor = "fix-horizon";
+  horizonLabel.textContent = "Reach";
+  horizonLabel.title = horizonSel.title;
+  horizonRow.append(horizonLabel, horizonSel);
+  fsEdits.body.append(undoRow, gapRow, autoRow, realignRow, horizonRow);
   navBody.append(title, chip, fsScore.fs, fsPlayback.fs, fsSnap.fs, fsLanes.fs, fsEdits.fs);
   _borrowNavActions({ "undo-btn": undoRow, "redo-btn": undoRow }, fsEdits.body);
 
@@ -1935,7 +2032,9 @@ function _buildDom(contentEl, waveformsEl) {
     speedReset,
     loading,
     loadingText,
+    realignBtn,
   };
+  _syncRealignUi();
   f.playheadColor =
     getComputedStyle(document.documentElement)
       .getPropertyValue("--color-playhead")
@@ -2764,6 +2863,7 @@ function _setRealignBusy(f, on) {
   f.els.strip?.classList.toggle("fix-realigning", on);
   const btn = document.getElementById("fix-snap-sel");
   if (btn) btn.disabled = on;
+  _syncRealignUi();
 }
 
 /** One handle per boundary between visible lanes, on that boundary. */
@@ -3459,6 +3559,37 @@ function _redrawOverlays() {
     gapBands++;
   }
   f.gapBands = gapBands;
+  // Spans waiting for Re-align (auto re-align off): a tinted band from each
+  // pinned fix to where its refill will reach — the next anchor or the
+  // horizon, as they stand now — so what the button will change is on screen.
+  const pendingSpans = [];
+  for (const p of f.pending) {
+    const a =
+      f.mode === "audio"
+        ? findTargetAnchor(_corrections, f.targetFile, p.refT)
+        : findAnchor(_corrections, p.i);
+    if (!a) continue;
+    const tB = f.mode === "audio" ? _aheadGridSpan(a.refT, a.t).tB : _aheadSpan(a.i, a.t).tB;
+    pendingSpans.push({ t0: a.t, t1: tB });
+    const xa = _timeToStripX(a.t);
+    const xb = _timeToStripX(tB);
+    if (xa === null || xb === null) continue;
+    const lo = Math.max(0, xa);
+    const hi = Math.min(w, xb);
+    if (hi - lo < 1) continue;
+    ctx.globalAlpha = 0.14;
+    ctx.fillStyle = "#d97706";
+    ctx.fillRect(lo, 0, hi - lo, wb);
+    ctx.globalAlpha = 0.9;
+    ctx.fillRect(lo, 0, hi - lo, 2);
+    if (hi - lo > 110) {
+      ctx.font = "10px sans-serif";
+      ctx.textBaseline = "top";
+      ctx.fillText("waits for Re-align", lo + 6, 5);
+      ctx.textBaseline = "alphabetic";
+    }
+  }
+  f.pendingSpans = pendingSpans;
   ctx.globalAlpha = 1;
 
   for (const g of pageGroups) {
@@ -3723,10 +3854,15 @@ function _tickHit(x) {
  * The dragged tick's allowed time range: strictly between the neighbouring
  * anchors (open interval, ANCHOR_EPS inside), non-strictly within the piece
  * corners — the same bounds correction-model's validateAnchorTime enforces,
- * applied as a clamp so the gesture can never build an invalid anchor.
+ * applied as a clamp so the gesture can never build an invalid anchor. And,
+ * since nothing behind a fix moves, never before the PREVIOUS TICK; with auto
+ * re-align off, never past the NEXT one either (the span ahead only follows
+ * at Re-align, so a crossed tick would sit out of order until then).
  */
 function _dragBounds(groupIx) {
   const f = _fix;
+  const hasPrev = groupIx > 0;
+  const hasNext = groupIx + 1 < f.groups.length;
   if (f.mode === "audio") {
     // Neighbouring TARGET anchors (strict by reference time, so the group's
     // own anchor is never its own neighbour); the corners are the grid's
@@ -3734,8 +3870,12 @@ function _dragBounds(groupIx) {
     const refT = scoreAlignment.ref_onset[f.groups[groupIx].eventIxs[0]];
     const { prev, next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
     const tg = _targetGrid();
-    const lo = (prev ? prev.t : tg[0]) + ANCHOR_EPS_SEC;
-    const hi = (next ? next.t : tg[tg.length - 1]) - ANCHOR_EPS_SEC;
+    let lo = prev ? prev.t : tg[0];
+    let hi = next ? next.t : tg[tg.length - 1];
+    if (hasPrev) lo = Math.max(lo, _leftGridSpan(groupIx, refT, null).tFloor);
+    if (!_autoRealign && hasNext) hi = Math.min(hi, _nextLocalGridSpan(groupIx, refT, null).tCeil);
+    lo += ANCHOR_EPS_SEC;
+    hi -= ANCHOR_EPS_SEC;
     return { lo, hi: Math.max(lo, hi) };
   }
   const i = _anchorEventOf(f.groups[groupIx]);
@@ -3745,9 +3885,12 @@ function _dragBounds(groupIx) {
   // The corners stay ANCHOR_EPS inside [0, duration] too: an anchor at
   // exactly 0 or exactly the duration makes its corner segment a zero-width
   // span, which the worker rejects as reversed.
-  const lo = prev && prev !== own ? prev.t + ANCHOR_EPS_SEC : ANCHOR_EPS_SEC;
-  const hi =
-    next && next !== own ? next.t - ANCHOR_EPS_SEC : dur - ANCHOR_EPS_SEC;
+  let lo = prev && prev !== own ? prev.t : 0;
+  let hi = next && next !== own ? next.t : dur;
+  if (hasPrev) lo = Math.max(lo, _groupStripTime(f.groups[groupIx - 1]));
+  if (!_autoRealign && hasNext) hi = Math.min(hi, _groupStripTime(f.groups[groupIx + 1]));
+  lo += ANCHOR_EPS_SEC;
+  hi -= ANCHOR_EPS_SEC;
   return { lo, hi: Math.max(lo, hi) };
 }
 
@@ -4783,6 +4926,197 @@ function _realignSegmentViaWorker(segment, priorRef) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// The spans a fix changes (Werner Goebl's feedback, 2026-09-29): nothing
+// BEHIND a fix moves — behind it only the offsets follow, linearly, and in
+// audio mode the raster between the ticks; AHEAD, the refill reaches the next
+// anchor or the horizon (auto re-align), or only the fix's own group until
+// Re-align (auto re-align off). See _autoRealign.
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the reference's aligned music ends — the corner of a refill with no
+ * anchor or horizon ahead. Open-ended alignment's alignedTo, not the file's
+ * end: a corner there pulled the last notes +4.4 s into the applause on the
+ * HQ corpus (2026-09-29).
+ */
+function _pieceEndT(tA) {
+  const dur = _refDuration();
+  const rec = loadedAlignmentJSON?.body?.audio?.[_fix.refFile];
+  const to = rec && !Array.isArray(rec) ? Number(rec.alignedTo) : NaN;
+  return Number.isFinite(to) && to > tA + ANCHOR_EPS_SEC && to < dur ? to : dur;
+}
+
+/** Score↔ref: the span behind a fix of event i — from the previous group's
+ *  anchor event to i, its onsets KEPT, its offsets following linearly. Null
+ *  for the first group. */
+function _leftSpan(groupIx, i, t) {
+  const prevG = _fix.groups[groupIx - 1];
+  if (!prevG) return null;
+  const iA = _anchorEventOf(prevG);
+  if (!(iA < i)) return null;
+  return {
+    iA,
+    tA: scoreAlignment.ref_onset[iA],
+    iB: i,
+    tB: t,
+    interiorCount: i - iA - 1,
+    local: true,
+    keepOnsets: true,
+  };
+}
+
+/** Score↔ref: the refill ahead of event i at time t — to the next anchor or
+ *  the first onset group at or past the horizon, whichever comes first (that
+ *  group's current time is the corner), else to where the music ends. */
+function _aheadSpan(i, t) {
+  const f = _fix;
+  const refOn = scoreAlignment.ref_onset;
+  const { next } = neighbourAnchors(_corrections, i);
+  let iB = next ? next.i : f.nEvents;
+  let horizon = false;
+  if (Number.isFinite(_horizonSec)) {
+    const tH = t + _horizonSec;
+    for (let e = i + 1; e < iB; e++) {
+      if (refOn[e] >= tH && f.qOn[e] > f.qOn[e - 1]) {
+        iB = e;
+        horizon = true;
+        break;
+      }
+    }
+  }
+  const tB = horizon ? refOn[iB] : next ? next.t : _pieceEndT(t);
+  return { iA: i, tA: t, iB, tB, interiorCount: Math.max(0, iB - i - 1), horizon };
+}
+
+/** Score↔ref, auto re-align off: the fix's own group follows it, up to the
+ *  next group, which stays put until Re-align. */
+function _nextLocalSpan(groupIx, i, t) {
+  const f = _fix;
+  const nextG = f.groups[groupIx + 1];
+  const { next } = neighbourAnchors(_corrections, i);
+  let iB = nextG ? nextG.eventIxs[0] : f.nEvents;
+  if (next && next.i < iB) iB = next.i;
+  const tB = iB < f.nEvents ? scoreAlignment.ref_onset[iB] : _pieceEndT(t);
+  return { iA: i, tA: t, iB, tB, interiorCount: Math.max(0, iB - i - 1), local: true };
+}
+
+/**
+ * Audio mode: the raster samples behind a fix at refT that follow it
+ * linearly. The first sample past the previous tick is KEPT, and it is the
+ * fill's left knot, so the previous tick's projection (interpolated from the
+ * samples around it) cannot move. `tFloor` is the lowest target time the fix
+ * may take: past the previous tick and past that kept sample.
+ */
+function _leftGridSpan(groupIx, refT, t) {
+  const f = _fix;
+  const refGrid = alignmentGrids[f.refFile];
+  const grid = _targetGrid();
+  const prevG = f.groups[groupIx - 1];
+  const { prev } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
+  let refPrev = prevG ? scoreAlignment.ref_onset[prevG.eventIxs[0]] : refGrid[0];
+  if (prev && prev.refT > refPrev) refPrev = prev.refT;
+  const k0 = rasterAfter(refGrid, refPrev);
+  const kHi = rasterBefore(refGrid, refT);
+  let tFloor = prev && prev.refT >= refPrev - REF_T_EPS ? prev.t : _refToTarget(refPrev);
+  if (k0 <= kHi) tFloor = Math.max(tFloor, grid[k0]);
+  const kLo = k0 + 1;
+  return {
+    refA: k0 <= kHi ? refGrid[k0] : refPrev,
+    tA: k0 <= kHi ? grid[k0] : tFloor,
+    refB: refT,
+    tB: t,
+    kLo,
+    kHi,
+    interiorCount: Math.max(0, kHi - kLo + 1),
+    local: true,
+    tFloor,
+  };
+}
+
+/** Audio mode, auto re-align off: the raster samples between a fix and the
+ *  next tick follow it linearly; the last sample before the next tick is kept
+ *  (the next tick's projection cannot move). `tCeil` mirrors _leftGridSpan's
+ *  floor. */
+function _nextLocalGridSpan(groupIx, refT, t) {
+  const f = _fix;
+  const refGrid = alignmentGrids[f.refFile];
+  const grid = _targetGrid();
+  const last = refGrid.length - 1;
+  const nextG = f.groups[groupIx + 1];
+  const { next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
+  let refNext = nextG ? scoreAlignment.ref_onset[nextG.eventIxs[0]] : refGrid[last];
+  if (next && next.refT < refNext) refNext = next.refT;
+  const k1 = rasterBefore(refGrid, refNext);
+  const kLo = rasterAfter(refGrid, refT);
+  let tCeil = next && next.refT <= refNext + REF_T_EPS ? next.t : _refToTarget(refNext);
+  if (k1 >= kLo) tCeil = Math.min(tCeil, grid[k1]);
+  const kHi = k1 - 1;
+  return {
+    refA: refT,
+    tA: t,
+    refB: k1 >= kLo ? refGrid[k1] : refNext,
+    tB: k1 >= kLo ? grid[k1] : tCeil,
+    kLo,
+    kHi,
+    interiorCount: Math.max(0, kHi - kLo + 1),
+    local: true,
+    tCeil,
+  };
+}
+
+/** Audio mode: the grid refill ahead of a fix at (refT, t) — to the next
+ *  target anchor or the first raster sample at or past the horizon, whichever
+ *  comes first (that sample keeps its value as the corner), else to the
+ *  grid's frozen last sample. */
+function _aheadGridSpan(refT, t) {
+  const f = _fix;
+  const refGrid = alignmentGrids[f.refFile];
+  const grid = _targetGrid();
+  const last = refGrid.length - 1;
+  const { next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
+  const kLo = rasterAfter(refGrid, refT);
+  let kHi = next ? rasterBefore(refGrid, next.refT) : last - 1;
+  let refB = next ? next.refT : refGrid[last];
+  let tB = next ? next.t : grid[last];
+  let horizon = false;
+  if (Number.isFinite(_horizonSec)) {
+    const tH = t + _horizonSec;
+    for (let k = kLo; k <= kHi; k++) {
+      if (grid[k] >= tH) {
+        refB = refGrid[k];
+        tB = grid[k];
+        kHi = k - 1;
+        horizon = true;
+        break;
+      }
+    }
+  }
+  return {
+    refA: refT,
+    tA: t,
+    refB,
+    tB,
+    kLo,
+    kHi,
+    interiorCount: Math.max(0, kHi - kLo + 1),
+    horizon,
+  };
+}
+
+/** The pending (not yet re-aligned) fixes: add / drop one by its key. */
+function _addPending(f, key) {
+  const same = (p) =>
+    key.refT !== undefined ? Math.abs(p.refT - key.refT) <= REF_T_EPS : p.i === key.i;
+  if (!f.pending.some(same)) f.pending.push({ ...key });
+  f.exitFlushTried = false; // a new wait deserves its own refill at exit
+}
+function _dropPending(f, key) {
+  f.pending = f.pending.filter((p) =>
+    key.refT !== undefined ? Math.abs(p.refT - key.refT) > REF_T_EPS : p.i !== key.i,
+  );
+}
+
 /**
  * Commit an anchor on a group: 'drag' pins event i at a new time t and
  * auto-realigns the flanking segments (worker fix_realign on cached features,
@@ -4836,10 +5170,21 @@ async function _commitAnchor(groupIx, t, kind) {
     anchorOffsets: [],
     window: null,
   };
+  // Nothing behind a fix moves: the drag bounds keep a tick after the
+  // previous one, and a commit that gets here anyway is refused before the
+  // model changes.
+  const left = _leftSpan(groupIx, i, t);
+  if (!approve && left && !(left.tA < t)) {
+    _announce("Cannot anchor here: not before the previous onset.");
+    return;
+  }
   let segs;
   try {
-    segs = setAnchor(_corrections, { i, q: entry.q, t, kind, ts: Date.now() }, ctx)
-      .segments;
+    setAnchor(_corrections, { i, q: entry.q, t, kind, ts: Date.now() }, ctx);
+    segs = [
+      ...(left ? [left] : []),
+      _autoRealign ? _aheadSpan(i, t) : _nextLocalSpan(groupIx, i, t),
+    ];
   } catch (err) {
     _announce(`Cannot anchor here: ${err.message}`);
     return;
@@ -4863,19 +5208,26 @@ async function _commitAnchor(groupIx, t, kind) {
   );
   applyAnchorValue(refOn, i, t);
   let linearFilled = 0;
+  let localFilled = 0;
   let realigned = 0;
   try {
     for (const seg of segs) {
       let res;
-      if (seg.interiorCount <= 0) {
+      if (seg.interiorCount <= 0 || seg.local) {
         // Nothing to refill, but the left-boundary anchor's own OFFSET
         // still lives inside this span and must follow it: skipping here
         // left the offset stale, so a rightward drag beside an existing
         // anchor could leave offset ≤ onset and the synth rendered the
         // note as a 20 ms blip (the first-note stutter). A GAP span keeps
         // the note's length instead of stretching it across the applause.
+        // A LOCAL span (behind the fix, or its own group with auto re-align
+        // off) never goes to the worker: it follows linearly.
         if (seg.iA < 0) continue;
-        res = findGap(_corrections, seg.iA) ? _gapSpanFill(seg, entry) : _linearFill(seg);
+        res =
+          seg.interiorCount <= 0 && findGap(_corrections, seg.iA)
+            ? _gapSpanFill(seg, entry)
+            : _linearFill(seg);
+        if (seg.local) localFilled++;
       } else {
         const priorRef = refOn.slice(seg.iA + 1, seg.iB);
         try {
@@ -4976,7 +5328,13 @@ async function _commitAnchor(groupIx, t, kind) {
     );
   }
   _setRealignBusy(f, false);
-  f.lastCommit = { kind, i, t, realigned, linear: linearFilled, degenerate };
+  f.lastCommit = { kind, i, t, realigned, linear: linearFilled, local: localFilled, degenerate };
+  // Auto re-align off: the span ahead waits for Re-align (Shift+R).
+  const pending = !_autoRealign;
+  if (pending) {
+    entry.pendingAhead = true;
+    _addPending(f, { i });
+  }
   // The commit's console trail. Every "the note I fixed does not sound" report
   // so far has come down to one of three numbers: the note's duration (a
   // collapsed offset is floored at 20 ms), the peak actually rendered into the
@@ -5026,12 +5384,16 @@ async function _commitAnchor(groupIx, t, kind) {
   }
   _pushCommitEntry(entry);
   _syncCorrectionsHeader();
-  _setChip("ready", "Correction engine ready");
+  _setChip(
+    "ready",
+    pending ? "Pinned — the span ahead waits for Re-align (Shift+R)" : "Correction engine ready",
+  );
+  _syncRealignUi();
   _auditionRerender(entry.window.t0, entry.renderT1);
   _scheduleRedraw();
-  // Auto-replay from just before the previous anchor: the invalidated span
-  // starts there, so the ear re-checks exactly what the fix changed. Kept
-  // even when suppressed, because R replays it on demand.
+  // Auto-replay from just before the previous tick: the changed span starts
+  // there, so the ear re-checks exactly what the fix changed. Kept even when
+  // suppressed, because R replays it on demand.
   _lastReplay = {
     t0: entry.window.t0,
     fixedT: entry.t,
@@ -5128,14 +5490,24 @@ async function _commitGridAnchor(groupIx, t, kind) {
     window: null, // the target-time span the commit changed
     renderT1: null,
   };
+  // Nothing behind a fix moves (see _dragBounds and _leftGridSpan).
+  const left = _leftGridSpan(groupIx, refT, t);
+  if (!approve && !(left.tFloor < t)) {
+    _announce("Cannot anchor here: not before the previous onset.");
+    return;
+  }
   let segs;
   try {
-    segs = setTargetAnchor(
+    setTargetAnchor(
       _corrections,
       file,
       { refT, t, kind, ts: Date.now(), i, q: entry.q },
       ctx,
-    ).segments;
+    );
+    segs = [
+      left,
+      _autoRealign ? _aheadGridSpan(refT, t) : _nextLocalGridSpan(groupIx, refT, t),
+    ];
   } catch (err) {
     _announce(`Cannot anchor here: ${err.message}`);
     return;
@@ -5160,23 +5532,29 @@ async function _commitGridAnchor(groupIx, t, kind) {
   if (own) entry.own = { k: own.k, before: own.before, after: t };
   let realigned = 0;
   let linearFilled = 0;
+  let localFilled = 0;
   try {
     for (const seg of segs) {
       if (seg.interiorCount <= 0) continue;
       const rasterRef = refGrid.slice(seg.kLo, seg.kHi + 1);
       const priorT = grid.slice(seg.kLo, seg.kHi + 1);
       let times;
-      try {
-        const reply = await _realignGridViaWorker(seg, rasterRef, priorT);
-        if (_fix !== f) throw new Error("fix mode exited during the realign");
-        times = reply.result.times;
-        realigned++;
-      } catch (err) {
-        if (_fix === f && /too short to align/.test(err?.message || "")) {
-          times = _linearGridFill(seg, rasterRef);
-          linearFilled++;
-        } else {
-          throw err;
+      if (seg.local) {
+        times = _linearGridFill(seg, rasterRef);
+        localFilled++;
+      } else {
+        try {
+          const reply = await _realignGridViaWorker(seg, rasterRef, priorT);
+          if (_fix !== f) throw new Error("fix mode exited during the realign");
+          times = reply.result.times;
+          realigned++;
+        } catch (err) {
+          if (_fix === f && /too short to align/.test(err?.message || "")) {
+            times = _linearGridFill(seg, rasterRef);
+            linearFilled++;
+          } else {
+            throw err;
+          }
         }
       }
       const before = applyGridSegment(grid, seg, times);
@@ -5223,7 +5601,22 @@ async function _commitGridAnchor(groupIx, t, kind) {
   entry.window = { t0, t1: segs[segs.length - 1].tB };
   entry.renderT1 = t1;
   _setRealignBusy(f, false);
-  f.lastCommit = { kind, i, t, refT, file, realigned, linear: linearFilled, degenerate: 0 };
+  f.lastCommit = {
+    kind,
+    i,
+    t,
+    refT,
+    file,
+    realigned,
+    linear: linearFilled,
+    local: localFilled,
+    degenerate: 0,
+  };
+  const pending = !_autoRealign;
+  if (pending) {
+    entry.pendingAhead = true;
+    _addPending(f, { refT });
+  }
   const fmt = (v) => (Number.isFinite(v) ? v.toFixed(4) : String(v));
   console.log(
     `fix mode: ${kind} on ${file} at reference ${fmt(refT)} (event ${i}, bar ` +
@@ -5233,7 +5626,11 @@ async function _commitGridAnchor(groupIx, t, kind) {
   );
   _pushCommitEntry(entry);
   _syncCorrectionsHeader();
-  _setChip("ready", "Correction engine ready");
+  _setChip(
+    "ready",
+    pending ? "Pinned — the span ahead waits for Re-align (Shift+R)" : "Correction engine ready",
+  );
+  _syncRealignUi();
   _auditionRerender(t0, t1);
   _scheduleRedraw();
   _lastReplay = { t0, fixedT: t, passUntilT: entry.window.t1 };
@@ -5243,6 +5640,272 @@ async function _commitGridAnchor(groupIx, t, kind) {
   } else if (!_replaySuppressed) {
     _replayFix(_lastReplay);
   }
+}
+
+/** Resolve once no realign or batch is running (an exit or a Save may ask
+ *  for a Re-align while a commit is still in flight). */
+async function _whenIdle(f, timeoutMs = 30000) {
+  const t0 = performance.now();
+  while ((f.realignBusy || _batch) && _fix === f && performance.now() - t0 < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return _fix === f && !f.realignBusy && !_batch;
+}
+
+/**
+ * Re-align (Shift+R, the button; exit and Save call it too): refill the span
+ * AHEAD of every pending fix, in time order, each to its next anchor or the
+ * horizon as they stand now. One `fix-realign` history entry covers the lot,
+ * so undo takes the refill back and leaves the pinned ticks. Resolves true
+ * when nothing is left pending.
+ */
+async function _realignPending() {
+  const f = _fix;
+  if (!f || !f.pending.length) return true;
+  if (!f.engineReady) {
+    _announce(_notEditableWhy());
+    return false;
+  }
+  if (!(await _whenIdle(f))) return false;
+  const audio = f.mode === "audio";
+  const file = f.targetFile;
+  const refOn = scoreAlignment.ref_onset;
+  const refOff = scoreAlignment.ref_offset;
+  const grid = audio ? _targetGrid() : null;
+  const refGrid = audio ? alignmentGrids[f.refFile] : null;
+  const items = f.pending
+    .map((p) => (audio ? findTargetAnchor(_corrections, file, p.refT) : findAnchor(_corrections, p.i)))
+    .filter(Boolean)
+    .sort((a, b) => a.t - b.t);
+  const entry = {
+    type: "fix-realign",
+    mode: f.mode,
+    file: audio ? file : null,
+    keys: f.pending.map((p) => ({ ...p })),
+    spans: [],
+    i: items.length ? items[0].i : null,
+    barHint: items.length && Number.isInteger(items[0].i) ? _barOfQuarter(f.qOn[items[0].i]) : null,
+    window: null,
+    renderT1: null,
+  };
+  _setRealignBusy(f, true);
+  _setChip("realign", `Re-aligning ${items.length} span${items.length === 1 ? "" : "s"} ahead…`);
+  let realigned = 0;
+  let linearFilled = 0;
+  try {
+    for (const a of items) {
+      if (audio) {
+        const seg = _aheadGridSpan(a.refT, a.t);
+        if (seg.interiorCount <= 0) continue;
+        const rasterRef = refGrid.slice(seg.kLo, seg.kHi + 1);
+        const priorT = grid.slice(seg.kLo, seg.kHi + 1);
+        let times;
+        try {
+          const reply = await _realignGridViaWorker(seg, rasterRef, priorT);
+          if (_fix !== f) throw new Error("fix mode exited during the realign");
+          times = reply.result.times;
+          realigned++;
+        } catch (err) {
+          if (_fix !== f || !/too short to align/.test(err?.message || "")) throw err;
+          times = _linearGridFill(seg, rasterRef);
+          linearFilled++;
+        }
+        const before = applyGridSegment(grid, seg, times);
+        entry.spans.push({
+          kLo: seg.kLo,
+          interiorCount: seg.interiorCount,
+          before: before.before,
+          after: times.slice(),
+          tA: seg.tA,
+          tB: seg.tB,
+          refA: seg.refA,
+          refB: seg.refB,
+        });
+        continue;
+      }
+      const seg = _aheadSpan(a.i, a.t);
+      let res;
+      if (seg.interiorCount <= 0) {
+        res = findGap(_corrections, seg.iA) ? _gapSpanFill(seg, { i: -1 }) : _linearFill(seg);
+      } else {
+        try {
+          const reply = await _realignSegmentViaWorker(seg, refOn.slice(seg.iA + 1, seg.iB));
+          if (_fix !== f) throw new Error("fix mode exited during the realign");
+          res = reply.result;
+          realigned++;
+        } catch (err) {
+          if (_fix !== f || !/too short to align/.test(err?.message || "")) throw err;
+          res = _linearFill(seg);
+          linearFilled++;
+        }
+      }
+      const before = applySegment(refOn, refOff, seg, res.ref_onset, res.ref_offset);
+      const span = {
+        iA: seg.iA,
+        iB: seg.iB,
+        interiorCount: seg.interiorCount,
+        beforeOn: before.beforeOn,
+        beforeOff: before.beforeOff,
+        afterOn: res.ref_onset.slice(),
+        afterOff: res.ref_offset.slice(),
+        anchorOffset: null,
+        tA: seg.tA,
+        tB: seg.tB,
+      };
+      if (res.anchor_a_offset != null) {
+        span.anchorOffset = { i: seg.iA, before: refOff[seg.iA], after: res.anchor_a_offset };
+        refOff[seg.iA] = res.anchor_a_offset;
+      }
+      entry.spans.push(span);
+    }
+  } catch (err) {
+    _undoRealignData(entry, { restorePending: false });
+    console.error("fix mode: re-align of the pending spans failed, rolled back", err);
+    if (_fix === f) {
+      _setRealignBusy(f, false);
+      _setChip("error", `Re-align failed (${err.message}) — the spans still wait`);
+      _syncRealignUi();
+      _scheduleRedraw();
+    }
+    return false;
+  }
+  _setRealignBusy(f, false);
+  f.pending = [];
+  f.lastRealign = { spans: entry.spans.length, realigned, linear: linearFilled };
+  if (entry.spans.length) {
+    const t0 = Math.min(...entry.spans.map((s) => s.tA));
+    const t1 = Math.max(...entry.spans.map((s) => s.tB));
+    entry.window = { t0, t1 };
+    entry.renderT1 = _renderEndOf(t1, audio ? entry.spans[0].refA : null, audio ? entry.spans[entry.spans.length - 1].refB : null);
+    if (audio) {
+      _dirtyGridFiles.add(file);
+      _recomputeProjection(f);
+    }
+    pushFixUndoEntry(entry);
+    _syncCorrectionsHeader();
+    _auditionRerender(t0, entry.renderT1);
+    _lastReplay = { t0, fixedT: t0, passUntilT: t1 };
+    if (!_replaySuppressed) _replayFix(_lastReplay);
+  }
+  _setChip("ready", "Correction engine ready");
+  _syncRealignUi();
+  _scheduleRedraw();
+  return true;
+}
+
+/** How far the right ear must be re-rendered after a change ending at t1:
+ *  out to the furthest sounding end of any note starting before it (score↔ref
+ *  onsets, or — audio mode — the projected notes whose reference onsets lie
+ *  in [refA, refB]). */
+function _renderEndOf(t1, refA, refB) {
+  const f = _fix;
+  const refOn = scoreAlignment.ref_onset;
+  let end = t1;
+  if (f.mode === "audio") {
+    const { on: pOn, off: pOff } = _audTables(f);
+    const iLo = Math.max(0, _lowerBound(refOn, refA) - 1);
+    for (let k = iLo; k < f.nEvents && refOn[k] <= refB + 1e-9; k++) {
+      const e = pOn[k] + _soundingDur(pOn, pOff, k);
+      if (Number.isFinite(e) && e > end) end = e;
+    }
+    return end;
+  }
+  const refOff = scoreAlignment.ref_offset;
+  for (let k = 0; k < f.nEvents && refOn[k] <= t1 + 1e-9; k++) {
+    const e = refOn[k] + _soundingDur(refOn, refOff, k);
+    if (Number.isFinite(e) && e > end) end = e;
+  }
+  return end;
+}
+
+/** Undo a Re-align's data (snapshot semantics, reverse order); with a session
+ *  on the same recording open, its spans wait again. */
+function _undoRealignData(entry, { restorePending = true } = {}) {
+  if (entry.mode === "audio") {
+    const grid = alignmentGrids[entry.file];
+    if (grid) {
+      for (let s = entry.spans.length - 1; s >= 0; s--) {
+        const sp = entry.spans[s];
+        for (let k = 0; k < sp.interiorCount; k++) grid[sp.kLo + k] = sp.before[k];
+      }
+      _dirtyGridFiles.add(entry.file);
+    }
+  } else {
+    const refOn = scoreAlignment?.ref_onset;
+    const refOff = scoreAlignment?.ref_offset;
+    if (refOn && refOff) {
+      for (let s = entry.spans.length - 1; s >= 0; s--) {
+        const sp = entry.spans[s];
+        for (let k = 0; k < sp.interiorCount; k++) {
+          refOn[sp.iA + 1 + k] = sp.beforeOn[k];
+          refOff[sp.iA + 1 + k] = sp.beforeOff[k];
+        }
+        if (sp.anchorOffset) refOff[sp.anchorOffset.i] = sp.anchorOffset.before;
+      }
+    }
+  }
+  const f = _fix;
+  if (restorePending && f && _sessionOwns(f, entry)) {
+    for (const k of entry.keys) _addPending(f, k);
+  }
+}
+
+/** Redo a Re-align's data; its spans no longer wait. */
+function _redoRealignData(entry) {
+  if (entry.mode === "audio") {
+    const grid = alignmentGrids[entry.file];
+    if (grid) {
+      for (const sp of entry.spans) {
+        for (let k = 0; k < sp.interiorCount; k++) grid[sp.kLo + k] = sp.after[k];
+      }
+      _dirtyGridFiles.add(entry.file);
+    }
+  } else {
+    const refOn = scoreAlignment?.ref_onset;
+    const refOff = scoreAlignment?.ref_offset;
+    if (refOn && refOff) {
+      for (const sp of entry.spans) {
+        for (let k = 0; k < sp.interiorCount; k++) {
+          refOn[sp.iA + 1 + k] = sp.afterOn[k];
+          refOff[sp.iA + 1 + k] = sp.afterOff[k];
+        }
+        if (sp.anchorOffset) refOff[sp.anchorOffset.i] = sp.anchorOffset.after;
+      }
+    }
+  }
+  const f = _fix;
+  if (f && _sessionOwns(f, entry)) {
+    for (const k of entry.keys) _dropPending(f, k);
+  }
+  _syncCorrectionsHeader();
+}
+
+/** Whether the open session is the one a history entry's pending spans
+ *  belong to (the same mode, and in audio mode the same recording). */
+function _sessionOwns(f, entry) {
+  const audio =
+    entry.type === "fix-grid-anchor" || (entry.type === "fix-realign" && entry.mode === "audio");
+  return audio ? f.mode === "audio" && f.targetFile === entry.file : f.mode !== "audio";
+}
+
+/** A pinned-but-pending fix going back / forward through history: its span
+ *  stops / starts waiting. */
+function _pendingOnHop(entry, redo) {
+  const f = _fix;
+  if (!entry.pendingAhead || !f || !_sessionOwns(f, entry)) return;
+  const key = entry.type === "fix-grid-anchor" ? { refT: entry.refT } : { i: entry.i };
+  if (redo) _addPending(f, key);
+  else _dropPending(f, key);
+}
+
+/** The Re-align button's state: enabled with a count while spans wait. */
+function _syncRealignUi() {
+  const f = _fix;
+  const btn = f?.els?.realignBtn;
+  if (!btn) return;
+  const n = f.pending.length;
+  btn.disabled = !n || f.realignBusy;
+  btn.textContent = n ? `Re-align ${n} (Shift+R)` : "Re-align (Shift+R)";
 }
 
 /** Reverse a partially applied grid commit (worker error, exit mid-flight). */
@@ -5680,7 +6343,7 @@ async function _snapSelectionToOnsets() {
       `${batch.shared} shared a ${label} with a neighbour and ${batch.shared === 1 ? "was" : "were"} left to the realign`,
     );
   }
-  if (batch.blocked) parts.push(`${batch.blocked} blocked by a neighbouring anchor`);
+  if (batch.blocked) parts.push(`${batch.blocked} blocked by a neighbour`);
   if (batch.already) parts.push(`${batch.already} already there`);
   _announce(
     `Moved ${batch.moved} of ${batch.requested} onset${batch.requested === 1 ? "" : "s"} ` +
@@ -5721,6 +6384,7 @@ function _replayFix(r) {
  */
 function _linearFill(seg) {
   const f = _fix;
+  const refOn = scoreAlignment.ref_onset;
   const qA = seg.iA >= 0 ? f.qOn[seg.iA] : 0;
   const qB = seg.iB < f.nEvents ? f.qOn[seg.iB] : f.qOff[f.nEvents - 1];
   const scale = (seg.tB - seg.tA) / Math.max(qB - qA, 1e-9);
@@ -5738,8 +6402,9 @@ function _linearFill(seg) {
   const mapOff = (q) => (q <= qB ? clip(lin(q)) : Math.min(lin(q), dur));
   const on = [];
   const off = [];
+  // keepOnsets: the span BEHIND a fix, where nothing moves but the offsets.
   for (let e = seg.iA + 1; e < seg.iB; e++) {
-    on.push(clip(lin(f.qOn[e])));
+    on.push(seg.keepOnsets ? refOn[e] : clip(lin(f.qOn[e])));
     off.push(mapOff(f.qOff[e]));
   }
   return {
@@ -5838,18 +6503,27 @@ export function applyFixCorrectionUndo(entry) {
     _afterHistoryHop(entry, "Undid");
     return;
   }
+  if (entry.type === "fix-realign") {
+    _undoRealignData(entry);
+    _afterHistoryHop(entry, "Undid", entry.spans.length);
+    _syncRealignUi();
+    return;
+  }
   if (entry.type === "fix-anchor-batch") {
     // A "move to nearest onset" batch: its anchors come off in reverse, then
     // one hop covering the whole span.
     for (let k = entry.entries.length - 1; k >= 0; k--) _undoEntryData(entry.entries[k]);
     _afterHistoryHop(entry.entries[0], "Undid", entry.entries.length, _batchWindow(entry));
+    _syncRealignUi();
     return;
   }
   _undoEntryData(entry);
   _afterHistoryHop(entry, "Undid");
+  _syncRealignUi();
 }
 
 function _undoEntryData(entry) {
+  _pendingOnHop(entry, false);
   if (entry.type === "fix-grid-anchor") {
     _undoGridEntryData(entry);
     return;
@@ -5878,16 +6552,25 @@ export function applyFixCorrectionRedo(entry) {
     _afterHistoryHop(entry, "Redid");
     return;
   }
+  if (entry.type === "fix-realign") {
+    _redoRealignData(entry);
+    _afterHistoryHop(entry, "Redid", entry.spans.length);
+    _syncRealignUi();
+    return;
+  }
   if (entry.type === "fix-anchor-batch") {
     for (const e of entry.entries) _redoEntryData(e);
     _afterHistoryHop(entry.entries[0], "Redid", entry.entries.length, _batchWindow(entry));
+    _syncRealignUi();
     return;
   }
   _redoEntryData(entry);
   _afterHistoryHop(entry, "Redid");
+  _syncRealignUi();
 }
 
 function _redoEntryData(entry) {
+  _pendingOnHop(entry, true);
   if (entry.type === "fix-grid-anchor") {
     _redoGridEntryData(entry);
     return;
@@ -5934,7 +6617,8 @@ function _batchWindow(batch) {
 
 function _afterHistoryHop(entry, verb, count = 1, win = null) {
   const f = _fix;
-  const gridEntry = entry.type === "fix-grid-anchor";
+  const gridEntry =
+    entry.type === "fix-grid-anchor" || (entry.type === "fix-realign" && entry.mode === "audio");
   // A grid hop is visible only to a session on THAT recording; any other open
   // session neither shows nor plays it, so it is announced like an off-screen
   // hop and the main view catches up at exit.
@@ -5952,7 +6636,10 @@ function _afterHistoryHop(entry, verb, count = 1, win = null) {
     const what =
       entry.type === "fix-gap"
         ? "unscored-audio gap"
-        : gridEntry
+        : entry.type === "fix-realign"
+          ? `re-alignment of ${count} span${count === 1 ? "" : "s"}` +
+            (gridEntry ? ` of ${entry.file}` : "")
+          : gridEntry
           ? `${count > 1 ? `${count} ` : ""}alignment correction${count > 1 ? "s" : ""} of ${entry.file}`
           : count > 1
             ? `${count} alignment corrections`
@@ -6108,8 +6795,18 @@ function _onFixKeydown(e) {
       break;
     }
     case "KeyR":
-      if (e.altKey || e.shiftKey) {
+      if (e.altKey) {
         handled = false;
+        break;
+      }
+      if (e.shiftKey) {
+        // Shift+R: Re-align the spans ahead of the pinned fixes (a floating
+        // nudge commits first — it is a fix like the others).
+        _commitPendingNudge();
+        if (!f.pending.length) _announce("Nothing waits for Re-align.");
+        else {
+          _realignPending().catch((err) => console.error("fix mode: re-align failed:", err));
+        }
         break;
       }
       // Deliberately does NOT commit a floating nudge: R means "let me hear
@@ -6498,6 +7195,11 @@ export function fixTestState() {
       ? { startT: f.drag.startT, curT: f.drag.curT }
       : null,
     lastCommit: f.lastCommit ? { ...f.lastCommit } : null,
+    autoRealign: _autoRealign,
+    horizonSec: _horizonSec,
+    pending: f.pending.map((p) => ({ ...p })),
+    pendingSpans: (f.pendingSpans || []).map((s) => ({ ...s })),
+    lastRealign: f.lastRealign ? { ...f.lastRealign } : null,
     lastGap: f.lastGap ? { ...f.lastGap } : null,
     gapBands: f.gapBands ?? 0,
     relayouts: f.relayouts ?? 0,

@@ -76,6 +76,7 @@ import {
   applyFixCorrectionRedo,
   fixCorrectionsDirty,
   fixRevertCorrections,
+  fixFlushPending,
 } from "./fix-mode.js";
 import {
   initAnnotationV6,
@@ -3563,8 +3564,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // Download JSON button
   const dlBtn = document.getElementById("download-json-btn");
   if (dlBtn) {
-    dlBtn.addEventListener("click", () => {
+    dlBtn.addEventListener("click", async () => {
       if (!loadedAlignmentJSON) return;
+      // Spans a correction session still has waiting for Re-align are
+      // refilled first: a saved file is never half-applied.
+      if (!(await fixFlushPending())) return;
       // Phase E will serialise V6 annotation state into loadedAlignmentJSON
       // inside this hook. For now it just clears V6's per-annotation
       // hasUnsavedChanges flags, which in turn pushes the central indicator
@@ -3761,7 +3765,8 @@ document.addEventListener("DOMContentLoaded", () => {
       case "fix-anchor":
       case "fix-anchor-batch":
       case "fix-gap":
-      case "fix-grid-anchor": {
+      case "fix-grid-anchor":
+      case "fix-realign": {
         // Snapshot semantics: the entry carries its before/after values, so
         // fix-mode applies the hop without the alignment worker; the same
         // entry object shuttles between the stacks.
@@ -3833,7 +3838,8 @@ document.addEventListener("DOMContentLoaded", () => {
       case "fix-anchor":
       case "fix-anchor-batch":
       case "fix-gap":
-      case "fix-grid-anchor": {
+      case "fix-grid-anchor":
+      case "fix-realign": {
         applyFixCorrectionRedo(entry);
         _undoStack.push(entry);
         break;
@@ -3881,6 +3887,8 @@ document.addEventListener("DOMContentLoaded", () => {
         return `alignment anchors (${entry.count})`;
       case "fix-gap":
         return "unscored-audio gap";
+      case "fix-realign":
+        return entry.spans.length === 1 ? "re-alignment" : `re-alignment (${entry.spans.length} spans)`;
       default:
         return "";
     }

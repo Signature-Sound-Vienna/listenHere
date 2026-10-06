@@ -81,6 +81,7 @@ import {
 import {
   initAnnotationV6,
   commitAnnotationsToAlignment,
+  serializeAnnotations,
   loadAnnotationsFromAlignment,
   maybeSyncV6Regions,
   setActiveRegionStart,
@@ -126,6 +127,23 @@ import {
   seekToActiveMarker,
   persistMarkers,
 } from "./engine/markers.js";
+import {
+  RECOVERY_FORMAT,
+  newSessionId,
+  pieceFingerprint,
+  listSnapshots,
+  readSnapshot,
+  removeSnapshot,
+  pruneSnapshots,
+  writeSnapshot,
+  contentSignature,
+  offersFor,
+  restoredHeader,
+  describeSnapshot,
+  describeWhen,
+  alignmentFileName,
+  IN_BROWSER_SOURCE,
+} from "./engine/session-recovery.js";
 // Preserve the public API: annotation/waveform-interactions.js reaches the
 // per-waveform renderer registry through listen.js rather than importing the
 // engine module directly, as it did for the overlay wrappers before increment
@@ -1283,12 +1301,28 @@ export function pushFixUndoEntry(entry) {
 // from _changeCounter so a Solid post can clear annotation dirtiness without
 // affecting the alignment-data dirty flag.
 let _annoChangesPending = false;
+// A wizard alignment taken to this view without being saved: the alignment
+// itself is unsaved work. Set by the session the hand-off starts (via the
+// pending flag), cleared by Save data, and false for every other load.
+let _alignmentNeverSaved = false;
+let _pendingNeverSaved = false;
 export function setAnnoChangesPending(v) {
   _annoChangesPending = !!v;
   updateDirtyState();
 }
 // Revert: original grids captured when alignment first loads
 const _alignOriginalGrids = {};
+/** Whether any recording's grid differs from its as-loaded copy. */
+function _gridsChangedSinceLoad() {
+  for (const [filename, original] of Object.entries(_alignOriginalGrids)) {
+    const current = alignmentGrids[filename];
+    if (!current || current.length !== original.length) return true;
+    for (let i = 0; i < original.length; i++) {
+      if (current[i] !== original[i]) return true;
+    }
+  }
+  return false;
+}
 // Drag markers: whether markers are currently draggable
 export let dragMarkersEnabled = false;
 // Track whether pulse hints have been shown (first-time tooltips)
@@ -1984,22 +2018,13 @@ export function swapCurrentAudio(newAudio) {
 }
 
 export function updateDirtyState() {
-  const isDirty =
-    _changeCounter !== _savedAtCounter || _annoChangesPending;
-  const dlBtn = document.getElementById("download-json-btn");
-  if (dlBtn) {
-    dlBtn.classList.toggle("json-dirty", isDirty);
-    dlBtn.title = isDirty
-      ? "Download alignment data (You have unsaved changes!)"
-      : "Download alignment data";
-  }
-  const ctrl = document.getElementById("nav-middle-toggle");
-  if (ctrl) {
-    ctrl.classList.toggle("json-dirty", isDirty);
-    ctrl.title = isDirty
-      ? "Collapse / expand controls (You have unsaved changes!)"
-      : "Collapse / expand controls";
-  }
+  const isDirty = _hasUnsavedWork();
+  document.getElementById("download-json-btn")?.classList.toggle("json-dirty", isDirty);
+  document.getElementById("nav-middle-toggle")?.classList.toggle("json-dirty", isDirty);
+  _refreshDirtyTitles();
+  // Every change path ends here, which makes it the one place to hook the
+  // recovery snapshot (debounced; see _scheduleRecoveryWrite).
+  _scheduleRecoveryWrite();
 }
 
 /**
@@ -2775,8 +2800,422 @@ let _approvedReplacement = null;
  * flag. Both replacement paths ask this before discarding anything.
  */
 function _hasUnsavedWork() {
-  return _annoChangesPending || _changeCounter !== _savedAtCounter;
+  return (
+    _annoChangesPending || _changeCounter !== _savedAtCounter || _alignmentNeverSaved
+  );
 }
+
+// ---------------------------------------------------------------------------
+// Session recovery (0.85.0). The format and its reasoning live in
+// engine/session-recovery.js; this is the timing and the UI. One session per
+// completed load: it starts at the end of setGrids, stops at the start of the
+// next one, and reads the header from the alignment object it started with —
+// not loadedAlignmentJSON, which the file picker rebinds to an incoming file
+// before that file is loaded.
+// ---------------------------------------------------------------------------
+
+/** {id, fingerprint, source, recordings, startedAt, json, written} or null. */
+let _recovery = null;
+let _recoveryTimer = null;
+/** The snapshot a restore is loading; adopted by the setGrids it triggers. */
+let _pendingRestore = null;
+const RECOVERY_DEBOUNCE_MS = 1500;
+
+function _recoveryStorage() {
+  try {
+    return window.localStorage || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _recordingKeys(json) {
+  return Object.keys(json?.body?.audio || {}).filter((k) => k !== SYNTH_MEI_KEY);
+}
+
+/** What the session holds now, in snapshot form (header + annotations). */
+function _recoveryPayload() {
+  return {
+    header: { ...(_recovery.json.header || {}), markers: [...markers] },
+    annotations: serializeAnnotations(),
+  };
+}
+
+function _writeRecoveryNow() {
+  clearTimeout(_recoveryTimer);
+  _recoveryTimer = null;
+  const store = _recoveryStorage();
+  if (!_recovery || !store) return;
+  const dirty = _hasUnsavedWork();
+  // A clean session that never had a snapshot needs none; one that did must
+  // record that it is now clean, so it is not offered back.
+  if (!dirty && !_recovery.written) return;
+  const { header, annotations } = _recoveryPayload();
+  const ok = writeSnapshot(store, {
+    v: RECOVERY_FORMAT,
+    id: _recovery.id,
+    fingerprint: _recovery.fingerprint,
+    source: _recovery.source,
+    recordings: _recovery.recordings,
+    startedAt: _recovery.startedAt,
+    updatedAt: Date.now(),
+    dirty,
+    header,
+    annotations,
+  });
+  if (ok) {
+    _recovery.written = true;
+    _recovery.lastWrittenAt = Date.now();
+    _refreshDirtyTitles(); // the tooltip names the kept copy and its time
+  }
+}
+
+function _scheduleRecoveryWrite() {
+  if (!_recovery) return;
+  clearTimeout(_recoveryTimer);
+  _recoveryTimer = setTimeout(_writeRecoveryNow, RECOVERY_DEBOUNCE_MS);
+}
+
+/** Write anything pending, then end the session (start of a load). */
+function _endRecoverySession() {
+  if (_recoveryTimer) _writeRecoveryNow();
+  _recovery = null;
+}
+
+/**
+ * Begin the session for the load that just completed: carry on a restored
+ * one, or start fresh and offer back any unsaved work for this piece.
+ */
+function _startRecoverySession(json) {
+  const restoring = _pendingRestore;
+  _pendingRestore = null;
+  // A restore reloads the same alignment, so it keeps the flag; any other
+  // load takes it from the wizard hand-off, or clears it.
+  if (!restoring) _alignmentNeverSaved = _pendingNeverSaved;
+  _pendingNeverSaved = false;
+  const recordings = _recordingKeys(json);
+  _recovery = {
+    id: restoring ? restoring.id : newSessionId(),
+    fingerprint: pieceFingerprint(json?.header?.meiUri, recordings),
+    source: restoring?.source || workId || "alignment",
+    recordings: recordings.length,
+    startedAt: restoring ? restoring.startedAt : Date.now(),
+    json,
+    written: !!restoring,
+  };
+  const store = _recoveryStorage();
+  if (!store) return;
+  pruneSnapshots(store, { keepId: _recovery.id });
+  if (restoring) {
+    // The restored work is in memory but on no disk: say so, and keep its
+    // snapshot current under its original id.
+    bumpChangeCounter();
+    updateDirtyState();
+    _hideRecoveryBanner();
+    return;
+  }
+  if (_alignmentNeverSaved) updateDirtyState(); // light the unsaved dot
+  const { header, annotations } = _recoveryPayload();
+  const offers = offersFor(store, {
+    fingerprint: _recovery.fingerprint,
+    currentId: _recovery.id,
+    loadedSignature: contentSignature(header, annotations),
+  });
+  if (offers.length) _showRecoveryBanner(offers);
+  else _hideRecoveryBanner();
+}
+
+function _hideRecoveryBanner() {
+  document.getElementById("recovery-banner")?.remove();
+}
+
+function _showRecoveryBanner(offers) {
+  _hideRecoveryBanner();
+  const items = offers.slice(0, 5).map((s) =>
+    el("li", { class: "recovery-item" }, [
+      el("span", { class: "recovery-desc" }, [
+        s.header?.label ? el("strong", { class: "recovery-label", text: s.header.label }) : null,
+        s.header?.label ? ", " : null,
+        el("strong", { text: describeWhen(s.updatedAt) }),
+        " — " + describeSnapshot(s) + ", from ",
+        el("em", { text: _sourceText(s.source) }),
+      ]),
+      el("button", {
+        type: "button",
+        class: "recovery-restore",
+        text: "Restore",
+        onclick: () => _restoreSnapshot(s.id),
+      }),
+      el("button", {
+        type: "button",
+        class: "recovery-discard",
+        text: "Discard",
+        title: "Delete this unsaved work for good",
+        onclick: (ev) => {
+          const store = _recoveryStorage();
+          if (store) removeSnapshot(store, s.id);
+          ev.currentTarget.closest(".recovery-item")?.remove();
+          if (!document.querySelector("#recovery-banner .recovery-item")) {
+            _hideRecoveryBanner();
+          }
+        },
+      }),
+    ]),
+  );
+  const banner = el("div", { id: "recovery-banner", class: "recovery-ui", role: "alert" }, [
+    el("p", {
+      class: "recovery-title",
+      text:
+        offers.length === 1
+          ? "Unsaved work for this piece was found from an earlier session."
+          : "Unsaved work for this piece was found from earlier sessions.",
+    }),
+    el("ul", { class: "recovery-list" }, items),
+    el("button", {
+      type: "button",
+      class: "recovery-later",
+      text: "Not now",
+      title: "Hide this; the work stays recoverable",
+      onclick: _hideRecoveryBanner,
+    }),
+  ]);
+  document.body.appendChild(banner);
+}
+
+/** Load the snapshot's header and annotations over the loaded grids. */
+async function _restoreSnapshot(id) {
+  const store = _recoveryStorage();
+  const snap = store && readSnapshot(store, id);
+  if (!snap || !loadedAlignmentJSON) return;
+  const merged = {
+    ...loadedAlignmentJSON,
+    header: restoredHeader(loadedAlignmentJSON.header, snap.header),
+    annotations: snap.annotations || [],
+  };
+  _pendingRestore = snap;
+  await setGrids(merged);
+  // Declined (setGrids asked about unsaved edits and was told no).
+  if (_pendingRestore === snap) _pendingRestore = null;
+}
+
+/** The file picker's note on unsaved work, naming the files it needs. */
+function _renderPickerRecoveryNotice() {
+  const host = document.getElementById("file-picker-recovery");
+  if (!host) return;
+  const store = _recoveryStorage();
+  const pending = store
+    ? listSnapshots(store).filter(
+        // A never-saved wizard alignment has no files to load: not listed.
+        (s) => s.dirty && s.id !== _recovery?.id && s.source !== IN_BROWSER_SOURCE,
+      )
+    : [];
+  host.replaceChildren();
+  host.hidden = !pending.length;
+  if (!pending.length) return;
+  host.append(
+    el("p", {
+      class: "recovery-title",
+      text: "Unsaved work from an earlier session. Load these files to restore it:",
+    }),
+    el(
+      "ul",
+      { class: "recovery-list" },
+      pending.slice(0, 3).map((s) =>
+        el("li", { class: "recovery-item" }, [
+          el("span", { class: "recovery-desc" }, [
+            s.header?.label ? el("strong", { class: "recovery-label", text: s.header.label }) : null,
+            s.header?.label ? ", " : null,
+            el("strong", { text: describeWhen(s.updatedAt) }),
+            " — ",
+            el("em", { text: _sourceText(s.source) }),
+            " and its " + s.recordings + " recording" +
+              (s.recordings === 1 ? "" : "s") + "; " + describeSnapshot(s),
+          ]),
+          el("button", {
+            type: "button",
+            class: "recovery-discard",
+            text: "Discard",
+            title: "Delete this unsaved work for good",
+            onclick: () => {
+              removeSnapshot(store, s.id);
+              _renderPickerRecoveryNotice();
+            },
+          }),
+        ]),
+      ),
+    ),
+  );
+}
+
+/** How a snapshot's source reads in the recovery notes. */
+function _sourceText(source) {
+  return source === IN_BROWSER_SOURCE
+    ? "an alignment made in the wizard and never saved"
+    : source;
+}
+
+/** "alignment.json" from a file name or a URL. */
+function _baseName(source) {
+  return String(source || "").split(/[\\/]/).pop() || String(source || "");
+}
+
+function _clockTime(ms) {
+  try {
+    return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  } catch (_) {
+    return new Date(ms).toISOString().slice(11, 16);
+  }
+}
+
+/**
+ * What is unsaved, in words, and what this browser holds of it — for the
+ * leave dialog and the unsaved-changes tooltip.
+ */
+function _unsavedSummary() {
+  const unsaved = [];
+  if (_alignmentNeverSaved) unsaved.push("the alignment itself");
+  const anns = v6State.getAll().filter((a) => a.hasUnsavedChanges);
+  if (anns.length) {
+    const names = anns.map((a) => a.label || "untitled");
+    unsaved.push(
+      anns.length + " annotation" + (anns.length === 1 ? "" : "s") +
+        " (" + names.slice(0, 3).join(", ") + (names.length > 3 ? ", …" : "") + ")",
+    );
+  }
+  if (_changeCounter !== _savedAtCounter) {
+    unsaved.push("markers, grouping, and/or alignment corrections");
+  }
+  // The snapshot holds the header and the annotations, never the grids.
+  const correctionsNotKept = fixCorrectionsDirty() || _gridsChangedSinceLoad();
+  const kept = _recovery?.written
+    ? {
+        name: _recovery.json?.header?.label || "",
+        at: _recovery.lastWrittenAt,
+        file: _baseName(_recovery.source),
+        recordings: _recovery.recordings,
+      }
+    : null;
+  // A wizard alignment never saved has no file to restore the copy onto.
+  const neverSaved = _alignmentNeverSaved;
+  return { unsaved, correctionsNotKept, kept, neverSaved };
+}
+
+function _refreshDirtyTitles() {
+  const isDirty = _hasUnsavedWork();
+  let detail = "";
+  if (isDirty) {
+    const { unsaved, correctionsNotKept, kept, neverSaved } = _unsavedSummary();
+    detail = " — you have unsaved changes: " + unsaved.join("; ");
+    if (neverSaved) {
+      detail += "\nThis alignment has not been saved to a file yet; save data to keep it.";
+    } else if (kept) {
+      detail +=
+        `\nKept in this browser${kept.name ? ` as "${kept.name}"` : ""} ` +
+        `(${_clockTime(kept.at)}); ` +
+        "load the same files again to get it back.";
+    }
+    if (correctionsNotKept) {
+      detail += "\nAlignment corrections are not kept in this browser.";
+    }
+  }
+  const dlBtn = document.getElementById("download-json-btn");
+  if (dlBtn) dlBtn.title = "Download alignment data" + detail;
+  const ctrl = document.getElementById("nav-middle-toggle");
+  if (ctrl) ctrl.title = "Collapse / expand controls" + detail;
+}
+
+/** The app's own leave dialog, for links that leave the page. */
+async function _confirmLeave() {
+  if (_recovery) _writeRecoveryNow(); // so what it says is kept, is
+  const { unsaved, correctionsNotKept, kept, neverSaved } = _unsavedSummary();
+  const lines = unsaved.map((t) =>
+    el("li", { class: "lh-v6-confirm-line removed", text: "− Unsaved: " + t }),
+  );
+  lines.push(
+    neverSaved
+      ? el("li", {
+          class: "lh-v6-confirm-line removed",
+          text:
+            "− This alignment has not been saved to a file yet. Without the " +
+            "file, the copy kept in this browser cannot be restored: save data first.",
+        })
+      : kept
+      ? el("li", {
+          class: "lh-v6-confirm-line neutral",
+          text:
+            `✓ Kept in this browser${kept.name ? ` as "${kept.name}"` : ""} ` +
+            `(${_clockTime(kept.at)}). ` +
+            `To get it back, load ${kept.file} and its ${kept.recordings} ` +
+            `recording${kept.recordings === 1 ? "" : "s"} again; ` +
+            "you will be offered the work back.",
+        })
+      : el("li", {
+          class: "lh-v6-confirm-line removed",
+          text: "− No copy could be kept in this browser",
+        }),
+  );
+  if (correctionsNotKept) {
+    lines.push(
+      el("li", {
+        class: "lh-v6-confirm-line removed",
+        text: "− Alignment corrections are not kept in this browser",
+      }),
+    );
+  }
+  return confirmDialog({
+    title: "Leave this page?",
+    confirmLabel: "Leave",
+    cancelLabel: "Stay",
+    focus: "cancel",
+    enterConfirms: false,
+    body: [
+      el("p", { class: "lh-v6-confirm-target", text: "You have unsaved changes." }),
+      el("ul", { class: "lh-v6-confirm-list" }, lines),
+      el("p", {
+        class: "lh-v6-confirm-detail",
+        text: "Save data downloads everything to a file.",
+      }),
+    ],
+  });
+}
+
+/** Set once the app's own dialog said Leave, so the browser does not ask again. */
+let _leaveConfirmed = false;
+
+// Links that leave the page in this tab (the logo, the mode links) get the
+// app's dialog, which can explain; the browser's cannot. Bubble phase, so a
+// link some other handler already took over (defaultPrevented) is left alone.
+document.addEventListener("click", async (e) => {
+  const a = e.target?.closest?.("a[href]");
+  if (!a || e.defaultPrevented || e.button !== 0) return;
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; // new tab/window
+  if ((a.target && a.target !== "_self") || a.hasAttribute("download")) return;
+  const url = new URL(a.href, location.href);
+  const samePage =
+    url.origin === location.origin &&
+    url.pathname === location.pathname &&
+    url.search === location.search;
+  if (samePage && url.hash) return; // an in-page anchor
+  if (!_hasUnsavedWork()) return;
+  e.preventDefault();
+  if (await _confirmLeave()) {
+    _leaveConfirmed = true;
+    location.href = url.href;
+  }
+});
+
+// The guard. Browsers show only their own wording here (custom text has been
+// ignored since ~2016), and only once the user has interacted with the page.
+window.addEventListener("beforeunload", (e) => {
+  if (_recovery) _writeRecoveryNow();
+  if (_leaveConfirmed || !_hasUnsavedWork()) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+// Mobile Safari does not fire beforeunload reliably; pagehide it does.
+window.addEventListener("pagehide", () => {
+  if (_recoveryTimer) _writeRecoveryNow();
+});
 
 function _assessIncomingPiece(grids) {
   const current = Object.keys(alignmentGrids).filter((k) => k !== SYNTH_MEI_KEY);
@@ -3014,9 +3453,15 @@ let _pendingGroupOverlapReport = [];
 
 async function setGrids(grids) {
   console.log("received grids: ", grids);
+  // The outgoing session's snapshot is brought up to date and the session
+  // stopped BEFORE anything is torn down: a reset empties markers and
+  // annotations, and a write after it would record the loss as the work.
+  const outgoingRecovery = _recovery;
+  _endRecoverySession();
   // Replacing the loaded piece requires a full teardown first (issue #32)
   if (!(await _maybeResetForNewPiece(grids))) {
     console.log("setGrids: user declined replacing the loaded piece");
+    _recovery = outgoingRecovery; // nothing was loaded; carry on as before
     return;
   }
   // After the guard, not before: the confirm dialog must not sit behind a spinner.
@@ -3280,6 +3725,10 @@ async function setGrids(grids) {
   if (document.querySelector("#waveforms .waveform")) hideWaveformsPaneLoading();
   // One tick per completed load. Exposed on _listenTest so e2e tests can wait
   // for "this piece finished loading" instead of sleeping for a guessed duration.
+  // Session recovery: a new session for this load, or the restored one
+  // continued. Ahead of the tick below, so a load counts as complete only
+  // once its session (and any offer of earlier work) exists.
+  _startRecoverySession(grids);
   _loadGeneration++;
   // Fix-mode prewarm (?fixMode only; no-op otherwise): invalidates the old
   // piece's derived caches and, at load-idle, does the Verovio layout work so
@@ -3299,7 +3748,7 @@ async function setGrids(grids) {
 // Align → Listen in-memory handoff
 // Called by align.js when alignment completes (no page reload needed).
 // ---------------------------------------------------------------------------
-function onAlignmentComplete(alignmentResult, files) {
+function onAlignmentComplete(alignmentResult, files, savedAs = null) {
   // Store each audio file so WaveSurfer can load them directly
   files.forEach((f) => {
     fileBlobUrls.set(f.name, URL.createObjectURL(f));
@@ -3308,7 +3757,10 @@ function onAlignmentComplete(alignmentResult, files) {
   useFilesMode = true;
   _fromAlignmentHandoff = true;
   setLoadedAlignmentJSON(alignmentResult);
-  workId = "in-browser-alignment";
+  // Named after the file the wizard saved, if it did: that is what a restore
+  // will need. Otherwise the alignment exists nowhere but this tab.
+  workId = savedAs || IN_BROWSER_SOURCE;
+  _pendingNeverSaved = !savedAs;
 
   // Update URL to reflect listen mode (so Solid redirects return here, not to align)
   history.replaceState(null, "", "/?useFiles");
@@ -3588,9 +4040,13 @@ document.addEventListener("DOMContentLoaded", () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "alignment.json";
+      a.download = alignmentFileName(loadedAlignmentJSON.header?.label);
       a.click();
       URL.revokeObjectURL(url);
+      // The session's work now has a file, under this name: what the
+      // recovery notes should tell the user to load.
+      if (_recovery) _recovery.source = a.download;
+      _alignmentNeverSaved = false;
       _savedAtCounter = _changeCounter;
       updateDirtyState();
     });
@@ -3910,23 +4366,7 @@ document.addEventListener("DOMContentLoaded", () => {
         : "Redo (Ctrl+Shift+Z)";
     }
     if (revertBtn) {
-      let hasChanges = fixCorrectionsDirty();
-      if (!hasChanges) {
-        for (const [filename, original] of Object.entries(_alignOriginalGrids)) {
-          const current = alignmentGrids[filename];
-          if (!current || current.length !== original.length) {
-            hasChanges = true;
-            break;
-          }
-          for (let i = 0; i < original.length; i++) {
-            if (current[i] !== original[i]) {
-              hasChanges = true;
-              break;
-            }
-          }
-          if (hasChanges) break;
-        }
-      }
+      const hasChanges = fixCorrectionsDirty() || _gridsChangedSinceLoad();
       revertBtn.disabled = !hasChanges;
     }
     updateDirtyState();
@@ -4776,6 +5216,22 @@ function initFilePicker() {
   const fileInput = document.getElementById("file-picker-input");
   const dropZone = document.getElementById("file-picker-card");
   const jsonStatusEl = document.getElementById("file-picker-json-status");
+  const labelRow = document.getElementById("file-picker-label-row");
+  const labelInput = document.getElementById("file-picker-label");
+
+  // The session label lives in the alignment's header, so it travels with the
+  // file and is prefilled from it next time. Editing it is not an edit of the
+  // work: it rides along with the next save rather than marking anything dirty.
+  labelInput?.addEventListener("input", () => {
+    if (!loadedAlignmentJSON) return;
+    if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+    const v = labelInput.value.trim();
+    if (v) loadedAlignmentJSON.header.label = v;
+    else delete loadedAlignmentJSON.header.label;
+    // ...but the recovery snapshot must carry the new name, since it is what
+    // tells the user which files to load. Writes only if one is already kept.
+    _scheduleRecoveryWrite();
+  });
 
   // --- Tab switching ---
   document.querySelectorAll("#fp-tabs .fp-tab").forEach((tab) => {
@@ -4808,6 +5264,12 @@ function initFilePicker() {
     }
     const modeSwitch = document.getElementById("fp-mode-switch");
     if (modeSwitch) modeSwitch.classList.toggle("is-hidden", loaded);
+    if (labelRow && labelInput) {
+      labelRow.hidden = !loaded;
+      if (document.activeElement !== labelInput) {
+        labelInput.value = loadedAlignmentJSON?.header?.label ?? "";
+      }
+    }
   }
 
   // Populate expected file list
@@ -4847,7 +5309,8 @@ function initFilePicker() {
     updateJsonStatus();
   }
 
-  async function handleFiles(files) {
+  /** @param {string|null} folder  the picked folder's name, when the browser gives one */
+  async function handleFiles(files, folder = null) {
     // Separate JSON from audio files
     const jsonFiles = [];
     const audioFiles = [];
@@ -4911,6 +5374,13 @@ function initFilePicker() {
           window._pendingLocalAlignment = data;
           // Set workId from the JSON filename
           workId = jsonFiles[0].name;
+          // Prefill the session label: the file's own, else the folder's
+          // name, else the file name. A timestamp would only repeat what the
+          // recovery notes already show.
+          if (!data.header.label) {
+            data.header.label =
+              folder || jsonFiles[0].name.replace(/\.json$/i, "");
+          }
           // Temporarily set loadedAlignmentJSON so LD URI section can read header
           setLoadedAlignmentJSON(data);
           renderFileList();
@@ -4957,7 +5427,7 @@ function initFilePicker() {
           files.push(await entry.getFile());
         }
       }
-      handleFiles(files);
+      handleFiles(files, dirHandle.name);
     } catch (e) {
       if (e.name !== "AbortError") console.warn("Directory picker error:", e);
     }
@@ -5212,6 +5682,7 @@ function showFilePickerIfNeeded() {
       manageBtn.addEventListener("click", () => {
         document.getElementById("file-picker-overlay").style.display = "flex";
         populateLdUriSection();
+        _renderPickerRecoveryNotice();
       });
     }
     // Show download button (useful once alignment is loaded from file)
@@ -5221,6 +5692,7 @@ function showFilePickerIfNeeded() {
       showFilePickerIfNeeded._initialized = true;
       initFilePicker();
       populateLdUriSection();
+      _renderPickerRecoveryNotice();
     }
   }
 }

@@ -6,6 +6,11 @@
 // load.  Audio File objects stay in memory — no reload after alignment.
 // ---------------------------------------------------------------------------
 
+import {
+  alignmentFileName,
+  meiTitle,
+} from "./engine/session-recovery.js";
+
 const TARGET_SR = 22050;
 
 let selectedFiles = []; // Array of File objects
@@ -154,6 +159,28 @@ let _meiMidiVerovioVersion = null;
 /** Expansion-related Verovio options live at that render (null when all default). */
 let _meiMidiVerovioOptions = null;
 
+/** This run's score title (MEI titleStmt), the session label's default. */
+let _meiTitleText = "";
+
+/** The file name this run's result was saved under, or null if it was not. */
+let _savedAs = null;
+
+/** Set once Listen! hands the result to the listen view, whose guard takes over. */
+let _handedOff = false;
+
+/** A run between Start and its result or failure. (alignmentRunning is not
+ *  this: it stays set after a run, to keep the wizard's tabs locked.) */
+let _runInProgress = false;
+
+// A run in progress, or a result neither saved nor handed over, is work a
+// closed tab would lose: ask first. (Browsers show their own wording.)
+window.addEventListener("beforeunload", (e) => {
+  const unsavedResult = !!alignmentResult && !_savedAs && !_handedOff;
+  if (!_runInProgress && !unsavedResult) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+
 /**
  * Called by listen.js once DOMContentLoaded fires, passing a Promise that
  * resolves to the shared verovio toolkit.
@@ -168,6 +195,7 @@ async function fetchMeiMidi(meiUri) {
   const resp = await fetch(meiUri);
   if (!resp.ok) throw new Error(`Could not fetch MEI (HTTP ${resp.status})`);
   const meiText = await resp.text();
+  _meiTitleText = meiTitle(meiText);
   const loaded = tk.loadData(meiText);
   if (!loaded) throw new Error("Verovio could not parse the MEI data");
   const midiBase64 = tk.renderToMIDI();
@@ -409,9 +437,13 @@ async function startAlignment() {
     : 0;
 
   sessionStorage.removeItem("alignSavedBeforeListen");
+  _meiTitleText = "";
+  _savedAs = null;
+  _handedOff = false;
 
   // Show progress, hide controls
   alignmentRunning = true;
+  _runInProgress = true;
   document.getElementById("align-steps").classList.add("disabled");
   document.getElementById("align-start-btn").style.display = "none";
   document.getElementById("align-summary").style.display = "none";
@@ -563,10 +595,26 @@ async function startAlignment() {
       if (includeParams && includeParams.checked && alignmentResult.header) {
         alignmentResult.header.alignmentParams = { ...currentOptions };
       }
+      // The session label, editable in the results panel: the score's title,
+      // else the score file's name, else none.
+      if (alignmentResult.header) {
+        const meiUriUsed = alignmentResult.header.meiUri || "";
+        const fallback = meiUriUsed
+          ? decodeURIComponent(meiUriUsed.split(/[\\/]/).pop()).replace(/\.mei$/i, "")
+          : "";
+        const label = _meiTitleText || fallback;
+        if (label) alignmentResult.header.label = label;
+      }
+      const labelInput = document.getElementById("align-label-input");
+      if (labelInput) labelInput.value = alignmentResult.header?.label || "";
       renderOpenEndsReport(alignmentResult);
       progressBar.style.width = "100%";
       progressText.textContent = "";
-      document.getElementById("align-results").style.display = "";
+      const resultsEl = document.getElementById("align-results");
+      resultsEl.style.display = "";
+      // The step list above fills the panel: bring the name field and the
+      // Save data / Listen! buttons into view.
+      resultsEl.scrollIntoView({ block: "end" });
       worker.terminate();
       const w = pendingWaiters.get("result");
       if (w) {
@@ -693,6 +741,8 @@ async function startAlignment() {
   } catch (err) {
     // Worker/feature errors surface here via rejectAllWaiters; UI was updated
     // by the message handler already. Nothing else to do.
+  } finally {
+    _runInProgress = false;
   }
 }
 
@@ -799,15 +849,17 @@ function downloadJSON() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "alignment.json";
+  a.download = alignmentFileName(alignmentResult.header?.label);
   a.click();
   URL.revokeObjectURL(url);
+  _savedAs = a.download;
   sessionStorage.setItem("alignSavedBeforeListen", "true");
 }
 
 function listenToAlignment() {
   if (!alignmentResult || !_onComplete) return;
-  _onComplete(alignmentResult, selectedFiles);
+  _handedOff = true;
+  _onComplete(alignmentResult, selectedFiles, _savedAs);
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,6 +1096,15 @@ export function initAlignPanel() {
     meiInput.addEventListener("input", updateScoreParamState);
     updateScoreParamState(); // initial state
   }
+
+  // The session label: written straight into the result's header, so Save
+  // data names the file after it and the listen view inherits it.
+  document.getElementById("align-label-input")?.addEventListener("input", (e) => {
+    if (!alignmentResult?.header) return;
+    const v = e.target.value.trim();
+    if (v) alignmentResult.header.label = v;
+    else delete alignmentResult.header.label;
+  });
 
   // Results buttons
   document

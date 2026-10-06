@@ -1,5 +1,16 @@
 # Listen Here! CHANGELOG.md
 
+### 0.85.0 -- Session recovery: unsaved work survives losing the tab
+* Closing, reloading, or navigating away from a tab with unsaved work now asks first. Browsers allow only their own wording there, so the app's own links that leave the page (the logo, the alignment-mode links) ask with the app's dialog instead: what is unsaved, the session's name, and how to get the work back.
+* The unsaved-changes tooltip on Save data and the controls toggle says what is unsaved and when a copy was last kept in this browser.
+* Markers, grouping tabs, and annotations are snapshotted to the browser's local storage 1.5 s after each change, per load ("session"), without any save. The alignment grids are not copied (≈12 MB for a real piece, beyond local storage's ≈5 MB); fix-mode corrections, which live in them, are not yet covered.
+* Loading the same piece again (same score and recordings) offers unsaved work back, with its time, contents, and the alignment file it came from: Restore, Discard, or Not now. Restored work stays unsaved until Save data.
+* The file picker lists unsaved work from earlier sessions and names the alignment file and recordings it needs.
+* Sessions can be named: on the Manage recordings screen, and in the wizard's "Alignment complete!" panel (prefilled from the score's title). The name is saved in the alignment's header (`label`) and names the Save data file ("Fledermaus, expert set.json" rather than "alignment.json"). On the Manage recordings screen it is prefilled from the file's own label, else the chosen folder's name (Choose Folder, Chromium), else the file name. It is kept in the recovery snapshot, where it leads the recovery notes, and renaming does not count as an unsaved change.
+* An alignment made in the wizard and not yet saved counts as unsaved work. The wizard page asks before closing while a run is in progress or its result is neither saved nor taken to the listen view; in the listen view, an alignment the wizard did not save lights the unsaved-changes indicator, gets the leave prompts, and is named in the leave dialog and the tooltip as not restorable without its file. Saving in either place clears it. The wizard scrolls its results into view on completion.
+* Save data retires a snapshot from the offer. Snapshots older than 30 days, or beyond the newest 20, are pruned.
+* Testing: spec 49 (14 tests) is new; 49.13–49.14 run a real alignment in the wizard on two copies of the short fixture (~10 s each).
+
 ### 0.83.0 -- Fix mode: nothing behind a fix moves; re-alignment reaches a horizon, or waits for a button
 * A fix no longer refills the span before it, only the previous notes' offsets follow, and a tick cannot be dragged before the previous one.
 * The refill ahead stops at the next anchor or at the new "Reach" horizon, whichever comes first (10 s, 30 s by default, 60 s, 2 min, or to the next anchor). The note there keeps its time. On the HQ Fledermaus alignment one fix now moves ~150 later notes instead of ~99 % of the piece.

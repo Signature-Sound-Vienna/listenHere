@@ -258,6 +258,11 @@
           <div id="align-results" style="display:none">
             <h3>Alignment complete!</h3>
             <div id="align-open-ends-report"></div>
+            <label id="align-label-row" title="Names the saved file, and helps find unsaved work again">
+              <span>Name this session</span>
+              <input type="text" id="align-label-input" maxlength="120" autocomplete="off"
+                     placeholder="e.g. Fledermaus overture, five recordings" />
+            </label>
             <button id="align-download-btn">Save data</button>
             <button id="align-open-btn">Listen!</button>
           </div>
@@ -301,6 +306,12 @@
           </div>
           <p class="file-picker-drop-hint">or drag &amp; drop files anywhere on this panel</p>
           <div id="file-picker-json-status"></div>
+          <label id="file-picker-label-row" hidden>
+            <span>Name this session <span class="fp-label-hint">(helps find it again)</span></span>
+            <input type="text" id="file-picker-label" maxlength="120" autocomplete="off"
+                   placeholder="e.g. Fledermaus, expert set, files in Desktop/Fledermaus" />
+          </label>
+          <div id="file-picker-recovery" class="recovery-ui" hidden></div>
           <div id="file-picker-status">
             <div id="file-picker-progress"></div>
             <ul id="file-picker-list"></ul>

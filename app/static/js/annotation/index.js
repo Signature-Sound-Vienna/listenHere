@@ -48,8 +48,14 @@ import {
  */
 export function commitAnnotationsToAlignment(alignmentJSON) {
   if (!alignmentJSON) return;
-  alignmentJSON.annotations = state.getAll().map(_serializeAnnotationForAlignment);
+  alignmentJSON.annotations = serializeAnnotations();
   state.markAllSaved();
+}
+
+/** The annotations as a save writes them, WITHOUT marking anything saved —
+ *  for session recovery's snapshots, which must not clear the dirty state. */
+export function serializeAnnotations() {
+  return state.getAll().map(_serializeAnnotationForAlignment);
 }
 
 function _serializeAnnotationForAlignment(a) {

@@ -2008,7 +2008,7 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
      selector would lower this rule's specificity app-wide, which is a much
      larger change than the modal needs. Excluding is strictly narrowing, so
      nothing outside the modal is affected. */
-  button:not(.drawer-btns button):not(#close-settings-drawer):not(.transport-btn):not(.gm-modal button) {
+  button:not(.drawer-btns button):not(#close-settings-drawer):not(.transport-btn):not(.gm-modal button):not(.recovery-ui button) {
     background-color: var(--color-surface-raised, var(--color-surface-alt));
     color: var(--color-text);
     border-color: var(--color-border);
@@ -2450,6 +2450,131 @@ nav input[type="checkbox"]:focus-visible {
 .json-status-missing {
   color: var(--color-danger, #dc2626);
   font-weight: 500;
+}
+
+/* The session label: on the Manage recordings screen, and in the wizard's
+   "Alignment complete!" panel. */
+#file-picker-label-row,
+#align-label-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25em;
+  margin-bottom: 0.8em;
+  font-size: 0.9em;
+}
+
+/* One line in the wizard: its panel is short, and Save data / Listen! below
+   must stay in view. */
+#align-label-row {
+  flex-direction: row;
+  justify-content: center;
+  gap: 0.5em;
+}
+
+#align-label-row #align-label-input {
+  width: min(100%, 18em);
+}
+
+#file-picker-label-row[hidden] {
+  display: none;
+}
+
+#file-picker-label-row .fp-label-hint,
+#align-label-row .fp-label-hint {
+  color: var(--color-text-muted, #6b7280);
+}
+
+#file-picker-label,
+#align-label-input {
+  width: min(100%, 26em);
+  box-sizing: border-box;
+  text-align: center;
+  padding: 0.35em 0.5em;
+  border: 1px solid var(--color-border, #d1d5db);
+  border-radius: 4px;
+  background: var(--color-surface, #fff);
+  color: var(--color-text, #111827);
+  font: inherit;
+}
+
+/* Session recovery: the offer after a load, and the file picker's note. */
+#recovery-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  width: min(640px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 0.8em 1em;
+  border: 1px solid var(--color-warning, #f59e0b);
+  border-radius: 8px;
+  background: var(--color-warning-bg, #fffbeb);
+  color: var(--color-warning-text, #92400e);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  font-size: 0.9em;
+}
+
+#file-picker-recovery {
+  margin-bottom: 0.8em;
+  padding: 0.6em 0.8em;
+  border: 1px solid var(--color-warning, #f59e0b);
+  border-radius: 6px;
+  background: var(--color-warning-bg, #fffbeb);
+  color: var(--color-warning-text, #92400e);
+  font-size: 0.85em;
+}
+
+#recovery-banner .recovery-title,
+#file-picker-recovery .recovery-title {
+  margin: 0 0 0.5em;
+  font-weight: 600;
+}
+
+#recovery-banner .recovery-list,
+#file-picker-recovery .recovery-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#recovery-banner .recovery-item,
+#file-picker-recovery .recovery-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.3em 0;
+}
+
+#recovery-banner .recovery-desc,
+#file-picker-recovery .recovery-desc {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+#recovery-banner button,
+#file-picker-recovery button {
+  flex-shrink: 0;
+  padding: 0.25em 0.8em;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#recovery-banner button.recovery-restore {
+  background: var(--color-warning-text, #92400e);
+  border-color: var(--color-warning-text, #92400e);
+  color: var(--color-warning-bg, #fffbeb);
+}
+
+#recovery-banner button.recovery-later {
+  display: block;
+  margin: 0.5em 0 0 auto;
 }
 
 /* Nav drag handles for waveform reordering */

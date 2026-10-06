@@ -26,6 +26,24 @@ docs/exhibit-prototype-plan.md, not a preference:
   score-determined (§5.2c). Only ONE time per region was ever authored — the rest
   were mirrored through the grid — so re-deriving *improves* 15–18 times per
   region rather than damaging hand-work.
+* **Hand corrections travel INSIDE the HQ alignment, never beside it.** Fix mode
+  (plan §14, `?fixMode`) writes corrected `ref_onset`/`ref_offset` values in place
+  and the anchor/gap record under `header.corrections`; this script copies that
+  record's counts and base into `source.corrections`, so a payload says whether it
+  was built from a corrected alignment. The flow after a correcting session:
+  Save data → `alignment.json`; replace `ExhibitAnnots/Alignment_Fledermaus_HQ.json`
+  with it (keep the dated predecessor); re-run `--steps payload`. Note what that
+  moves: score↔ref corrections change `body.score` only — every region time here
+  re-derives through the audio-to-audio grids, which such corrections never touch —
+  so those alone move nothing on the wall until the exhibit's score view reads
+  `body.score`. AUDIO-TO-AUDIO corrections (0.59.0, `header.corrections.audio`,
+  keyed per recording) rewrite that recording's grid in place, so every region
+  whose index pair falls in a refilled span gets new times on that recording at
+  the next payload build: the wall MOVES, by design — the exhibit's regions were
+  never verified and wait for exactly this. `source.corrections.audio` names the
+  corrected recordings; diff the derived region times before and after a build.
+  A hand-placed override on a corrected recording is warned about below: it is
+  never recomputed, so it may now disagree with the grid around it.
 * **The 13 canonical pairs are ASSERTED, not trusted.** CANONICAL_PAIRS below is
   the plan's table; the script re-derives each pair from the source set's own grid
   and fails loudly on any disagreement. If a future re-align changes grid length,
@@ -41,8 +59,9 @@ docs/exhibit-prototype-plan.md, not a preference:
 * **Every visitor-visible string becomes a language map** (`{"en": …}`), so German
   drops in without touching the exhibit. Bilingual is release-blocking for
   December; retrofitting i18n later is the expensive path (§6.6).
-* **Audio is transcoded to 48 kHz** (§5.2e). The corpus is mixed 44.1/48 — the four
-  curated VPO recordings are 48 kHz and the four non-VPO ones are 44.1 — and the
+* **Audio is transcoded to 48 kHz** (§5.2e). The corpus is mixed 44.1/48 — it was
+  an exact VPO/non-VPO split at eight, and stopped being one at ten (VPO-1951-1954
+  is 44.1, so it is six 48 kHz against four 44.1) — and the
   iPad's AudioContext runs at 48 kHz, so half the set would hit iOS's resampling
   path inside `windowed-audio-player.js`'s gapless calibration. Resampling once,
   offline, deletes that risk instead of testing it, and costs no re-alignment
@@ -52,10 +71,17 @@ docs/exhibit-prototype-plan.md, not a preference:
   `…/Fledermaus/`), and the prefix mints identifiers that already exist. Picking a
   winner would silently re-identify somebody's annotations.
 
+* **A second piece is a table entry, not a fork of this script** (PIECES below,
+  `--piece`): its alignment source, curated recordings, canonical pairs, wav
+  directory, title, and opus. Kaiserwalzer (op. 437, the attract loop's next
+  piece, plan §4.4 R6) is the first — PROVISIONAL, from a fast-preset alignment
+  with no annotation sets, and its payload says so in `warnings`.
+
 Usage:
-    tools/prep_exhibit_data.py                     # everything
+    tools/prep_exhibit_data.py                     # everything, Die Fledermaus
     tools/prep_exhibit_data.py --steps payload     # just the merge
     tools/prep_exhibit_data.py --steps audio --force
+    tools/prep_exhibit_data.py --piece kaiserwalzer  # the second piece (all steps)
 """
 from __future__ import annotations
 
@@ -83,13 +109,24 @@ SOURCES = {
 }
 AUDIENCES = ["kids", "adults", "expert"]
 
-# The curated eight (§5.2). Barely a choice: the four narrow annotations plus the
-# reference force exactly this set, and it lands on an exact 4 VPO / 4 non-VPO
-# split — which turns out to be the 48 kHz / 44.1 kHz split too (§5.2e).
+# The curated set: reference first, then chronological, then the non-VPO four.
+#
+# EIGHT UNTIL 2026-09-01, when the author raised the cap to TEN for this piece and
+# every future one (Q1). The eight were forced: the four narrow annotations plus
+# the reference, landing on an exact 4 VPO / 4 non-VPO split, which is also the
+# 48 kHz / 44.1 kHz split (§5.2e). The two additions are chosen, not forced:
+#   VPO-2002       her own pick — the pivot recording of "D or E?", the year the
+#                  correction first appears. Without it the annotation names a
+#                  moment a visitor cannot hear (Q2, answered by adding it).
+#   VPO-1951-1954  unstrands the danced-origins argument in Agogic and "Schwung"
+#                  (Q3): 239 characters that had nowhere to appear.
+# TEN IS A CAP, NOT A TARGET. Adding an eleventh needs the author, not this file.
 CURATED = [
     "VPO-2010.wav",  # the reference, and the slowest
+    "VPO-1951-1954.wav",
     "VPO-1987.wav",  # NB: the plain file is the 48 kHz one; both alternate 1987 releases are 44.1
     "VPO-1989.wav",
+    "VPO-2002.wav",
     "VPO-2022.wav",
     "Philharmonia Orchestra London, Georg Randolph Warren (1982).wav",
     "K&K Philharmoniker, Kendlinger (2010).wav",
@@ -107,22 +144,133 @@ CANONICAL_PAIRS = {
     "rgn_msvpcupp_5": (12772, 13933),  # Expert, Oboe Solos (a)
     "rgn_msvpd6fv_6": (14990, 15582),  # Expert, Oboe Solos (b)
     "rgn_msvqekba_8": (8564, 9414),   # Expert, Agogic and "Schwung"
-    "rgn_mrxa6xz4_2": (0, 0),         # Kids, Clapping Detective — DEGENERATE, dropped
     "rgn_mrxebibu_3": (26315, 29120),  # Kids, Clapping Detective
     "rgn_mrxej01r_5": (2843, 2866),   # Kids, Lonely Bell (a)
     "rgn_mrxeqqiz_6": (2755, 3420),   # Kids, Lonely Bell (b)
     "rgn_ms4gs23a_2": (25280, 26589),  # Kids, Rollercoaster Ending
 }
 
-# A stray empty region the author must delete; a re-derive cannot repair a
-# zero-length one, and drawing it would put an invisible target on the wall.
-DEGENERATE_REGIONS = {"rgn_mrxa6xz4_2"}
+# Zero-length regions: a re-derive cannot repair one, and drawing it would put an
+# invisible target on the wall, so the payload drops it and the author must delete
+# it at source. EMPTY since 2026-09-01: the one known instance, Kids / Clapping
+# Detective's `rgn_mrxa6xz4_2`, was deleted at source on the author's instruction
+# (Q8). The mechanism stays for the next one.
+DEGENERATE_REGIONS = set()
 
 # Region → recordings whose times Chanda hand-places, and which this script must
 # therefore leave alone once they arrive in the overrides file (§5.2d).
 NEEDS_HAND_PLACEMENT = {"rgn_msvors30_2"}
 
 OVERRIDES_FILE = "overrides.json"
+
+# The rest of the Fledermaus description: where its wavs are, where its audio goes,
+# and what the band calls it. `audio/<slug>.mp3` is the FROZEN layout for this piece:
+# the audio directory is shared between worktrees while the payloads are per tree,
+# so moving the ten files would break whichever tree has not been regenerated.
+WAV_DIR = "app/static/wav/Fledermaus"
+AUDIO_SUBDIR = ""  # "" = audio/<slug>.mp3; later pieces get audio/<piece>/<slug>.mp3
+PIECE_TITLE = {"en": "Die Fledermaus — Overture"}
+PIECE_COMPOSER = "Johann Strauss II"
+# No opus, and that is CORRECT rather than missing: Strauss II's dances and
+# marches are opus-numbered, his operettas are not, and the graph agrees (the
+# overture's Work entity is titled without one while sibling dance works all
+# carry theirs, e.g. "Sängerslust, op. 328"). The exhibit displays `opus` when a
+# piece carries it — Kaiserwalzer (op. 437) is the first to use it.
+PIECE_OPUS = None
+DEFAULT_SRC_DIR = os.path.join(REPO, "ExhibitAnnots")
+ALIGNMENT_IS_HQ = True
+
+# --------------------------------------------------------------------------- pieces
+# A SECOND PIECE (attract loop v2, 2026-09-10; plan §4.4 R6: Kaiserwalzer next,
+# about ten pieces by December). The Fledermaus constants above are the module's
+# defaults and keep their reasoning in place; `--piece` swaps in another entry
+# from this table by rebinding those globals (apply_piece) — a script-sized
+# answer, chosen over threading a piece object through a dozen functions.
+#
+# Kaiserwalzer is PROVISIONAL in every respect and its payload says so:
+#   * the spine is `alignment-fast.json` (Listen Here! v0.18.0, the FAST preset:
+#     coarse 4, slack 80) — the only Kaiserwalzer alignment in the tree. The
+#     §5.2c lesson stands: the HQ re-alignment comes BEFORE any annotation is
+#     authored against it, and the payload carries an `alignment-not-hq` warning
+#     until then. Cursors and aligned switches may sit seconds off in places.
+#   * no audience sets exist, so no annotations, no canonical pairs, and no
+#     overrides file — the attract loop plays the piece through without a switch.
+#   * the ten recordings are a PROPOSAL, not the author's curation: the
+#     alignment's reference and the six other VPO concert years the corpus
+#     holds, then three non-VPO recordings with a named conductor and year —
+#     Karajan's 1984 Berlin recording, Bernstein's 1982 New York one, and
+#     Kendlinger 2010, which the Fledermaus set also has. Left out: the
+#     compilations, the two synthetic references, the year-range VPO discs,
+#     Böhm 1939 (a 4:36 cut), Furtwängler 1950, and the second Karajan. The
+#     author decides; ten is the cap.
+#   * audio goes to `audio/kaiserwalzer/`: two file names are shared with the
+#     Fledermaus corpus (VPO-1987, Kendlinger 2010) and would collide in `audio/`.
+#   * metadata.json (conductor, year, portrait) knows only the Fledermaus set,
+#     so the band names nobody for the eight recordings it has not met;
+#     prep_exhibit_metadata.py needs these recordings' RDF slugs first.
+PIECES = {
+    "fledermaus": None,  # the module defaults above
+    "kaiserwalzer": {
+        "src_dir": os.path.join(REPO, "app/static/wav/Kaiserwalzer"),
+        "sources": {"hq": "alignment-fast.json"},
+        "audiences": [],
+        "curated": [
+            "VPO-2021.wav",  # the alignment's reference, and the slowest (13:33)
+            "VPO-1987.wav",
+            "VPO-1991.wav",
+            "VPO-1996.wav",
+            "VPO-2003.wav",
+            "VPO-2008.wav",
+            "VPO-2016.wav",
+            "1984_Berliner Philharmoniker, Karajan (Kaiser–Walzer).wav",
+            "New York Philharmonic, Leonard Bernstein (1982).wav",
+            "K&K Philharmoniker, Kendlinger (2010).wav",
+        ],
+        "pairs": {},
+        "needs_hand_placement": set(),
+        "wav_dir": "app/static/wav/Kaiserwalzer",
+        "audio_subdir": "kaiserwalzer",
+        "title": {"en": "Kaiser-Walzer", "de": "Kaiser-Walzer"},
+        "composer": "Johann Strauss II",
+        "opus": "op. 437",
+        "alignment_is_hq": False,
+    },
+}
+
+
+def apply_piece(name):
+    """Rebind the module's piece constants to PIECES[name]; the default stays put."""
+    global PIECE, SOURCES, AUDIENCES, CURATED, CANONICAL_PAIRS, NEEDS_HAND_PLACEMENT
+    global WAV_DIR, AUDIO_SUBDIR, PIECE_TITLE, PIECE_COMPOSER, PIECE_OPUS
+    global DEFAULT_SRC_DIR, ALIGNMENT_IS_HQ
+    spec = PIECES[name]
+    PIECE = name
+    if spec is None:
+        return
+    SOURCES = dict(spec["sources"])
+    AUDIENCES = list(spec["audiences"])
+    CURATED = list(spec["curated"])
+    CANONICAL_PAIRS = dict(spec["pairs"])
+    NEEDS_HAND_PLACEMENT = set(spec["needs_hand_placement"])
+    WAV_DIR = spec["wav_dir"]
+    AUDIO_SUBDIR = spec["audio_subdir"]
+    PIECE_TITLE = spec["title"]
+    PIECE_COMPOSER = spec["composer"]
+    PIECE_OPUS = spec["opus"]
+    DEFAULT_SRC_DIR = spec["src_dir"]
+    ALIGNMENT_IS_HQ = bool(spec.get("alignment_is_hq", True))
+
+
+def audio_rel(key):
+    """The payload's audio path, relative to the exhibit ROOT (see build_recordings)."""
+    return f"audio/{AUDIO_SUBDIR}/{slugify(key)}.mp3" if AUDIO_SUBDIR else f"audio/{slugify(key)}.mp3"
+
+# A per-recording note this short is a data cell, not something written for a
+# reader. Five of the "D or E?" notes were the two characters "E6" until the author
+# replaced them with sentences (Q5) — but only on the recordings that were curated
+# at the time. Raising the cap can pull a bare one into view, so this warns rather
+# than waiting for somebody to notice it on the wall.
+STUB_TEXT_CHARS = 8
 
 
 # --------------------------------------------------------------------------- util
@@ -317,13 +465,13 @@ def build_recordings(hq, warnings, probe=True):
             # Relative to app/static/exhibit/ — the exhibit ROOT, not the payload's
             # own directory. Resolving against the page rather than the data file is
             # the less surprising of the two, and it survives the payload moving.
-            "audio": f"audio/{slugify(key)}.mp3",
+            "audio": audio_rel(key),
             "duration": entry["duration"],
             "peaks": entry["peaks"],
             "times": entry["times"],
         }
         if probe:
-            rate = probe_rate(os.path.join(REPO, "app/static/wav/Fledermaus", key))
+            rate = probe_rate(os.path.join(REPO, WAV_DIR, key))
             if rate:
                 # Recorded so §5.2e stays visible in the data rather than only in prose.
                 rec["sourceSampleRate"] = rate
@@ -363,6 +511,12 @@ def build_annotations(sets, warnings):
                 if tgt["file"] not in curated:
                     dropped += 1
                     continue
+                desc = (tgt.get("description") or "").strip()
+                if 0 < len(desc) < STUB_TEXT_CHARS:
+                    warnings.add("stub-target-text",
+                                 f"{audience}/{ann['label']} → {tgt['file']}: "
+                                 f"{desc!r} is a data cell, not a sentence. The "
+                                 f"AUTHOR must write it out (Q5).")
                 targets.append({
                     "file": tgt["file"],
                     "description": lang_map(tgt.get("description")),
@@ -372,7 +526,7 @@ def build_annotations(sets, warnings):
             if dropped:
                 warnings.add("targets-outside-curation",
                              f"{audience}/{ann['label']}: {dropped} of "
-                             f"{len(ann.get('targets', []))} targets are not in the curated 8",
+                             f"{len(ann.get('targets', []))} targets are not in the curated set",
                              kept=len(targets))
             if not targets:
                 warnings.add("annotation-has-no-targets",
@@ -447,9 +601,13 @@ def rederive_times(annotations, recordings, warnings):
     return filled
 
 
-def apply_overrides(annotations, overrides, warnings):
-    """Overlay hand-placed times. Applied LAST; a re-run must never recompute these."""
+def apply_overrides(annotations, overrides, warnings, corrections=None):
+    """Overlay hand-placed times. Applied LAST; a re-run must never recompute these.
+    `corrections` (summarise_corrections' output) names the recordings whose grids
+    carry audio-to-audio anchors: an override on one of those is flagged, since
+    the grid around it moved and the hand-placed time did not."""
     applied = 0
+    corrected = (corrections or {}).get("audio") or {}
     index = {a["id"]: a for a in annotations}
     for ann_id, regions in (overrides or {}).items():
         if ann_id.startswith("_"):
@@ -472,6 +630,13 @@ def apply_overrides(annotations, overrides, warnings):
                     "start": times["start"], "end": times["end"], "derived": False,
                 }
                 applied += 1
+                if filename in corrected:
+                    warnings.add("override-on-corrected-grid",
+                                 f"{ann_id}/{region_id}/{filename}: a hand-placed time on a "
+                                 f"recording whose grid carries {corrected[filename]} "
+                                 f"audio-to-audio anchor(s) — the grid around it moved and "
+                                 f"this time did not; check it against the corrected grid or "
+                                 f"retire the override")
     if applied:
         log(f"  applied {applied} hand-placed override times")
     else:
@@ -520,7 +685,7 @@ def seed_overrides(path):
                 "Expert / 'D or E?' region (a), rgn_msvors30_2, index 705-711.",
                 "6 indices / 0.12 s wide, against up to 2.53 s of alignment disagreement",
                 "at that point - 21x the region width - so no alignment preset can place",
-                "it. Chanda hand-places it on the eight curated recordings AFTER the",
+                "it. Chanda hand-places it on the curated recordings AFTER the",
                 "re-derive; the tool supports per-recording edge-drag. Once those times",
                 "land here they are overrides forever: no future re-alignment may",
                 "recompute them. See plan 5.2d.",
@@ -534,6 +699,39 @@ def seed_overrides(path):
     return True
 
 
+def summarise_corrections(record):
+    """The HQ alignment's hand-correction record (header.corrections, written by
+    fix mode) as provenance: the counts plus the base the anchors were laid on.
+    None for an uncorrected alignment — the normal state before hand-correction."""
+    if not isinstance(record, dict):
+        return None
+    audio = {}
+    for filename, slot in (record.get("audio") or {}).items():
+        n = len((slot or {}).get("anchors") or [])
+        if n:
+            audio[filename] = n
+    return {
+        "version": record.get("version"),
+        "anchors": len(record.get("anchors") or []),
+        "gaps": len(record.get("gaps") or []),
+        "audio": audio,  # recording → its audio-to-audio anchor count (0.59.0)
+        "base": record.get("base"),
+    }
+
+
+def describe_corrections(summary):
+    if summary is None:
+        return "none (an uncorrected alignment)"
+    text = (f"{summary['anchors']} anchors, {summary['gaps']} unscored-audio gaps "
+            "(a hand-corrected alignment)")
+    audio = summary.get("audio") or {}
+    if audio:
+        parts = ", ".join(f"{f} ({n})" for f, n in sorted(audio.items()))
+        text += (f"; audio-to-audio anchors on {len(audio)} recording(s): {parts} — "
+                 "their region times move with the corrected grids")
+    return text
+
+
 def step_payload(args, sets, warnings):
     log("payload:")
     verify_pairs(sets, warnings)
@@ -543,27 +741,32 @@ def step_payload(args, sets, warnings):
     rederive_times(annotations, recordings, warnings)
 
     os.makedirs(args.data_dir, exist_ok=True)
-    overrides_path = os.path.join(args.data_dir, OVERRIDES_FILE)
-    seed_overrides(overrides_path)
-    overrides = load_overrides(overrides_path, warnings)
-    apply_overrides(annotations, overrides, warnings)
-    pending_hand_placement(annotations, warnings)
-
     hq_header = sets["hq"]["header"]
+    corrections = summarise_corrections(hq_header.get("corrections"))
+    if AUDIENCES:
+        overrides_path = os.path.join(args.data_dir, OVERRIDES_FILE)
+        seed_overrides(overrides_path)
+        overrides = load_overrides(overrides_path, warnings)
+        apply_overrides(annotations, overrides, warnings, corrections)
+        pending_hand_placement(annotations, warnings)
+    else:
+        # Nothing to hand-place without annotations; seeding the D-or-E slot for
+        # a piece that has no "D or E?" would be a lie in a committed file.
+        log("  overrides: none — this piece has no annotation sets")
+    log(f"  corrections: {describe_corrections(corrections)}")
+    if not ALIGNMENT_IS_HQ:
+        warnings.add("alignment-not-hq",
+                     f"{SOURCES['hq']} is not an HQ-preset alignment "
+                     f"(params {hq_header.get('alignmentParams')}); cursors and aligned "
+                     f"switches may sit seconds off in places. Re-align at hq BEFORE any "
+                     f"annotation is authored against this piece (plan §5.2c).")
     payload = {
         "schema": SCHEMA,
         "piece": {
             "id": PIECE,
-            "title": {"en": "Die Fledermaus — Overture"},
-            "composer": "Johann Strauss II",
-            # No opus, and that is CORRECT rather than missing: Strauss II's
-            # dances and marches are opus-numbered, his operettas are not, and
-            # the graph agrees (the overture's Work entity is titled without one
-            # while sibling dance works all carry theirs, e.g. "Sängerslust,
-            # op. 328"). The exhibit displays `opus` when a piece carries it —
-            # Kaiserwalzer (op. 437), the attract loop's stretch piece, will be
-            # the first to use it.
-            "opus": None,
+            "title": PIECE_TITLE,
+            "composer": PIECE_COMPOSER,
+            "opus": PIECE_OPUS,  # None is a fact for Die Fledermaus — see PIECE_OPUS
             "ref": hq_header.get("ref"),
             "meiUri": f"./{PIECE}.mei",
             "meiSource": hq_header.get("meiUri"),
@@ -574,6 +777,7 @@ def step_payload(args, sets, warnings):
             "alignment": SOURCES["hq"],
             "alignmentCreatedBy": hq_header.get("createdBy"),
             "alignmentParams": hq_header.get("alignmentParams"),
+            "corrections": corrections,
             "audienceSets": {a: SOURCES[a] for a in AUDIENCES},
         },
         "recordings": recordings,
@@ -636,11 +840,12 @@ def step_audio(args, sets, warnings):
     if not shutil.which("ffmpeg"):
         warnings.add("no-ffmpeg", "ffmpeg is not on PATH; skipping the transcode")
         return
-    os.makedirs(args.audio_dir, exist_ok=True)
-    wav_dir = os.path.join(REPO, "app/static/wav/Fledermaus")
+    out_dir = os.path.join(args.audio_dir, AUDIO_SUBDIR) if AUDIO_SUBDIR else args.audio_dir
+    os.makedirs(out_dir, exist_ok=True)
+    wav_dir = os.path.join(REPO, WAV_DIR)
     for key in CURATED:
         src = os.path.join(wav_dir, key)
-        dst = os.path.join(args.audio_dir, f"{slugify(key)}.mp3")
+        dst = os.path.join(out_dir, f"{slugify(key)}.mp3")
         if not os.path.exists(src):
             warnings.add("source-wav-missing", f"{src}")
             continue
@@ -671,7 +876,11 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--steps", nargs="+", default=["payload", "mei", "audio"],
                     choices=["payload", "mei", "audio"])
-    ap.add_argument("--src-dir", default=os.path.join(REPO, "ExhibitAnnots"))
+    ap.add_argument("--piece", default="fledermaus", choices=sorted(PIECES),
+                    help="which piece to build (PIECES); the default is Die Fledermaus")
+    ap.add_argument("--src-dir", default=None,
+                    help="where the alignment sources are; defaults per piece "
+                         "(ExhibitAnnots/ for Die Fledermaus)")
     ap.add_argument("--data-dir", default=os.path.join(REPO, "app/static/exhibit/data"))
     ap.add_argument("--audio-dir", default=os.path.join(REPO, "app/static/exhibit/audio"))
     ap.add_argument("--quality", type=int, default=4, help="libmp3lame -q:a (0 best, 9 worst)")
@@ -684,6 +893,10 @@ def main():
                     help="check the index arithmetic against align-core and exit")
     args = ap.parse_args()
     args.timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    apply_piece(args.piece)
+    if args.src_dir is None:
+        args.src_dir = DEFAULT_SRC_DIR
+    log(f"piece: {args.piece}")
 
     if args.self_test:
         self_test(args.src_dir)

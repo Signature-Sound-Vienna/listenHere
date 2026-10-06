@@ -1,0 +1,226 @@
+{
+ "schema": "lh-exhibit-dyk/1",
+ "source": [
+  {
+   "path": "content/dyk/concert-years.md",
+   "sha256": "cefa22022f190255e18d89f9b44d30faa5ea52984f7de28e48341367f8db6d61"
+  },
+  {
+   "path": "content/dyk/conductors.md",
+   "sha256": "bc4fff314db7530496bc839aa5ff2cc7a3801d5323142700b923c9a30ef086f0"
+  }
+ ],
+ "years": {
+  "1945": {
+   "text": {
+    "kids": {
+     "en": "The concert’s most beautiful, most famous waltz, the Blue Danube waltz, was played at the New Year’s Concert for the very first time in 1945. Ever since, it’s been one of the best-loved moments every single year."
+    },
+    "adults": {
+     "en": "1945 was the year the encore tradition began — and the year Johann Strauss II’s The Blue Danube waltz, today the concert’s signature waltz and a kind of unofficial Austrian anthem, was heard at the concert for the first time, as an encore, under the concert series’ founder Clemens Krauss. Remarkably, it entered the programme in the last winter of the Second World War."
+    },
+    "expert": {
+     "en": "Introduced by Krauss, the Blue Danube has been an encore at nearly every concert since 1945 (with a few early exceptions), while the Radetzky March followed a year later, in 1946. So the concert’s two iconic bookends were not present at the 1939 founding — they crystallised in the mid-1940s, exactly as the war ended and the event began the long process of shedding, and later confronting, its origins."
+    }
+   },
+   "image": null,
+   "subtitle": {
+    "en": "the time the Blue Danube waltz was first performed"
+   }
+  },
+  "1959": {
+   "text": {
+    "kids": {
+     "en": "For its first twenty years you could only *hear* the New Year’s concert, on the radio. In 1959, for the very first time, people could *watch* it on television, and that’s when the whole world started tuning in."
+    },
+    "adults": {
+     "en": "1959 was the first time the New Year’s Concert was televised, which launched its internationalisation via the Eurovision network. Only the second half, following the interval, was broadcast at first, with conductor Willi Boskovsky was on the podium."
+    },
+    "expert": {
+     "en": "The televised second half of the series, a tradition which began with Eurovision in 1959, ran about 75 minutes. From 1966 the concert was also carried on Intervision, the Eastern-bloc counterpart to Eurovision, and regular overseas transmission was established starting in 1972, laying the technical foundation of today’s globally televised annual phenomenon. Television also reshaped the event itself. Today’s annual ballet interludes and the tightly directed camera work only exist because of it."
+    }
+   },
+   "image": null,
+   "subtitle": {
+    "en": "the time the concert was first televised"
+   }
+  },
+  "1968": {
+   "text": {
+    "kids": {
+     "en": "One year — 1968 — the musicians didn’t just say ‘Happy New Year’ once, like usual during the encore. They said it in *nineteen different languages*, each time by a different member of the orchestra!"
+    },
+    "adults": {
+     "en": "The spoken New Year’s greeting during The Blue Danube, a little moment when the conductor pauses to address the audience, was taken to a charming extreme in 1968. Willi Boskovsky sent the New Year’s greetings to Europe and overseas in nineteen different languages, each voiced by a different member of the Vienna Philharmonic, with Boskovsky himself giving the closing English ‘Happy New Year.’"
+    },
+    "expert": {
+     "en": "The greeting-during-the-Danube encore is itself Boskovsky's invention, and 1968 (his fourteenth concert) shows how far he pushed the concert’s role as a gesture of international goodwill. Broadcast that year over both Eurovision and Intervision, ‘Happy New Year’ was wished in nineteen languages by nineteen individual orchestra members, reaching across the Iron Curtain at the height of the Cold War."
+    }
+   },
+   "image": null,
+   "subtitle": {
+    "en": "the time ‘Happy New Year’ went international"
+   }
+  },
+  "1982": {
+   "text": {
+    "kids": {
+     "en": "Here’s a secret from 1982: some surprise visitors dashed onto the stage, completely naked, during the concert to hold up a sign on stage — but the millions of people watching at home on TV didn’t see a thing! At that exact moment the cameras had switched to a pre-filmed ballet dance, so the orchestra just kept playing and viewers at home never knew."
+    },
+    "adults": {
+     "en": "During the 1982 concert, conducted by Lorin Maazel, two activists, Florian Sommer and Robert Herz, stormed the stage of the Musikverein naked and unfurled a banner reading ‘Menschenrechte für Schwule’ [‘Human rights for gays’]. Almost no one watching at home saw it: the worldwide television audience missed the protest entirely because ORF happened to be airing a pre-recorded ballet interlude which had switched away at exactly that moment, as scheduled."
+    },
+    "expert": {
+     "en": "The little-known 1982 *Neujarhskonzert* stage protest was actually a small landmark in Austrian LGBTQ history, not a simple prank. It was tied to the gay-rights movement (HOSI Wien) at a time when Austria still had highly discriminatory anti-gay laws. The two nude activists unfurled a ‘human rights for gays’ banner during Maazel’s concert, but the global TV audience saw a pre-recorded ballet sequence instead, meaning the disruption survives almost entirely in the movement’s own press (and the memories of orchestra and audience members sitting there live) rather than in the broadcast record. It’s a reminder that these ‘perfect’ televised concerts are highly choreographed constructions, and that it’s the cameras which really determine what history remembers."
+    }
+   },
+   "image": null,
+   "subtitle": {
+    "en": "the time with a stage protest almost nobody noticed"
+   }
+  },
+  "2005": {
+   "text": {
+    "kids": {
+     "en": "The concert almost always ends with a cheerful march that everyone claps along to. But in 2005 the orchestra chose *not* to play it, as a way of showing respect and sympathy for the many people affected by a terrible tsunami."
+    },
+    "adults": {
+     "en": "Days after the December 2004 Indian Ocean earthquake and tsunami, the 2005 concert under Lorin Maazel closed with The Blue Danube and omitted the Radetzky March as a mark of respect to the victims. It is the only time the Radetzky March has been omitted in the series since it became a fixed way of closing the concert series."
+    },
+    "expert": {
+     "en": "The 2005 omission of the Radetzsky March is the single known exception to a closing ritual that had been effectively inviolable since 1958, a rare case of current events from the outside world overriding the concert series’ near-liturgical form. It stands alongside 1967, when Boskovsky moved The Blue Danube into the main programme to mark the waltz’s centenary, as one of the only deliberate breaks in the sequence."
+    }
+   },
+   "image": null,
+   "subtitle": {
+    "en": "the time there was no Radetzky March"
+   }
+  },
+  "2021": {
+   "text": {
+    "kids": {
+     "en": "In 2021 something had never happened before: the New Year's Concert was played to a completely *empty* hall! Because people couldn’t gather during the COVID pandemic, around 7,000 fans from more than 90 countries clapped at home and sent the sound in over the internet, which was played through the speakers in the Golden Hall so the musicians could hear applause."
+    },
+    "adults": {
+     "en": "The 2021 concert, led by Riccardo Muti, was the first in the event's history to be performed without a live audience, because of the COVID-19 pandemic. Roughly 7,000 people from over 90 countries registered to send in their applause, which was piped into the empty Golden Hall through the sound system. The famous Radetzky March clap-along simply couldn’t happen, the first time that longstanding tradition was broken."
+    },
+    "expert": {
+     "en": "2021 was Muti’s sixth New Year’s Concert, and was played to an empty Musikverein under Austria’s COVID-19 pandemic restrictions. The virtual applause was transmitted into the hall only at the end of each half, not during the pieces, from a signed-up selection of the worldwide online audience, and the Radetzky March was performed as written, without the audience’s customary, rhythmic clapping."
+    }
+   },
+   "image": null,
+   "subtitle": {
+    "en": "the time the concert played to an empty hall"
+   }
+  }
+ },
+ "conductors": {
+  "Willi Boskovsky": {
+   "text": {
+    "kids": {
+     "en": "For 25 years, the person leading the New Year's Concert didn’t just wave a baton, he actually conducted with his violin! **Willi Boskovsky** played and led at the very same time, exactly the way Johann Strauss did long ago. Can you find the violin in his photo?"
+    },
+    "adults": {
+     "en": "**Willi Boskovsky** led the New Year’s Concert a record 25 times, between 1955 and 1979. That’s more often than any other conductor in the orchestra’s history. A longtime concertmaster of the Vienna Philharmonic, he was handed the podium after the unexpected death of Clemens Krauss in 1954, and he led in the old Viennese manner, regularly directing the orchestra from the violin just as Johann Strauss I had done."
+    },
+    "expert": {
+     "en": "**Boskovsky**’s quarter-century leading the *Neujahrskonzert* revived the 19th-century ‘Vorgeiger’ tradition — directing while playing the solo violin, in emulation of Johann Strauss. His cycle of recordings with Decca effectively fixed the post-war sound of the concert for a global television audience. His run ended only when he suffered a stroke in January 1979, which forced him to step down. The orchestra's response — initially engaging Lorin Maazel through 1986, then switching to a different conductor every year — is the reason the podium rotates to this day."
+    }
+   },
+   "image": {
+    "id": "boskovsky-violin",
+    "aspect": [
+     624,
+     292
+    ],
+    "caption": {
+     "en": "Willi Boskovsky conducting the New Year's Concert from the violin"
+    },
+    "status": "placeholder",
+    "src": null
+   }
+  },
+  "Herbert von Karajan": {
+   "text": {
+    "kids": {
+     "en": "The famous conductor **Herbert von Karajan** led the New Year's Concert just *once*, in 1987 — and he did something nobody had ever done before: he invited a *singer!* Soprano Kathleen Battle sang a sparkling waltz called ‘Voices of Spring’, or in German the *Frühlingsstimmenwaltzer*."
+    },
+    "adults": {
+     "en": "**Herbert von Karajan** conducted the New Year's Concert only once, on 1 January 1987 — and it opened with the Overture to *Die Fledermaus*. His key innovation was to bring in a vocal soloist for the first time: Karajan invited Kathleen Battle, a star at the Metropolitan Opera in New York at the time, to sing Johann Strauss' *Frühlingsstimmenwalzer*… the first time a singer had been engaged in the concert series. The live Deutsche Grammophon recording was made at the Musikverein in January 1987 and became one of the best-loved in the series."
+    },
+    "expert": {
+     "en": "**Karajan**’s sole New Year’s Concert came near the end of his life (he died in 1989), and it was the first ever to feature a vocal soloist. The gesture was a deliberate historical echo: at Clemens Krauss’s very first Strauss-family concert in Salzburg in 1929, soprano Adele Kern had sung Voices of Spring, and Karajan now repeated the idea with Kathleen Battle. Fittingly for this exhibit, the programme opened with the *Fledermaus* Overture — the same 1987 reading in our corpus here — a notably relaxed version compared to quicker Vienna Philharmonic renditions in the years around it"
+    }
+   },
+   "image": {
+    "id": "karajan-battle-1987",
+    "aspect": [
+     624,
+     407
+    ],
+    "caption": {
+     "en": "Herbert von Karajan with the soprano Kathleen Battle, 1 January 1987"
+    },
+    "status": "placeholder",
+    "src": null
+   }
+  },
+  "Clemens Krauss": {
+   "text": {
+    "kids": {
+     "en": "The New Year’s Concert had to be invented by *somebody*, and that somebody was a conductor named **Clemens Krauss.** He started the whole tradition way back in 1939, and the very first year it happened on New Year’s Eve, not on New Year’s Day!"
+    },
+    "adults": {
+     "en": "**Clemens Krauss** founded the New Year’s Concert and led it until his death in 1954, except for two years. The very first one took place on 31 December 1939 — the only edition ever held on New Year's Eve rather than New Year’s Day (it moved to 1 January in 1941). That first programme featured only music by Johann Strauss II and ended with the Overture to *Die Fledermaus* — one of the pieces at the heart of this museum exhibit."
+    },
+    "expert": {
+     "en": "**Krauss** (1893–1954) launched the concert during the darkest chapter in the orchestra's history: the 1939 ‘*außerordentliches Konzert*’ [non-subscription concert] was devised with the support of Vienna’s Nazi *Gauleiter* Baldur von Schirach and dedicated to the *Kriegswinterhilfswerk* [Wintertime War Relief] organization. It was quickly taken up for propaganda purposes, a history the Vienna Philharmonic itself now openly acknowledges. Krauss conducted the concert in 1939, 1941–45 and 1948–54; only the second half of the 1954 concert was ever recorded live, so his famous Decca discs were actually taped in the studio each summer as a memento for the growing radio audience — which is the origin of the 1951–54 set of recordings you can listen to in this museum exhibit!"
+    }
+   },
+   "image": null
+  },
+  "Carlos Kleiber": {
+   "text": {
+    "kids": {
+     "en": "One of the most famous conductors in the world almost *never* performed in public — but **Carlos Kleiber** loved this Viennese music so much that he led the New Year's Concert twice, in 1989 and 1992. People were so excited that those concerts sold out in hours just from a *rumour* that he might appear!"
+    },
+    "adults": {
+     "en": "**Carlos Kleiber** — son of the great conductor Erich Kleiber, and himself often voted the greatest conductor of the 20th century — was famously reclusive and conducted remarkably rarely. He made an exception for this repertoire, leading the New Year’s Concert in 1989 and 1992 (his 1992 appearance fell in the orchestra’s 150th-anniversary year). Both are preserved on video, and his 1989 *Fledermaus Overture* is widely considered one of the greatest performances of the piece ever recorded."
+    },
+    "expert": {
+     "en": "**Kleiber**’s two New Year’s Concerts (1989, 1992) sit within one of the most sparing careers in conducting history — Kleiber reportedly turned down the Berlin Philharmonic yet said yes to Vienna, drawn to the Viennese idiom. *Die Fledermaus* was a lifelong preoccupation of Kleibers (he is said to have conducted the operetta some 78 times), and the 1989 overture is frequently cited as his definitive account. A measure of his eccentricity: for one benefit concert he accepted, in lieu of a fee, a new Audi built to his particular specifications."
+    }
+   },
+   "image": null
+  },
+  "Josef Krips": {
+   "text": {
+    "kids": {
+     "en": "After the Second World War ended, someone had to keep the young New Year's Concerts going, and that person was **Josef Krips.** He led the series in 1946 and 1947, and 1946 was the very first time the concert included the Radetzky March… the march everyone claps along to at the end!"
+    },
+    "adults": {
+     "en": "**Josef Krips** (1902–1974) conducted the New Year's Concert in 1946 and 1947, stepping in while the concert’s founder, Clemens Krauss, served a two-year conducting ban imposed by the Allies. Krips, whose father was Jewish, and who had been barred from working under the Nazi regime, was one of the very few conductors cleared to perform in post-war Austria, and he became central to rebuilding Vienna’s musical life, reopening both the Vienna State Opera and, in 1946, the Salzburg Festival. The Radetzky March was heard at the New Year's Concert for the first time during his 1946 performance."
+    },
+    "expert": {
+     "en": "Krips’s two concerts sit precisely in the gap left by Krauss’ denazification ban (1946–47). After the 1938 *Anschlus*s Krips, whose father was Jewish, had lost his Vienna State Opera post and his professorship, and his musical activity was effectively suspended through the war. This is why he could come in with ‘clean hands,’ and prove indispensable to the reconstruction, leading the first post-war Vienna Philharmonic tours, the reopening of the State Opera, and the 1946 Salzburg Festival conducting *Don Giovanni.* The Radetzky March made its concert debut under him in 1946 (although it and the Blue Danube waltz only became the fixed twin encores beginning in 1958). Krips went on to lead the London Symphony Orchestra, the San Francisco Symphony and the Metropolitan Opera."
+    }
+   },
+   "image": null
+  },
+  "Gustavo Dudamel": {
+   "text": {
+    "kids": {
+     "en": "The youngest person ever to conduct the New Year’s Concert came all the way from Venezuela! **Gustavo Dudamel** led it in 2017. He learned music as a child in a programme called *El Sistema* that donates instruments to kids in poorer areas of the world — proof you can start small and end up on the world’s most famous stage!"
+    },
+    "adults": {
+     "en": "When Venezuelan conductor **Gustavo Dudamel** made his New Year's Concert debut in 2017, he became the youngest conductor in the event’s history. A product of Venezuela’s *El Sistema* music-education programme, he first performed with the Vienna Philharmonic in 2007; his 2017 concert also marked the orchestra’s 175th anniversary. Dudamel is now Music & Artistic Director of the Los Angeles Philharmonic and, from 2026, of the New York Philharmonic."
+    },
+    "expert": {
+     "en": "**Dudamel**’s 2017 concert (and at age 35 as the youngest conductor featured in the series’ history) is emblematic of the event’s current, global reach. Broadcast to more than 90 countries and some 50 million viewers according to the orchestra’s data, his appearance coincided with the 175th-anniversary year of the Vienna Philharmonic. An *El Sistema* alumnus with a genuinely mainstream reach (Dudamel has featured at the Super Bowl, on Hollywood score recordings, and countless festival stages) he embodies the concert’s modern role as a worldwide cultural phenomenon rather than a purely Viennese event."
+    }
+   },
+   "image": null
+  }
+ },
+ "warnings": []
+}

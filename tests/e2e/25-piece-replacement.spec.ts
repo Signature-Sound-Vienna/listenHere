@@ -9,7 +9,13 @@ import { test, expect, Page } from '@playwright/test';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { stubExternalMei, FIXTURES_DIR, zoomSettled } from '../support/helpers';
+import {
+  stubExternalMei,
+  FIXTURES_DIR,
+  zoomSettled,
+  readFixtureJson,
+  fixtureUploads,
+} from '../support/helpers';
 
 const A_KEYS = ['audio-a.mp3', 'audio-b.mp3', 'audio-c.mp3'];
 const B_KEYS = ['audio-1.mp3', 'audio-2.mp3', 'audio-3.mp3'];
@@ -21,7 +27,7 @@ const SYNTH = 'Score (synthesised from MEI)';
  * 2 MB of inline peaks.
  */
 function makePieceB(): string {
-  const a = JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, 'alignment.json'), 'utf8'));
+  const a = readFixtureJson('alignment.json');
   const audio = a.body.audio;
   a.body.audio = {
     'audio-1.mp3': audio['audio-a.mp3'],
@@ -48,7 +54,7 @@ function collectErrors(page: Page): string[] {
 
 /** Variant of the fixture with a different score, so it is a different piece. */
 function makeOtherPieceSameRecordings(): string {
-  const a = JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, 'alignment.json'), 'utf8'));
+  const a = readFixtureJson('alignment.json');
   a.header.meiUri = a.header.meiUri.replace(/[^/]+\.mei$/, 'Some-Other-Piece.mei');
   const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lh-other-')), 'alignment-other.json');
   fs.writeFileSync(out, JSON.stringify(a));
@@ -57,7 +63,7 @@ function makeOtherPieceSameRecordings(): string {
 
 /** Same piece and score, but one recording fewer. */
 function makeSamePieceFewerRecordings(dropKey: string): string {
-  const a = JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, 'alignment.json'), 'utf8'));
+  const a = readFixtureJson('alignment.json');
   delete a.body.audio[dropKey];
   const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lh-subset-')), 'alignment-subset.json');
   fs.writeFileSync(out, JSON.stringify(a));
@@ -71,7 +77,7 @@ function makeSamePieceFewerRecordings(dropKey: string): string {
  * distinguish them.
  */
 function makeAudioOnly(opts: { warp?: number; keep?: string[] } = {}): string {
-  const a = JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, 'alignment.json'), 'utf8'));
+  const a = readFixtureJson('alignment.json');
   delete a.header.meiUri;
   delete a.body.score;
   for (const [k, v] of Object.entries<any>(a.body.audio)) {
@@ -168,7 +174,7 @@ async function setPickerFiles(page: Page, files: string[]) {
     page.waitForEvent('filechooser'),
     page.click('#file-picker-files-btn'),
   ]);
-  await chooser.setFiles(files);
+  await chooser.setFiles(fixtureUploads(files));
 }
 
 async function clickContinue(page: Page) {

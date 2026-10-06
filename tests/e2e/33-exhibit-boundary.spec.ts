@@ -133,10 +133,17 @@ test.describe('33. Exhibit engine boundary', () => {
   //      inhabitants: consumers are meant to import them rather than copy them,
   //      so they must stay import-free. If any grows an import, this fails
   //      before the consumer even exists. time-map.js joined 2026-08-28
-  //      (plan §13 — the stand-in tool and the §12 axis modes both build on it).
-  test('33.3 align-core, grouping-core, and time-map import nothing', () => {
+  //      (plan §13 — the stand-in tool and the §12 axis modes both build on it);
+  //      correction-model.js joined 2026-08-30 (plan §14 — the fix-mode
+  //      anchors/gaps model).
+  test('33.3 align-core, grouping-core, time-map, and correction-model import nothing', () => {
     const offenders: string[] = [];
-    for (const name of ['align-core.js', 'grouping-core.js', 'time-map.js']) {
+    for (const name of [
+      'align-core.js',
+      'grouping-core.js',
+      'time-map.js',
+      'correction-model.js',
+    ]) {
       const file = path.join(JS_ROOT, 'engine', name);
       expect(fs.existsSync(file), `${name} is missing`).toBe(true);
       const reached = [...closure([file]).keys()].filter((p) => p !== file);

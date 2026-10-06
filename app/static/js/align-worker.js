@@ -1,6 +1,8 @@
 /*
  * align-worker.js
- * Web Worker for in-browser audio alignment using Pyodide (numpy + scipy).
+ * Web Worker for in-browser audio alignment using Pyodide (numpy only —
+ * scipy was dropped 2026-09-02: it cost ~2 s of every runtime boot for three
+ * linear interpolations and one running maximum, all numpy now).
  * Computes chroma features via STFT, aligns recordings using DTW.
  *
  * Architecture:
@@ -49,8 +51,39 @@ function reportStep(phase, step, file, index, total, elapsed) {
 
 const PYTHON_CODE = `
 import numpy as np
-from scipy.interpolate import interp1d
 from js import reportProgress, reportStep
+
+def interp_linear_extrap(x, y, xq):
+    """interp1d(kind='linear', fill_value='extrapolate') without scipy — the
+    only thing scipy was loaded for (~2 s of runtime per session). x must be
+    strictly increasing (make_monotonic guarantees it for warping paths):
+    np.interp inside the range, the end segments' slopes outside. A scalar
+    query returns a float, an array query an array, as interp1d did."""
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    scalar = np.ndim(xq) == 0
+    q = np.atleast_1d(np.asarray(xq, dtype=np.float64))
+    if len(x) < 2:
+        out = np.full(q.shape, y[0] if len(y) else np.nan)
+    else:
+        out = np.interp(q, x, y)
+        lo = q < x[0]
+        if lo.any():
+            out[lo] = y[0] + (q[lo] - x[0]) * (y[1] - y[0]) / (x[1] - x[0])
+        hi = q > x[-1]
+        if hi.any():
+            out[hi] = y[-1] + (q[hi] - x[-1]) * (y[-1] - y[-2]) / (x[-1] - x[-2])
+    return float(out[0]) if scalar else out
+
+def _running_max(a, half):
+    """Maximum over [i - half, i + half], edge-clipped — maximum_filter1d
+    (mode='nearest') without scipy."""
+    a = np.asarray(a, dtype=np.float64)
+    out = a.copy()
+    for d in range(1, int(half) + 1):
+        out[d:] = np.maximum(out[d:], a[:-d])
+        out[:-d] = np.maximum(out[:-d], a[d:])
+    return out
 import time as _time
 
 SR = 22050
@@ -69,17 +102,39 @@ SCORE_HOP  = SR // SCORE_FEATURE_RATE
 SCORE_N_FFT = 4096
 SCORE_DOWNSAMPLE = 2     # pool by this factor => coarse at 5 Hz
 ONSET_N_FFT = 1024       # short window (46 ms) for sharp onset detection
-ONSET_WEIGHT = 2.0       # chroma scale-up factor at detected onsets
+# (An ONSET_WEIGHT constant lived here until 0.59.0: build_score_features scaled
+# each chroma frame by 1 + weight × onset strength and L2-renormalised the
+# frame — which the per-frame normalisation cancelled exactly. Measured on
+# 2026-09-11: features, pooled features, and the cosine cost matrix differed by
+# < 1e-6 between weight 2 and weight 0. The parameter never changed an
+# alignment; it and the wizard's knob for it are gone. Alignments stamped with
+# an onsetWeight still load: readers ignore the key. No backticks in this
+# blob, ever — one ends the JS template literal that carries it.)
 
 # Audio-to-audio DTW parameters
 COARSE = 4               # coarse pooling factor
 SLACK  = 80              # Sakoe-Chiba band half-width (fine frames)
 
+# Open-ended alignment — audio with no counterpart in the reference (applause,
+# announcements, tuning). The coarse DTW may enter and leave the TARGET
+# anywhere; the REFERENCE is always consumed in full, within its own usable
+# span. Asymmetry is deliberate: free ends on both sides turn the problem into
+# best-common-subsequence, whose degenerate answer is to align a confident
+# fragment and skip the rest.
+MUSIC_PEAKINESS   = 2.0    # chroma max/mean above this = tonal, i.e. music
+MUSIC_SMOOTH_SEC  = 1.0    # smoothing window for the peakiness curve
+MUSIC_MIN_RUN_SEC = 3.0    # window length over which music is declared
+MUSIC_RUN_FRACTION = 0.25  # ... and the share of that window that must be tonal
+MAX_TRIM_FRACTION = 0.5    # never discard more than this much of a file
+MIN_SPAN_RATIO    = 0.6    # aligned target span / reference span, lower bound
+MAX_SPAN_RATIO    = 1.667  # ... and upper bound; outside either = degenerate
+SPAN_REPORT_EPS   = 0.25   # seconds; below this a trim is not worth reporting
+
 
 def _apply_options():
     """Override module constants from JS _opt_* globals (if set)."""
     global FEATURE_RATE, HOP, COARSE, SLACK
-    global SCORE_DOWNSAMPLE, ONSET_WEIGHT
+    global SCORE_DOWNSAMPLE
     v = int(_opt_feature_rate) if int(_opt_feature_rate) > 0 else None
     if v:
         FEATURE_RATE = v
@@ -93,9 +148,6 @@ def _apply_options():
     v = int(_opt_score_downsample) if int(_opt_score_downsample) > 0 else None
     if v:
         SCORE_DOWNSAMPLE = v
-    v = float(_opt_onset_weight)
-    if v >= 0:
-        ONSET_WEIGHT = v
 
 
 def _stft_setup(audio, n_fft, hop):
@@ -152,13 +204,15 @@ def compute_chroma_score(audio):
     return compute_chroma(audio, n_fft=SCORE_N_FFT, hop=SCORE_HOP)
 
 
-def compute_onset_strength(audio):
+def compute_onset_strength(audio, hop=None):
     """Spectral-flux onset strength — fully streaming.
-    Uses ONSET_N_FFT short window for temporal resolution; same hop as chroma_score.
+    Uses ONSET_N_FFT short window for temporal resolution; hop defaults to
+    SCORE_HOP, overridable (the fix-mode lanes pass their own fine hop).
     Peak extra memory: 2 * ONSET_N_FFT/2 floats (current + prev frame).
     """
     n_fft = ONSET_N_FFT
-    hop   = SCORE_HOP
+    if hop is None:
+        hop = SCORE_HOP
     audio_pad, window, n_frames, s = _stft_setup(audio, n_fft, hop)
     CHUNK = 256
     flux = np.zeros(n_frames, dtype=np.float32)
@@ -192,18 +246,6 @@ def compute_onset_strength(audio):
     if mx > 1e-8:
         flux /= mx
     return flux  # (n_frames,)
-
-
-def build_score_features(chroma, onset):
-    """Onset-weighted chroma: scale each frame by (1 + ONSET_WEIGHT * onset),
-    then L2-renormalise.  Amplifies attack moments in both score and real audio
-    so DTW strongly prefers aligning them together (approximates DLNCO).
-    """
-    scale = (np.float32(1.0) + np.float32(ONSET_WEIGHT) * onset)  # (n_frames,)
-    weighted = chroma * scale[np.newaxis, :]
-    norms = np.linalg.norm(weighted, axis=0, keepdims=True)
-    norms[norms < 1e-8] = np.float32(1.0)
-    return (weighted / norms).astype(np.float32)
 
 
 def _pool_features(feat, factor):
@@ -336,24 +378,61 @@ def dtw_band(C, band):
     return np.array([path_i, path_j])
 
 
-def _dtw_f32(C):
+def _dtw_f32(C, open_ends=False, entry_max=None, exit_min=None):
     """Unconstrained DTW in float32 (lower memory than float64).
     Intended for small coarse cost matrices only.
     Returns warping path (2, L).
+
+    open_ends=False: corner-to-corner, pinned at (0, 0) and (N-1, M-1).
+    open_ends=True:  subsequence DTW, asymmetric. Every row is still
+      traversed (the reference is consumed in full), but the path may ENTER
+      at any column of row 0 up to entry_max and LEAVE at any column of row
+      N-1 from exit_min on, so material at the head or tail of the COLUMN
+      signal with no counterpart in the row signal is skipped rather than
+      stretched.
+
+    entry_max / exit_min are not an optimisation, they are the correctness
+    of the thing. A free end prefers SHORTER paths, because skipping columns
+    means fewer cells to pay for: measured on synthetic pairs with nothing
+    extra in them at all, unbounded free ends still cut 0.4-2.4 s off the
+    head and up to 1.6 s off the tail. The cost margin does not dominate the
+    way the accumulated-cost argument suggests. So the DTW is allowed to skip
+    only as far as detect_music_span found material that is not music: the
+    detector decides WHETHER there is anything to skip, the DTW decides
+    exactly WHERE, and on a clean recording the window is empty and the
+    result is the pinned path.
     """
     N, M = C.shape
     D = np.full((N, M), np.inf, dtype=np.float32)
-    D[0, 0] = C[0, 0]
-    for j in range(1, M):
-        D[0, j] = D[0, j - 1] + C[0, j]
+    emax = 0
+    if open_ends:
+        emax = M - 1 if entry_max is None else max(0, min(M - 1, int(entry_max)))
+        # Free start: entering at any allowed column of row 0 costs only that
+        # cell. Past the window, row 0 accumulates as usual — such a cell is a
+        # path that entered inside the window and ran horizontally to here.
+        D[0, :emax + 1] = C[0, :emax + 1]
+        for j in range(emax + 1, M):
+            D[0, j] = D[0, j - 1] + C[0, j]
+    else:
+        D[0, 0] = C[0, 0]
+        for j in range(1, M):
+            D[0, j] = D[0, j - 1] + C[0, j]
     for i in range(1, N):
         D[i, 0] = D[i - 1, 0] + C[i, 0]
     for i in range(1, N):
         for j in range(1, M):
             D[i, j] = C[i, j] + min(D[i-1, j-1], D[i-1, j], D[i, j-1])
-    i, j = N - 1, M - 1
+    if open_ends:
+        xmin = 0 if exit_min is None else max(0, min(M - 1, int(exit_min)))
+        i, j = N - 1, xmin + int(np.argmin(D[N - 1, xmin:]))
+    else:
+        i, j = N - 1, M - 1
     pi, pj = [i], [j]
-    while i > 0 or j > 0:
+    # The pinned variant walks row 0 back to the origin. The open one stops as
+    # soon as it reaches a legal entry cell — and walks left along row 0 to
+    # reach one, undoing the horizontal run that row 0 accumulated past emax.
+    stop_j = 0 if not open_ends else emax
+    while i > 0 or j > stop_j:
         if i == 0: j -= 1
         elif j == 0: i -= 1
         else:
@@ -419,12 +498,15 @@ def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
         # Then g[k] = min(base[k] - prefix[k], g[k-1])
         #           = min_{k'<=k}(base[k'] - prefix[k'])
         # → fully vectorisable with np.minimum.accumulate
-        prefix = np.cumsum(costs)
-        g_vals  = base - prefix                               # (bw,)
+        # float64 for the row temporaries: prefix grows to O(bw) along the
+        # row, so the float32 add-back (prefix + cum_g) cancels catastrophically
+        # (~1e-5 noise), which used to mis-mark parents (see below).
+        prefix = np.cumsum(costs, dtype=np.float64)
+        g_vals  = base.astype(np.float64) - prefix            # (bw,)
         if i == 0 and lo == 0:
-            g_vals[0] = costs[0] - prefix[0]   # origin cell: D[0,0]=costs[0]
+            g_vals[0] = np.float64(costs[0]) - prefix[0]   # origin cell: D[0,0]=costs[0]
         cum_g   = np.minimum.accumulate(g_vals)               # (bw,)
-        d_cur   = prefix + cum_g                              # (bw,) final accumulated costs
+        d_cur   = (prefix + cum_g).astype(np.float32)         # (bw,) final accumulated costs
 
         # Fix up the origin cell (i=0, j=0 must equal costs[0])
         if i == 0 and lo == 0:
@@ -433,12 +515,20 @@ def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
         # ── parent pointers (one numpy pass per row) ───────────────────────
         # For each k: was the horizontal option better than diag/vert?
         # "best k0 for horiz ending at k" is argmin of g_vals[0..k]
-        # If cum_g[k] < base[k] - prefix[k], horiz from some k0 < k was used.
+        # If cum_g[k] < g_vals[k], horiz from some k0 < k was used. Decide
+        # from the cum-min's PROVENANCE, in g-space — comparing the float32
+        # reconstruction (d_cur < base) decides on cancellation roundoff and
+        # decoded paths costing far more than the DP optimum (found 2026-08-30
+        # by spec 41's synthetic corpus; 156 mis-marked parents on one run).
         # We need the actual k0 to store correct parents but for the path we
         # only need one choice: 0=diag/vert, 2=horiz (see backtrack below).
-        use_horiz = (d_cur < base)                            # (bw,) bool
-        # Among diag/vert: which predecessor was better?
-        use_vert  = (~use_horiz) & (vert_pred <= diag_pred)
+        use_horiz = (cum_g < g_vals)                          # (bw,) bool
+        # Among diag/vert: which predecessor was better? STRICT less-than so
+        # exact ties prefer the diagonal — the same tie semantics as
+        # dtw_band's backtrack. A non-strict compare here walks staircases
+        # through zero-cost plateaus (sustained identical frames), biasing
+        # the path early; real audio never ties exactly, synthetic audio does.
+        use_vert  = (~use_horiz) & (vert_pred < diag_pred)
         par_row = par[i, :bw]
         par_row[:] = np.where(use_horiz, np.int8(2),
                      np.where(use_vert,  np.int8(1),
@@ -471,8 +561,12 @@ def _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi):
                 elif p == 1: i -= 1                     # vert
                 else:        j -= 1                     # horiz
             else:
-                # Out-of-band fallback — shouldn't happen with correct slack
+                # Out-of-band fallback. With connective bands this should not
+                # fire; if it ever does, clamp back under the row's ceiling so
+                # one stray step cannot become a thousand-row diagonal drift.
                 i -= 1; j -= 1
+                if j > int(j_hi[i]):
+                    j = int(j_hi[i])
         pi.append(i); pj.append(j)
     pi.reverse(); pj.reverse()
     return np.array([pi, pj])
@@ -495,7 +589,93 @@ def make_monotonic(wp):
     return wp[:, keep]
 
 
-def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
+def chroma_peakiness(chroma):
+    """Per-frame max/mean over the 12 pitch classes.
+
+    Tonal music concentrates energy in a few pitch classes and scores high;
+    applause, tuning, and speech spread it flat and score near 1. Measured
+    2026-09-18 over the first 50 s of VPO-1963-1979 (DVD 1), per second:
+    applause 1.1-1.6, quiet gap 1.2-1.8, music 2.3-8.4 — no overlap. Zero
+    crossing rate does NOT separate the same material (music reaches 0.086
+    against applause's 0.095), which is why this is the feature used.
+
+    Silent frames (all-zero chroma) score 0, i.e. not music.
+    """
+    col_sum = chroma.sum(axis=0)
+    col_max = chroma.max(axis=0)
+    out = np.zeros(chroma.shape[1], dtype=np.float64)
+    live = col_sum > 1e-8
+    out[live] = col_max[live] * 12.0 / col_sum[live]
+    return out
+
+
+def detect_music_span(chroma):
+    """Propose the frames [i0, i1] of chroma that carry music.
+
+    Head and tail only — never an interior cut, because an interior flat
+    stretch is a quiet passage, not an absence of counterpart. Refuses to trim
+    more than MAX_TRIM_FRACTION of the signal, so a bad proposal degrades to
+    the whole file rather than to a confident mistake.
+
+    A window counts as music when MUSIC_RUN_FRACTION of its frames are tonal,
+    NOT when all of them are. Requiring every frame was the first rule and it
+    cut real music off the tails, reported from the listen UI and then measured
+    over all twenty Fledermaus recordings at hq. Endings are dense and
+    percussive, and one cymbal or timpani frame flattens chroma long enough to
+    break an all-tonal window, so the rule stopped at the last CLEAN three
+    seconds rather than at the end of the music. Total tail over-trim across
+    the corpus, against where tonal content actually stops:
+
+        every frame tonal  424 s  (worst 60 s)   <- the first rule
+        50% of frames       52 s  (worst 13 s)
+        25% of frames       16 s  (worst  7 s)   <- shipped
+
+    Lowering it barely costs any detection — mean trim only falls from 21.6 s
+    to 18.7 s, so the applause is still found, and DVD 1's 27 s of it still is.
+    Worst of all was the REFERENCE: VPO-2010 came out as 5.0-493.4 s against
+    tonal content running to about 528 s, and since the reference's span bounds
+    every pair, those 35 lost seconds propagated to all twenty recordings.
+    Under-trimming is the safe error: a few seconds of applause aligned costs
+    far less than the end of the piece going missing.
+
+    Returns (i0, i1) inclusive frame indices; (0, n-1) when nothing is found.
+    """
+    n = chroma.shape[1]
+    full = (0, n - 1)
+    if n < 4:
+        return full
+    peak = chroma_peakiness(chroma)
+    smooth_w = max(1, int(round(FEATURE_RATE * MUSIC_SMOOTH_SEC)))
+    if smooth_w > 1 and n >= smooth_w:
+        kernel = np.ones(smooth_w, dtype=np.float64) / smooth_w
+        peak = np.convolve(peak, kernel, mode="same")
+    tonal = (peak >= MUSIC_PEAKINESS).astype(np.float64)
+    run = max(1, int(round(FEATURE_RATE * MUSIC_MIN_RUN_SEC)))
+    if n < run:
+        return full
+    # Windows of length run that are mostly tonal; index k covers [k, k+run-1]
+    sums = np.convolve(tonal, np.ones(run, dtype=np.float64), mode="valid")
+    solid = np.nonzero(sums >= run * MUSIC_RUN_FRACTION - 0.5)[0]
+    if len(solid) == 0:
+        return full
+    i0 = int(solid[0])
+    i1 = int(solid[-1]) + run - 1
+    if i1 >= n:
+        i1 = n - 1
+    # Refuse an implausible trim rather than acting on a weak detection.
+    max_trim = MAX_TRIM_FRACTION * n
+    if i0 > max_trim:
+        i0 = 0
+    if (n - 1 - i1) > max_trim:
+        i1 = n - 1
+    if i1 - i0 < run:
+        return full
+    return (i0, i1)
+
+
+def align_pair(ref_chroma, other_chroma, ref_duration, other_duration,
+               open_ends=False, ref_frame0=0, ref_frames_total=None,
+               target_span=None):
     """Two-level memory-efficient DTW alignment.
 
     Level 1 — Coarse (4× pool):
@@ -509,25 +689,87 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
       Rolling d_prev row: M float32      ≈ 33 KB for 8400 frames.
       Parent matrix: (N × band) int8    ≈ 1-4 MB.
       Tight Sakoe-Chiba band derived from coarse path ± SLACK frames.
+
+    open_ends — run the COARSE pass as subsequence DTW, then slice the target
+      to the span the path actually used and run the fine pass, unchanged,
+      over that slice. The fine pass is NOT itself open-ended: it seeds only
+      its origin cell and only when the band's first row starts at column 0
+      (see _guided_band_dtw), so an open coarse band would leave every
+      accumulated cost at inf and backtrack a silent diagonal. Slicing keeps
+      j_lo[0] == 0 by construction and leaves that verified code alone.
+      Endpoint precision is therefore one coarse frame (0.1 s at hq).
+
+    ref_chroma may be a SLICE of the reference (its usable span). ref_frame0
+      is that slice's offset and ref_frames_total the full reference frame
+      count, so times stay in the original reference file's seconds.
+
+    target_span — (first, last) FINE frame of the target that detect_music_span
+      found to be music. It bounds how much the open ends may skip; without it
+      they overshoot on clean recordings (see _dtw_f32). None = unbounded.
+
+    Returns {times, from, to, guard}: the transferred grid, the target's
+    aligned span in that file's seconds, and whether the span guard held.
     """
     N, M = ref_chroma.shape[1], other_chroma.shape[1]
+    if ref_frames_total is None:
+        ref_frames_total = N
+    ref_scale   = ref_duration   / max(ref_frames_total - 1, 1)
+    other_scale = other_duration / max(M - 1, 1)
 
-    # ── Level 1: coarse unconstrained DTW ────────────────────────────────
+    # ── Level 1: coarse DTW, pinned or open-ended ────────────────────────
     rc = _pool_features(ref_chroma, COARSE)
     oc = _pool_features(other_chroma, COARSE)
     Nc, Mc = rc.shape[1], oc.shape[1]
 
     Cc = (1.0 - rc.T @ oc).clip(0, 2).astype(np.float32)
     del rc, oc
-    wp_c = _dtw_f32(Cc)
+    # The detector's music span, in coarse columns: the DTW may enter at or
+    # before its first music frame and leave at or after its last.
+    entry_max, exit_min = None, None
+    if open_ends and target_span is not None:
+        entry_max = int(target_span[0]) // COARSE
+        exit_min = min(Mc - 1, int(target_span[1]) // COARSE)
+    wp_c = _dtw_f32(Cc, open_ends=bool(open_ends),
+                    entry_max=entry_max, exit_min=exit_min)
+
+    # ── Span guard, on the coarse path, before the expensive fine pass ───
+    # A free-ended path that covers an implausible stretch of the target is a
+    # failed alignment wearing a confident face. Only a failing pair pays for
+    # the second coarse DTW.
+    guard_ok = True
+    if open_ends:
+        a_c = int(wp_c[1][0])
+        b_c = int(wp_c[1][-1])
+        span_sec     = (b_c - a_c) * COARSE * other_scale
+        ref_span_sec = (N - 1) * ref_scale
+        head_sec     = a_c * COARSE * other_scale
+        tail_sec     = max(0.0, other_duration - (b_c * COARSE + COARSE - 1) * other_scale)
+        ratio = span_sec / ref_span_sec if ref_span_sec > 0 else 0.0
+        if (ratio < MIN_SPAN_RATIO or ratio > MAX_SPAN_RATIO
+                or (head_sec + tail_sec) > MAX_TRIM_FRACTION * other_duration):
+            guard_ok = False
+            wp_c = _dtw_f32(Cc)
     del Cc
+
+    # ── Slice the target to the span the coarse path used ────────────────
+    if open_ends and guard_ok:
+        j_offset = int(wp_c[1][0]) * COARSE
+        j_end    = min(M - 1, int(wp_c[1][-1]) * COARSE + COARSE - 1)
+    else:
+        j_offset, j_end = 0, M - 1
+    if j_end - j_offset < 1:
+        j_offset, j_end = 0, M - 1
+    other_slice = other_chroma[:, j_offset:j_end + 1]
+    Ms = other_slice.shape[1]
 
     # ── Build fine-resolution per-row band bounds from coarse path ───────
     # Linearly interpolate the coarse warping path to fine frames,
     # then expand by ±SLACK to give the fine DTW room to move.
     # Map every coarse path step to fine (row_i, col_j) coordinates
     fi_pts = wp_c[0].astype(np.float32) * COARSE   # fine row
-    fj_pts = wp_c[1].astype(np.float32) * COARSE   # fine col (centre of coarse block)
+    # fine col (centre of coarse block), relative to the slice
+    fj_pts = wp_c[1].astype(np.float32) * COARSE - np.float32(j_offset)
+    np.clip(fj_pts, 0, Ms - 1, out=fj_pts)
 
     # Interpolate centre column for every fine row
     if len(fi_pts) > 1:
@@ -538,8 +780,8 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
     else:
         fj_centre = np.full(N, fj_pts[0], dtype=np.float32)
 
-    j_lo = np.maximum(0,     (fj_centre - SLACK).astype(np.int32))
-    j_hi = np.minimum(M - 1, (fj_centre + SLACK + COARSE).astype(np.int32))
+    j_lo = np.maximum(0,      (fj_centre - SLACK).astype(np.int32))
+    j_hi = np.minimum(Ms - 1, (fj_centre + SLACK + COARSE).astype(np.int32))
 
     # Enforce monotonicity of band (required for streaming DTW correctness)
     for fi in range(1, N):
@@ -549,20 +791,27 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration):
     del wp_c, fj_centre, fi_pts, fj_pts
 
     # ── Level 2: guided band streaming DTW ───────────────────────────────
-    wp = _guided_band_dtw(ref_chroma, other_chroma, j_lo, j_hi)
+    wp = _guided_band_dtw(ref_chroma, other_slice, j_lo, j_hi)
     wp = make_monotonic(wp)
+    del other_slice
 
     # ── Convert frame indices → times → transfer annotation grid ─────────
-    n_ref   = ref_chroma.shape[1]
-    n_other = other_chroma.shape[1]
-    ref_times   = wp[0].astype(np.float64) * ref_duration   / max(n_ref   - 1, 1)
-    other_times = wp[1].astype(np.float64) * other_duration / max(n_other - 1, 1)
+    ref_times   = (wp[0].astype(np.float64) + ref_frame0) * ref_scale
+    other_times = (wp[1].astype(np.float64) + j_offset)   * other_scale
 
     ref_grid   = np.arange(0, ref_duration, ANNOTATION_STEP)
-    transferred = interp1d(
-        ref_times, other_times, kind='linear', fill_value='extrapolate'
-    )(ref_grid)
-    return transferred.tolist()
+    transferred = interp_linear_extrap(ref_times, other_times, ref_grid)
+    # Outside the warping path the grid is extrapolated, and make_monotonic
+    # can drop a leading vertical run, which used to push the first entries
+    # below zero (four files in the Fledermaus corpus, -0.04 to -0.55 s). A
+    # playhead cannot sit before the file starts or after it ends.
+    np.clip(transferred, 0.0, other_duration, out=transferred)
+    return {
+        "times": transferred.tolist(),
+        "from":  float(other_times[0]),
+        "to":    float(other_times[-1]),
+        "guard": bool(guard_ok),
+    }
 
 
 def compute_peaks(samples, n_peaks):
@@ -595,13 +844,25 @@ _batch_peak_count = 0
 _batch_score_mode = False
 _feature_count = 0
 _feature_total = 0
+_batch_open_ends = False     # global "ignore audio with no counterpart"
+_batch_open_by_file = {}     # per-file overrides; missing = follow the global
+_ref_span = None             # (from_sec, to_sec) of the reference's usable span
 
 
-def begin_batch(ref_name, peak_count, score_mode, feature_total):
+def _open_ends_for(name):
+    """Whether this file's head and tail may be left unaligned."""
+    if name in _batch_open_by_file:
+        return bool(_batch_open_by_file[name])
+    return bool(_batch_open_ends)
+
+
+def begin_batch(ref_name, peak_count, score_mode, feature_total,
+                open_ends=False, open_by_file=None):
     """Reset per-batch state at the start of a new alignment run."""
     global _chromas, _durations, _peaks_data, _ref_audio_copy
     global _batch_ref_name, _batch_peak_count, _batch_score_mode
     global _feature_count, _feature_total
+    global _batch_open_ends, _batch_open_by_file, _ref_span
     _chromas = {}
     _durations = {}
     _peaks_data = {}
@@ -611,6 +872,9 @@ def begin_batch(ref_name, peak_count, score_mode, feature_total):
     _batch_score_mode = bool(score_mode)
     _feature_count = 0
     _feature_total = int(feature_total)
+    _batch_open_ends = bool(open_ends)
+    _batch_open_by_file = dict(open_by_file or {})
+    _ref_span = None
     import gc
     gc.collect()
 
@@ -646,6 +910,7 @@ def align_all_from_features():
     peak heap usage at ref_chroma + one other_chroma + DTW scratch.
     """
     import gc
+    global _ref_span
     ref_name = _batch_ref_name
     if ref_name not in _chromas:
         raise RuntimeError(f"Reference '{ref_name}' missing from extracted features")
@@ -654,12 +919,33 @@ def align_all_from_features():
     filenames = list(_chromas.keys())
     n = len(filenames)
 
+    # ── The reference's usable span, decided once for the whole run ───────
+    # The reference may itself open with applause. One span fixes all N pairs
+    # and stays inspectable, where a per-pair outcome would not. Times stay in
+    # the ORIGINAL reference file's seconds; we simply do not align outside it.
+    ref_full = _chromas[ref_name]
+    ref_frames_total = ref_full.shape[1]
+    ref_scale = ref_duration / max(ref_frames_total - 1, 1)
+    ref_f0, ref_f1 = 0, ref_frames_total - 1
+    if _open_ends_for(ref_name):
+        ref_f0, ref_f1 = detect_music_span(ref_full)
+    ref_span_from = ref_f0 * ref_scale
+    ref_span_to   = ref_f1 * ref_scale
+    _ref_span = (ref_span_from, ref_span_to)
+    ref_trimmed = (ref_f0 > 0) or (ref_f1 < ref_frames_total - 1)
+    ref_slice = ref_full[:, ref_f0:ref_f1 + 1]
+
     result = {}
+    trimmed_files = []
+    guard_failed = []
     pair_count = 0
     total_pairs = max(1, n - 1)
     for name in filenames:
+        aligned = None
         if name == ref_name:
             times = ref_grid.tolist()
+            if ref_trimmed:
+                aligned = (ref_span_from, ref_span_to)
         else:
             pair_count += 1
             reportStep("align", "start", name, pair_count, total_pairs, None)
@@ -668,28 +954,61 @@ def align_all_from_features():
                 int(30 + 65 * pair_count / total_pairs)
             )
             t0 = _time.time()
-            times = align_pair(
-                _chromas[ref_name], _chromas[name],
-                ref_duration, _durations[name]
+            open_ends = _open_ends_for(name)
+            # What the DTW is ALLOWED to skip in this recording. Without this
+            # bound a free end trims a clean recording too (see _dtw_f32).
+            target_span = (
+                detect_music_span(_chromas[name]) if open_ends else None
             )
+            pair = align_pair(
+                ref_slice, _chromas[name],
+                ref_duration, _durations[name],
+                open_ends=open_ends,
+                ref_frame0=ref_f0,
+                ref_frames_total=ref_frames_total,
+                target_span=target_span,
+            )
+            times = pair["times"]
+            # Only an open-ended pair whose guard held makes a claim about
+            # where the counterpart begins and ends; a pinned pair covers the
+            # whole file by construction, and a guard failure fell back to one.
+            if open_ends and pair["guard"]:
+                aligned = (pair["from"], pair["to"])
+            if open_ends and not pair["guard"]:
+                guard_failed.append(name)
             elapsed = _time.time() - t0
             reportStep("align", "done", name, pair_count, total_pairs, elapsed)
-        if _peaks_data:
-            result[name] = {
-                "times": times,
-                "peaks": _peaks_data[name],
-                "duration": round(_durations[name], 6),
-            }
+        if _peaks_data or aligned is not None:
+            entry = {"times": times, "duration": round(_durations[name], 6)}
+            if _peaks_data:
+                entry["peaks"] = _peaks_data[name]
+            result[name] = entry
         else:
             result[name] = times
+        if aligned is not None:
+            a_from = round(max(0.0, aligned[0]), 6)
+            a_to   = round(min(_durations[name], aligned[1]), 6)
+            result[name]["alignedFrom"] = a_from
+            result[name]["alignedTo"]   = a_to
+            # "Trimmed" means there is really material with no counterpart —
+            # a span covering the whole file is not worth reporting.
+            if a_from > SPAN_REPORT_EPS or (_durations[name] - a_to) > SPAN_REPORT_EPS:
+                trimmed_files.append(name)
         # Free the non-ref chroma as soon as it's been consumed.
         if name != ref_name:
             del _chromas[name]
             gc.collect()
 
     reportProgress("Done!", 100)
+    header = {"ref": ref_name}
+    if _batch_open_ends or _batch_open_by_file:
+        header["openEnds"] = {
+            "enabled": bool(_batch_open_ends),
+            "trimmed": trimmed_files,
+            "guardFailed": guard_failed,
+        }
     return {
-        "header": {"ref": ref_name},
+        "header": header,
         "body": {"audio": result}
     }
 
@@ -810,16 +1129,14 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
       1. Parse SMF MIDI → notes + complete tempo map
       2. Synthesise to mono PCM (additive sine harmonics) — puts synth and
          real audio in the same STFT feature space
-      3. Extract STFT chroma (SCORE_N_FFT) and spectral-flux onset strength
-         (ONSET_N_FFT, finer window) for both synth and reference
-      4. Scale each chroma frame by (1 + ONSET_WEIGHT * onset), renormalise
-         → attack moments dominate the cost matrix, stabilising alignment
-         for ensemble music (approximates DLNCO onset weighting)
-      5. Coarse DTW: pool features by SCORE_DOWNSAMPLE (=> ~5 Hz),
+      3. Extract STFT chroma (SCORE_N_FFT, L2-normalised per frame) for both
+         synth and reference. (An onset-weighting step followed here until
+         0.59.0; see the note at ONSET_N_FFT — it was a measured no-op.)
+      4. Coarse DTW: pool features by SCORE_DOWNSAMPLE (=> ~5 Hz),
          run fully unconstrained DTW on the small matrix.  This captures
          global structure — the essential fix for the 'random' failure mode
          that plagued a single-level SC-band approach.
-      6. Map each deduplicated note onset/offset through the coarse warping
+      5. Map each deduplicated note onset/offset through the coarse warping
          path via linear interpolation → final score-to-audio alignment.
 
     Returns dict: score_onset, ref_onset, score_offset, ref_offset
@@ -838,27 +1155,26 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
     midi_dur = _tick_to_sec(max_tick, tpq, tcs) + 0.5
     ref_dur  = len(ref_audio) / SR
 
+    # The reference's usable span, decided once in align_all_from_features.
+    # Without this a reference that opens with applause drags the score's
+    # first note back to t=0, exactly as it did for the audio pairs.
+    span_from, span_to = 0.0, ref_dur
+    if _ref_span is not None:
+        span_from = max(0.0, float(_ref_span[0]))
+        span_to   = min(ref_dur, float(_ref_span[1]))
+    if span_to - span_from < 1.0:
+        span_from, span_to = 0.0, ref_dur
+    if span_from > 0.0 or span_to < ref_dur:
+        ref_audio = ref_audio[int(round(span_from * SR)):int(round(span_to * SR))]
+    span_dur = len(ref_audio) / SR
+
     reportProgress("Score alignment: synthesising MIDI audio...", None)
     synth_audio = synth_midi_audio(notes, tpq, tcs, midi_dur)
 
     reportProgress("Score alignment: extracting chroma features...", None)
-    sc = compute_chroma_score(synth_audio)
-    rc = compute_chroma_score(ref_audio)
-
-    reportProgress("Score alignment: extracting onset features...", None)
-    sc_onset = compute_onset_strength(synth_audio)
+    sc_feat = compute_chroma_score(synth_audio)
     del synth_audio
-    rc_onset = compute_onset_strength(ref_audio)
-
-    # Trim/pad onset arrays to match chroma frame count
-    n_sc = sc.shape[1];  n_rc = rc.shape[1]
-    sc_onset = sc_onset[:n_sc] if len(sc_onset) >= n_sc else np.pad(sc_onset, (0, n_sc - len(sc_onset)))
-    rc_onset = rc_onset[:n_rc] if len(rc_onset) >= n_rc else np.pad(rc_onset, (0, n_rc - len(rc_onset)))
-
-    # Onset-weighted chroma features
-    sc_feat = build_score_features(sc, sc_onset)
-    rc_feat = build_score_features(rc, rc_onset)
-    del sc, rc, sc_onset, rc_onset
+    rc_feat = compute_chroma_score(ref_audio)
 
     # --- Coarse DTW (unconstrained) on downsampled features ---
     reportProgress("Score alignment: coarse DTW...", None)
@@ -877,9 +1193,10 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
 
     # Coarse path → time mapping (each frame spans SCORE_DOWNSAMPLE * SCORE_HOP seconds)
     sc_times_c = wp_c[0].astype(np.float64) * midi_dur / max(n_sc_c - 1, 1)
-    rc_times_c = wp_c[1].astype(np.float64) * ref_dur  / max(n_rc_c - 1, 1)
+    rc_times_c = (wp_c[1].astype(np.float64) * span_dur / max(n_rc_c - 1, 1)
+                  + span_from)
     del wp_c
-    wf = interp1d(sc_times_c, rc_times_c, kind='linear', fill_value='extrapolate')
+    wf = lambda xq: interp_linear_extrap(sc_times_c, rc_times_c, xq)
 
     # Deduplicate chord notes: one entry per unique (onset_tick, offset_tick)
     seen = {}
@@ -908,22 +1225,533 @@ def score_align(midi_bytes_py, ref_audio, mei_uri):
         "synth_onset":  s_on_sec,   # listen.js uses these to build the synth waveform’s alignment grid
         "synth_offset": s_off_sec,
     }
+
+
+# --- Fix-mode (hand-correction) session — plan section 14, increment 1 ---
+#
+# The alignment-correction UI pins ANCHORS (score event <-> reference time)
+# and re-fills only the events BETWEEN neighbouring anchors. The reference
+# audio and the score's parsed + synthesised form stay resident so each
+# refill re-runs DTW only on its segment, at a hop that ADAPTS to the
+# segment length: short segments get finer frames than the original
+# full-piece alignment (FIX_MIN_HOP ~23 ms vs SCORE_HOP 100 ms), while a
+# full-piece segment lands back near the original resolution via the
+# FIX_MAX_FRAMES cap. The band follows the STORED mapping (tapered onto the
+# anchor endpoints), so far from a fix the refill snaps back to the old
+# path — anchors bend the alignment locally, they never reshuffle it.
+
+FIX_MIN_HOP = 512        # samples (~23 ms) — floor for short segments
+FIX_MAX_FRAMES = 6000    # frame cap; full piece lands near SCORE_HOP
+FIX_SLACK_SEC = 4.0      # default band half-width around the prior map
+
+_fix = None
+
+def fix_begin(ref_audio, midi_bytes_py):
+    """Bootstrap a correction session: parse + synthesise the score once and
+    keep both PCM arrays resident. Returns the deduplicated event table —
+    the SAME construction as score_align — so the client can run the item-T
+    quarters guard against the stored score_onset before any editing."""
+    global _fix
+    tpq, tcs, notes = parse_midi(midi_bytes_py)
+    if not notes:
+        raise RuntimeError('fix_begin: MIDI contains no notes')
+    max_tick = max(n[1] for n in notes)
+    midi_dur = _tick_to_sec(max_tick, tpq, tcs) + 0.5
+    reportProgress('Correction session: synthesising score audio...', None)
+    synth_audio = synth_midi_audio(notes, tpq, tcs, midi_dur)
+    ref = np.asarray(ref_audio, dtype=np.float32)
+    seen = {}
+    for st, et, pitch, vel in sorted(notes, key=lambda x: (x[0], x[1])):
+        if (st, et) not in seen:
+            seen[(st, et)] = vel
+    q_on = []; q_off = []; s_on_sec = []; s_off_sec = []
+    for (st, et), vel in sorted(seen.items()):
+        q_on.append(st / tpq)
+        q_off.append(et / tpq)
+        s_on_sec.append(_tick_to_sec(st, tpq, tcs))
+        s_off_sec.append(_tick_to_sec(et, tpq, tcs))
+    _fix = {
+        'ref': ref,
+        'synth': synth_audio,
+        'ref_dur': len(ref) / SR,
+        'midi_dur': midi_dur,
+        's_on': np.array(s_on_sec, dtype=np.float64),
+        's_off': np.array(s_off_sec, dtype=np.float64),
+    }
+    return {
+        'score_onset': q_on,
+        'score_offset': q_off,
+        'synth_onset': s_on_sec,
+        'synth_offset': s_off_sec,
+        'n_events': len(q_on),
+        'ref_duration': _fix['ref_dur'],
+        'midi_duration': midi_dur,
+    }
+
+def _fix_features(audio, lo_sec, hi_sec, hop):
+    """Per-frame L2-normalised chroma for one audio slice at the segment's hop."""
+    lo = max(0, int(lo_sec * SR))
+    hi = min(len(audio), int(hi_sec * SR))
+    return compute_chroma(audio[lo:hi], n_fft=SCORE_N_FFT, hop=hop)
+
+def _fix_guided_warp(feat_a, feat_b, a_lo, a_hi, b_lo, b_hi, knots_a, knots_b, slack, who):
+    """The anchored refill's core, shared by the score-to-reference and the
+    audio-to-audio corrections: a guided band DTW between two feature slices
+    whose corners ARE the two anchors. The band is centred on the PRIOR
+    mapping (knots_a -> knots_b: the stored values, endpoints forced onto the
+    anchors, made monotonic and clipped so garbage stored values can only cost
+    band width, never break the DTW's preconditions), +- slack seconds.
+    Returns wf: a-time -> b-time along the decoded path (linear interpolation,
+    edge-extrapolated). Reads nothing but its arguments, so a score-less
+    session can use it unchanged."""
+    n_a = feat_a.shape[1]; n_b = feat_b.shape[1]
+    if n_a < 2 or n_b < 2:
+        raise ValueError(who + ': segment too short to align')
+    seg_a = a_hi - a_lo; seg_b = b_hi - b_lo
+    ka = np.asarray(knots_a, dtype=np.float64)
+    kb = np.asarray(knots_b, dtype=np.float64)
+    kb = np.maximum.accumulate(np.clip(kb, b_lo, b_hi))
+    ka, first_ix = np.unique(ka, return_index=True)
+    kb = kb[first_ix]
+
+    a_times = a_lo + np.arange(n_a, dtype=np.float64) * seg_a / max(n_a - 1, 1)
+    centre_b = np.interp(a_times, ka, kb)
+    centre_f = (centre_b - b_lo) * (n_b - 1) / seg_b
+    slack_f = max(8, int(np.ceil(slack * (n_b - 1) / seg_b)))
+    j_lo = np.clip((centre_f - slack_f).astype(np.int32), 0, n_b - 1)
+    j_hi = np.minimum(n_b - 1, (centre_f + slack_f).astype(np.int32))
+    j_lo[0] = 0
+    j_lo = np.maximum.accumulate(j_lo)
+    j_hi = np.maximum.accumulate(j_hi)
+    j_hi[-1] = n_b - 1
+    j_hi = np.maximum(j_hi, j_lo)  # never an empty row band
+    # CONNECTIVITY: where the prior map jumps by more than the slack (a stored
+    # discontinuity, e.g. an unscored-audio artifact zone), the band would
+    # otherwise be DISJOINT between adjacent rows, severing the DP: every cell
+    # downstream of the jump accumulates inf, parents there are meaningless,
+    # and the backtrack walks out of band (found 2026-08-31 on the Fledermaus
+    # HQ corpus: a first-onset fix mapped the whole opening ~55 s late).
+    # Bridging the floor to the previous ceiling + 1 keeps every row reachable,
+    # so the DTW genuinely traverses the jump instead of silently breaking.
+    # min of two non-decreasing sequences, so j_lo stays non-decreasing.
+    j_lo[1:] = np.minimum(j_lo[1:], j_hi[:-1] + 1)
+
+    wp = make_monotonic(_guided_band_dtw(feat_a, feat_b, j_lo, j_hi))
+    a_path = a_lo + wp[0].astype(np.float64) * seg_a / max(n_a - 1, 1)
+    b_path = b_lo + wp[1].astype(np.float64) * seg_b / max(n_b - 1, 1)
+    return lambda xq: interp_linear_extrap(a_path, b_path, xq)
+
+def fix_realign_segment(i_a, t_a, i_b, t_b, prior_ref, slack_sec=None, max_frames=None):
+    """Re-fill ref onsets/offsets for the events strictly between two anchors.
+
+    i_a / i_b: bounding event indices (-1 = piece-start corner, n_events =
+    piece-end corner); t_a / t_b: their (corrected) reference times.
+    prior_ref: the CURRENT ref_onset values of the interior events, used as
+    the DTW guide band's centre (tapered onto the anchors, +- slack_sec).
+    Returns interior ref_onset / ref_offset, the anchor event i_a's remapped
+    offset when it falls inside the segment, and the hop actually used.
+    """
+    if _fix is None:
+        raise RuntimeError('fix_realign_segment before fix_begin')
+    slack = FIX_SLACK_SEC if slack_sec is None else float(slack_sec)
+    cap = FIX_MAX_FRAMES if max_frames is None else int(max_frames)
+    s_on = _fix['s_on']; s_off = _fix['s_off']
+    n_ev = len(s_on)
+    i_a = int(i_a); i_b = int(i_b)
+    if not (-1 <= i_a < i_b <= n_ev):
+        raise ValueError('fix_realign_segment: bad segment indices')
+    s_a = 0.0 if i_a < 0 else float(s_on[i_a])
+    s_b = _fix['midi_dur'] if i_b >= n_ev else float(s_on[i_b])
+    t_a = float(t_a); t_b = float(t_b)
+    if not (t_b > t_a and s_b > s_a):
+        raise ValueError('fix_realign_segment: empty or reversed segment span')
+    interior = list(range(i_a + 1, i_b))
+    if len(prior_ref) != len(interior):
+        raise ValueError('fix_realign_segment: prior_ref length mismatch')
+    if not interior:
+        return {'ref_onset': [], 'ref_offset': [], 'anchor_a_offset': None, 'hop': 0}
+
+    # Hop adapts to the segment: fine frames when short, capped for length.
+    seg_s = s_b - s_a; seg_r = t_b - t_a
+    hop = max(FIX_MIN_HOP, int(np.ceil(max(seg_s, seg_r) * SR / cap)))
+    feat_s = _fix_features(_fix['synth'], s_a, s_b, hop)
+    feat_r = _fix_features(_fix['ref'], t_a, t_b, hop)
+    wf = _fix_guided_warp(
+        feat_s, feat_r, s_a, s_b, t_a, t_b,
+        [s_a] + [float(s_on[i]) for i in interior] + [s_b],
+        [t_a] + [float(v) for v in prior_ref] + [t_b],
+        slack, 'fix_realign_segment',
+    )
+
+    # An OFFSET may legitimately lie past the segment's right edge: ties,
+    # sustained notes under a moving line, any polyphonic overlap. On the
+    # Fledermaus HQ corpus 33.5% of events sustain past the next DISTINCT
+    # onset; of the events an anchor is actually laid on (a group's first),
+    # 8.3% of onset groups do so at adjacent-anchor spacing and 0.7% two
+    # groups on, which is where THIS function computes the offset rather than
+    # the client's linear fill. Such an offset has no image under this
+    # segment's warp, and both earlier answers were wrong: clipping it to t_b
+    # truncated the note, and returning None for the anchor's own offset left
+    # it STALE — a rightward drag could then leave offset <= onset, which the
+    # synth renders as an almost inaudible 20 ms blip (the "dropped first
+    # note"). Continue at the segment's average rate instead: monotone with
+    # the anchors, never degenerate, capped by the recording.
+    seg_rate = seg_r / seg_s
+
+    def _map_off(s):
+        s = float(s)
+        if s <= s_b:
+            return float(np.clip(wf(s), t_a, t_b))
+        return float(min(t_b + (s - s_b) * seg_rate, _fix['ref_dur']))
+
+    new_on  = [float(np.clip(wf(float(s_on[i])),  t_a, t_b)) for i in interior]
+    new_off = [_map_off(s_off[i]) for i in interior]
+    anchor_a_offset = _map_off(s_off[i_a]) if i_a >= 0 else None
+    return {
+        'ref_onset': new_on,
+        'ref_offset': new_off,
+        'anchor_a_offset': anchor_a_offset,
+        'hop': hop,
+    }
+
+# --- audio-to-audio correction (plan §14 increment 5): the target recording ---
+# The reference stays the common axis: a recording's grid is its own time
+# sampled on the REFERENCE raster (ANNOTATION_STEP), and an audio-to-audio
+# anchor is a point (reference time, target time) on that curve. The refill
+# rewrites the raster samples between two anchors. Nothing here reads the score
+# or the synth, so the same ops will serve a score-less session.
+
+def fix_target_begin(name, audio):
+    """Make a second recording resident beside the reference: the TARGET of an
+    audio-to-audio correction. One target at a time; a new begin replaces it."""
+    if _fix is None:
+        raise RuntimeError('fix_target_begin before fix_begin')
+    pcm = np.asarray(audio, dtype=np.float32)
+    _fix['target'] = {'name': str(name), 'pcm': pcm, 'dur': len(pcm) / SR}
+    return {'name': str(name), 'duration': _fix['target']['dur']}
+
+def fix_target_realign(ref_a, t_a, ref_b, t_b, raster_ref, prior_t, slack_sec=None, max_frames=None):
+    """Refill the target's grid between the anchors (ref_a <-> t_a) and
+    (ref_b <-> t_b): new target times for the reference-raster points
+    raster_ref strictly between them, guided by prior_t (the grid's CURRENT
+    values at those points), forced through both anchors, clipped into
+    [t_a, t_b], non-decreasing. Returns {'times', 'hop'}."""
+    if _fix is None or 'target' not in _fix:
+        raise RuntimeError('fix_target_realign before fix_target_begin')
+    slack = FIX_SLACK_SEC if slack_sec is None else float(slack_sec)
+    cap = FIX_MAX_FRAMES if max_frames is None else int(max_frames)
+    ref_a = float(ref_a); ref_b = float(ref_b); t_a = float(t_a); t_b = float(t_b)
+    if not (ref_b > ref_a and t_b > t_a):
+        raise ValueError('fix_target_realign: empty or reversed segment span')
+    raster = [float(r) for r in raster_ref]
+    if len(prior_t) != len(raster):
+        raise ValueError('fix_target_realign: prior_t length mismatch')
+    if any(not (ref_a < r < ref_b) for r in raster):
+        raise ValueError('fix_target_realign: raster point outside the segment')
+    if not raster:
+        return {'times': [], 'hop': 0}
+    seg_r = ref_b - ref_a; seg_t = t_b - t_a
+    hop = max(FIX_MIN_HOP, int(np.ceil(max(seg_r, seg_t) * SR / cap)))
+    feat_r = _fix_features(_fix['ref'], ref_a, ref_b, hop)
+    feat_t = _fix_features(_fix['target']['pcm'], t_a, t_b, hop)
+    wf = _fix_guided_warp(
+        feat_r, feat_t, ref_a, ref_b, t_a, t_b,
+        [ref_a] + raster + [ref_b],
+        [t_a] + [float(v) for v in prior_t] + [t_b],
+        slack, 'fix_target_realign',
+    )
+    times = np.clip(wf(np.asarray(raster, dtype=np.float64)), t_a, t_b)
+    times = np.maximum.accumulate(times)
+    return {'times': [float(v) for v in times], 'hop': hop}
+
+def fix_target_dispose():
+    """Release the target recording; the reference session stays."""
+    if _fix is not None:
+        _fix.pop('target', None)
+
+# --- fix-mode v2 lanes (plan §14 Layout Q2): mel spectrogram + onset curve + peaks ---
+# Display and snapping products, computed ONCE per correction session from the
+# resident reference audio, AFTER fix_ready — arming never waits for them.
+
+LANE_HOP = 512           # samples (~23 ms) — one lane column per hop
+LANE_N_MELS = 64
+LANE_N_FFT = 2048        # 93 ms window for the mel lane (frequency resolution)
+LANE_DB_RANGE = 80.0     # dynamic range kept below the recording's loudest frame
+LANE_FMIN = 30.0
+
+LANE_SCALES = ('mel', 'log', 'linear')
+
+def _band_edges(scale, n_bands, fmin, fmax):
+    """n_bands + 2 band edges on the chosen frequency scale (Hz)."""
+    if scale == 'linear':
+        return np.linspace(fmin, fmax, n_bands + 2)
+    if scale == 'log':
+        return np.geomspace(fmin, fmax, n_bands + 2)
+    def hz2mel(f):
+        return 2595.0 * np.log10(1.0 + f / 700.0)
+    def mel2hz(m):
+        return 700.0 * (10.0 ** (m / 2595.0) - 1.0)
+    return mel2hz(np.linspace(hz2mel(fmin), hz2mel(fmax), n_bands + 2))
+
+def _band_centres(scale, n_bands, fmin, fmax):
+    """Each band's centre frequency (Hz) — the Y-axis labels' data."""
+    return _band_edges(scale, n_bands, fmin, fmax)[1:-1]
+
+def _band_filterbank(scale, n_fft, n_bands, fmin, fmax):
+    """Triangular band filters on a mel / log / linear scale (Slaney-style area
+    normalisation): (n_bands, bins). A band narrower than a bin (many log bands
+    low down) would cover no bin centre and paint black; it takes its nearest
+    bin instead."""
+    freqs = np.fft.rfftfreq(n_fft, d=1.0 / SR)
+    edges = _band_edges(scale, n_bands, fmin, fmax)
+    fb = np.zeros((n_bands, len(freqs)), dtype=np.float32)
+    for m in range(n_bands):
+        lo, c, hi = edges[m], edges[m + 1], edges[m + 2]
+        up = (freqs - lo) / max(c - lo, 1e-9)
+        down = (hi - freqs) / max(hi - c, 1e-9)
+        row = np.maximum(0.0, np.minimum(up, down))
+        if not np.any(row > 0):
+            row[int(np.argmin(np.abs(freqs - c)))] = 1.0
+        fb[m] = row
+    fb *= (2.0 / (edges[2:] - edges[:-2])).astype(np.float32)[:, None]
+    return fb
+
+def _mel_filterbank(n_fft, n_mels, fmin, fmax):
+    return _band_filterbank('mel', n_fft, n_mels, fmin, fmax)
+
+LANE_WINDOWS = ('hann', 'hamming', 'blackman', 'rect')
+
+def _lane_window(name, n):
+    """The spectrogram's analysis window by name (the user's choice)."""
+    if name == 'hamming':
+        w = np.hamming(n)
+    elif name == 'blackman':
+        w = np.blackman(n)
+    elif name == 'rect':
+        w = np.ones(n)
+    else:
+        w = np.hanning(n)
+    return w.astype(np.float32)
+
+def compute_mel_spectrogram(audio, n_fft=None, hop=None, n_mels=None, win_type='hann', scale='mel'):
+    """Log-power band spectrogram (mel / log / linear bands) quantised to uint8
+    over LANE_DB_RANGE below the loudest frame: (n_bands, n_frames), row 0 =
+    the lowest band. Streaming like the other features (peak extra memory
+    ~CHUNK x n_fft floats)."""
+    if n_fft is None: n_fft = LANE_N_FFT
+    if hop is None: hop = LANE_HOP
+    if n_mels is None: n_mels = LANE_N_MELS
+    audio_pad, window, n_frames, s = _stft_setup(audio, n_fft, hop)
+    window = _lane_window(win_type, n_fft)
+    fb_t = _band_filterbank(scale, n_fft, n_mels, LANE_FMIN, SR / 2.0).T    # (bins, n_bands)
+    CHUNK = 256
+    mel_db = np.zeros((n_mels, n_frames), dtype=np.float32)
+    for cs in range(0, n_frames, CHUNK):
+        ce = min(n_frames, cs + CHUNK)
+        frames = np.lib.stride_tricks.as_strided(
+            audio_pad[cs * hop:],
+            shape=(ce - cs, n_fft),
+            strides=(s * hop, s)
+        )
+        spec = np.fft.rfft(frames * window, axis=1)
+        power = (spec.real * spec.real + spec.imag * spec.imag).astype(np.float32)
+        del spec
+        mel = power @ fb_t                                    # (chunk, n_mels)
+        del power
+        mel_db[:, cs:ce] = (10.0 * np.log10(np.maximum(mel, 1e-10))).T
+        del mel
+    mel_db -= mel_db.max()
+    np.clip(mel_db, -LANE_DB_RANGE, 0.0, out=mel_db)
+    return ((mel_db + LANE_DB_RANGE) * (255.0 / LANE_DB_RANGE)).astype(np.uint8)
+
+def pick_onset_peaks(env, hop, pre_max=0.05, post_max=0.05, pre_avg=0.10,
+                     post_avg=0.10, delta=0.10, wait=0.05, abs_floor=0.02,
+                     norm_win=3.0):
+    """Peak-pick an onset-strength curve (librosa's onset_detect shape, made
+    dynamics-aware): frame i is a peak when it is the maximum over
+    [i - pre_max, i + post_max], exceeds the mean over [i - pre_avg, i + post_avg]
+    by delta x the local maximum over +-norm_win (so a quiet passage keeps its
+    onsets), clears an absolute floor (a fraction of the global peak), and comes
+    at least 'wait' after the previous peak. Returns seconds, refined to
+    sub-frame precision by a parabola through the peak's three frames; frame
+    times are window CENTRES, (i * hop + ONSET_N_FFT / 2) / SR."""
+    env = np.asarray(env, dtype=np.float64)
+    n = len(env)
+    if n < 3:
+        return []
+    fr = SR / float(hop)
+    def frames(sec):
+        return max(1, int(round(sec * fr)))
+    pre_m, post_m = frames(pre_max), frames(post_max)
+    pre_a, post_a = frames(pre_avg), frames(post_avg)
+    loc_max = env.copy()
+    for d in range(1, pre_m + 1):
+        loc_max[d:] = np.maximum(loc_max[d:], env[:-d])
+    for d in range(1, post_m + 1):
+        loc_max[:-d] = np.maximum(loc_max[:-d], env[d:])
+    csum = np.concatenate([[0.0], np.cumsum(env)])
+    idx = np.arange(n)
+    lo = np.maximum(0, idx - pre_a)
+    hi = np.minimum(n, idx + post_a + 1)
+    loc_mean = (csum[hi] - csum[lo]) / (hi - lo)
+    scale = _running_max(env, frames(norm_win))
+    cand = (env >= loc_max) & (env >= loc_mean + delta * scale) & (env >= abs_floor)
+    w = frames(wait)
+    peaks = []
+    last = -n
+    for i in np.flatnonzero(cand):
+        if i - last > w:
+            peaks.append(int(i))
+            last = i
+    times = []
+    for i in peaks:
+        off = 0.0
+        if 0 < i < n - 1:
+            a, b, c = env[i - 1], env[i], env[i + 1]
+            denom = a - 2.0 * b + c
+            if denom < 0:
+                off = min(0.5, max(-0.5, 0.5 * (a - c) / denom))
+        times.append(((i + off) * hop + ONSET_N_FFT / 2.0) / SR)
+    return times
+
+PAT_DB = 6.0        # the perceived attack: the fraction 10^(-PAT_DB/20) of the envelope's LINEAR rise (0.5 at 6 dB)
+PAT_ENV_HOP = 0.005 # s — the RMS envelope's resolution
+PAT_ENV_WIN = 0.010 # s
+PAT_BACK = 0.15     # s searched before a flux peak for the attack's foot
+PAT_FWD = 0.20      # s searched after it for the attack's crest
+
+def perceptual_attack_times(audio, peaks, hop):
+    """A perceived-attack estimate per detected onset (the P-centre /
+    perceptual attack time, after Vos & Rasch 1981 and Gordon 1987): the moment
+    the RMS envelope, rising from its foot (the minimum up to PAT_BACK before
+    the flux peak) to its crest (the maximum up to PAT_FWD after it), crosses
+    foot + (crest - foot) * 10^(-PAT_DB/20), i.e. half the linear rise. It
+    usually falls a little BEFORE the flux peak, which sits late in the rise:
+    on the Fledermaus corpus 82 % of onsets, median 24 ms (2026-09-29).
+    Linear sub-frame interpolation."""
+    audio = np.asarray(audio, dtype=np.float32)
+    n = len(audio)
+    eh = max(1, int(round(PAT_ENV_HOP * SR)))
+    ew = max(eh, int(round(PAT_ENV_WIN * SR)))
+    ratio = 10.0 ** (-PAT_DB / 20.0)
+    out = []
+    for tp in peaks:
+        tp = float(tp)
+        lo = max(0, int((tp - PAT_BACK) * SR))
+        hi = min(n, int((tp + PAT_FWD) * SR) + ew)
+        if hi - lo < 3 * ew:
+            out.append(tp); continue
+        seg = audio[lo:hi].astype(np.float64)
+        n_fr = (len(seg) - ew) // eh + 1
+        if n_fr < 3:
+            out.append(tp); continue
+        fr = np.lib.stride_tricks.as_strided(
+            seg, shape=(n_fr, ew), strides=(seg.strides[0] * eh, seg.strides[0]))
+        env = np.sqrt(np.mean(fr * fr, axis=1))
+        centres = (lo + np.arange(n_fr) * eh + ew / 2.0) / SR
+        kp = int(np.clip(np.searchsorted(centres, tp), 0, n_fr - 1))
+        kc = kp + int(np.argmax(env[kp:]))          # the crest, from the peak on
+        crest = env[kc]
+        kf = int(np.argmin(env[:kc + 1])) if kc > 0 else 0   # the foot before it
+        foot = env[kf]
+        if crest <= foot * 1.0001:
+            out.append(tp); continue
+        thr = foot + (crest - foot) * ratio
+        k = kf
+        while k < kc and env[k + 1] < thr:
+            k += 1
+        if k >= kc:
+            out.append(float(centres[kc])); continue
+        e0, e1 = env[k], env[k + 1]
+        frac = 0.0 if e1 <= e0 else min(1.0, max(0.0, (thr - e0) / (e1 - e0)))
+        out.append(float(centres[k] + frac * (centres[k + 1] - centres[k])))
+    return out
+
+def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, what='all', scale='mel', which='ref'):
+    """The v2 lanes for the current correction session: the band spectrogram
+    (user-configurable FFT size, window, hop, bands, frequency scale) and —
+    unless what == 'mel', a configuration change — the fine-hop onset curve of
+    the resident audio with its picked peaks and their perceived attack times
+    (the two snap-to-onset target lists). which = 'ref' | 'target' picks the
+    audio on the strip: the reference, or the audio-to-audio TARGET
+    (fix_target_begin). Frame i of a lane is centred at
+    i * <lane>_hop / SR + <lane>_t0."""
+    if _fix is None:
+        raise RuntimeError('fix_lanes before fix_begin')
+    if which == 'target':
+        if 'target' not in _fix:
+            raise RuntimeError('fix_lanes: no target recording resident')
+        ref = _fix['target']['pcm']
+    else:
+        ref = _fix['ref']
+    onset_hop = LANE_HOP if hop is None else int(hop)
+    n_mels = LANE_N_MELS if n_mels is None else int(n_mels)
+    n_fft = LANE_N_FFT if n_fft is None else int(n_fft)
+    mel_hop = onset_hop if mel_hop is None else int(mel_hop)
+    window = window if window in LANE_WINDOWS else 'hann'
+    scale = scale if scale in LANE_SCALES else 'mel'
+    mel = compute_mel_spectrogram(ref, n_fft, mel_hop, n_mels, window, scale)
+    out = {
+        'sr': SR, 'what': what, 'which': which, 'window': window, 'n_fft': n_fft, 'n_mels': n_mels,
+        'scale': scale,
+        'band_hz': [float(c) for c in _band_centres(scale, n_mels, LANE_FMIN, SR / 2.0)],
+        'mel_hop': mel_hop, 'mel_frames': int(mel.shape[1]), 'mel_t0': n_fft / 2.0 / SR,
+        'mel': np.ascontiguousarray(mel),
+        'onset_hop': onset_hop, 'onset_t0': ONSET_N_FFT / 2.0 / SR,
+        'onset_frames': 0, 'onset': None, 'peaks': None, 'pat': None,
+    }
+    if what != 'mel':
+        onset = compute_onset_strength(ref, hop=onset_hop)
+        peaks = pick_onset_peaks(onset, onset_hop)
+        out['onset_frames'] = int(len(onset))
+        out['onset'] = np.ascontiguousarray(onset, dtype=np.float32)
+        out['peaks'] = [float(t) for t in peaks]
+        out['pat'] = perceptual_attack_times(ref, peaks, onset_hop)
+    return out
+
+def fix_dispose():
+    """Release the correction session's resident audio."""
+    global _fix
+    _fix = None
+    import gc
+    gc.collect()
 `;
 
 /* --- Pyodide lifecycle --- */
 
+/** Copy a numpy array out of Pyodide's heap as a typed array, then release the
+ *  view and the proxy (a raw `.data` view would dangle once Python frees it). */
+function takeBuffer(pyodide, name, fmt, Ctor) {
+  const proxy = pyodide.globals.get(name);
+  const view = proxy.getBuffer(fmt);
+  try {
+    return new Ctor(view.data);
+  } finally {
+    view.release();
+    proxy.destroy();
+  }
+}
+
 let pyodideReady = null;
 
+/** How long the three boot stages took (ms), for the fix-mode arming trail. */
+let bootTiming = null;
+
 async function initPyodide() {
+  const t0 = performance.now();
   reportProgress("Loading Python runtime...", 0);
   const pyodide = await loadPyodide();
-  reportProgress(
-    "Installing numpy and scipy (first load may take a moment)...",
-    3,
-  );
-  await pyodide.loadPackage(["numpy", "scipy"]);
+  const t1 = performance.now();
+  reportProgress("Installing numpy (first load may take a moment)...", 3);
+  await pyodide.loadPackage(["numpy"]);
+  const t2 = performance.now();
   reportProgress("Initializing alignment engine...", 8);
   await pyodide.runPythonAsync(PYTHON_CODE);
+  bootTiming = {
+    pyodideMs: Math.round(t1 - t0),
+    packagesMs: Math.round(t2 - t1),
+    initMs: Math.round(performance.now() - t2),
+  };
   return pyodide;
 }
 
@@ -940,6 +1768,31 @@ async function initPyodide() {
  *
  *   main → worker: "align_all" { meiMidi, meiUri }
  *   worker → main: "result" { alignment }
+ *
+ * Fix-mode (alignment-correction) protocol — plan §14, increment 1:
+ *
+ *   main → worker: "fix_begin" { refSamples, meiMidi, options }  (samples transferred)
+ *   worker → main: "fix_ready" { events }   (the item-T quarters-guard table)
+ *
+ *   (per correction)
+ *   main → worker: "fix_realign" { iA, tA, iB, tB, priorRef, slackSec?, maxFrames? }
+ *   worker → main: "fix_segment" { iA, iB, result: { ref_onset, ref_offset,
+ *                                  anchor_a_offset, hop } }
+ *
+ *   main → worker: "fix_dispose"
+ *   worker → main: "fix_disposed"
+ *
+ *   Audio-to-audio correction (increment 5) — a TARGET recording resident
+ *   beside the reference; its grid (target time on the reference raster) is
+ *   refilled between two (reference time ↔ target time) anchors:
+ *
+ *   main → worker: "fix_target_begin" { name, samples }   (samples transferred)
+ *   worker → main: "fix_target_ready" { name, duration } | "fix_target_error" { message }
+ *   main → worker: "fix_target_realign" { refA, tA, refB, tB, rasterRef, priorT,
+ *                                         slackSec?, maxFrames? }
+ *   worker → main: "fix_target_segment" { result: { times, hop } }
+ *   main → worker: "fix_target_dispose"   →   worker → main: "fix_target_disposed"
+ *   "fix_lanes" takes which: "ref" | "target" for the audio on the strip.
  *
  *   (errors at any point) worker → main: "error" { message }
  *
@@ -959,6 +1812,8 @@ self.onmessage = async function (e) {
         scoreMode,
         featureTotal,
         options,
+        openEnds,
+        openEndsByFile,
       } = e.data;
 
       const opts = options || {};
@@ -966,19 +1821,26 @@ self.onmessage = async function (e) {
       pyodide.globals.set("_opt_slack", opts.slack ?? 0);
       pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
       pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
-      pyodide.globals.set("_opt_onset_weight", opts.onsetWeight ?? -1);
       pyodide.globals.set("_ref_name_arg", refName);
       pyodide.globals.set("_peak_count_arg", peakCount || 0);
       pyodide.globals.set("_score_mode_arg", !!scoreMode);
       pyodide.globals.set("_feature_total_arg", featureTotal || 0);
+      pyodide.globals.set("_open_ends_arg", !!openEnds);
+      pyodide.globals.set(
+        "_open_by_file_json",
+        JSON.stringify(openEndsByFile || {}),
+      );
 
       await pyodide.runPythonAsync(`
+import json as _json
 _apply_options()
 begin_batch(
     str(_ref_name_arg),
     int(_peak_count_arg),
     bool(_score_mode_arg),
     int(_feature_total_arg),
+    bool(_open_ends_arg),
+    _json.loads(str(_open_by_file_json)),
 )
 `);
       self.postMessage({ type: "batch_ready" });
@@ -1031,6 +1893,173 @@ json.dumps(result)
         type: "result",
         alignment: JSON.parse(resultJson),
       });
+      return;
+    }
+
+    if (e.data.type === "fix_boot") {
+      // Warm the runtime ahead of a session — the load-idle prewarm, and entry
+      // before the decode. Idempotent: fix_begin awaits the same promise.
+      if (!pyodideReady) pyodideReady = initPyodide();
+      await pyodideReady;
+      self.postMessage({ type: "fix_booted", timing: bootTiming });
+      return;
+    }
+
+    if (e.data.type === "fix_begin") {
+      const tBoot0 = performance.now();
+      if (!pyodideReady) pyodideReady = initPyodide();
+      const pyodide = await pyodideReady;
+      const bootMs = Math.round(performance.now() - tBoot0);
+      const tBegin0 = performance.now();
+      const { refSamples, meiMidi, options } = e.data;
+      const opts = options || {};
+      pyodide.globals.set("_opt_coarse", opts.coarse ?? 0);
+      pyodide.globals.set("_opt_slack", opts.slack ?? 0);
+      pyodide.globals.set("_opt_feature_rate", opts.featureRate ?? 0);
+      pyodide.globals.set("_opt_score_downsample", opts.scoreDownsample ?? 0);
+      pyodide.globals.set("_fix_ref_data", refSamples);
+      pyodide.globals.set("_fix_midi_arg", meiMidi);
+      const eventsJson = await pyodide.runPythonAsync(`
+import json
+_apply_options()
+_fix_ref_arr = np.frombuffer(_fix_ref_data.to_py(), dtype=np.float32).copy()
+_fix_midi_bytes = bytes(_fix_midi_arg.to_py())
+_fix_events = fix_begin(_fix_ref_arr, _fix_midi_bytes)
+del _fix_ref_arr, _fix_midi_bytes
+del globals()['_fix_ref_data']
+import gc
+gc.collect()
+json.dumps(_fix_events)
+`);
+      self.postMessage({
+        type: "fix_ready",
+        events: JSON.parse(eventsJson),
+        // The arming trail: how long the runtime took to come up (zero when
+        // it was already resident) and how long fix_begin's synth took.
+        timing: {
+          bootMs,
+          beginMs: Math.round(performance.now() - tBegin0),
+          boot: bootTiming,
+        },
+      });
+      return;
+    }
+
+    if (e.data.type === "fix_realign") {
+      const pyodide = await pyodideReady;
+      const { iA, tA, iB, tB, priorRef, slackSec, maxFrames } = e.data;
+      pyodide.globals.set(
+        "_fix_seg_arg",
+        JSON.stringify({ iA, tA, iB, tB, priorRef, slackSec, maxFrames }),
+      );
+      const segJson = await pyodide.runPythonAsync(`
+import json
+_seg = json.loads(str(_fix_seg_arg))
+json.dumps(fix_realign_segment(
+    _seg['iA'], _seg['tA'], _seg['iB'], _seg['tB'],
+    _seg['priorRef'], _seg.get('slackSec'), _seg.get('maxFrames'),
+))
+`);
+      self.postMessage({ type: "fix_segment", iA, iB, result: JSON.parse(segJson) });
+      return;
+    }
+
+    if (e.data.type === "fix_lanes") {
+      // The v2 lanes (mel spectrogram, onset curve, onset peaks) for the
+      // resident session. Failures post under their OWN type: a generic
+      // "error" would be claimed by whatever realign the client has pending.
+      try {
+        const pyodide = await pyodideReady;
+        const { hop, nMels, nFft, window: win, melHop, what, scale, which } = e.data;
+        pyodide.globals.set("_lanes_hop", hop ?? 512);
+        pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
+        pyodide.globals.set("_lanes_n_fft", nFft ?? 2048);
+        pyodide.globals.set("_lanes_window", win || "hann");
+        pyodide.globals.set("_lanes_mel_hop", melHop ?? hop ?? 512);
+        pyodide.globals.set("_lanes_what", what || "all");
+        pyodide.globals.set("_lanes_scale", scale || "mel");
+        pyodide.globals.set("_lanes_which", which || "ref");
+        const metaJson = await pyodide.runPythonAsync(`
+import json
+_lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels), int(_lanes_n_fft),
+                   str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what),
+                   str(_lanes_scale), str(_lanes_which))
+_lanes_mel = _lanes.pop('mel')
+_lanes_onset = _lanes.pop('onset')
+json.dumps(_lanes)
+`);
+        const meta = JSON.parse(metaJson);
+        const mel = takeBuffer(pyodide, "_lanes_mel", "u8", Uint8Array);
+        const onset =
+          meta.what === "mel"
+            ? null
+            : takeBuffer(pyodide, "_lanes_onset", "f32", Float32Array);
+        await pyodide.runPythonAsync("del _lanes, _lanes_mel, _lanes_onset");
+        const transfer = [mel.buffer];
+        if (onset) transfer.push(onset.buffer);
+        self.postMessage({ type: "fix_lanes", ...meta, mel, onset }, transfer);
+      } catch (err) {
+        self.postMessage({ type: "fix_lanes_error", message: err.toString() });
+      }
+      return;
+    }
+
+    if (e.data.type === "fix_dispose") {
+      const pyodide = await pyodideReady;
+      await pyodide.runPythonAsync("fix_dispose()");
+      self.postMessage({ type: "fix_disposed" });
+      return;
+    }
+
+    if (e.data.type === "fix_target_begin") {
+      // The audio-to-audio TARGET: a second recording resident beside the
+      // reference. Failures post under their own type — a pending realign
+      // would otherwise claim a generic "error".
+      try {
+        const pyodide = await pyodideReady;
+        const { name, samples } = e.data;
+        pyodide.globals.set("_fix_target_name", name);
+        pyodide.globals.set("_fix_target_data", samples);
+        const infoJson = await pyodide.runPythonAsync(`
+import json
+_fix_target_arr = np.frombuffer(_fix_target_data.to_py(), dtype=np.float32).copy()
+_fix_target_info = fix_target_begin(str(_fix_target_name), _fix_target_arr)
+del _fix_target_arr
+del globals()['_fix_target_data']
+import gc
+gc.collect()
+json.dumps(_fix_target_info)
+`);
+        self.postMessage({ type: "fix_target_ready", ...JSON.parse(infoJson) });
+      } catch (err) {
+        self.postMessage({ type: "fix_target_error", message: err.toString() });
+      }
+      return;
+    }
+
+    if (e.data.type === "fix_target_realign") {
+      const pyodide = await pyodideReady;
+      const { refA, tA, refB, tB, rasterRef, priorT, slackSec, maxFrames } = e.data;
+      pyodide.globals.set(
+        "_fix_tseg_arg",
+        JSON.stringify({ refA, tA, refB, tB, rasterRef, priorT, slackSec, maxFrames }),
+      );
+      const segJson = await pyodide.runPythonAsync(`
+import json
+_tseg = json.loads(str(_fix_tseg_arg))
+json.dumps(fix_target_realign(
+    _tseg['refA'], _tseg['tA'], _tseg['refB'], _tseg['tB'],
+    _tseg['rasterRef'], _tseg['priorT'], _tseg.get('slackSec'), _tseg.get('maxFrames'),
+))
+`);
+      self.postMessage({ type: "fix_target_segment", result: JSON.parse(segJson) });
+      return;
+    }
+
+    if (e.data.type === "fix_target_dispose") {
+      const pyodide = await pyodideReady;
+      await pyodide.runPythonAsync("fix_target_dispose()");
+      self.postMessage({ type: "fix_target_disposed" });
       return;
     }
   } catch (err) {

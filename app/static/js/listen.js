@@ -65,8 +65,23 @@ import {
   setVerovioPromise,
 } from "./align.js";
 import {
+  fixModeOnPieceReset,
+  fixModePrewarm,
+  fixTestState,
+  fixTestControl,
+  isFixModeActive,
+  fixTransport,
+  fixRealignBusy,
+  applyFixCorrectionUndo,
+  applyFixCorrectionRedo,
+  fixCorrectionsDirty,
+  fixRevertCorrections,
+  fixFlushPending,
+} from "./fix-mode.js";
+import {
   initAnnotationV6,
   commitAnnotationsToAlignment,
+  serializeAnnotations,
   loadAnnotationsFromAlignment,
   maybeSyncV6Regions,
   setActiveRegionStart,
@@ -112,6 +127,23 @@ import {
   seekToActiveMarker,
   persistMarkers,
 } from "./engine/markers.js";
+import {
+  RECOVERY_FORMAT,
+  newSessionId,
+  pieceFingerprint,
+  listSnapshots,
+  readSnapshot,
+  removeSnapshot,
+  pruneSnapshots,
+  writeSnapshot,
+  contentSignature,
+  offersFor,
+  restoredHeader,
+  describeSnapshot,
+  describeWhen,
+  alignmentFileName,
+  IN_BROWSER_SOURCE,
+} from "./engine/session-recovery.js";
 // Preserve the public API: annotation/waveform-interactions.js reaches the
 // per-waveform renderer registry through listen.js rather than importing the
 // engine module directly, as it did for the overlay wrappers before increment
@@ -135,7 +167,9 @@ const session = new DataSession();
 // aliases stay valid for every call site and every importing module.
 export const markers = session.markers;
 export const loaded = session.loaded;
-const timemap = session.timemap; // verovio timemap
+// Verovio timemap. Exported for fix-mode.js, which maps onset quarters to the
+// xml:ids sounding at them (reference-stable: refilled in place, never rebound).
+export const timemap = session.timemap;
 let parser = new DOMParser(); // XML parser for MEI
 let ref;
 let colorMap;
@@ -166,6 +200,10 @@ export let scoreAlignment = session.scoreAlignment; // score tstamp to ref tstam
 // (no synth waveform prepared yet, or qstamp matching failed).
 export let correctedSynthOnsets = null;
 export let correctedSynthOffsets = null;
+/** The synth-onset table the synth row's grid was interpolated FROM (the
+ *  corrected table, the stored one, or the MIDI reconstruction) — so the grid
+ *  can be rebuilt from changed ref tables with the very same other half. */
+let _synthGridOnsets = null;
 let mei = session.mei; // MEI XML
 let meiDOM = session.meiDOM; // MEI DOM
 let referenceAudioIx = session.referenceAudioIx;
@@ -181,10 +219,62 @@ function setScoreAlignment(v) {
   // New score alignment → any previously derived corrected tables are stale.
   correctedSynthOnsets = null;
   correctedSynthOffsets = null;
+  _synthGridOnsets = null;
   return (scoreAlignment = session.scoreAlignment = v);
+}
+
+/**
+ * Rebuild the score synth row's alignment grid from the CURRENT score↔ref
+ * tables — the corrected-tables path, run ONCE per fix-mode session at exit
+ * (plan §14 cluster C) and after a correction hop that lands outside one.
+ * The synth audio is score-time and does not change; only the ref→synth
+ * mapping does, and with it the tempo curves and the synth row's overlays.
+ * Returns false when no synth row was ever built.
+ */
+export function refreshSynthAlignmentGrid() {
+  const refGrid = alignmentGrids[referenceAudioIx];
+  const refOnsets = scoreAlignment?.ref_onset;
+  if (!(SYNTH_MEI_KEY in alignmentGrids) || !_synthGridOnsets) return false;
+  if (!Array.isArray(refGrid) || !Array.isArray(refOnsets) || !refOnsets.length) {
+    return false;
+  }
+  alignmentGrids[SYNTH_MEI_KEY] = interpAlignmentGrid(refGrid, refOnsets, _synthGridOnsets);
+  for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
+  _tempoYRange = null;
+  for (const fn of Object.keys(waveformViews)) drawAlignmentGrid(fn);
+  redrawAllMarkers();
+  return true;
+}
+
+/**
+ * One recording's grid was edited in place (fix mode's audio-to-audio
+ * correction writes the loaded grid, which the alignment JSON's `times`
+ * aliases): redraw its grid overlay, drop its tempo curve, and move the
+ * markers, which sit at grid indices. Also re-points the JSON at the live
+ * array in case an earlier grid undo replaced it. Returns false when no such
+ * recording is loaded.
+ */
+export function refreshRecordingGrid(filename) {
+  const grid = alignmentGrids[filename];
+  if (!Array.isArray(grid)) return false;
+  const entry = loadedAlignmentJSON?.body?.audio?.[filename];
+  if (entry && !Array.isArray(entry) && Array.isArray(entry.times) && entry.times !== grid) {
+    entry.times = grid;
+  } else if (entry && Array.isArray(entry) && entry !== grid) {
+    loadedAlignmentJSON.body.audio[filename] = grid;
+  }
+  delete _tempoRawCache[filename];
+  _tempoYRange = null;
+  if (waveformViews[filename]) drawAlignmentGrid(filename);
+  redrawAllMarkers();
+  return true;
 }
 function setMei(v) {
   return (mei = session.mei = v);
+}
+/** The loaded MEI XML text (fix-mode re-lays the score out from it). */
+export function getMeiXml() {
+  return mei;
 }
 function setMeiDOM(v) {
   return (meiDOM = session.meiDOM = v);
@@ -227,6 +317,7 @@ export const wavesurfers = session.view.wavesurfers; // filename -> WaveSurfer r
 // Owned by the DataSession (Wave A). Reference-stable: never rebound, so these
 // aliases stay valid for every call site and every importing module.
 export const waveformPeaks = session.waveformPeaks; // filename -> { peaks: number[], duration: number } when pre-computed
+export const alignedSpans = session.alignedSpans; // filename -> { from, to }: the stretch with a counterpart in the reference
 
 // Audio normalization + windowed-player lifecycle extracted to
 // ./engine/normalization.js (Phase 1 refactor). seekAnalysis is imported above
@@ -579,7 +670,7 @@ try {
   console.warn("unable to access local storage: ", err);
 }
 
-function resolveAudioUrl(filename) {
+export function resolveAudioUrl(filename) {
   // Synthesised MEI audio: return blob URL once ready, or null while still being synthesised
   if (_synthBlobUrls.has(filename)) {
     const _u = _synthBlobUrls.get(filename);
@@ -760,17 +851,42 @@ function _computeRawTempo(filename) {
     samples.push({ s: sq, t: tInterp });
   }
 
-  // 3. Compute instantaneous tempo between consecutive samples.
+  // 3. Compute instantaneous tempo between consecutive samples. An interval
+  //    that crosses an UNSCORED-AUDIO GAP (header.corrections.gaps, laid in fix
+  //    mode) is dropped and the run before it ends with a break: the jump is a
+  //    discontinuity, not an extreme ritardando, so the curve must not plunge
+  //    there — nor be smoothed or drawn across it.
+  const gapSpans = _unscoredGapSpans();
   const points = [];
   for (let i = 0; i < samples.length - 1; i++) {
-    const ds = samples[i + 1].s - samples[i].s; // quarter notes (= step)
+    const s0 = samples[i].s;
+    const s1 = samples[i + 1].s;
+    if (gapSpans.some((g) => s0 < g.qB && s1 > g.qA)) {
+      if (points.length) points[points.length - 1].breakAfter = true;
+      continue;
+    }
+    const ds = s1 - s0; // quarter notes (= step)
     const dt = samples[i + 1].t - samples[i].t; // seconds
     if (dt <= 0) continue;
     const tempo = (ds / dt) * 60; // QPM
     const time = (samples[i].t + samples[i + 1].t) / 2; // mid-point in audio time
-    points.push({ time, scoreTime: samples[i].s + ds / 2, tempo });
+    points.push({ time, scoreTime: s0 + ds / 2, tempo });
   }
   return points;
+}
+
+/** The loaded alignment's unscored-audio gaps as score-time spans [qA, qB]. */
+function _unscoredGapSpans() {
+  const gaps = loadedAlignmentJSON?.header?.corrections?.gaps;
+  const q = scoreAlignment?.score_onset;
+  if (!Array.isArray(gaps) || !Array.isArray(q)) return [];
+  const spans = [];
+  for (const g of gaps) {
+    const qA = q[g.i];
+    const qB = q[g.i + 1];
+    if (Number.isFinite(qA) && Number.isFinite(qB) && qB > qA) spans.push({ qA, qB });
+  }
+  return spans;
 }
 
 /**
@@ -789,6 +905,13 @@ function _getRawTempo(filename) {
  */
 function _smoothTempo(points, windowSize) {
   if (windowSize <= 0 || points.length <= 1) return points;
+  // Runs: a point flagged breakAfter (an unscored-audio gap follows it) ends
+  // one, and smoothing never reaches across a break.
+  const run = new Array(points.length);
+  for (let i = 0, r = 0; i < points.length; i++) {
+    run[i] = r;
+    if (points[i].breakAfter) r++;
+  }
   const out = [];
   for (let i = 0; i < points.length; i++) {
     let wSum = 0,
@@ -798,16 +921,19 @@ function _smoothTempo(points, windowSize) {
       j <= Math.min(points.length - 1, i + windowSize);
       j++
     ) {
+      if (run[j] !== run[i]) continue;
       const d = (j - i) / windowSize;
       const w = Math.exp(-2 * d * d);
       wSum += points[j].tempo * w;
       wCount += w;
     }
-    out.push({
+    const p = {
       time: points[i].time,
       scoreTime: points[i].scoreTime,
       tempo: wSum / wCount,
-    });
+    };
+    if (points[i].breakAfter) p.breakAfter = true;
+    out.push(p);
   }
   return out;
 }
@@ -1138,12 +1264,12 @@ export function refreshWfBg(filename) {
 // imported at the top of this file.
 
 // ---------------------------------------------------------------------------
-// Alignment correction (drag-to-morph)
+// Unified undo/redo, marker dragging. (The marker-drag "Fix alignment" mode —
+// a Gaussian warp of a grid around a dragged marker — was removed in 0.61.0,
+// ruling B4: alignment correction is fix-mode.js's job now.)
 // ---------------------------------------------------------------------------
-let _alignCorrectionMode = false;
 // Unified Undo/Redo: arrays of tagged entries
 // Entry types:
-//   { type:'align-fix', filename, grid }
 //   { type:'marker-add', alignIx, markerArrayIx }
 //   { type:'marker-delete', alignIx, markerArrayIx }
 //   { type:'marker-move', markerArrayIx, oldAlignIx, newAlignIx }
@@ -1162,76 +1288,46 @@ let _savedAtCounter = 0;
 export function bumpChangeCounter() {
   _changeCounter++;
 }
+/** Fix-mode pushes its fix-anchor/fix-gap snapshot entries through this seam
+ *  (the push half lives in the DOMContentLoaded closure with the buttons it
+ *  updates; the closure assigns the implementation below). */
+let _pushFixUndoImpl = null;
+export function pushFixUndoEntry(entry) {
+  _pushFixUndoImpl?.(entry, true);
+}
 // V6 annotation-changes pending. Pushed by annotation/index.js via
 // setAnnoChangesPending(). ORed into updateDirtyState() so the central
 // Save-data indicator reflects annotation changes too. Tracked separately
 // from _changeCounter so a Solid post can clear annotation dirtiness without
 // affecting the alignment-data dirty flag.
 let _annoChangesPending = false;
+// A wizard alignment taken to this view without being saved: the alignment
+// itself is unsaved work. Set by the session the hand-off starts (via the
+// pending flag), cleared by Save data, and false for every other load.
+let _alignmentNeverSaved = false;
+let _pendingNeverSaved = false;
 export function setAnnoChangesPending(v) {
   _annoChangesPending = !!v;
   updateDirtyState();
 }
 // Revert: original grids captured when alignment first loads
 const _alignOriginalGrids = {};
-// Radius presets (in alignment indices)
-const _ALIGN_RADIUS_NARROW = 10;
-const _ALIGN_RADIUS_MEDIUM = 30;
-const _ALIGN_RADIUS_WIDE = 90;
-// Current radius selection (set from UI)
-let _alignRadius = _ALIGN_RADIUS_MEDIUM;
+/** Whether any recording's grid differs from its as-loaded copy. */
+function _gridsChangedSinceLoad() {
+  for (const [filename, original] of Object.entries(_alignOriginalGrids)) {
+    const current = alignmentGrids[filename];
+    if (!current || current.length !== original.length) return true;
+    for (let i = 0; i < original.length; i++) {
+      if (current[i] !== original[i]) return true;
+    }
+  }
+  return false;
+}
 // Drag markers: whether markers are currently draggable
 export let dragMarkersEnabled = false;
-// Drag mode: 'move' or 'fix'
-let _dragMode = "move";
 // Track whether pulse hints have been shown (first-time tooltips)
 let _pulseHintShown = false;
 let _disableDragHintShown = false;
-
-/** Symmetric Gaussian weight. */
-function _gaussianWeight(j, jCenter, sigma) {
-  const diff = j - jCenter;
-  return Math.exp(-(diff * diff) / (2 * sigma * sigma));
-}
-
-/** Choose sigma: modifier keys override the UI selection. */
-function _sigmaFromEvent(e) {
-  if (e.shiftKey && e.altKey) return _ALIGN_RADIUS_NARROW;
-  if (e.shiftKey) return _ALIGN_RADIUS_MEDIUM;
-  return _alignRadius;
-}
-
-/**
- * Apply a Gaussian-weighted displacement to a grid, enforcing monotonicity.
- * Returns a new array (does not mutate the input).
- *
- * @param {number[]} grid        - alignment times
- * @param {number}   jCenter     - index of the drag anchor
- * @param {number}   dtDrag      - displacement in seconds at the anchor
- * @param {number}   sigma       - Gaussian radius (in indices)
- * @returns {number[]} morphed grid
- */
-function _morphGrid(grid, jCenter, dtDrag, sigma) {
-  const n = grid.length;
-
-  const out = new Array(n);
-  for (let j = 0; j < n; j++) {
-    const w = _gaussianWeight(j, jCenter, sigma);
-    out[j] = grid[j] + dtDrag * w;
-  }
-  // Enforce monotonicity outward from the drag anchor: entries that
-  // would violate ordering get shoved aside in the appropriate direction.
-  const EPS = 1e-6;
-  // Left of anchor: push entries leftward if they collide
-  for (let j = jCenter - 1; j >= 0; j--) {
-    if (out[j] >= out[j + 1]) out[j] = out[j + 1] - EPS;
-  }
-  // Right of anchor: push entries rightward if they collide
-  for (let j = jCenter + 1; j < n; j++) {
-    if (out[j] <= out[j - 1]) out[j] = out[j - 1] + EPS;
-  }
-  return out;
-}
 
 // ---------------------------------------------------------------------------
 // Pane-level loading indicator.
@@ -1674,55 +1770,13 @@ function updateCloseListeningBadge() {
   const cb = document.getElementById("close-listening-cb");
   if (cb) cb.checked = closeListeningMode;
   // Update dependent controls
-  _updateDragFieldsetState();
-}
-
-/** Update enabled state of drag-marker fieldset and radius fieldset. */
-function _updateDragFieldsetState() {
-  const dragFieldset = document.getElementById("drag-marker-fieldset");
-  const radiusFieldset = document.getElementById("radius-fieldset");
-  // Drag markers is always available (not gated on close-listening)
-  if (dragFieldset) dragFieldset.disabled = false;
-  if (radiusFieldset)
-    radiusFieldset.disabled = !(dragMarkersEnabled && _dragMode === "fix");
-  // Update marker visual classes
   updateMarkerDraggableClass();
-  // Update correction overlay pointer-events
-  const corrActive = dragMarkersEnabled && _dragMode === "fix";
-  if (corrActive !== _alignCorrectionMode) {
-    _alignCorrectionMode = corrActive;
-    _applyCorrectionOverlayPointerEvents();
-  }
 }
 
-/** Apply the effective pointer-events state to correction overlay canvases.
- *  Correction overlays are interactive only when fix-alignment mode is active
- *  AND draw-region mode is not active (draw mode needs events to pass through
- *  to the WaveSurfer wrapper for the regions plugin). */
+/** Draw-region mode: set by annotation code when entering/exiting it, read by
+ *  engine modules (waveform-layout suppresses its own drags while it is on). */
 let _drawModeActive = false;
 
-/** Are the alignment-correction overlay canvases interactive right now?
- *  The two flags are only ever meaningful together, so engine modules get this
- *  one accessor rather than both (increment 22): a correction canvas takes
- *  pointer events only in fix-alignment mode with draw-region mode off.
- *  This is the single source of truth for that expression — the pointer-events
- *  sweep below and engine/waveform-events.js's canvas creation both read it. */
-export function correctionOverlaysInteractive() {
-  return _alignCorrectionMode && !_drawModeActive;
-}
-
-function _applyCorrectionOverlayPointerEvents() {
-  const effective = correctionOverlaysInteractive();
-  document.querySelectorAll(".align-correction-overlay").forEach((c) => {
-    c.style.pointerEvents = effective ? "auto" : "none";
-    if (!effective) c.style.cursor = "";
-  });
-  document.body.classList.toggle("align-correction-active", effective);
-}
-
-/** Called by annotation.js when entering/exiting draw-region mode.
- *  Suppresses correction overlay pointer-events so drag-selection
- *  events reach the WaveSurfer wrapper. */
 /** Read-only accessor for engine modules; only annotation code sets the flag. */
 export function isDrawModeActive() {
   return _drawModeActive;
@@ -1730,7 +1784,6 @@ export function isDrawModeActive() {
 
 export function setDrawModeActive(active) {
   _drawModeActive = active;
-  _applyCorrectionOverlayPointerEvents();
   // Toggle a class so CSS can suppress native drag on waveform elements
   document
     .getElementById("waveforms")
@@ -1965,22 +2018,13 @@ export function swapCurrentAudio(newAudio) {
 }
 
 export function updateDirtyState() {
-  const isDirty =
-    _changeCounter !== _savedAtCounter || _annoChangesPending;
-  const dlBtn = document.getElementById("download-json-btn");
-  if (dlBtn) {
-    dlBtn.classList.toggle("json-dirty", isDirty);
-    dlBtn.title = isDirty
-      ? "Download alignment data (You have unsaved changes!)"
-      : "Download alignment data";
-  }
-  const ctrl = document.getElementById("nav-middle-toggle");
-  if (ctrl) {
-    ctrl.classList.toggle("json-dirty", isDirty);
-    ctrl.title = isDirty
-      ? "Collapse / expand controls (You have unsaved changes!)"
-      : "Collapse / expand controls";
-  }
+  const isDirty = _hasUnsavedWork();
+  document.getElementById("download-json-btn")?.classList.toggle("json-dirty", isDirty);
+  document.getElementById("nav-middle-toggle")?.classList.toggle("json-dirty", isDirty);
+  _refreshDirtyTitles();
+  // Every change path ends here, which makes it the one place to hook the
+  // recovery snapshot (debounced; see _scheduleRecoveryWrite).
+  _scheduleRecoveryWrite();
 }
 
 /**
@@ -1990,6 +2034,9 @@ export function updateDirtyState() {
 export function updateMarkBtnTooltip() {
   const btn = document.getElementById("mark");
   if (!btn) return;
+  // Fix mode hides the button while a session is open; updating it then
+  // would change its title, icon, and mode behind the session's back.
+  if (isFixModeActive()) return;
   let atMarker = false;
   const ws =
     currentAudioIx && wavesurfers[currentAudioIx]
@@ -2015,7 +2062,9 @@ export function updateMarkBtnTooltip() {
   }
   btn.title = atMarker
     ? "Remove the currently-active marker"
-    : "Place a marker at the current playback position";
+    : // Keep the shortcut hint the markup ships with: this runs on the first
+      // marker refresh and silently dropped it (M places; removal has no key).
+      "Place a marker at the current playback position (M)";
   const iconMark = btn.querySelector(".icon-mark");
   const iconMarkX = btn.querySelector(".icon-mark-x");
   if (iconMark) iconMark.style.display = atMarker ? "none" : "";
@@ -2078,6 +2127,7 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
   // if not yet created, do so (guard against the async gap below re-entering):
   if (!(filename in wavesurfers) && !_preparing.has(filename)) {
     const waveform = createWaveformRow(filename);
+    // Fix-mode entry affordance (?fixMode only; the module decides which rows).
 
     // Row done. Whether its renderer gets built now or when the user scrolls to
     // it is the lazy-creation decision (roadmap item L).
@@ -2441,6 +2491,7 @@ async function _buildAndPrepareSynthWaveform(
     (scoreData.synth_onset && scoreData.synth_onset.length === refOnsets.length
       ? scoreData.synth_onset
       : _reconstructEventOnsetSecs(refOnsets.length, notes, tpq, tempoChanges));
+  _synthGridOnsets = synthOnsets;
   alignmentGrids[synthKey] = interpAlignmentGrid(
     alignmentGrids[refKey] || [],
     refOnsets,
@@ -2607,6 +2658,7 @@ function resetSession(keepAudioKeys = []) {
   const keep = new Set(keepAudioKeys);
 
   // 1. Leave transient modes that reference the outgoing piece
+  fixModeOnPieceReset();
   if (closeListeningMode) exitCloseListeningMode();
   clearMeasureVisuals();
   _jumpToTargetActive = false;
@@ -2696,6 +2748,7 @@ function _pruneWaveformsWithoutGrids() {
     delete wavesurfers[fn];
     delete wfBgCache[fn];
     delete waveformPeaks[fn];
+    delete alignedSpans[fn];
     delete _tempoRawCache[fn];
     delete _alignOriginalGrids[fn];
     loaded.delete(fn);
@@ -2747,8 +2800,422 @@ let _approvedReplacement = null;
  * flag. Both replacement paths ask this before discarding anything.
  */
 function _hasUnsavedWork() {
-  return _annoChangesPending || _changeCounter !== _savedAtCounter;
+  return (
+    _annoChangesPending || _changeCounter !== _savedAtCounter || _alignmentNeverSaved
+  );
 }
+
+// ---------------------------------------------------------------------------
+// Session recovery (0.85.0). The format and its reasoning live in
+// engine/session-recovery.js; this is the timing and the UI. One session per
+// completed load: it starts at the end of setGrids, stops at the start of the
+// next one, and reads the header from the alignment object it started with —
+// not loadedAlignmentJSON, which the file picker rebinds to an incoming file
+// before that file is loaded.
+// ---------------------------------------------------------------------------
+
+/** {id, fingerprint, source, recordings, startedAt, json, written} or null. */
+let _recovery = null;
+let _recoveryTimer = null;
+/** The snapshot a restore is loading; adopted by the setGrids it triggers. */
+let _pendingRestore = null;
+const RECOVERY_DEBOUNCE_MS = 1500;
+
+function _recoveryStorage() {
+  try {
+    return window.localStorage || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function _recordingKeys(json) {
+  return Object.keys(json?.body?.audio || {}).filter((k) => k !== SYNTH_MEI_KEY);
+}
+
+/** What the session holds now, in snapshot form (header + annotations). */
+function _recoveryPayload() {
+  return {
+    header: { ...(_recovery.json.header || {}), markers: [...markers] },
+    annotations: serializeAnnotations(),
+  };
+}
+
+function _writeRecoveryNow() {
+  clearTimeout(_recoveryTimer);
+  _recoveryTimer = null;
+  const store = _recoveryStorage();
+  if (!_recovery || !store) return;
+  const dirty = _hasUnsavedWork();
+  // A clean session that never had a snapshot needs none; one that did must
+  // record that it is now clean, so it is not offered back.
+  if (!dirty && !_recovery.written) return;
+  const { header, annotations } = _recoveryPayload();
+  const ok = writeSnapshot(store, {
+    v: RECOVERY_FORMAT,
+    id: _recovery.id,
+    fingerprint: _recovery.fingerprint,
+    source: _recovery.source,
+    recordings: _recovery.recordings,
+    startedAt: _recovery.startedAt,
+    updatedAt: Date.now(),
+    dirty,
+    header,
+    annotations,
+  });
+  if (ok) {
+    _recovery.written = true;
+    _recovery.lastWrittenAt = Date.now();
+    _refreshDirtyTitles(); // the tooltip names the kept copy and its time
+  }
+}
+
+function _scheduleRecoveryWrite() {
+  if (!_recovery) return;
+  clearTimeout(_recoveryTimer);
+  _recoveryTimer = setTimeout(_writeRecoveryNow, RECOVERY_DEBOUNCE_MS);
+}
+
+/** Write anything pending, then end the session (start of a load). */
+function _endRecoverySession() {
+  if (_recoveryTimer) _writeRecoveryNow();
+  _recovery = null;
+}
+
+/**
+ * Begin the session for the load that just completed: carry on a restored
+ * one, or start fresh and offer back any unsaved work for this piece.
+ */
+function _startRecoverySession(json) {
+  const restoring = _pendingRestore;
+  _pendingRestore = null;
+  // A restore reloads the same alignment, so it keeps the flag; any other
+  // load takes it from the wizard hand-off, or clears it.
+  if (!restoring) _alignmentNeverSaved = _pendingNeverSaved;
+  _pendingNeverSaved = false;
+  const recordings = _recordingKeys(json);
+  _recovery = {
+    id: restoring ? restoring.id : newSessionId(),
+    fingerprint: pieceFingerprint(json?.header?.meiUri, recordings),
+    source: restoring?.source || workId || "alignment",
+    recordings: recordings.length,
+    startedAt: restoring ? restoring.startedAt : Date.now(),
+    json,
+    written: !!restoring,
+  };
+  const store = _recoveryStorage();
+  if (!store) return;
+  pruneSnapshots(store, { keepId: _recovery.id });
+  if (restoring) {
+    // The restored work is in memory but on no disk: say so, and keep its
+    // snapshot current under its original id.
+    bumpChangeCounter();
+    updateDirtyState();
+    _hideRecoveryBanner();
+    return;
+  }
+  if (_alignmentNeverSaved) updateDirtyState(); // light the unsaved dot
+  const { header, annotations } = _recoveryPayload();
+  const offers = offersFor(store, {
+    fingerprint: _recovery.fingerprint,
+    currentId: _recovery.id,
+    loadedSignature: contentSignature(header, annotations),
+  });
+  if (offers.length) _showRecoveryBanner(offers);
+  else _hideRecoveryBanner();
+}
+
+function _hideRecoveryBanner() {
+  document.getElementById("recovery-banner")?.remove();
+}
+
+function _showRecoveryBanner(offers) {
+  _hideRecoveryBanner();
+  const items = offers.slice(0, 5).map((s) =>
+    el("li", { class: "recovery-item" }, [
+      el("span", { class: "recovery-desc" }, [
+        s.header?.label ? el("strong", { class: "recovery-label", text: s.header.label }) : null,
+        s.header?.label ? ", " : null,
+        el("strong", { text: describeWhen(s.updatedAt) }),
+        " — " + describeSnapshot(s) + ", from ",
+        el("em", { text: _sourceText(s.source) }),
+      ]),
+      el("button", {
+        type: "button",
+        class: "recovery-restore",
+        text: "Restore",
+        onclick: () => _restoreSnapshot(s.id),
+      }),
+      el("button", {
+        type: "button",
+        class: "recovery-discard",
+        text: "Discard",
+        title: "Delete this unsaved work for good",
+        onclick: (ev) => {
+          const store = _recoveryStorage();
+          if (store) removeSnapshot(store, s.id);
+          ev.currentTarget.closest(".recovery-item")?.remove();
+          if (!document.querySelector("#recovery-banner .recovery-item")) {
+            _hideRecoveryBanner();
+          }
+        },
+      }),
+    ]),
+  );
+  const banner = el("div", { id: "recovery-banner", class: "recovery-ui", role: "alert" }, [
+    el("p", {
+      class: "recovery-title",
+      text:
+        offers.length === 1
+          ? "Unsaved work for this piece was found from an earlier session."
+          : "Unsaved work for this piece was found from earlier sessions.",
+    }),
+    el("ul", { class: "recovery-list" }, items),
+    el("button", {
+      type: "button",
+      class: "recovery-later",
+      text: "Not now",
+      title: "Hide this; the work stays recoverable",
+      onclick: _hideRecoveryBanner,
+    }),
+  ]);
+  document.body.appendChild(banner);
+}
+
+/** Load the snapshot's header and annotations over the loaded grids. */
+async function _restoreSnapshot(id) {
+  const store = _recoveryStorage();
+  const snap = store && readSnapshot(store, id);
+  if (!snap || !loadedAlignmentJSON) return;
+  const merged = {
+    ...loadedAlignmentJSON,
+    header: restoredHeader(loadedAlignmentJSON.header, snap.header),
+    annotations: snap.annotations || [],
+  };
+  _pendingRestore = snap;
+  await setGrids(merged);
+  // Declined (setGrids asked about unsaved edits and was told no).
+  if (_pendingRestore === snap) _pendingRestore = null;
+}
+
+/** The file picker's note on unsaved work, naming the files it needs. */
+function _renderPickerRecoveryNotice() {
+  const host = document.getElementById("file-picker-recovery");
+  if (!host) return;
+  const store = _recoveryStorage();
+  const pending = store
+    ? listSnapshots(store).filter(
+        // A never-saved wizard alignment has no files to load: not listed.
+        (s) => s.dirty && s.id !== _recovery?.id && s.source !== IN_BROWSER_SOURCE,
+      )
+    : [];
+  host.replaceChildren();
+  host.hidden = !pending.length;
+  if (!pending.length) return;
+  host.append(
+    el("p", {
+      class: "recovery-title",
+      text: "Unsaved work from an earlier session. Load these files to restore it:",
+    }),
+    el(
+      "ul",
+      { class: "recovery-list" },
+      pending.slice(0, 3).map((s) =>
+        el("li", { class: "recovery-item" }, [
+          el("span", { class: "recovery-desc" }, [
+            s.header?.label ? el("strong", { class: "recovery-label", text: s.header.label }) : null,
+            s.header?.label ? ", " : null,
+            el("strong", { text: describeWhen(s.updatedAt) }),
+            " — ",
+            el("em", { text: _sourceText(s.source) }),
+            " and its " + s.recordings + " recording" +
+              (s.recordings === 1 ? "" : "s") + "; " + describeSnapshot(s),
+          ]),
+          el("button", {
+            type: "button",
+            class: "recovery-discard",
+            text: "Discard",
+            title: "Delete this unsaved work for good",
+            onclick: () => {
+              removeSnapshot(store, s.id);
+              _renderPickerRecoveryNotice();
+            },
+          }),
+        ]),
+      ),
+    ),
+  );
+}
+
+/** How a snapshot's source reads in the recovery notes. */
+function _sourceText(source) {
+  return source === IN_BROWSER_SOURCE
+    ? "an alignment made in the wizard and never saved"
+    : source;
+}
+
+/** "alignment.json" from a file name or a URL. */
+function _baseName(source) {
+  return String(source || "").split(/[\\/]/).pop() || String(source || "");
+}
+
+function _clockTime(ms) {
+  try {
+    return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  } catch (_) {
+    return new Date(ms).toISOString().slice(11, 16);
+  }
+}
+
+/**
+ * What is unsaved, in words, and what this browser holds of it — for the
+ * leave dialog and the unsaved-changes tooltip.
+ */
+function _unsavedSummary() {
+  const unsaved = [];
+  if (_alignmentNeverSaved) unsaved.push("the alignment itself");
+  const anns = v6State.getAll().filter((a) => a.hasUnsavedChanges);
+  if (anns.length) {
+    const names = anns.map((a) => a.label || "untitled");
+    unsaved.push(
+      anns.length + " annotation" + (anns.length === 1 ? "" : "s") +
+        " (" + names.slice(0, 3).join(", ") + (names.length > 3 ? ", …" : "") + ")",
+    );
+  }
+  if (_changeCounter !== _savedAtCounter) {
+    unsaved.push("markers, grouping, and/or alignment corrections");
+  }
+  // The snapshot holds the header and the annotations, never the grids.
+  const correctionsNotKept = fixCorrectionsDirty() || _gridsChangedSinceLoad();
+  const kept = _recovery?.written
+    ? {
+        name: _recovery.json?.header?.label || "",
+        at: _recovery.lastWrittenAt,
+        file: _baseName(_recovery.source),
+        recordings: _recovery.recordings,
+      }
+    : null;
+  // A wizard alignment never saved has no file to restore the copy onto.
+  const neverSaved = _alignmentNeverSaved;
+  return { unsaved, correctionsNotKept, kept, neverSaved };
+}
+
+function _refreshDirtyTitles() {
+  const isDirty = _hasUnsavedWork();
+  let detail = "";
+  if (isDirty) {
+    const { unsaved, correctionsNotKept, kept, neverSaved } = _unsavedSummary();
+    detail = " — you have unsaved changes: " + unsaved.join("; ");
+    if (neverSaved) {
+      detail += "\nThis alignment has not been saved to a file yet; save data to keep it.";
+    } else if (kept) {
+      detail +=
+        `\nKept in this browser${kept.name ? ` as "${kept.name}"` : ""} ` +
+        `(${_clockTime(kept.at)}); ` +
+        "load the same files again to get it back.";
+    }
+    if (correctionsNotKept) {
+      detail += "\nAlignment corrections are not kept in this browser.";
+    }
+  }
+  const dlBtn = document.getElementById("download-json-btn");
+  if (dlBtn) dlBtn.title = "Download alignment data" + detail;
+  const ctrl = document.getElementById("nav-middle-toggle");
+  if (ctrl) ctrl.title = "Collapse / expand controls" + detail;
+}
+
+/** The app's own leave dialog, for links that leave the page. */
+async function _confirmLeave() {
+  if (_recovery) _writeRecoveryNow(); // so what it says is kept, is
+  const { unsaved, correctionsNotKept, kept, neverSaved } = _unsavedSummary();
+  const lines = unsaved.map((t) =>
+    el("li", { class: "lh-v6-confirm-line removed", text: "− Unsaved: " + t }),
+  );
+  lines.push(
+    neverSaved
+      ? el("li", {
+          class: "lh-v6-confirm-line removed",
+          text:
+            "− This alignment has not been saved to a file yet. Without the " +
+            "file, the copy kept in this browser cannot be restored: save data first.",
+        })
+      : kept
+      ? el("li", {
+          class: "lh-v6-confirm-line neutral",
+          text:
+            `✓ Kept in this browser${kept.name ? ` as "${kept.name}"` : ""} ` +
+            `(${_clockTime(kept.at)}). ` +
+            `To get it back, load ${kept.file} and its ${kept.recordings} ` +
+            `recording${kept.recordings === 1 ? "" : "s"} again; ` +
+            "you will be offered the work back.",
+        })
+      : el("li", {
+          class: "lh-v6-confirm-line removed",
+          text: "− No copy could be kept in this browser",
+        }),
+  );
+  if (correctionsNotKept) {
+    lines.push(
+      el("li", {
+        class: "lh-v6-confirm-line removed",
+        text: "− Alignment corrections are not kept in this browser",
+      }),
+    );
+  }
+  return confirmDialog({
+    title: "Leave this page?",
+    confirmLabel: "Leave",
+    cancelLabel: "Stay",
+    focus: "cancel",
+    enterConfirms: false,
+    body: [
+      el("p", { class: "lh-v6-confirm-target", text: "You have unsaved changes." }),
+      el("ul", { class: "lh-v6-confirm-list" }, lines),
+      el("p", {
+        class: "lh-v6-confirm-detail",
+        text: "Save data downloads everything to a file.",
+      }),
+    ],
+  });
+}
+
+/** Set once the app's own dialog said Leave, so the browser does not ask again. */
+let _leaveConfirmed = false;
+
+// Links that leave the page in this tab (the logo, the mode links) get the
+// app's dialog, which can explain; the browser's cannot. Bubble phase, so a
+// link some other handler already took over (defaultPrevented) is left alone.
+document.addEventListener("click", async (e) => {
+  const a = e.target?.closest?.("a[href]");
+  if (!a || e.defaultPrevented || e.button !== 0) return;
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; // new tab/window
+  if ((a.target && a.target !== "_self") || a.hasAttribute("download")) return;
+  const url = new URL(a.href, location.href);
+  const samePage =
+    url.origin === location.origin &&
+    url.pathname === location.pathname &&
+    url.search === location.search;
+  if (samePage && url.hash) return; // an in-page anchor
+  if (!_hasUnsavedWork()) return;
+  e.preventDefault();
+  if (await _confirmLeave()) {
+    _leaveConfirmed = true;
+    location.href = url.href;
+  }
+});
+
+// The guard. Browsers show only their own wording here (custom text has been
+// ignored since ~2016), and only once the user has interacted with the page.
+window.addEventListener("beforeunload", (e) => {
+  if (_recovery) _writeRecoveryNow();
+  if (_leaveConfirmed || !_hasUnsavedWork()) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+// Mobile Safari does not fire beforeunload reliably; pagehide it does.
+window.addEventListener("pagehide", () => {
+  if (_recoveryTimer) _writeRecoveryNow();
+});
 
 function _assessIncomingPiece(grids) {
   const current = Object.keys(alignmentGrids).filter((k) => k !== SYNTH_MEI_KEY);
@@ -2986,9 +3453,15 @@ let _pendingGroupOverlapReport = [];
 
 async function setGrids(grids) {
   console.log("received grids: ", grids);
+  // The outgoing session's snapshot is brought up to date and the session
+  // stopped BEFORE anything is torn down: a reset empties markers and
+  // annotations, and a write after it would record the loss as the work.
+  const outgoingRecovery = _recovery;
+  _endRecoverySession();
   // Replacing the loaded piece requires a full teardown first (issue #32)
   if (!(await _maybeResetForNewPiece(grids))) {
     console.log("setGrids: user declined replacing the loaded piece");
+    _recovery = outgoingRecovery; // nothing was loaded; carry on as before
     return;
   }
   // After the guard, not before: the confirm dialog must not sit behind a spinner.
@@ -3008,6 +3481,15 @@ async function setGrids(grids) {
       for (const [key, val] of Object.entries(grids.body.audio)) {
         if (val && !Array.isArray(val) && Array.isArray(val.times)) {
           waveformPeaks[key] = { peaks: val.peaks, duration: val.duration };
+          // Audio the wizard found no counterpart for, at the head or tail
+          // (applause, announcements, tuning). Absent = the whole recording
+          // is aligned, which is what every older alignment means.
+          if (
+            Number.isFinite(val.alignedFrom) &&
+            Number.isFinite(val.alignedTo)
+          ) {
+            alignedSpans[key] = { from: val.alignedFrom, to: val.alignedTo };
+          }
           alignmentGrids[key] = val.times;
         } else {
           alignmentGrids[key] = val;
@@ -3243,7 +3725,15 @@ async function setGrids(grids) {
   if (document.querySelector("#waveforms .waveform")) hideWaveformsPaneLoading();
   // One tick per completed load. Exposed on _listenTest so e2e tests can wait
   // for "this piece finished loading" instead of sleeping for a guessed duration.
+  // Session recovery: a new session for this load, or the restored one
+  // continued. Ahead of the tick below, so a load counts as complete only
+  // once its session (and any offer of earlier work) exists.
+  _startRecoverySession(grids);
   _loadGeneration++;
+  // Fix-mode prewarm (?fixMode only; no-op otherwise): invalidates the old
+  // piece's derived caches and, at load-idle, does the Verovio layout work so
+  // entering the correction screen is instant.
+  fixModePrewarm();
   // Now that the pane is populated and its spinner retired, report any group
   // overlap the load had to repair. Deliberately not awaited: the load IS
   // finished, and blocking setGrids on a dialog would hold up every caller.
@@ -3258,7 +3748,7 @@ async function setGrids(grids) {
 // Align → Listen in-memory handoff
 // Called by align.js when alignment completes (no page reload needed).
 // ---------------------------------------------------------------------------
-function onAlignmentComplete(alignmentResult, files) {
+function onAlignmentComplete(alignmentResult, files, savedAs = null) {
   // Store each audio file so WaveSurfer can load them directly
   files.forEach((f) => {
     fileBlobUrls.set(f.name, URL.createObjectURL(f));
@@ -3267,7 +3757,10 @@ function onAlignmentComplete(alignmentResult, files) {
   useFilesMode = true;
   _fromAlignmentHandoff = true;
   setLoadedAlignmentJSON(alignmentResult);
-  workId = "in-browser-alignment";
+  // Named after the file the wizard saved, if it did: that is what a restore
+  // will need. Otherwise the alignment exists nowhere but this tab.
+  workId = savedAs || IN_BROWSER_SOURCE;
+  _pendingNeverSaved = !savedAs;
 
   // Update URL to reflect listen mode (so Solid redirects return here, not to align)
   history.replaceState(null, "", "/?useFiles");
@@ -3523,8 +4016,11 @@ document.addEventListener("DOMContentLoaded", () => {
   // Download JSON button
   const dlBtn = document.getElementById("download-json-btn");
   if (dlBtn) {
-    dlBtn.addEventListener("click", () => {
+    dlBtn.addEventListener("click", async () => {
       if (!loadedAlignmentJSON) return;
+      // Spans a correction session still has waiting for Re-align are
+      // refilled first: a saved file is never half-applied.
+      if (!(await fixFlushPending())) return;
       // Phase E will serialise V6 annotation state into loadedAlignmentJSON
       // inside this hook. For now it just clears V6's per-annotation
       // hasUnsavedChanges flags, which in turn pushes the central indicator
@@ -3544,9 +4040,13 @@ document.addEventListener("DOMContentLoaded", () => {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "alignment.json";
+      a.download = alignmentFileName(loadedAlignmentJSON.header?.label);
       a.click();
       URL.revokeObjectURL(url);
+      // The session's work now has a file, under this name: what the
+      // recovery notes should tell the user to load.
+      if (_recovery) _recovery.source = a.download;
+      _alignmentNeverSaved = false;
       _savedAtCounter = _changeCounter;
       updateDirtyState();
     });
@@ -3565,12 +4065,6 @@ document.addEventListener("DOMContentLoaded", () => {
   const toolsPanel = document.getElementById("tools-panel");
   const closeListeningCb = document.getElementById("close-listening-cb");
   const dragMarkersCb = document.getElementById("drag-markers-cb");
-  const dragModeMove = document.getElementById("drag-mode-move");
-  const dragModeFix = document.getElementById("drag-mode-fix");
-  const radiusFieldset = document.getElementById("radius-fieldset");
-  const radiusNarrow = document.getElementById("radius-narrow");
-  const radiusMedium = document.getElementById("radius-medium");
-  const radiusWide = document.getElementById("radius-wide");
   const undoBtn = document.getElementById("undo-btn");
   const redoBtn = document.getElementById("redo-btn");
   const revertBtn = document.getElementById("revert-all-btn");
@@ -3607,44 +4101,12 @@ document.addEventListener("DOMContentLoaded", () => {
   if (dragMarkersCb) {
     // Sync initial state from (possibly browser-cached) form value
     dragMarkersEnabled = dragMarkersCb.checked;
-    if (dragModeMove) dragModeMove.disabled = !dragMarkersEnabled;
-    if (dragModeFix) dragModeFix.disabled = !dragMarkersEnabled;
+    updateMarkerDraggableClass();
     dragMarkersCb.addEventListener("change", () => {
       dragMarkersEnabled = dragMarkersCb.checked;
-      // Enable/disable the drag-mode radio buttons
-      if (dragModeMove) dragModeMove.disabled = !dragMarkersEnabled;
-      if (dragModeFix) dragModeFix.disabled = !dragMarkersEnabled;
-      _updateDragFieldsetState();
+      updateMarkerDraggableClass();
     });
   }
-
-  // --- Drag mode radios ---
-  // Sync initial state from (possibly browser-cached) radio selection
-  _dragMode =
-    document.querySelector('input[name="drag-mode"]:checked')?.value || "move";
-  [dragModeMove, dragModeFix].forEach((r) => {
-    if (r)
-      r.addEventListener("change", () => {
-        _dragMode =
-          document.querySelector('input[name="drag-mode"]:checked')?.value ||
-          "move";
-        _updateDragFieldsetState();
-      });
-  });
-
-  // Apply initial enabled/correction state
-  _updateDragFieldsetState();
-
-  // --- Radius radios ---
-  // Sync initial state from (possibly browser-cached) radio selection
-  const _initRadius = document.querySelector('input[name="radius"]:checked');
-  if (_initRadius) _alignRadius = parseInt(_initRadius.value);
-  [radiusNarrow, radiusMedium, radiusWide].forEach((r) => {
-    if (r)
-      r.addEventListener("change", () => {
-        _alignRadius = parseInt(r.value);
-      });
-  });
 
   // --- Unified Undo / Redo ---
 
@@ -3657,6 +4119,8 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     _updateUndoRedoState();
   }
+  // Fix-mode correction commits ride the same unified stack (plan §14 B3).
+  _pushFixUndoImpl = _pushUndo;
 
   /** Delete the currently active marker (close-listening mode). */
   function _deleteActiveMarker() {
@@ -3694,20 +4158,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function _undoOne() {
     if (_undoStack.length === 0) return;
+    const top = _undoStack[_undoStack.length - 1];
+    // A fix entry cannot hop while its sibling's realign is still splicing.
+    if (top.type?.startsWith("fix-") && fixRealignBusy()) return;
     _changeCounter--;
     const entry = _undoStack.pop();
     switch (entry.type) {
-      case "align-fix": {
-        _redoStack.push({
-          type: "align-fix",
-          filename: entry.filename,
-          grid: alignmentGrids[entry.filename].slice(),
-        });
-        alignmentGrids[entry.filename] = entry.grid;
-        _syncGridToJSON(entry.filename);
-        drawAlignmentGrid(entry.filename);
-        break;
-      }
       case "marker-add": {
         // Undo add = remove the marker
         const ix = markers.indexOf(entry.alignIx);
@@ -3762,26 +4218,29 @@ document.addEventListener("DOMContentLoaded", () => {
         if (closeListeningMode) seekToActiveMarker();
         break;
       }
+      case "fix-anchor":
+      case "fix-anchor-batch":
+      case "fix-gap":
+      case "fix-grid-anchor":
+      case "fix-realign": {
+        // Snapshot semantics: the entry carries its before/after values, so
+        // fix-mode applies the hop without the alignment worker; the same
+        // entry object shuttles between the stacks.
+        applyFixCorrectionUndo(entry);
+        _redoStack.push(entry);
+        break;
+      }
     }
     _updateUndoRedoState();
   }
 
   function _redoOne() {
     if (_redoStack.length === 0) return;
+    const top = _redoStack[_redoStack.length - 1];
+    if (top.type?.startsWith("fix-") && fixRealignBusy()) return;
     _changeCounter++;
     const entry = _redoStack.pop();
     switch (entry.type) {
-      case "align-fix": {
-        _undoStack.push({
-          type: "align-fix",
-          filename: entry.filename,
-          grid: alignmentGrids[entry.filename].slice(),
-        });
-        alignmentGrids[entry.filename] = entry.grid;
-        _syncGridToJSON(entry.filename);
-        drawAlignmentGrid(entry.filename);
-        break;
-      }
       case "marker-add": {
         // Redo add = re-insert
         const insertIx = Math.min(entry.markerArrayIx, markers.length);
@@ -3832,6 +4291,15 @@ document.addEventListener("DOMContentLoaded", () => {
         if (closeListeningMode) seekToActiveMarker();
         break;
       }
+      case "fix-anchor":
+      case "fix-anchor-batch":
+      case "fix-gap":
+      case "fix-grid-anchor":
+      case "fix-realign": {
+        applyFixCorrectionRedo(entry);
+        _undoStack.push(entry);
+        break;
+      }
     }
     _updateUndoRedoState();
   }
@@ -3849,6 +4317,8 @@ document.addEventListener("DOMContentLoaded", () => {
       markers.length = 0;
     }
     redrawAllMarkers();
+    // Fix-mode corrections revert to the as-loaded ref tables and record too.
+    fixRevertCorrections();
     _undoStack.length = 0;
     _redoStack.length = 0;
     _changeCounter = _savedAtCounter;
@@ -3859,14 +4329,22 @@ document.addEventListener("DOMContentLoaded", () => {
   function _actionLabel(entry) {
     if (!entry) return "";
     switch (entry.type) {
-      case "align-fix":
-        return "fix alignment";
       case "marker-add":
         return "add marker";
       case "marker-delete":
         return "delete marker";
       case "marker-move":
         return "move marker";
+      case "fix-anchor":
+        return "alignment anchor";
+      case "fix-grid-anchor":
+        return `alignment anchor (${entry.file})`;
+      case "fix-anchor-batch":
+        return `alignment anchors (${entry.count})`;
+      case "fix-gap":
+        return "unscored-audio gap";
+      case "fix-realign":
+        return entry.spans.length === 1 ? "re-alignment" : `re-alignment (${entry.spans.length} spans)`;
       default:
         return "";
     }
@@ -3888,21 +4366,7 @@ document.addEventListener("DOMContentLoaded", () => {
         : "Redo (Ctrl+Shift+Z)";
     }
     if (revertBtn) {
-      let hasChanges = false;
-      for (const [filename, original] of Object.entries(_alignOriginalGrids)) {
-        const current = alignmentGrids[filename];
-        if (!current || current.length !== original.length) {
-          hasChanges = true;
-          break;
-        }
-        for (let i = 0; i < original.length; i++) {
-          if (current[i] !== original[i]) {
-            hasChanges = true;
-            break;
-          }
-        }
-        if (hasChanges) break;
-      }
+      const hasChanges = fixCorrectionsDirty() || _gridsChangedSinceLoad();
       revertBtn.disabled = !hasChanges;
     }
     updateDirtyState();
@@ -4103,447 +4567,68 @@ document.addEventListener("DOMContentLoaded", () => {
       startAlignIx: markers[nearby.markerArrayIx],
       wfEl,
     };
-
-    // If in fix-alignment mode, also set up the correction drag
-    if (_dragMode === "fix") {
-      const grid = alignmentGrids[filename];
-      if (
-        !grid ||
-        filename === referenceAudioIx ||
-        filename === SYNTH_MEI_KEY
-      ) {
-        _markerDragState = null;
-        document.body.classList.remove("marker-dragging");
-        return;
-      }
-      const jCenter = markers[nearby.markerArrayIx];
-      const sigma = _sigmaFromEvent(e);
-      const isGlobal = e.ctrlKey || e.metaKey;
-      const origGrid = grid.slice();
-      const dur = wavesurfers[filename]?.getDuration() || 1;
-      // Push undo entries for alignment grids
-      if (isGlobal) {
-        for (const fn of Object.keys(alignmentGrids)) {
-          if (fn === referenceAudioIx || fn === SYNTH_MEI_KEY) continue;
-          _pushUndo({
-            type: "align-fix",
-            filename: fn,
-            grid: alignmentGrids[fn].slice(),
-          });
-        }
-      } else {
-        _pushUndo({ type: "align-fix", filename, grid: origGrid });
-      }
-      _markerDragState.fixMode = true;
-      _markerDragState.jCenter = jCenter;
-      _markerDragState.origGrid = origGrid;
-      _markerDragState.sigma = sigma;
-      _markerDragState.dur = dur;
-      _markerDragState.isGlobal = isGlobal;
-    }
   });
 
   // Mousemove: drag marker
   document.addEventListener("mousemove", (e) => {
     if (!_markerDragState) return;
-    const { filename, markerArrayIx, startX, wfEl, fixMode } = _markerDragState;
+    const { filename, markerArrayIx, startX, wfEl } = _markerDragState;
     const dur = wavesurfers[filename]?.getDuration() || 1;
     const rect = wfEl.getBoundingClientRect();
     const _zoomedW = getZoomedWidth(filename) || rect.width;
 
-    if (fixMode) {
-      // Fix alignment mode: morph the grid
-      _markerDragState.sigma = _sigmaFromEvent(e);
-      const sigma = _markerDragState.sigma;
-      const dtDrag = (e.clientX - startX) / (_zoomedW / dur);
-      const morphed = _morphGrid(
-        _markerDragState.origGrid,
-        _markerDragState.jCenter,
-        dtDrag,
-        sigma,
-      );
-      const corrCanvas = wfEl.querySelector(".align-correction-overlay");
-      if (corrCanvas) {
-        _drawMorphPreview(
-          corrCanvas,
-          filename,
-          morphed,
-          _markerDragState.origGrid,
-        );
-      }
-      // Show the dragged marker at its morphed position
-      const morphedTime = morphed[_markerDragState.jCenter];
-      const _fullW = getZoomedWidth(filename);
-      const leftPx =
-        dur > 0
-          ? Math.max(0, Math.min(_fullW, (morphedTime / dur) * _fullW))
-          : 0;
-      const markerEl = wfEl.querySelector(
-        `.ws-marker[data-align-ix="${markers[markerArrayIx]}"]`,
-      );
-      if (markerEl) markerEl.style.left = `${leftPx}px`;
-      // Update all other markers on this waveform to their morphed positions
-      wfEl.querySelectorAll(".ws-marker[data-align-ix]").forEach((el) => {
-        if (el === markerEl) return;
-        const aIx = parseInt(el.dataset.alignIx);
-        if (aIx >= 0 && aIx < morphed.length) {
-          const t = morphed[aIx];
-          const p =
-            dur > 0 ? Math.max(0, Math.min(_fullW, (t / dur) * _fullW)) : 0;
-          el.style.left = `${p}px`;
-        }
-      });
-      // Global preview on other waveforms
-      if (_markerDragState.isGlobal) {
-        document.querySelectorAll(".align-correction-overlay").forEach((c) => {
-          const fn = c.closest(".waveform")?.dataset.ix;
-          if (
-            !fn ||
-            fn === filename ||
-            fn === referenceAudioIx ||
-            fn === SYNTH_MEI_KEY
-          )
-            return;
-          const fnOrigGrid = _undoStack
-            .slice()
-            .reverse()
-            .find((u) => u.type === "align-fix" && u.filename === fn)?.grid;
-          if (!fnOrigGrid) return;
-          const refSpacing =
-            _markerDragState.origGrid[_markerDragState.jCenter] || 1;
-          const localSpacing = fnOrigGrid[_markerDragState.jCenter] || 1;
-          const scale = localSpacing / refSpacing;
-          const localMorphed = _morphGrid(
-            fnOrigGrid,
-            _markerDragState.jCenter,
-            dtDrag * scale,
-            sigma,
-          );
-          _drawMorphPreview(c, fn, localMorphed, fnOrigGrid);
-        });
-      }
-    } else {
-      // Move marker mode: show cursor at new position
-      const pxDelta = e.clientX - startX;
-      const timeDelta = (pxDelta / _zoomedW) * dur;
-      const origTime = getCorrespondingTime(
-        filename,
-        _markerDragState.startAlignIx,
-      );
-      const newTime = Math.max(0, Math.min(dur, origTime + timeDelta));
-      const newAlignIx = getClosestAlignmentIx(newTime, filename);
-      // Temporarily update marker position for visual feedback
-      markers[markerArrayIx] = newAlignIx;
-      redrawAllMarkers();
-    }
+    // Move marker mode: show cursor at new position
+    const pxDelta = e.clientX - startX;
+    const timeDelta = (pxDelta / _zoomedW) * dur;
+    const origTime = getCorrespondingTime(
+      filename,
+      _markerDragState.startAlignIx,
+    );
+    const newTime = Math.max(0, Math.min(dur, origTime + timeDelta));
+    const newAlignIx = getClosestAlignmentIx(newTime, filename);
+    // Temporarily update marker position for visual feedback
+    markers[markerArrayIx] = newAlignIx;
+    redrawAllMarkers();
   });
 
   // Mouseup: commit marker drag
   document.addEventListener("mouseup", (e) => {
     if (!_markerDragState) return;
-    const { filename, markerArrayIx, startX, startAlignIx, wfEl, fixMode } =
+    const { filename, markerArrayIx, startX, startAlignIx, wfEl } =
       _markerDragState;
     const dur = wavesurfers[filename]?.getDuration() || 1;
     const rect = wfEl.getBoundingClientRect();
     const _zoomedW = getZoomedWidth(filename) || rect.width;
 
-    if (fixMode) {
-      const dtDrag = (e.clientX - startX) / (_zoomedW / dur);
-      if (Math.abs(dtDrag) < 1e-4) {
-        // No meaningful drag — pop the undo entries
-        if (_markerDragState.isGlobal) {
-          for (const fn of Object.keys(alignmentGrids)) {
-            if (fn === referenceAudioIx || fn === SYNTH_MEI_KEY) continue;
-            _undoStack.pop();
-          }
-        } else {
-          _undoStack.pop();
-        }
-      } else {
-        const sigma = _markerDragState.sigma;
-        const morphed = _morphGrid(
-          _markerDragState.origGrid,
-          _markerDragState.jCenter,
-          dtDrag,
-          sigma,
-        );
-        alignmentGrids[filename] = morphed;
-        _syncGridToJSON(filename);
-        drawAlignmentGrid(filename);
-        if (_markerDragState.isGlobal) {
-          for (const fn of Object.keys(alignmentGrids)) {
-            if (
-              fn === filename ||
-              fn === referenceAudioIx ||
-              fn === SYNTH_MEI_KEY
-            )
-              continue;
-            const fnOrigGrid = _undoStack
-              .slice()
-              .reverse()
-              .find((u) => u.type === "align-fix" && u.filename === fn)?.grid;
-            if (!fnOrigGrid) continue;
-            const refSpacing =
-              _markerDragState.origGrid[_markerDragState.jCenter] || 1;
-            const localSpacing = fnOrigGrid[_markerDragState.jCenter] || 1;
-            const scale = localSpacing / refSpacing;
-            const localMorphed = _morphGrid(
-              fnOrigGrid,
-              _markerDragState.jCenter,
-              dtDrag * scale,
-              sigma,
-            );
-            alignmentGrids[fn] = localMorphed;
-            _syncGridToJSON(fn);
-            drawAlignmentGrid(fn);
-          }
-        }
-        // Commit: clear redo stack
-        _redoStack.length = 0;
-      }
-      // Clear correction overlays
-      document.querySelectorAll(".align-correction-overlay").forEach((c) => {
-        c.getContext("2d").clearRect(0, 0, c.width, c.height);
-      });
-      // Redraw markers — grid times have changed, so marker positions must update
+    // Move marker mode: commit the new position
+    const pxDelta = e.clientX - startX;
+    const timeDelta = (pxDelta / _zoomedW) * dur;
+    const origTime = getCorrespondingTime(filename, startAlignIx);
+    const newTime = Math.max(0, Math.min(dur, origTime + timeDelta));
+    const newAlignIx = getClosestAlignmentIx(newTime, filename);
+    if (newAlignIx !== startAlignIx) {
+      markers[markerArrayIx] = newAlignIx;
+      persistMarkers();
+      _pushUndo(
+        {
+          type: "marker-move",
+          markerArrayIx,
+          oldAlignIx: startAlignIx,
+          newAlignIx,
+        },
+        true,
+      );
       redrawAllMarkers();
+      if (closeListeningMode) seekToActiveMarker();
     } else {
-      // Move marker mode: commit the new position
-      const pxDelta = e.clientX - startX;
-      const timeDelta = (pxDelta / _zoomedW) * dur;
-      const origTime = getCorrespondingTime(filename, startAlignIx);
-      const newTime = Math.max(0, Math.min(dur, origTime + timeDelta));
-      const newAlignIx = getClosestAlignmentIx(newTime, filename);
-      if (newAlignIx !== startAlignIx) {
-        markers[markerArrayIx] = newAlignIx;
-        persistMarkers();
-        _pushUndo(
-          {
-            type: "marker-move",
-            markerArrayIx,
-            oldAlignIx: startAlignIx,
-            newAlignIx,
-          },
-          true,
-        );
-        redrawAllMarkers();
-        if (closeListeningMode) seekToActiveMarker();
-      } else {
-        // Restore original position (no change)
-        markers[markerArrayIx] = startAlignIx;
-        redrawAllMarkers();
-      }
+      // Restore original position (no change)
+      markers[markerArrayIx] = startAlignIx;
+      redrawAllMarkers();
     }
     _markerDragState = null;
     document.body.classList.remove("marker-dragging");
     _updateUndoRedoState();
   });
-
-  // --- Hover influence zone for fix-alignment mode ---
-  let _lastHoverCanvas = null;
-  let _lastHoverFilename = null;
-  let _lastHoverMouseX = null;
-
-  document.addEventListener("keydown", _onModifierChange);
-  document.addEventListener("keyup", _onModifierChange);
-  function _onModifierChange(e) {
-    if (!_alignCorrectionMode || _markerDragState) return;
-    if (!(e.key === "Shift" || e.key === "Alt")) return;
-    if (_lastHoverCanvas && _lastHoverFilename && _lastHoverMouseX != null) {
-      const sigma = _sigmaFromEvent(e);
-      _drawInfluenceZone(
-        _lastHoverCanvas,
-        _lastHoverFilename,
-        _lastHoverMouseX,
-        sigma,
-      );
-    }
-  }
-
-  function _drawInfluenceZone(canvas, filename, mouseX, sigma) {
-    const ctx = canvas.getContext("2d");
-    const viewW = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, viewW, h);
-    const grid = alignmentGrids[filename];
-    if (!grid || grid.length === 0) return;
-    const dur = wavesurfers[filename]?.getDuration() || 1;
-    const fullW = getZoomedWidth(filename) || viewW;
-    const scrollLeft = wavesurfers[filename]?.getScroll() || 0;
-    // mouseX is viewport-relative; convert to full-width coordinate for time lookup
-    const mouseTime = ((mouseX + scrollLeft) / fullW) * dur;
-    let jCenter = 0;
-    let bestDist = Infinity;
-    for (let j = 0; j < grid.length; j++) {
-      const d = Math.abs(grid[j] - mouseTime);
-      if (d < bestDist) {
-        bestDist = d;
-        jCenter = j;
-      }
-    }
-    const _izC = parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
-    const _izRgb = `${_izC.r},${_izC.g},${_izC.b}`;
-    ctx.fillStyle = `rgba(${_izRgb},0.12)`;
-    const cutoff = Math.ceil(sigma * 3);
-    const jMin = Math.max(0, jCenter - cutoff);
-    const jMax = Math.min(grid.length - 1, jCenter + cutoff);
-    const xMin = (grid[jMin] / dur) * fullW - scrollLeft;
-    const xMax = (grid[jMax] / dur) * fullW - scrollLeft;
-    ctx.fillRect(xMin, 0, xMax - xMin, h);
-    const xCenter = (grid[jCenter] / dur) * fullW - scrollLeft;
-    ctx.strokeStyle = `rgba(${_izRgb},0.5)`;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(xCenter, 0);
-    ctx.lineTo(xCenter, h);
-    ctx.stroke();
-  }
-
-  function _drawMorphPreview(canvas, filename, morphedGrid, origGrid) {
-    const ctx = canvas.getContext("2d");
-    const viewW = canvas.width;
-    const h = canvas.height;
-    ctx.clearRect(0, 0, viewW, h);
-    const dur = wavesurfers[filename]?.getDuration() || 1;
-    const fullW = getZoomedWidth(filename) || viewW;
-    const scrollLeft = wavesurfers[filename]?.getScroll() || 0;
-    // Dynamic extent band: highlight all entries with displacement > 0.5% of peak
-    if (_markerDragState && _markerDragState.fixMode && origGrid) {
-      let peakDisp = 0;
-      for (let j = 0; j < morphedGrid.length; j++) {
-        peakDisp = Math.max(peakDisp, Math.abs(morphedGrid[j] - origGrid[j]));
-      }
-      if (peakDisp > 1e-6) {
-        const threshold = peakDisp * 0.005;
-        let jMin = morphedGrid.length - 1;
-        let jMax = 0;
-        for (let j = 0; j < morphedGrid.length; j++) {
-          if (Math.abs(morphedGrid[j] - origGrid[j]) > threshold) {
-            if (j < jMin) jMin = j;
-            if (j > jMax) jMax = j;
-          }
-        }
-        if (jMin <= jMax) {
-          const xMin = (morphedGrid[jMin] / dur) * fullW - scrollLeft;
-          const xMax = (morphedGrid[jMax] / dur) * fullW - scrollLeft;
-          const _mpBand = parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-score-band").trim()) || { r: 70, g: 130, b: 230 };
-          ctx.fillStyle = `rgba(${_mpBand.r},${_mpBand.g},${_mpBand.b},0.08)`;
-          ctx.fillRect(xMin, 0, xMax - xMin, h);
-        }
-      }
-    }
-    // Compute peak displacement for colour interpolation
-    const n = morphedGrid.length;
-    let peakDispAll = 0;
-    if (origGrid) {
-      for (let j = 0; j < n; j++) {
-        peakDispAll = Math.max(
-          peakDispAll,
-          Math.abs(morphedGrid[j] - origGrid[j]),
-        );
-      }
-    }
-    // Colour endpoints: grid base → bright red, by displacement ratio
-    const r0 = 140,
-      g0 = 90,
-      b0 = 90,
-      a0 = 0.55; // grid base
-    const r1 = 220,
-      g1 = 40,
-      b1 = 40,
-      a1 = 0.9; // max displacement
-    const minPixelStep = 4;
-    let lastAbsX = -999;
-    ctx.lineWidth = 1;
-    for (let j = 0; j < n; j++) {
-      const absoluteX = (j / n) * fullW - scrollLeft;
-      const relativeX = (morphedGrid[j] / dur) * fullW - scrollLeft;
-      if (absoluteX > viewW + 10 && relativeX > viewW + 10) continue;
-      if (absoluteX < -10 && relativeX < -10) continue;
-      if (absoluteX - lastAbsX < minPixelStep) continue;
-      lastAbsX = absoluteX;
-      const disp = origGrid ? Math.abs(morphedGrid[j] - origGrid[j]) : 0;
-      // Skip lines with negligible displacement
-      if (peakDispAll > 1e-6 && disp / peakDispAll < 0.005) continue;
-      const t = peakDispAll > 1e-6 ? disp / peakDispAll : 0;
-      const r = Math.round(r0 + (r1 - r0) * t);
-      const g = Math.round(g0 + (g1 - g0) * t);
-      const b = Math.round(b0 + (b1 - b0) * t);
-      const a = (a0 + (a1 - a0) * t).toFixed(2);
-      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${a})`;
-      ctx.beginPath();
-      ctx.moveTo(absoluteX, 0);
-      ctx.lineTo(relativeX, h / 6);
-      ctx.moveTo(relativeX, 5 * (h / 6));
-      ctx.lineTo(absoluteX, h);
-      ctx.stroke();
-    }
-  }
-
-  // Hover: show influence zone near active marker in fix mode
-  // Only display when cursor is close to a marker (within MARKER_GRAB_PX).
-  document.getElementById("waveforms").addEventListener("mousemove", (e) => {
-    if (!_alignCorrectionMode) return;
-    if (_markerDragState) return;
-    const wfEl = e.target.closest(".waveform");
-    if (!wfEl) return;
-    const filename = wfEl.dataset.ix;
-    if (!filename || filename === referenceAudioIx) return;
-    const canvas = wfEl.querySelector(".align-correction-overlay");
-    if (!canvas) return;
-
-    // Only show influence zone when near a marker
-    const nearby = _findNearbyMarker(wfEl, e.clientX);
-    if (!nearby) {
-      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
-      canvas.style.cursor = "";
-      canvas.title = "";
-      _lastHoverCanvas = null;
-      _lastHoverFilename = null;
-      _lastHoverMouseX = null;
-      return;
-    }
-    // Score waveform alignment is derived from the notation — show forbidden
-    if (filename === SYNTH_MEI_KEY) {
-      canvas.style.cursor = "not-allowed";
-      canvas.title =
-        "Score alignment cannot be adjusted — it is derived from note onsets";
-      canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
-      _lastHoverCanvas = null;
-      _lastHoverFilename = null;
-      _lastHoverMouseX = null;
-      return;
-    }
-    canvas.style.cursor = "grab";
-    canvas.title = "";
-    const rect = canvas.getBoundingClientRect();
-    const mouseX = (e.clientX - rect.left) * (canvas.width / rect.width);
-    _lastHoverCanvas = canvas;
-    _lastHoverFilename = filename;
-    _lastHoverMouseX = mouseX;
-    const sigma = _sigmaFromEvent(e);
-    _drawInfluenceZone(canvas, filename, mouseX, sigma);
-  });
-
-  document.getElementById("waveforms").addEventListener(
-    "mouseleave",
-    (e) => {
-      if (!_alignCorrectionMode || _markerDragState) return;
-      const wfEl = e.target.closest(".waveform");
-      if (wfEl) {
-        const canvas = wfEl.querySelector(".align-correction-overlay");
-        if (canvas) {
-          canvas.getContext("2d").clearRect(0, 0, canvas.width, canvas.height);
-          canvas.style.cursor = "";
-          canvas.title = "";
-        }
-      }
-      _lastHoverCanvas = null;
-      _lastHoverFilename = null;
-      _lastHoverMouseX = null;
-    },
-    true,
-  );
 
   // load alignment json
   if (window.alignMode === "align") {
@@ -4578,29 +4663,39 @@ document.addEventListener("DOMContentLoaded", () => {
     })
     .catch((err) => console.warn("Couldn't load colormap:", err));
   // --- Transport controls ---
+  // While a fix session is open these same buttons drive the CORRECTION
+  // screen — the audition, onset stepping, page turns — since every one of
+  // them would otherwise act on the hidden waveform pane (the mark button is
+  // hidden there instead). The mapping is fixTransport's, and matches fix
+  // mode's own keyboard exactly.
   // Play/pause
   document.getElementById("playpause").addEventListener("click", function () {
+    if (fixTransport("playpause")) return;
     playpause();
   });
 
   // Skip to start
   document.getElementById("skip-back").addEventListener("click", function () {
+    if (fixTransport("skip-back")) return;
     if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
     wavesurfers[currentAudioIx].seekTo(0);
   });
 
   // Rewind 10s
   document.getElementById("seek-back").addEventListener("click", function () {
+    if (fixTransport("seek-back")) return;
     seekBy(-10);
   });
 
   // Forward 10s
   document.getElementById("seek-fwd").addEventListener("click", function () {
+    if (fixTransport("seek-fwd")) return;
     seekBy(10);
   });
 
   // Skip to end
   document.getElementById("skip-end").addEventListener("click", function () {
+    if (fixTransport("skip-end")) return;
     if (!currentAudioIx || !wavesurfers[currentAudioIx]) return;
     wavesurfers[currentAudioIx].seekTo(1);
   });
@@ -4608,6 +4703,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // mark button — places a new marker, or removes the active marker when
   // paused at one in close-listening mode
   document.getElementById("mark").addEventListener("click", function (e) {
+    if (fixTransport("mark")) return;
     if (this.dataset.mode === "remove") {
       _deleteActiveMarker();
       updateMarkBtnTooltip();
@@ -4823,6 +4919,11 @@ document.addEventListener("DOMContentLoaded", () => {
       e.target.closest(".gm-modal, #settings-drawer, #file-picker-overlay, .lh-v6-drawer, .lh-v6-load-overlay, .lh-v6-confirm-overlay")
     )
       return;
+    // Fix mode owns the keyboard while open (its own document-level handler
+    // drives audition/selection/approve/marks); every shortcut here would
+    // act on the HIDDEN waveform pane. Ctrl+Z / Ctrl+Shift+Z live in their
+    // own listener above and stay global — undo is unified by ruling.
+    if (isFixModeActive()) return;
     console.log("KEYDOWN: ", e);
     if (!currentAudioIx) return;
 
@@ -5061,9 +5162,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   // Time measurement (Shift-hold durations, Shift+drag spans) lives in
-  // ./engine/measure.js. Align-correction mode claims Shift for its influence
-  // zone, so that conflict is injected rather than imported over there.
-  initMeasureInteractions({ isSuppressed: () => _alignCorrectionMode });
+  // ./engine/measure.js.
+  initMeasureInteractions();
 });
 
 /**
@@ -5116,6 +5216,22 @@ function initFilePicker() {
   const fileInput = document.getElementById("file-picker-input");
   const dropZone = document.getElementById("file-picker-card");
   const jsonStatusEl = document.getElementById("file-picker-json-status");
+  const labelRow = document.getElementById("file-picker-label-row");
+  const labelInput = document.getElementById("file-picker-label");
+
+  // The session label lives in the alignment's header, so it travels with the
+  // file and is prefilled from it next time. Editing it is not an edit of the
+  // work: it rides along with the next save rather than marking anything dirty.
+  labelInput?.addEventListener("input", () => {
+    if (!loadedAlignmentJSON) return;
+    if (!loadedAlignmentJSON.header) loadedAlignmentJSON.header = {};
+    const v = labelInput.value.trim();
+    if (v) loadedAlignmentJSON.header.label = v;
+    else delete loadedAlignmentJSON.header.label;
+    // ...but the recovery snapshot must carry the new name, since it is what
+    // tells the user which files to load. Writes only if one is already kept.
+    _scheduleRecoveryWrite();
+  });
 
   // --- Tab switching ---
   document.querySelectorAll("#fp-tabs .fp-tab").forEach((tab) => {
@@ -5148,6 +5264,12 @@ function initFilePicker() {
     }
     const modeSwitch = document.getElementById("fp-mode-switch");
     if (modeSwitch) modeSwitch.classList.toggle("is-hidden", loaded);
+    if (labelRow && labelInput) {
+      labelRow.hidden = !loaded;
+      if (document.activeElement !== labelInput) {
+        labelInput.value = loadedAlignmentJSON?.header?.label ?? "";
+      }
+    }
   }
 
   // Populate expected file list
@@ -5187,7 +5309,8 @@ function initFilePicker() {
     updateJsonStatus();
   }
 
-  async function handleFiles(files) {
+  /** @param {string|null} folder  the picked folder's name, when the browser gives one */
+  async function handleFiles(files, folder = null) {
     // Separate JSON from audio files
     const jsonFiles = [];
     const audioFiles = [];
@@ -5251,6 +5374,13 @@ function initFilePicker() {
           window._pendingLocalAlignment = data;
           // Set workId from the JSON filename
           workId = jsonFiles[0].name;
+          // Prefill the session label: the file's own, else the folder's
+          // name, else the file name. A timestamp would only repeat what the
+          // recovery notes already show.
+          if (!data.header.label) {
+            data.header.label =
+              folder || jsonFiles[0].name.replace(/\.json$/i, "");
+          }
           // Temporarily set loadedAlignmentJSON so LD URI section can read header
           setLoadedAlignmentJSON(data);
           renderFileList();
@@ -5297,7 +5427,7 @@ function initFilePicker() {
           files.push(await entry.getFile());
         }
       }
-      handleFiles(files);
+      handleFiles(files, dirHandle.name);
     } catch (e) {
       if (e.name !== "AbortError") console.warn("Directory picker error:", e);
     }
@@ -5552,6 +5682,7 @@ function showFilePickerIfNeeded() {
       manageBtn.addEventListener("click", () => {
         document.getElementById("file-picker-overlay").style.display = "flex";
         populateLdUriSection();
+        _renderPickerRecoveryNotice();
       });
     }
     // Show download button (useful once alignment is loaded from file)
@@ -5561,6 +5692,7 @@ function showFilePickerIfNeeded() {
       showFilePickerIfNeeded._initialized = true;
       initFilePicker();
       populateLdUriSection();
+      _renderPickerRecoveryNotice();
     }
   }
 }
@@ -5610,6 +5742,8 @@ window._listenTest = {
   get wavesurfers() { return wavesurfers; },
   get currentAudioIx() { return currentAudioIx; },
   get alignmentGrids() { return alignmentGrids; },
+  /** The tempo curve's draw model for a file (the gap break's test surface). */
+  tempoModel(filename) { return getTempoDrawModel(filename); },
   get loaded() { return [...loaded]; },
   get markers() { return [...markers]; },
   /** The DataSession itself — state ownership is migrating into it (item 13). */
@@ -5634,10 +5768,21 @@ window._listenTest = {
   get renderedWaveforms() { return Object.keys(waveformViews).filter(isWaveformRendered); },
   /** Rows in the pane still waiting on the viewport (roadmap item L). */
   get deferredWaveforms() { return [..._deferred]; },
+  /** filename -> {from, to}: the stretch that has a counterpart in the reference. */
+  get alignedSpans() { return { ...alignedSpans }; },
+  /** No-counterpart bands painted on a waveform's last redraw, 0-2. Counts
+   *  only bands VISIBLE in the viewport, so read it at default zoom. */
+  noCounterpartBands(filename) {
+    return waveformViews[filename]?.noCounterpartBands ?? 0;
+  },
   /** Whether the loaded piece is big enough to defer off-screen waveforms. */
   get lazyWaveformsActive() { return _lazyWaveforms; },
   /** Deferred waveforms queued or mid-build; 0 means the build queue has settled. */
   get materializePending() { return _materializeQueue.length + _materializing.size; },
+  /** Fix-mode (alignment correction) state; {active:false, lastRefusal} when closed. */
+  get fix() { return fixTestState(); },
+  /** Fix-mode audition controls + stereo-buffer probe (tests only). */
+  fixCtl: fixTestControl,
   /** Activate a recording, building it first if it was deferred. */
   swapCurrentAudio(filename) { swapCurrentAudio(filename); },
   /**

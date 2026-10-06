@@ -40,7 +40,6 @@ import {
   updateRenderAnnoRegions,
   materializeSettled,
   hideWaveformOverlay,
-  correctionOverlaysInteractive,
 } from "../listen.js";
 import { updateGroupCounts } from "./grouping-ui.js";
 import { updateTransportIcons } from "./transport.js";
@@ -205,20 +204,6 @@ export function onWaveformReady(filename, playPosition, isPlaying) {
   // after resize (the updater reads currentTime from this file's wavesurfer
   // and repaints every position-indicator canvas).
 
-  // --- Alignment correction overlay canvas ---
-  const corrCanvas = document.createElement("canvas");
-  corrCanvas.classList.add("align-correction-overlay");
-  corrCanvas.width = readyWfContainer.clientWidth;
-  corrCanvas.height = WAVE_HEIGHT;
-  corrCanvas.draggable = false; // prevent native browser drag
-  const corrStyle = corrCanvas.style;
-  corrStyle.pointerEvents = correctionOverlaysInteractive() ? "auto" : "none";
-  // Correction canvas goes on the wrapper (viewport-fixed)
-  ow.wrapper.insertBefore(corrCanvas, ow.inner);
-
-  // Store reference for resize
-  const _corrCanvasRef = corrCanvas;
-
   // Wire scroll listener on WaveSurfer's shadow-DOM scroll container
   const _wsScrollContainer = getScrollContainer(filename);
   let _scrollRedrawRaf = false;
@@ -275,11 +260,6 @@ export function onWaveformReady(filename, playPosition, isPlaying) {
   wavesurfers[filename].on("redrawcomplete", () => {
     // Resize our overlay canvases and repaint grid lines.
     drawAlignmentGrid(filename);
-    // Resize correction overlay (viewport-sized)
-    if (_corrCanvasRef && readyWfContainer.isConnected) {
-      _corrCanvasRef.width = readyWfContainer.clientWidth;
-      _corrCanvasRef.height = wavesurfers[filename].options.height || 128;
-    }
     // Sync overlay scroll position after redraw
     syncOverlayScroll(filename);
     // Restore markers (canvas has been redrawn, marker positions must refresh).

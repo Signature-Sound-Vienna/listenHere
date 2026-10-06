@@ -69,31 +69,8 @@ test.describe('27. Time measurement', () => {
     await expect(page.locator('.measure-drag-span')).toHaveCount(0);
     await expect(page.locator('.measure-drag-label')).toHaveCount(0);
   });
-  // 27.3 align-correction mode owns Shift for its influence zone, so
-  // measurement must stay out of the way. This is the one behaviour whose shape
-  // changed in the extraction: the flag used to be read directly, and is now an
-  // injected `isSuppressed` predicate.
-  test('27.3 Shift does not measure while Fix alignment is armed', async ({ loadedPage: page }) => {
-    await placeMarkers(page, 2);
-
-    await page.locator('#drag-markers-cb').check({ force: true });
-    await page.locator('#drag-mode-fix').check({ force: true });
-    await page.waitForTimeout(300);
-
-    await page.keyboard.down('Shift');
-    await page.waitForTimeout(600);
-    await expect(page.locator('.measure-label')).toHaveCount(0);
-    await expect(page.locator('.measure-span')).toHaveCount(0);
-    await page.keyboard.up('Shift');
-
-    // and it measures again once Fix alignment is disarmed
-    await page.locator('#drag-markers-cb').uncheck({ force: true });
-    await page.waitForTimeout(300);
-    await page.keyboard.down('Shift');
-    await expect
-      .poll(() => page.locator('.measure-label').count(), { timeout: 5_000 })
-      .toBeGreaterThan(0);
-    await page.keyboard.up('Shift');
-  });
+  // (27.3, "Shift does not measure while Fix alignment is armed", went with
+  // the legacy marker-drag Fix alignment mode in 0.61.0, ruling B4: nothing
+  // contends for Shift any more.)
 
 });

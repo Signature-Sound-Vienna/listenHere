@@ -102,6 +102,11 @@ export class DataSession {
      *  Shared so a recording is decoded once per screen, not once per viewport. */
     this.waveformPeaks = {};
 
+    /** filename -> { from, to } in that file's seconds: the stretch that HAS a
+     *  counterpart in the reference. Written by the wizard's open-ended
+     *  alignment; absent means the whole recording is aligned. */
+    this.alignedSpans = {};
+
     /** SYNTH_MEI_KEY -> blob URL once MEI synthesis is done, or '__pending__'. */
     this.synthBlobUrls = new Map();
 
@@ -208,6 +213,7 @@ export class DataSession {
     this.markers.length = 0;
     this.timemap.length = 0;
     clearMap(this.waveformPeaks);
+    clearMap(this.alignedSpans);
     clearMap(this.gridFingerprints);
     this.synthBlobUrls.clear();
     this.fileBlobs.clear();

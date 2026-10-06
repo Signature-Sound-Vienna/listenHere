@@ -251,6 +251,16 @@
   --color-measure-drag-text: #fde68a;
   --color-measure-drag-bg: rgba(120, 80, 0, 0.85);
   --color-measure-drag-border: rgba(245, 158, 11, 0.6);
+
+  /* Fix-mode status chip. The four semantic vars are defined ONLY here:
+     the light themes use the literals in the var() fallbacks, which measure
+     4.3–5.8:1 there, while the same literals land at 1.2–1.7:1 on a dark
+     surface — unreadable. These clear 4.5:1 on this theme's surface-alt
+     (#4ade80 5.94:1, #fca5a5 5.46:1). */
+  --color-success-text: #4ade80;
+  --color-success-border: #4ade8073;
+  --color-danger-text: #fca5a5;
+  --color-danger-border: #fca5a573;
 }
 
 /* ============================================================
@@ -470,6 +480,16 @@
   --color-group-bg: rgba(68, 71, 90, 0.60);
   --color-group-ungrouped-bg: rgba(40, 42, 54, 0.60);
   --color-wf-overlay-staged-bg: rgba(189, 147, 249, 0.22);
+
+  /* Fix-mode status chip. The four semantic vars are defined ONLY here:
+     the light themes use the literals in the var() fallbacks, which measure
+     4.3–5.8:1 there, while the same literals land at 1.2–1.7:1 on a dark
+     surface — unreadable. These clear 4.5:1 on this theme's surface-alt
+     (#50fa7b 6.67:1, #ffb3b3 5.38:1). */
+  --color-success-text: #50fa7b;
+  --color-success-border: #50fa7b73;
+  --color-danger-text: #ffb3b3;
+  --color-danger-border: #ffb3b373;
 }
 
 /* ============================================================
@@ -528,6 +548,16 @@
   --color-group-bg: rgba(46, 77, 34, 0.60);
   --color-group-ungrouped-bg: rgba(23, 35, 18, 0.55);
   --color-wf-overlay-staged-bg: rgba(128, 200, 248, 0.22);
+
+  /* Fix-mode status chip. The four semantic vars are defined ONLY here:
+     the light themes use the literals in the var() fallbacks, which measure
+     4.3–5.8:1 there, while the same literals land at 1.2–1.7:1 on a dark
+     surface — unreadable. These clear 4.5:1 on this theme's surface-alt
+     (#60d060 5.57:1, #fca5a5 5.76:1). */
+  --color-success-text: #60d060;
+  --color-success-border: #60d06073;
+  --color-danger-text: #fca5a5;
+  --color-danger-border: #fca5a573;
 }
 
 /* ============================================================
@@ -586,6 +616,16 @@
   --color-group-bg: rgba(67, 76, 94, 0.60);
   --color-group-ungrouped-bg: rgba(46, 52, 64, 0.55);
   --color-wf-overlay-staged-bg: rgba(136, 192, 208, 0.22);
+
+  /* Fix-mode status chip. The four semantic vars are defined ONLY here:
+     the light themes use the literals in the var() fallbacks, which measure
+     4.3–5.8:1 there, while the same literals land at 1.2–1.7:1 on a dark
+     surface — unreadable. These clear 4.5:1 on this theme's surface-alt
+     (#b5cfa0 5.09:1, #eab0b6 4.68:1). */
+  --color-success-text: #b5cfa0;
+  --color-success-border: #b5cfa073;
+  --color-danger-text: #eab0b6;
+  --color-danger-border: #eab0b673;
 }
 
 html,
@@ -1968,7 +2008,7 @@ body:has(#settings-drawer:not(.closed)) .drawer-btns {
      selector would lower this rule's specificity app-wide, which is a much
      larger change than the modal needs. Excluding is strictly narrowing, so
      nothing outside the modal is affected. */
-  button:not(.drawer-btns button):not(#close-settings-drawer):not(.transport-btn):not(.gm-modal button) {
+  button:not(.drawer-btns button):not(#close-settings-drawer):not(.transport-btn):not(.gm-modal button):not(.recovery-ui button) {
     background-color: var(--color-surface-raised, var(--color-surface-alt));
     color: var(--color-text);
     border-color: var(--color-border);
@@ -2410,6 +2450,131 @@ nav input[type="checkbox"]:focus-visible {
 .json-status-missing {
   color: var(--color-danger, #dc2626);
   font-weight: 500;
+}
+
+/* The session label: on the Manage recordings screen, and in the wizard's
+   "Alignment complete!" panel. */
+#file-picker-label-row,
+#align-label-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25em;
+  margin-bottom: 0.8em;
+  font-size: 0.9em;
+}
+
+/* One line in the wizard: its panel is short, and Save data / Listen! below
+   must stay in view. */
+#align-label-row {
+  flex-direction: row;
+  justify-content: center;
+  gap: 0.5em;
+}
+
+#align-label-row #align-label-input {
+  width: min(100%, 18em);
+}
+
+#file-picker-label-row[hidden] {
+  display: none;
+}
+
+#file-picker-label-row .fp-label-hint,
+#align-label-row .fp-label-hint {
+  color: var(--color-text-muted, #6b7280);
+}
+
+#file-picker-label,
+#align-label-input {
+  width: min(100%, 26em);
+  box-sizing: border-box;
+  text-align: center;
+  padding: 0.35em 0.5em;
+  border: 1px solid var(--color-border, #d1d5db);
+  border-radius: 4px;
+  background: var(--color-surface, #fff);
+  color: var(--color-text, #111827);
+  font: inherit;
+}
+
+/* Session recovery: the offer after a load, and the file picker's note. */
+#recovery-banner {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  width: min(640px, calc(100vw - 32px));
+  box-sizing: border-box;
+  padding: 0.8em 1em;
+  border: 1px solid var(--color-warning, #f59e0b);
+  border-radius: 8px;
+  background: var(--color-warning-bg, #fffbeb);
+  color: var(--color-warning-text, #92400e);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  font-size: 0.9em;
+}
+
+#file-picker-recovery {
+  margin-bottom: 0.8em;
+  padding: 0.6em 0.8em;
+  border: 1px solid var(--color-warning, #f59e0b);
+  border-radius: 6px;
+  background: var(--color-warning-bg, #fffbeb);
+  color: var(--color-warning-text, #92400e);
+  font-size: 0.85em;
+}
+
+#recovery-banner .recovery-title,
+#file-picker-recovery .recovery-title {
+  margin: 0 0 0.5em;
+  font-weight: 600;
+}
+
+#recovery-banner .recovery-list,
+#file-picker-recovery .recovery-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#recovery-banner .recovery-item,
+#file-picker-recovery .recovery-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.3em 0;
+}
+
+#recovery-banner .recovery-desc,
+#file-picker-recovery .recovery-desc {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+#recovery-banner button,
+#file-picker-recovery button {
+  flex-shrink: 0;
+  padding: 0.25em 0.8em;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#recovery-banner button.recovery-restore {
+  background: var(--color-warning-text, #92400e);
+  border-color: var(--color-warning-text, #92400e);
+  color: var(--color-warning-bg, #fffbeb);
+}
+
+#recovery-banner button.recovery-later {
+  display: block;
+  margin: 0.5em 0 0 auto;
 }
 
 /* Nav drag handles for waveform reordering */
@@ -2941,12 +3106,6 @@ nav input[type="checkbox"]:focus-visible {
 body.marker-dragging,
 body.marker-dragging * {
   cursor: grabbing !important;
-}
-
-.align-correction-overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
 }
 
 /* === Alignment panel (embedded in listen page) === */
@@ -3674,6 +3833,93 @@ body.marker-dragging * {
 #align-progress-text:empty {
   min-height: 0;
   margin: 0;
+}
+
+/* Open-ended alignment: the global toggle, the per-row override, the report */
+#align-open-ends-row {
+  margin: 0.7em 0 0.2em;
+  text-align: left;
+}
+
+#align-open-ends-hint {
+  font-size: 0.78em;
+  color: var(--color-text-subtle, #94a3b8);
+  margin: 0.2em 0 0 1.6em;
+}
+
+/* A row that has been clicked no longer follows the global setting. */
+.align-trim-checkbox.align-trim-explicit {
+  outline: 2px solid var(--color-link, #2563eb);
+  outline-offset: 1px;
+  border-radius: 3px;
+}
+
+/* The post-run report. Folded shut so twenty recordings cannot push the
+ * Save and Listen buttons out of view. */
+#align-open-ends-details {
+  margin: 0 0 1em;
+  border: 1px solid var(--color-border, #e2e8f0);
+  border-radius: 8px;
+  background: var(--color-surface-subtle, rgba(148, 163, 184, 0.08));
+  text-align: left;
+  overflow: hidden;
+}
+
+#align-open-ends-details > summary {
+  padding: 0.55em 0.8em;
+  font-size: 0.87em;
+  font-weight: 600;
+  color: var(--color-text, #334155);
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+
+#align-open-ends-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Own disclosure triangle, so it reads the same in both browsers. */
+#align-open-ends-details > summary::before {
+  content: "\25B8";
+  display: inline-block;
+  width: 1em;
+  color: var(--color-text-muted, #64748b);
+  transition: transform 0.15s ease;
+}
+
+#align-open-ends-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+#align-open-ends-details > summary:hover {
+  background: var(--color-surface-hover, rgba(148, 163, 184, 0.14));
+}
+
+#align-open-ends-list {
+  margin: 0;
+  padding: 0.1em 0.9em 0.7em 1.9em;
+  max-height: 14em;
+  overflow-y: auto;
+  font-size: 0.83em;
+  line-height: 1.45;
+  color: var(--color-text-muted, #64748b);
+  text-align: left;
+}
+
+#align-open-ends-list li {
+  margin-bottom: 0.3em;
+}
+
+#align-open-ends-list strong {
+  color: var(--color-text, #334155);
+  font-weight: 600;
+}
+
+#align-open-ends-none {
+  margin: 0 0 0.9em;
+  font-size: 0.85em;
+  color: var(--color-text-muted, #64748b);
 }
 
 /* Results */
@@ -4741,6 +4987,16 @@ body.lh-v6-edit-active .waveform:not(.lh-v6-selected):hover::before {
 
 body.lh-v6-drawer-open .lh-v6-ribbon {
   right: 380px;
+}
+
+/* Annotation chrome stands down while the correction screen is open: the
+   ribbon is irrelevant there, and being fixed to the viewport bottom it
+   covered the strip's lower 40 px, anchor glyphs included. The pencil tab
+   goes with it — the drawer it opens pads the body by 380 px, which would
+   resize the score pane (and invalidate its prewarmed fit) mid-session. */
+body.fix-mode-open .lh-v6-ribbon,
+body.fix-mode-open .lh-v6-pull-tab {
+  display: none;
 }
 
 .lh-v6-ribbon-labelgroup {
@@ -6778,4 +7034,823 @@ body.lh-v6-drawer-open .drawer-btns {
   color: var(--color-text-secondary, #475569);
   background: var(--color-surface-alt, rgba(120, 120, 120, 0.12));
   border: 1px dashed var(--color-border-light, rgba(120, 120, 120, 0.4));
+}
+/* ---------------------------------------------------------------------------
+   Alignment-correction fix mode (?fixMode — plan §14, increment 2)
+   --------------------------------------------------------------------------- */
+
+/* Per-row entry affordance (score + reference rows only, module-gated). */
+/* The correction entry: the nav's "Correct alignment…" button opens this
+   chooser — step 1 the score against the reference, step 2 the recordings
+   against the reference, locked until step 1 was opened this load (or the
+   file carries a record, or the user skips it). */
+.fix-chooser-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.fix-chooser {
+  width: min(560px, 92vw);
+  max-height: 85vh;
+  overflow: auto;
+  background: var(--color-bg, #fff);
+  color: var(--color-text);
+  border: 1px solid var(--color-waveform-border, #aaa);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.35);
+  padding: 0.9em 1.1em 1.1em;
+}
+.fix-chooser-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.4em;
+}
+.fix-chooser-head h2 {
+  margin: 0;
+  font-size: 1.15em;
+}
+.fix-chooser-close {
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 1.1em;
+  cursor: pointer;
+  padding: 0.2em 0.45em;
+}
+.fix-chooser-step {
+  margin-top: 0.7em;
+  padding-top: 0.5em;
+  border-top: 1px solid var(--color-waveform-border, #ccc);
+}
+.fix-chooser-step h3 {
+  margin: 0 0 0.35em;
+  font-size: 0.95em;
+}
+.fix-chooser-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  padding: 0.25em 0;
+}
+.fix-chooser-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.fix-chooser-count {
+  flex: 0 0 auto;
+  font-size: 0.85em;
+  color: var(--color-text-secondary, var(--color-text-muted, #666));
+}
+.fix-chooser-go {
+  flex: 0 0 auto;
+}
+.fix-chooser-note {
+  margin: 0.2em 0 0.4em;
+  font-size: 0.85em;
+  color: var(--color-text-secondary, var(--color-text-muted, #666));
+}
+.fix-chooser-skip {
+  display: block;
+  margin: 0 0 0.5em;
+  font-size: 0.85em;
+  cursor: pointer;
+}
+.fix-chooser-locked .fix-chooser-list {
+  opacity: 0.55;
+}
+
+#fix-mode {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  position: relative;
+  overflow: hidden;
+}
+
+/* The correction controls live in the nav, in the region that replaces
+   Controls and Waveforms while a session is open. Both of those drive things
+   fix mode has hidden, so they stand down rather than sit there inert — and
+   the content pane is left entirely to the score and the strip. */
+body.fix-mode-open #region-controls,
+body.fix-mode-open #region-waveforms {
+  display: none;
+}
+/* Grows to fill the nav, so the version footer stays on the bottom edge as
+   it does in listen mode (where Waveforms is the region that grows). The
+   card inside keeps its content height — .nav-card is flex: 0 1 auto. */
+#region-fix {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+#region-fix .nav-card {
+  background-color: var(--color-nav-bg, #f7faeb);
+  border-color: var(--color-nav-border, #cbd5e1);
+}
+#region-fix .nav-section-header {
+  cursor: default;
+}
+#region-fix .nav-section-body {
+  gap: 0.35em;
+  padding-bottom: 0.5em;
+  font-size: var(--font-size-small, 0.9em);
+  /* When the column is shorter than the content, the REGION scrolls as one —
+     never its fieldsets one by one (user, 2026-09-03: five scrollbars). */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+}
+#region-fix .fix-fs.collapsible-fieldset,
+#region-fix .fix-fs.collapsible-fieldset:not(.collapsed) {
+  flex: 0 0 auto; /* keep the natural height; the nav's fieldsets may shrink, these do not */
+}
+#region-fix .fix-fs .fieldset-body {
+  overflow: visible;
+}
+/* Buttons pair on a row and split it; everything else takes a full row. */
+.fix-nav-row {
+  display: flex;
+  gap: 0.35em;
+}
+.fix-nav-row > button {
+  flex: 1 1 0;
+  min-width: 0;
+}
+/* The re-alignment reach: a label and its select sharing one row. */
+.fix-horizon-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* The correction buttons sit in the same column as the nav's own (Save data,
+   Undo, Redo, Revert), so they carry the same metrics: full width, the nav's
+   padding and radius, no shrunken header sizing. Colour is deliberately left
+   alone — the blanket themed button rule owns background/color/border with
+   ID-level specificity, and matching the neighbours means being subject to
+   the same rule they are, not fighting it (see the .gm-modal note). */
+#region-fix button {
+  font-family: inherit;
+  font-size: var(--font-size-medium);
+  border-radius: 4px;
+  padding: 0.3em 0.6em;
+  width: 100%;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+/* The magnet is an ICON at the end of its row, not a full-width nav button:
+   it was taking the row's whole width under the rule above (165 px of box
+   around two glyphs) and pushing the row into a horizontal scrollbar. */
+#region-fix .fix-icon-btn {
+  width: auto;
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 0.3em;
+  font-size: 1.1em;
+  line-height: 1.3;
+}
+/* The % readout is a compact inline control, not a full-width nav button. */
+#region-fix .fix-speed button {
+  width: auto;
+  padding: 0.15em 0.35em;
+  font-size: 0.95em;
+}
+/* The exit: a round × at the score pane's top-right, above the page and the
+   corner spinner's row; the blanket themed button rule owns its colours. */
+#fix-exit.fix-exit-corner {
+  position: absolute;
+  top: 0.45em;
+  right: 0.6em;
+  z-index: 9;
+  width: 2em;
+  height: 2em;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1.1em;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  opacity: 0.85;
+  cursor: pointer;
+}
+#fix-exit.fix-exit-corner:hover,
+#fix-exit.fix-exit-corner:focus-visible {
+  opacity: 1;
+}
+/* Wraps rather than ellipsising: the nowrap was a HEADER constraint (one
+   stable line, whose height fed the prewarm fit) and in a nav column it only
+   hid the filename — the informative half of the line. */
+.fix-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.fix-page-ctl {
+  display: flex;
+  align-items: center;
+  gap: 0.35em;
+  white-space: nowrap;
+  color: var(--color-text-secondary, #475569);
+}
+/* The outer transport buttons turn pages while correcting, so their
+   "to the start / to the end" glyphs would be a lie; the inner pair keep
+   theirs, since a step icon still steps (one onset instead of ten seconds). */
+.icon-fix-mode {
+  display: none;
+}
+body.fix-mode-open .icon-listen-mode {
+  display: none;
+}
+body.fix-mode-open .icon-fix-mode {
+  display: inline;
+}
+/* Markers are a listening-mode tool; the correction screen has none. */
+body.fix-mode-open #mark {
+  display: none;
+}
+.fix-chip {
+  align-self: flex-start;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 999px;
+  padding: 0.15em 0.7em;
+  font-size: 0.9em;
+  border: 1px solid var(--color-border-light, rgba(120, 120, 120, 0.4));
+  color: var(--color-text-secondary, #475569);
+  background: var(--color-surface-alt, rgba(120, 120, 120, 0.12));
+}
+.fix-chip[data-state="idle"] {
+  display: none;
+}
+.fix-chip[data-state="ready"] {
+  color: var(--color-success-text, #166534);
+  border-color: var(--color-success-border, rgba(22, 101, 52, 0.4));
+}
+.fix-chip[data-state="error"] {
+  color: var(--color-danger-text, #b91c1c);
+  border-color: var(--color-danger-border, rgba(185, 28, 28, 0.45));
+}
+
+/* The score pane stays notation paper in every theme: Verovio's strokes are
+   black, and legibility of the score outranks theme consistency here. */
+.fix-score {
+  flex: 85 1 0;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  background: #fbfaf6;
+}
+/* The zoom's scroller: inside the measured pane, so a zoomed page and its
+   scrollbars never change the box the prewarm fit was measured against. */
+.fix-score-scroll {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.fix-score-zoomed .fix-score-scroll {
+  overflow: auto;
+}
+/* A zoomed page narrower than the pane is centred; a wider one starts at the
+   left and scrolls (auto margins collapse to 0 on overflow). */
+.fix-score-zoomed .fix-score-svg {
+  margin: 0 auto;
+}
+.fix-score-svg,
+.fix-score-svg svg {
+  width: 100%;
+  height: 100%;
+}
+.fix-score-svg svg {
+  display: block;
+}
+
+/* The selected onset's notes (spike B's highlight pattern; fixed colour
+   because the paper background is fixed). Bright orange — mei-friend's
+   active-note colour — so the highlight never merges with the dark-red
+   alignment connector under it (user feedback, 2026-08-31). */
+.fix-score-svg g.fix-note-sel,
+.fix-score-svg g.fix-note-sel * {
+  fill: #ffa500 !important;
+  stroke: #ffa500 !important;
+}
+
+/* The bend band the connectors cross between score and strip. */
+.fix-gap {
+  flex: 0 0 26px;
+  cursor: row-resize; /* it drags the lane stack against the score */
+}
+
+.fix-strip {
+  --fix-strip-gutter: 12px;
+  /* The v2 lanes grow the strip: flex units of the pane plus a px floor, per
+     lane, switched by the classes _stripClassName() produces — which the
+     prewarm probe (_measurePaneDims) shares, so the score pane it measures is
+     the one _buildDom builds. With both lanes on the pane splits 85 : 24, so
+     the 85/15 ruling's pin (score > 3 × strip, spec 42.6) still holds. */
+  --fix-lane-spec: 0;
+  --fix-lane-onset: 0;
+  --fix-lane-spec-px: 0px;
+  --fix-lane-onset-px: 0px;
+  flex-grow: calc(15 + var(--fix-lane-spec) + var(--fix-lane-onset));
+  flex-shrink: 0;
+  flex-basis: auto;
+  min-height: calc(84px + var(--fix-lane-spec-px) + var(--fix-lane-onset-px));
+  position: relative;
+  border-top: 1px solid var(--color-waveform-border, #cbd5e1);
+}
+.fix-strip.fix-lanes-spec {
+  --fix-lane-spec: 6;
+  --fix-lane-spec-px: 32px;
+}
+.fix-strip.fix-lanes-onset {
+  --fix-lane-onset: 3;
+  --fix-lane-onset-px: 16px;
+}
+/* The lane stack stops short of the strip's bottom edge. That gutter is where
+   the playhead's lower arrowhead sits — outside every lane, on the strip's
+   one uncluttered edge — and it comes out of the STRIP's own height: the
+   score pane's height feeds the prewarm fit and must not move (the header
+   trap on the other axis). JS reads the gutter back off the two elements
+   rather than repeating the number, so this rule is its only definition.
+   Inside the stack the lanes share ONE time→x mapping (the waveform's
+   zoom + scroll); each is a flex row, the waveform's share shrinking a little
+   when a lane joins. */
+.fix-lanes {
+  position: absolute;
+  inset: 0 0 var(--fix-strip-gutter, 12px) 0;
+  display: flex;
+  flex-direction: column;
+}
+.fix-strip-ws {
+  position: relative;
+  flex: 10 1 0;
+  min-height: 0;
+}
+.fix-lane-spec,
+.fix-lane-onset {
+  display: block;
+  width: 100%;
+  min-height: 0;
+  border-top: 1px solid var(--color-waveform-border, #cbd5e1);
+}
+.fix-lane-spec {
+  flex: 10 1 0;
+}
+.fix-lane-onset {
+  flex: 4 1 0;
+}
+.fix-lane-spec[hidden],
+.fix-lane-onset[hidden] {
+  display: none; /* the author display would beat the UA [hidden] rule */
+}
+/* A user-resized strip: a fixed height in place of the flex share (sticky,
+   set by _applyStripSizing on the strip AND on the prewarm probe). */
+.fix-strip.fix-strip-sized {
+  flex: 0 0 var(--fix-strip-h);
+  min-height: 0;
+}
+/* Handles on the boundaries between visible lanes, above the tick canvas. */
+.fix-lane-handle {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 7px;
+  margin-top: -3px;
+  z-index: 5;
+  cursor: row-resize;
+}
+.fix-lane-handle:hover {
+  background: var(--color-alignment, rgb(140, 90, 90));
+  opacity: 0.25;
+}
+.fix-lane-handle[hidden] {
+  display: none;
+}
+/* Spectrogram configuration: two rows of two small selects under its switch. */
+.fix-spec-cfg {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+  margin: 0.1em 0 0.25em 1.4em;
+}
+.fix-spec-cfg span {
+  display: flex;
+  gap: 0.25em;
+}
+.fix-spec-cfg select,
+#fix-snap-target {
+  font-size: var(--font-size-small, 0.8em);
+  min-width: 0;
+  flex: 1;
+}
+.fix-spec-cfg[hidden] {
+  display: none;
+}
+/* The Correction region's fieldsets (the listening interface's collapsible
+   shape): each body a column of rows, each row a flex line. */
+.fix-fs .fieldset-body > span,
+.fix-fs .fieldset-body > .fix-nav-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+}
+/* A row of labels and small controls wraps in a narrow column rather than
+   overflowing it; the button pairs (Undo | Redo) stay on one line. */
+.fix-fs .fieldset-body > span {
+  flex-wrap: wrap;
+}
+.fix-fs .fieldset-body label {
+  cursor: pointer;
+}
+.fix-fs .fieldset-body > span > label {
+  white-space: nowrap;
+}
+/* The icon button must not take the fieldset's larger button font. */
+.fix-fs .fieldset-body .fix-icon-btn {
+  flex: 0 0 auto;
+  font-size: 0.95em;
+  padding: 0 0.2em;
+  line-height: 1.25;
+}
+.fix-fs .fieldset-body .fix-spec-cfg {
+  margin-left: 1.4em;
+}
+
+/* A pending spectrogram RECOMPUTE: the lane dims and a badge spins on it. */
+.fix-lane-spec.fix-lane-busy {
+  opacity: 0.35;
+  transition: opacity 0.2s;
+}
+.fix-lane-badge {
+  position: absolute;
+  right: 44px;
+  z-index: 5;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--color-waveform-border, #aaa);
+  background: var(--color-surface, rgba(255, 255, 255, 0.9));
+  color: var(--color-text, #222);
+  font-size: 11px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+.fix-lane-badge[hidden] {
+  display: none;
+}
+.fix-spin {
+  display: inline-block;
+  animation: fix-spin 1s linear infinite;
+}
+@keyframes fix-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Realigning (a commit, or S over several marks): the ticks pulse, the strip's
+   cursor says so, and the magnet button stands down until it is over. */
+.fix-realigning .fix-ticks {
+  animation: fix-pulse 0.9s ease-in-out infinite alternate;
+  cursor: progress;
+}
+.fix-realigning .fix-onset-skip,
+.fix-realigning .fix-lane-handle {
+  cursor: progress;
+}
+@keyframes fix-pulse {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.4;
+  }
+}
+
+/* The snap target's radios, in the listening interface's own shape. */
+.fix-snap-target-row {
+  margin-left: 1em;
+  font-size: var(--font-size-small, 0.85em);
+  flex-wrap: nowrap; /* "detected / perceived" is one line (user, 2026-09-03) */
+  white-space: nowrap;
+}
+.fix-snap-target-row input[type="radio"] {
+  margin: 0 0.25em 0 0;
+  flex: 0 0 auto;
+}
+.fix-snap-target-row label {
+  margin-right: 0.45em;
+  cursor: pointer;
+}
+/* The "move to nearest onset" icon at the end of the Snap row. */
+.fix-icon-btn {
+  margin-left: auto;
+  padding: 0 0.15em;
+  font-size: 0.95em;
+  line-height: 1.25;
+  letter-spacing: -0.05em;
+}
+.fix-toggles > span > label {
+  white-space: nowrap;
+}
+.fix-spec-labels-row {
+  flex: 0 0 auto;
+  gap: 0.25em;
+  font-size: var(--font-size-small, 0.85em);
+}
+.fix-page-ctl {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+#fix-score-zoom {
+  font-size: var(--font-size-small, 0.8em);
+  min-width: 0;
+  flex: 1;
+}
+.fix-strip-ws[data-placeholder]::after {
+  content: attr(data-placeholder);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted, #64748b);
+  font-size: var(--font-size-small, 0.85em);
+}
+
+/* Onset ticks draw on this canvas; it also takes the tick-select clicks. */
+/* Corrections are impossible until the engine arms. The ticks read as
+   not-yet-live and the strip's cursor says so, because the marker a user
+   reaches for first is bottom left while the chip is top right — the answer
+   to "why will this not move" has to be where the hand already is. Only the
+   tick canvas dims: the playhead has its own, so the audition (which arms
+   earlier) still looks live. */
+.fix-ticks-pending {
+  opacity: 0.4;
+}
+.fix-strip-pending .fix-ticks,
+.fix-strip-pending {
+  cursor: progress;
+}
+
+.fix-ticks {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  cursor: pointer;
+}
+
+/* ◀ / ▶ onset-skip pills on the strip's edges (region-nav's affordance). */
+.fix-onset-skip {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.3em 0.5em;
+  border: 1px solid var(--color-waveform-border, #aaa);
+  border-radius: 999px;
+  background: var(--color-surface, rgba(255, 255, 255, 0.9));
+  color: var(--color-text, #222);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  font-size: var(--font-size-small, 0.85em);
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.8;
+}
+.fix-onset-skip:hover {
+  opacity: 1;
+}
+.fix-onset-prev {
+  left: 8px;
+}
+.fix-onset-next {
+  right: 8px;
+}
+
+/* Score-to-strip connectors: an overlay spanning the whole fix container. */
+.fix-connectors {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.fix-connectors .fix-conn {
+  fill: none;
+  stroke: var(--color-alignment, rgb(140, 90, 90));
+  stroke-width: 1;
+  opacity: 0.28;
+}
+.fix-connectors .fix-conn-sel {
+  stroke-width: 1.8;
+  opacity: 0.95;
+}
+
+/* Fix-mode loading overlay (cold entry / relayout after a resize). */
+.fix-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.8em;
+  background: var(--color-bg, #fff);
+  color: var(--color-text-secondary, #475569);
+  font-size: var(--font-size-small, 0.9em);
+}
+.fix-loading[hidden] {
+  display: none; /* the author display:flex would otherwise beat [hidden] */
+}
+/* A relayout mid-session: a small spinner in the pane's top-right, the stale
+   page kept visible and dimmed beneath it (nothing blanks). */
+.fix-loading.fix-loading-corner {
+  inset: 0.5em 3.4em auto auto; /* left of the round exit button */
+  flex-direction: row;
+  gap: 0.4em;
+  padding: 0.25em 0.6em;
+  border-radius: 0.4em;
+  background: var(--color-bg-secondary, var(--color-bg, #fff));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+.fix-loading.fix-loading-corner .fix-loading-spin {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+}
+#fix-mode.fix-relayout .fix-score {
+  opacity: 0.45;
+}
+.fix-loading-spin {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 3px solid var(--color-border-light, rgba(120, 120, 120, 0.35));
+  border-top-color: var(--color-text-secondary, #475569);
+  animation: fix-loading-rotate 0.9s linear infinite;
+}
+@keyframes fix-loading-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* In-score connector underlay: injected as the page SVG's first-painted
+   group, so it sits beneath every score element. */
+.fix-score-svg .fix-underlay line {
+  stroke: var(--color-alignment, rgb(140, 90, 90));
+  opacity: 0.28;
+}
+.fix-score-svg .fix-underlay line.fix-underlay-sel {
+  opacity: 0.95;
+}
+
+/* The underlay must never intercept score clicks. */
+.fix-score-svg .fix-underlay {
+  pointer-events: none;
+}
+
+/* --- Increment 3: the interaction loop --- */
+
+/* The audition's play/pause is the MAIN transport's — see fixTransport. It
+   is disabled until the audition's buffers exist. */
+.transport-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.transport-btn:disabled:hover {
+  background: none;
+}
+
+/* Page-only playback and auto-replay suppression are checkboxes in listen
+   mode's own shape (input + label per row), so they need no colour of their
+   own — which also puts them out of reach of the blanket themed button rule
+   that made the previous toggle buttons signal via box-shadow. */
+.fix-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1em;
+}
+.fix-toggles span {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+}
+.fix-toggles label {
+  cursor: pointer;
+}
+
+/* Playback speed (pitch preserved). The % button doubles as reset-to-100
+   and lights up whenever speed is off unity — via box-shadow + weight only,
+   which the blanket themed button rule never sets (see #fix-page-only). */
+/* Both slider rows follow the zoom control's shape — a flanking icon, the
+   slider taking the rest — so they read as the same kind of control as the
+   nav's own. */
+.fix-slider-icon {
+  opacity: 0.9;
+  /* Emoji carry their detail in a few pixels, so they need real size: at the
+     row's own small font they were illegible. */
+  font-size: 1.7em;
+  line-height: 1;
+  cursor: default;
+}
+.fix-speed {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+  font-size: var(--font-size-small, 0.85em);
+  white-space: nowrap;
+}
+.fix-speed[hidden] {
+  display: none; /* author display:flex would beat the UA [hidden] rule */
+}
+/* In the nav column the sliders take the width they are given rather than
+   the fixed one the header row allowed them. */
+.fix-speed input[type="range"] {
+  flex: 1;
+  min-width: 40px;
+  margin: 0;
+}
+.fix-speed-reset {
+  min-width: 5ch;
+  padding: 0.15em 0.35em;
+  font-size: 0.95em;
+  line-height: 1.4;
+}
+.fix-speed-reset.fix-speed-off-unity {
+  box-shadow: inset 0 0 0 2px var(--color-marker, #e03030);
+  font-weight: 700;
+}
+
+/* Real-time audition balance (left ear: recording, right ear: synth). */
+.fix-balance {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+  font-size: var(--font-size-small, 0.85em);
+  color: var(--color-text-secondary, #64748b);
+  white-space: nowrap;
+}
+.fix-balance input[type="range"] {
+  flex: 1;
+  min-width: 40px;
+  margin: 0;
+}
+
+/* The audition playhead paints on its own canvas above the ticks (repaints
+   every frame during playback; the tick canvas stays selection-rate). */
+.fix-playhead {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  pointer-events: none;
+}
+
+/* Engine chip while a fix's segment realign is running. */
+.fix-chip[data-state="realign"] {
+  color: var(--color-text, #1e3a8a);
+  border-color: rgba(37, 99, 235, 0.45);
+}
+
+/* The selected onset's notes while they actually SOUND (playhead between
+   onset and offset via the corrected map): hotter than the selection orange. */
+.fix-score-svg g.fix-note-sel.fix-note-sounding,
+.fix-score-svg g.fix-note-sel.fix-note-sounding * {
+  fill: #ff6d00 !important;
+  stroke: #ff6d00 !important;
+}
+
+/* Announcement toast for history hops the user cannot currently see
+   ("Undid alignment correction near bar N" with fix mode closed). */
+#fix-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%) translateY(8px);
+  z-index: 1000;
+  max-width: 60ch;
+  padding: 0.5em 1em;
+  border-radius: 8px;
+  background: var(--color-text, #1f2937);
+  color: var(--color-bg, #fff);
+  font-size: var(--font-size-small, 0.9em);
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+#fix-toast.fix-toast-show {
+  opacity: 0.95;
+  transform: translateX(-50%) translateY(0);
 }

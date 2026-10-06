@@ -116,7 +116,7 @@ test.describe('38. The listening marker', () => {
       () => getComputedStyle(document.querySelector('.vp[data-marker="glass"]')!).paddingLeft,
     );
     expect(pad).toBe('70px'); // 12 + 52 + 6: the strap's own reservation, shared
-    expect(await markerState(page)).toEqual({ ix: null, homeFile: null, lifted: false, ghost: null });
+    expect(await markerState(page)).toEqual({ ix: null, homeFile: null, lifted: false, ghost: null, ghosts: [] });
   });
 
   // 38.3 The tap path's first half: a tap lifts the glass off its hook into
@@ -133,7 +133,7 @@ test.describe('38. The listening marker', () => {
   // and placement is the reader's own jump, so it PLAYS there (ruled). The
   // ticks appear on every strip and settle visible after the fresh window.
   test('38.4 a waveform tap while lifted places the marker and plays there', async ({ page }) => {
-    const { ref } = await boot(page, 'debug=1&marker=glass');
+    const { ref, order } = await boot(page, 'debug=1&marker=glass');
     await page.click('.vp[data-viewport="0"] .marker-glass');
 
     const strip = page.locator(`.vp[data-viewport="0"] .strip[data-file="${ref}"] .strip-ws`);
@@ -150,7 +150,7 @@ test.describe('38. The listening marker', () => {
     // One tick per strip, visible (settled-subtle is still visible — ruled).
     expect(
       await page.locator('.vp[data-viewport="0"] .marker-tick:not([hidden])').count(),
-    ).toBe(8);
+    ).toBe(order.length);
 
     // Placement is a jump: the tapped recording is audible AT the tapped
     // moment, playing. Same tolerance shape as 34.17.
@@ -675,29 +675,171 @@ test.describe('38. The listening marker', () => {
     );
   });
 
-  // 38.17 The magnifier: a placed glass shows the waveform under its lens at
-  // 2×, drawn from the payload's own peaks — present, sized, and non-blank.
-  test('38.17 the placed glass magnifies the waveform under its lens', async ({ page }) => {
+  // 38.17 The lens is a CIRCLE, and nothing is magnified under it. Both are
+  // rulings rather than incidentals — the oval and the 4× zoom shipped
+  // together in 0.36.0 and were both taken back after alpha feedback around
+  // the institute (2026-09-01) — so both are pinned here.
+  test('38.17 the lens is circular and magnifies nothing under it', async ({ page }) => {
     const { ref } = await boot(page, 'debug=1&marker=glass');
     await page.evaluate((ref) => {
       const T = (window as any)._exhibitTest;
-      // A loud moment, so the magnified peaks are unambiguously non-blank.
       T.placeMarker(0, ref, 120);
       T.transport.pause();
     }, ref);
     const probe = await page.evaluate(() => {
-      const mag = document.querySelector(
-        '.vp[data-viewport="0"] .marker-glass .marker-mag',
-      ) as HTMLCanvasElement;
-      if (!mag) return null;
-      const ctx = mag.getContext('2d')!;
-      const data = ctx.getImageData(0, 0, mag.width, mag.height).data;
-      let painted = 0;
-      for (let i = 3; i < data.length; i += 4) if (data[i] > 0) painted++;
-      return { w: mag.width, h: mag.height, painted };
+      const glass = document.querySelector(
+        '.vp[data-viewport="0"] .marker-glass',
+      ) as HTMLElement;
+      const lens = glass.querySelector('.glass-lens')!;
+      const ring = glass.querySelector('.glass-ring')!;
+      const box = lens.getBoundingClientRect();
+      return {
+        lensTag: lens.tagName.toLowerCase(),
+        ringTag: ring.tagName.toLowerCase(),
+        ellipses: glass.querySelectorAll('ellipse').length,
+        canvases: glass.querySelectorAll('canvas').length,
+        w: box.width,
+        h: box.height,
+      };
     });
-    expect(probe, 'no magnifier canvas in the glass').not.toBeNull();
-    expect(probe!.w).toBeGreaterThan(0);
-    expect(probe!.painted, 'the lens is blank over a loud moment').toBeGreaterThan(50);
+    expect(probe.lensTag).toBe('circle');
+    expect(probe.ringTag).toBe('circle');
+    expect(probe.ellipses, 'no oval geometry left in the glass').toBe(0);
+    expect(probe.canvases, 'the zoom under the lens was removed').toBe(0);
+    // Round on the screen, not merely in the markup: a placed glass hangs
+    // straight, and every viewport/stage rotation here is a right angle, so a
+    // circle's painted box is square either way.
+    expect(probe.w).toBeGreaterThan(0);
+    expect(Math.abs(probe.w - probe.h), 'the lens paints as an oval').toBeLessThan(1.5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 38b. THE ROOM'S MARKERS (the room machine, plan §4.4, 2026-09-11). With
+// ?room=shared every viewport's marker travels through the room's worker, and
+// each reader sees the OTHER three as ghosts whose HILT POINTS AT THE SOURCE:
+// 180° for the reader across the table (as built), a diagonal toward the
+// neighbouring screen for that table's two readers — down-diagonal for the
+// one on my side, up-diagonal for the one opposite — never horizontal. The
+// angle is a pure function of the two room ids and the screen geometry
+// (room.js ghostAngleFor); the two-page test pins the ghosts, the adopt across
+// screens executing on the adopter's window, and a leaving screen taking its
+// glasses with it.
+// ---------------------------------------------------------------------------
+
+test.describe("38b. The room's markers", () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  test('38.20 ghostAngleFor: the hilt points at the source for every viewport pair, in both screen orders', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1');
+    const table = await page.evaluate(async () => {
+      const { ghostAngleFor } = await import('/static/exhibit/room.js');
+      const base = { viewports: 2, rotations: [0, 180] };
+      const out: Record<string, number[][]> = {};
+      for (const screenOrder of ['ltr', 'rtl']) {
+        const config = { ...base, screenOrder };
+        out[screenOrder] = [0, 1, 2, 3].map((me) =>
+          [0, 1, 2, 3].map((src) => (src === me ? 0 : ghostAngleFor(config, me, src))),
+        );
+      }
+      return out;
+    });
+    // Rows: the viewer; columns: the source. Screen 1 stands to the RIGHT of
+    // screen 0's upright reader (ltr): for room 0, the far table's same-side
+    // reader (2) is down-right (−45) and its opposite reader (3) up-right
+    // (−135); the rotated reader (1) has the far table on their LEFT (+135,
+    // +45). Screen 1's readers see screen 0 the other way round.
+    expect(table.ltr).toEqual([
+      [0, 180, -45, -135],
+      [180, 0, 135, 45],
+      [45, 135, 0, 180],
+      [-135, -45, 180, 0],
+    ]);
+    // rtl mirrors every cross-screen angle; the same-screen 180° is untouched.
+    expect(table.rtl).toEqual([
+      [0, 180, 45, 135],
+      [180, 0, -135, -45],
+      [-45, -135, 0, 180],
+      [135, 45, 180, 0],
+    ]);
+  });
+
+  test("38.21 two screens: a marker on screen 0 appears on screen 1 as ghosts pointing at it; adopting one executes the jump there; a screen that leaves takes its glass with it", async ({
+    context,
+  }) => {
+    const pageA = await context.newPage();
+    const pageB = await context.newPage();
+    const { ref } = await boot(pageA, 'debug=1&marker=glass&room=shared&screen=0');
+    await boot(pageB, 'debug=1&marker=glass&room=shared&screen=1');
+    for (const p of [pageA, pageB]) {
+      await expect
+        .poll(() => p.evaluate(() => (window as any)._exhibitTest.room.state().welcomed), { timeout: 5_000 })
+        .toBe(true);
+      // The quiet transport (spec 36's stand-in): the jumps record and start no audio.
+      await p.evaluate(() => {
+        const T = (window as any)._exhibitTest;
+        (window as any)._taps = [];
+        const orig = T.transport.select.bind(T.transport);
+        T.transport.select = (file: string, time: number) => {
+          (window as any)._taps.push({ file, time });
+          return orig(file, time, false);
+        };
+      });
+    }
+    const tapCount = (p: Page) => p.evaluate(() => ((window as any)._taps as any[]).length);
+    const angleOf = (p: Page, vp: number, source: number) =>
+      p
+        .locator(`.vp[data-viewport="${vp}"] .marker-ghost[data-source="${source}"]`)
+        .evaluate((el) => (el as HTMLElement).style.getPropertyValue('--ghost-angle'));
+
+    // A's near reader (room 0) places a marker at 120 s of the reference.
+    await pageA.evaluate((ref) => (window as any)._exhibitTest.placeMarker(0, ref, 120), ref);
+    const ix = (await markerState(pageA, 0)).ix as number;
+    expect(ix).not.toBeNull();
+    expect(await tapCount(pageA), 'placement is the reader\'s own jump').toBe(1);
+    // A's far reader: the ghost across the table, at 180° as always.
+    expect((await markerState(pageA, 1)).ghosts).toEqual([{ source: 0, ix, file: ref, angle: 180 }]);
+    // Screen 1: both readers see it, turned toward screen 0 — down-left for
+    // the same-side reader, up-right for the rotated one opposite.
+    await expect
+      .poll(async () => (await markerState(pageB, 0)).ghosts, { timeout: 5_000 })
+      .toEqual([{ source: 0, ix, file: ref, angle: 45 }]);
+    expect((await markerState(pageB, 1)).ghosts).toEqual([{ source: 0, ix, file: ref, angle: -135 }]);
+    const ghostB0 = pageB.locator('.vp[data-viewport="0"] .marker-ghost[data-source="0"]');
+    await expect(ghostB0).not.toBeHidden();
+    expect(await angleOf(pageB, 0, 0)).toBe('45deg');
+    expect(await angleOf(pageB, 1, 0)).toBe('-135deg');
+    expect(await angleOf(pageA, 1, 0)).toBe('180deg');
+
+    // B's near reader (room 2) adopts it: the glass lifted, the ghost tapped.
+    // The adopt is B's own jump — executed on B, holder room 2 — not on A.
+    await pageB.click('.vp[data-viewport="0"] .marker-glass');
+    await ghostB0.click();
+    await expect.poll(async () => (await markerState(pageB, 0)).ix).toBe(ix);
+    await expect.poll(() => tapCount(pageB)).toBe(1);
+    expect(await tapCount(pageA)).toBe(1);
+    await expect.poll(() => pageA.evaluate(() => (window as any)._exhibitTest.turns.holder)).toBe(2);
+    // …and A now sees B's marker: down-right for A's near reader (same side),
+    // up-left for A's far reader, beside their own table's ghost.
+    await expect
+      .poll(async () => (await markerState(pageA, 0)).ghosts, { timeout: 5_000 })
+      .toEqual([{ source: 2, ix, file: ref, angle: -45 }]);
+    expect((await markerState(pageA, 1)).ghosts).toEqual([
+      { source: 0, ix, file: ref, angle: 180 },
+      { source: 2, ix, file: ref, angle: 135 },
+    ]);
+    expect((await markerState(pageB, 1)).ghosts).toEqual([
+      { source: 2, ix, file: ref, angle: 180 },
+      { source: 0, ix, file: ref, angle: -135 },
+    ]);
+
+    // Screen 0 leaves the room: its glass leaves the room's ghosts with it.
+    await pageA.goto('about:blank');
+    await expect.poll(async () => (await markerState(pageB, 0)).ghosts, { timeout: 5_000 }).toEqual([]);
+    expect((await markerState(pageB, 1)).ghosts).toEqual([{ source: 2, ix, file: ref, angle: 180 }]);
+    await pageA.close();
+    await pageB.close();
   });
 });

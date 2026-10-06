@@ -19,23 +19,27 @@
 // worker's own embedded Python on a synthetic MIDI whose real tempo event
 // sits at tick 0 — and checks the engine's JS parser agrees on the same bytes.
 import { test, expect } from '../support/fixtures';
-import { loadLocalAlignment, FIXTURES_DIR } from '../support/helpers';
+import {
+  loadLocalAlignment,
+  FIXTURES_DIR,
+  readFixtureJson,
+  localiseFixtureText,
+} from '../support/helpers';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 
 const SYNTH_SEL = '#waveforms .waveform[data-ix="Score (synthesised from MEI)"]';
 
-const readFixture = () =>
-  JSON.parse(fs.readFileSync(path.join(FIXTURES_DIR, 'alignment.json'), 'utf8'));
+const readFixture = () => readFixtureJson('alignment.json');
 
 /**
  * Serve every /static/test/ fixture from THIS checkout's tests/fixtures/,
- * so the spec is hermetic: the alignment URLs in helpers.ts hardcode
- * localhost:5001, and when the suite runs against a server on another port
- * (e.g. from a worktree while a main-checkout server owns 5001) those
- * fetches would otherwise go cross-origin to a server running other code.
- * Playwright-fulfilled responses are not subject to CORS.
+ * so the spec is hermetic: what the page loads is exactly the tree under
+ * test's fixtures, whatever server answers on the base URL. JSON is
+ * localised the way the Flask fixture route localises it (the fixtures'
+ * absolute URLs follow APP_BASE_URL), so the MEI is fetched from the same
+ * server as everything else.
  */
 async function serveFixturesFromDisk(page: import('@playwright/test').Page) {
   // Match on the PATH, not a '**/static/test/**' glob: the listen page's own
@@ -50,13 +54,18 @@ async function serveFixturesFromDisk(page: import('@playwright/test').Page) {
       const file = path.join(FIXTURES_DIR, name);
       if (!fs.existsSync(file) || !fs.statSync(file).isFile())
         return route.fulfill({ status: 404, body: 'no fixture' });
-      const contentType = name.endsWith('.json')
-        ? 'application/json'
-        : name.endsWith('.mei')
-          ? 'application/xml; charset=utf-8'
-          : name.endsWith('.mp3')
-            ? 'audio/mpeg'
-            : 'application/octet-stream';
+      if (name.endsWith('.json')) {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: localiseFixtureText(fs.readFileSync(file, 'utf8')),
+        });
+      }
+      const contentType = name.endsWith('.mei')
+        ? 'application/xml; charset=utf-8'
+        : name.endsWith('.mp3')
+          ? 'audio/mpeg'
+          : 'application/octet-stream';
       return route.fulfill({ status: 200, contentType, path: file });
     },
   );

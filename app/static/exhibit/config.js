@@ -19,7 +19,7 @@
  * the other side reads it the right way up.
  *
  * Measured on the real device 2026-08-24: the 13-inch iPad Air is 1024×1366 CSS
- * at dpr 2, so each half gets 1024×~640 and eight 54 px strips use 432 px of it.
+ * at dpr 2, so each half gets 1024×~640 and ten 38 px strips use 380 px of it.
  */
 const DEFAULTS = {
   // --- content selection ---
@@ -33,14 +33,33 @@ const DEFAULTS = {
   viewports: 2,
   splitOrientation: "horizontal", // "horizontal" = stacked halves; "vertical" = side by side
   rotations: [0, 180], // per viewport, degrees; index beyond the end means 0
-  stackedRecordings: 8,
-  // 48, down from week 1's 54: the commentary panel absorbs whatever height the
-  // strips leave over, and at 54 the longest authored text showed two lines on
-  // the iPad's halves (measured; annotation-list.js). Six pixels a strip buys
-  // the panel ~78 px — the waveforms are the overview, the commentary is the
-  // exhibit's voice, and `?stripHeight=54` puts the week-1 look back for an
-  // eyeball comparison.
-  stripHeight: 48, // CSS px per waveform strip
+  // TEN since 2026-09-01, eight before it: the author raised the shown-set cap for
+  // this piece and every future one, and named VPO-2002 (the "D or E?" pivot) as
+  // the first addition. A cap, not a target — `tools/prep_exhibit_data.py` decides
+  // WHICH recordings; this is only how many of them a viewport stacks.
+  stackedRecordings: 10,
+  // 38, down from 48, down from week 1's 54. The commentary panel absorbs
+  // whatever height the strips leave over, so the strip height IS the panel
+  // height, inverted — and each cut has been made for the panel, because the
+  // waveforms are the overview and the commentary is the exhibit's voice.
+  //
+  // WHY 38 AND NOT 48: raising the shown set to ten (2026-09-01) added 96 px of
+  // strips, and the panel is the residual. Measured at 1024×1366, the real iPad
+  // geometry, with the Expert set shown:
+  //     8 × 48  panel 159 px   description box 57 px visible
+  //    10 × 48  panel  59 px   description box  0 px visible — the text is GONE
+  //    10 × 38  panel 159 px   description box 57 px visible
+  // So 38 is not a taste call: it is the height at which ten strips leave the
+  // panel exactly what eight strips left it. `?stripHeight=48` still shows the
+  // taller waveforms, at the cost of the annotation text.
+  //
+  // SEPARATELY, and NOT caused by the above: `.ann-detail` is `overflow: auto`,
+  // and even at the 159 px baseline the long Expert descriptions show 57 px of
+  // the 397 they need — 14% of "Oboe Solos", 18% of Agogic, 34% of "D or E?".
+  // That is the museum-hardware check the author asked for on Q13, answered
+  // early: they do not run in full at this geometry, on a kiosk whose rule is
+  // that nothing scrolls. It needs an editorial or UI decision, not a number.
+  stripHeight: 38, // CSS px per waveform strip
   middleBandHeight: 96, // conductor, year, portrait — and NO UI labels (plan §6.3)
   // How the shared band handles being read from two opposite sides at once —
   // plan §4.3's orientation question, pulled forward by user feedback after the
@@ -55,7 +74,27 @@ const DEFAULTS = {
   //   "mirrored" — two copies, the far one rotated 180°: each reader gets a
   //                right-way-up copy at no height cost, but the piece is named
   //                once per READER rather than once per view.
+  //   "flip"     — upright, but the cluster TURNS to face whichever side last
+  //                took the clock (Chanda, demo feedback 2026-09-01). One
+  //                cluster, so the piece is named once per view like upright,
+  //                and the same 96 px — unlike rotated it costs the commentary
+  //                panel nothing. The play control and the time readouts stay
+  //                out of the rotation (middle-band.js says why). Needs two
+  //                facing viewports to mean anything, so it degrades to
+  //                upright at ?viewports=1, like mirrored.
   bandOrientation: "upright",
+  // HOW the flip changes over, which is a separate question from whether it
+  // flips at all. The first cut animated the rotation itself and the user found
+  // it over the top (2026-09-01) — a 180° spin on the one surface both visitors
+  // are reading is a large gesture for a small fact.
+  //   "fade" — the cluster dips almost out, turns while it is faint, and
+  //            settles. The change is still announced, but as a soft beat
+  //            rather than a movement across the band. THE DEFAULT.
+  //   "spin" — the original animated rotation, kept so the two are comparable
+  //            at the user testing rather than settled by one viewing.
+  // Either way `prefers-reduced-motion: reduce` gets the change with no
+  // animation at all.
+  bandFlipMotion: "fade",
   middleBandHeightRotated: 176, // fits the longest sidecar name turned 90°
   // The GENERIC side slot (feedback item 5, 2026-08-24): a region beside the
   // strips, on each viewport's own right — "right" is per READER for free,
@@ -85,7 +124,7 @@ const DEFAULTS = {
   // 0 means FIT THE WHOLE RECORDING INTO THE STRIP, which is WaveSurfer's
   // `fillParent` behaviour when `minPxPerSec` is 0. That is the right resting
   // state for this interface and not merely a convenient default: the exhibit's
-  // whole proposition is seeing eight interpretations of the *same* moment at
+  // whole proposition is seeing every interpretation of the *same* moment at
   // once, and at the previous default of 30 px/s a 582 s overture shows about 3%
   // of itself, so the stacked comparison has nothing to compare. Per-viewport
   // zoom and scroll arrive in week 2 (plan §4.2); until then `?zoom=30` is still
@@ -110,6 +149,26 @@ const DEFAULTS = {
   // and marked provisional when they were flagged for hand placement, rather than
   // being silently dropped or silently drawn at a misleading width.
   minRegionPx: 4,
+  // HOW LOUDLY a strip says which group it is in (Chanda, demo feedback
+  // 2026-09-01: the current indicator can get overlooked). The shipped edge is
+  // 4 px on the left of a ~1000 px strip, which is a legend a visitor has to
+  // be looking for.
+  //
+  //   "edge" — the shipped 4 px rule. The default, per the A/B rule.
+  //   "wide" — the same rule at 12 px: the cheapest real gain in salience, and
+  //            still nothing but a rule, so it cannot be read as meaning
+  //            anything the 4 px version did not.
+  //   "tint" — the wide rule PLUS the group's colour washed across the strip
+  //            behind the waveform. The loudest option, and the one that most
+  //            risks reading as "this recording is highlighted" rather than
+  //            "this recording is in that group".
+  //
+  // WHAT THIS DOES NOT CHANGE is WHEN a grouping paints at all: that is still
+  // `hasGroupStory` — an annotation must have something authored to say about
+  // its groups — which the user reaffirmed on 2026-09-01, the observation
+  // having been made about the one annotation that does. So these variants
+  // make "Die Glocke" louder; they do not give the other five a legend.
+  groupIndicator: "edge",
 
   // --- content ---
   // Audience and language are resolved PER VIEWPORT, never swapped globally, so
@@ -126,10 +185,107 @@ const DEFAULTS = {
   // why this is a switch option and not a change to the filter's meaning.
   audienceAll: false,
 
+  // --- views (plan §11; years-view.js, conductors-view.js) ---
+  // Which VIEW each viewport starts in, per viewport like `audiences`:
+  //   "listen"     — the listening interface, the shipped exhibit.
+  //   "years"      — the by-year explorer of the whole New Year's Concert
+  //                  series, drawn OVER this viewport's strips and commentary
+  //                  while the other half keeps listening; the band and the
+  //                  clock are untouched. Views are switched in-session, per
+  //                  viewport, with nothing reloaded (user ruling 2026-09-02).
+  //   "conductors" — the by-conductor explorer of the same series: every
+  //                  conductor, their years, and the portrait large where the
+  //                  exhibit has one (its photo credit sits at the view's foot).
+  views: ["listen", "listen"],
+  // Whether each viewport's toolbar offers the switch between them. OFF by
+  // default so the shipped exhibit stays byte-identical — on the wire too: the
+  // concerts sidecar (~0.5 MB) and the views' modules are fetched only when an
+  // entry is configured (this switch, or `bandTap` below). Forced on when
+  // `views` starts any viewport outside the listening view, because a view you
+  // cannot leave is a trap. Since 0.52.0 this is the DEBUG / FALLBACK entry:
+  // the ruled entry is the band (plan §11(f)), and every overlay carries its
+  // own close control, so the switch is no longer the only way back.
+  viewSwitch: false,
+  // THE BAND IS THE INTERFACE (plan §11(f), ruled 2026-09-02, conditional on
+  // the MIRRORED orientation): the facts the band shows are the way into the
+  // views — tap the year for the by-year explorer with that concert open, tap
+  // the conductor (name or portrait) for the by-conductor explorer with them
+  // open. Only mirrored copies can say WHICH reader tapped (each cluster is one
+  // viewport's copy, by construction — turns.js bandTapViewport), so under any
+  // other orientation this resolves to "off" with a warning and the toolbar
+  // switch stays the entry. A fact leads only where the series can follow: the
+  // year is tappable when the audible recording IS that year's concert, the
+  // conductor when the series knows them; the shared play control is never a
+  // fact and takes no turn in any orientation.
+  //
+  // The value is the WORDLESS AFFORDANCE the tappable facts wear — the band's
+  // no-labels rule (§6.3) holds, so tappability has to be seen, not read, and
+  // which cue works on a museum table is an A/B question, not a taste call:
+  //   "off"       — the shipped band; nothing tappable, nothing fetched.
+  //   "plain"     — tappable, no visual cue: the discoverability baseline.
+  //   "chip"      — each tappable fact softly outlined, the portrait ringed,
+  //                 like the other tappables on the table.
+  //   "underline" — a hairline under the name and the year.
+  //   "glyph"     — a small chevron after the name and the year.
+  //   "shimmer"   — a sheen passing across the name and the year, and a light
+  //                 travelling once round the portrait's rim, both resting
+  //                 between passes on one rhythm; reduced motion gets the
+  //                 underline instead.
+  bandTap: "off",
+  // THE "DID YOU KNOW?" FIGURES (content/dyk/, dyk.js). The museum text itself
+  // is CONTENT and always on — there is no knob for it, and the A/B rule for UX
+  // variants does not reach authored content (user, 2026-09-18). What IS a knob
+  // is the two PICTURES it refers to: both are press photographs of unknown
+  // licence, so the exhibit draws a placeholder frame at the right aspect in
+  // their place. "on" shows those frames, "off" hides them and leaves the text.
+  dykImages: "on",
+  // THE HAND (user, 2026-09-19). Which face the museum's story is set in:
+  // "print" is the card's own serif, as the archive data around it; "hand" is a
+  // researcher's handwriting on the notepad the story is drawn as, which is the
+  // reading the sheet invites.
+  //
+  // A PARAMETER RATHER THAN A DECISION, per the A/B rule: handwriting is the
+  // riskier choice for a museum audience — lower legibility at a glance, and
+  // worse for a reader with dyslexia or low vision — so it is opt-in and the
+  // October testing can say whether the charm is worth it. SYSTEM FACES ONLY,
+  // like the parchment serif: the kiosk has no network, and nothing here is
+  // licensed. On the iPad the stack lands on Bradley Hand or Noteworthy.
+  dykFont: "print",
+  // HOW the story is DRAWN: "pad" is the clipboard — paper, ruled lines, a metal
+  // clip, a pad of pages under it and a degree of tilt; "plain" is the accent
+  // rule down its side that the exhibit shipped with through 0.72.0.
+  //
+  // PAD IS THE DEFAULT, which is a deliberate exception to the A/B rule that the
+  // shipped behaviour stays default (user, 2026-09-19: they asked for the object
+  // and then for more of it, three rounds running). `plain` is one word away,
+  // and the October testing can still put the two side by side — which is the
+  // part of the rule that was actually load-bearing.
+  dykSkin: "pad",
+  // THE PAD'S GEOMETRY, as two numbers rather than two opinions (user,
+  // 2026-09-19). Both only mean anything when `dykSkin` draws an object.
+  //
+  // THEY INTERACT, and the study panel's hints say so: a rotated box needs room
+  // for its corners, and the room is what the width gives up. At the single
+  // viewport the sheet is ~540 px tall, so each degree of tilt swings it about
+  // 9 px wider — 3° against a 100% width will have its corners clipped by the
+  // card. 94/1.3 is the shipped pair and clears at both geometries, measured.
+  dykWidth: 94,   // percent of the card's width
+  dykTilt: 1.3,   // degrees, anticlockwise
+
   // --- appearance ---
-  // Palette preset (exhibit/themes.js): "dark" is the shipped look; the others
-  // are study-panel discussion placeholders, not candidate finals.
-  theme: "dark",
+  // Palette preset (exhibit/themes.js). PARCHMENT IS THE SHIPPED LOOK since
+  // 2026-09-19 (user: "it's what I'll lead with anyway") — the aged cream,
+  // iron-gall ink and bronze accent of a hand-written concert diary, which is
+  // also the palette the exhibit's physical-object family was drawn for: the
+  // leather strap, the stitched chips, the gold medallions, and now the story's
+  // notepad all say what they are on parchment and merely tint on the others.
+  //
+  // NOTE FOR ANYONE READING A DIFF: "dark" is still the CSS BASELINE — the
+  // token defaults in exhibit.css are its values, and every other palette is
+  // applied as inline overrides on :root. So the default boot now writes a
+  // token set where it used to write none, which is what 35.11 checks; the
+  // zero-override case moved to `?theme=dark`.
+  theme: "parchment",
   // Per-category pins on top of the preset — empty means "follow the preset".
   // Eight categories so museum-staff discussions can bikeshed one component at
   // a time and every outcome is still just a URL: ?theme=nord&themeWaves=amber.
@@ -216,6 +372,26 @@ const DEFAULTS = {
   // music; "off" keeps it A/B-testable.
   detailJump: "on",
 
+  // The PER-RECORDING note (`targets[].description`) — the annotator's comment
+  // about one recording within one annotation, as distinct from the annotation's
+  // shared description. 31 of the 61 targets in the shown set carry one and NO
+  // CODE PATH READ THEM until 2026-09-01 (Chanda, demo feedback: "we need a way
+  // to access per-waveform annotations, which are currently completely hidden").
+  // Among the invisible: all ten "D or E?" notes, and the 235-character danced-
+  // origins note that was the whole argument for showing VPO-1951-1954.
+  //
+  //   "on"  — the audible recording's note under the shared description, and a
+  //           dot on every strip that has one while its annotation paints.
+  //   "off" — the shipped-until-now behaviour, kept so the addition stays
+  //           A/B-comparable at the user testing.
+  //
+  // ON BY DEFAULT, deliberately against the usual params-keep-defaults rule:
+  // this is not a variant of a shipped behaviour, it is authored content that
+  // was never rendered. The notes are also SHORT — 23 to 235 characters against
+  // the shared descriptions' 657 to 1,669 — so the panel absorbs them where it
+  // cannot absorb the long text (Q13). See the marks note in main.js.
+  targetNotes: "on",
+
   // --- tap semantics (alpha-tester feedback, 2026-08-26) ---
   // What a tap on a NON-ACTIVE waveform means:
   //   "aligned" — the shipped behaviour: switch to that recording and carry
@@ -250,16 +426,69 @@ const DEFAULTS = {
   //                   a request they grant or deny (auto-grant below).
   // "hijack" stays the default so the variants are opt-in per the A/B rule.
   turnPolicy: "hijack",
+  // WHOSE SIDE THE CLOCK IS ANSWERING, marked on the shared band (Chanda, demo
+  // feedback 2026-09-01: signal the turn more clearly, and in every band
+  // orientation). Nothing marked it before — `.strip.is-selected` says what
+  // YOUR side chose, and the `.vp-turn` notices are transient and exist only
+  // under two of the three policies.
+  //
+  //   "edge" — a bar along the holder's edge of the band. Hard-edged,
+  //            language-free, orientation-free, and safe on every palette.
+  //   "wash" — the author's own suggestion, a tint rising from the holder's
+  //            side. Prettier, and the riskier of the two: the band's text and
+  //            portrait contrast is tuned against a flat background.
+  //   "off"  — no mark, the behaviour before this landed.
+  //
+  // ON by default, unlike the other A/B parameters, because this is a MISSING
+  // signal rather than a variant of a shipped one — the same reasoning as
+  // targetNotes above, and "off" keeps the comparison available.
+  //
+  // WHAT IT CLAIMS DEPENDS ON THE POLICY, and the difference is not cosmetic:
+  // under ?turnPolicy=request the holder can actually withhold the audio, so
+  // the mark means "this side may play back"; under hijack and attribution
+  // nobody can withhold anything and it means "this side chose what you are
+  // hearing". Marking a turn nobody has would be the dishonest reading, which
+  // is why the honest one is written down here and in the study panel.
+  turnIndicator: "edge",
   // request policy: a pending request is granted by itself after this many ms,
   // so an absent visitor can never lock the table. 0 = explicit grant only.
   turnGrantMs: 8000,
+  // request policy: after "Not yet", the denied side waits this long before a
+  // tap of theirs is put to the holder again — repeated taps meanwhile show
+  // the requester "the other side is still listening" and prompt nobody
+  // (user, 2026-09-03: minimise request-spamming). The holder's implicit
+  // denial (tapping their own strips while a request stands) counts too.
+  // 0 = ask again at once, the shipped behaviour.
+  turnDenyCooldownMs: 0,
   // How long the transient notices stay ("the other side changed the
   // recording", "…is still listening") before fading. UI only.
   turnNoticeMs: 4000,
   // Room-level audio arbitration (arbiter.js): "local" is inert single-screen
-  // behaviour; "broadcast" pauses this screen when another same-profile window
-  // claims the room's audio. Last claimant wins.
+  // behaviour; "broadcast" yields this screen's audio when another same-profile
+  // window claims the room's. Last claimant wins, except that a visitor's claim
+  // always outranks the attract loop's. The two-screen attract loop (its muted
+  // mirror and the tap hand-off) needs "broadcast".
   arbiter: "local",
+
+  // --- the room (room.js; the room machine, plan §4.4, planned 2026-09-11) ---
+  // Which screen of the room this window is. Room viewport ids are
+  // screen × viewports + the local index, so two windows of one PC name four
+  // distinct viewports. Per WINDOW: it lives in each window's URL, never in a
+  // preset (the study panel's reset keeps it).
+  screen: 0,
+  // Where screen s+1 stands as seen by the UPRIGHT reader (local viewport 0) of
+  // screen s: "ltr" = to their right (and so to the far reader's left), "rtl"
+  // the reverse. Only the oriented ghosts read it; both screens are assumed to
+  // stand the same way round.
+  screenOrder: "ltr",
+  // "off"    — each window is its own screen: the mirror and the hand-off run
+  //            only while a screen is idle under the attract band (v2, 0.60.0).
+  // "shared" — the room is one machine: EVERY non-audible window mirrors the
+  //            audible one muted and in step, a take anywhere fades that window
+  //            in, and the loser mutes and follows instead of pausing. Implies a
+  //            room-wide arbiter (a "local" arbiter is upgraded to "broadcast").
+  //            The shipped default stays off, per the A/B rule.
+  room: "off",
 
   // --- operations ---
   // Warm the audio at boot (user ruling 2026-08-26, from the iPad §7.2 round:
@@ -280,7 +509,48 @@ const DEFAULTS = {
   // seamless switches reads as a glitch (user, 2026-08-26); with a grace it
   // appears only when there is a genuine wait to explain.
   loadingGrace: 0,
-  attractAfterIdleMs: 0, // 0 disables the attract loop; week 4 turns it on
+  // --- alpha-tester feedback, 2026-09-10 ---
+  // How loudly the AUDIBLE strip says so ("quite subtle"). A/B variants; the
+  // shipped look stays the default:
+  //   "surface" — the brighter surface and waveform (as built).
+  //   "edge"    — plus an accent line along the strip's top edge.
+  //   "glow"    — plus an accent ring and soft glow round the strip.
+  //   "bars"    — plus a small three-bar "now playing" glyph after the caption,
+  //               moving while the clock runs.
+  activeStrip: "surface",
+  // A switch the reader did NOT make themselves — the other side's, or the
+  // attract loop's — is shown as a looping arrow from the old strip to the new
+  // one at the moment of the switch, on every viewport but the taker's. A
+  // reader who chose the jump needs no telling. "off" | "arrow".
+  switchCue: "off",
+
+  // --- the attract loop (attract.js; plan §4.4, design ruled 2026-09-07, the
+  // idle model replaced 2026-09-16) ---
+  // A SCREEN untouched for this long — touches only; music playing or stopping
+  // does not move the count — tidies its own table and raises the attract band.
+  // While the other screen is in use it rests under the band, mirroring the
+  // room; once both screens are past the window the loop plays the piece
+  // through by itself, carrying on from the playhead if music is on the
+  // speakers, from the top if the room is silent. 0 = off, the shipped default
+  // until release (the staff preset carries 3 min); a visitor's touch ends the
+  // loop on that screen and finds a live table.
+  attractAfterIdleMs: 0,
+  // Silence between passes of the piece, so the room breathes (user, 2026-09-07).
+  attractGapMs: 25000,
+  // Reload the page in the middle of that silence: invisible, it flushes any
+  // leak (plan §7.4) and is how the pieces will cycle (`?piece=`). Needs the
+  // kiosk browser's autoplay policy opened, or the loop resumes as "tap to
+  // start" — which it also does after any refused playback.
+  attractReload: true,
+  // Which audience's annotations each pass shows: "cycle" walks the three, or
+  // one of them by name.
+  attractAudience: "cycle",
+  // Which language's institutional logos the attract band shows ("de" | "en");
+  // the FWF line is bilingual regardless. Undecided (user, 2026-09-07), so a knob.
+  attractLogos: "de",
+  // The pieces the loop cycles through, comma-separated payload ids; empty =
+  // the one piece loaded. Each reload in the silence moves to the next.
+  attractPieces: "",
   // ?studyPanel=true mounts the staff-facing cog + tabbed parameter panel
   // (study-panel.js) for in-situ design discussion. Never on for visitors.
   studyPanel: false,
@@ -318,12 +588,105 @@ export function readConfig(search = typeof location === "undefined" ? "" : locat
   // A viewport count the other per-viewport arrays cannot cover is a config bug
   // that would otherwise surface as an undefined rotation halfway through layout.
   out.viewports = Math.max(1, Math.round(out.viewports));
+  // A viewport that starts in another view needs the switch to get back.
+  if (out.views.some((v) => v !== "listen")) out.viewSwitch = true;
   return out;
 }
 
 /** Rotation in degrees for viewport `i` — 0 for anything the config doesn't name. */
 export function rotationFor(config, i) {
   return Number(config.rotations?.[i]) || 0;
+}
+
+/**
+ * Orientations that only mean something when TWO readers face each other across
+ * the band. "mirrored" renders a second cluster for the far reader; "flip" turns
+ * the cluster towards whoever holds the clock. With one viewport there is no far
+ * reader, so mirrored would show one person the same facts twice and flip would
+ * spin the band under the only person reading it.
+ */
+const TWO_SIDED_ORIENTATIONS = new Set(["mirrored", "flip"]);
+
+/**
+ * Configs already warned about, so the two callers below do not say the same
+ * thing twice. Keyed on the config object rather than on the value, because the
+ * attract loop may one day resolve a second piece with its own config.
+ */
+const _warnedOrientation = new WeakSet();
+
+/**
+ * The band orientation actually in force, which is not always the configured one.
+ *
+ * Resolved in ONE place because two callers need to agree about it: buildScreen
+ * sizes the band from it (rotated is taller) and the band itself builds its
+ * clusters from it. A disagreement would reserve height for a shape that was
+ * never rendered.
+ *
+ * A single viewport falls back to "upright" and says so, rather than honouring a
+ * request that cannot mean anything — "rotated" is left alone, because equally
+ * sideways for one reader is a legitimate (if odd) debug choice, while mirrored
+ * and flip are not choices at all without a second side.
+ */
+export function bandOrientationFor(config) {
+  const want = config.bandOrientation;
+  if (config.viewports > 1 || !TWO_SIDED_ORIENTATIONS.has(want)) return want;
+  if (!_warnedOrientation.has(config)) {
+    _warnedOrientation.add(config);
+    console.warn(
+      `exhibit: bandOrientation "${want}" needs two facing viewports — using "upright"`,
+    );
+  }
+  return "upright";
+}
+
+/** The affordance variants `bandTap` accepts; "off" is the shipped band. */
+export const BAND_TAPS = ["off", "plain", "chip", "underline", "glyph", "shimmer"];
+
+const _warnedTap = new WeakSet();
+
+/**
+ * The band-tap affordance actually in force, which is not always the
+ * configured one: the facts are tappable only where a tap can be attributed to
+ * a reader, and only the mirrored band can do that (each cluster is one
+ * viewport's copy). Anything else — upright, rotated, flip, or a single
+ * viewport that demoted mirrored to upright — resolves to "off" and says so
+ * once, so the toolbar switch (`viewSwitch`) stays the way in. An unknown value
+ * also resolves to "off" rather than leaving the facts tappable but unmarked.
+ */
+export function bandTapFor(config) {
+  const want = config.bandTap;
+  if (!want || want === "off") return "off";
+  const warn = (msg) => {
+    if (_warnedTap.has(config)) return;
+    _warnedTap.add(config);
+    console.warn(msg);
+  };
+  if (!BAND_TAPS.includes(want)) {
+    warn(`exhibit: unknown bandTap "${want}" — using "off"`);
+    return "off";
+  }
+  // ...except with ONE viewport, where there are not two readers to tell apart:
+  // the single cluster's tap is the only reader's whatever the orientation
+  // (turns.js bandTapViewport). Refusing it there was this rule drawn too wide
+  // — it left a one-viewport table with no way in but ?viewSwitch=1 (2026-09-18).
+  if (config.viewports === 1) return want;
+  if (bandOrientationFor(config) !== "mirrored") {
+    warn(
+      `exhibit: bandTap "${want}" needs bandOrientation=mirrored (only mirrored copies ` +
+        `attribute a band tap to a reader) — using "off"; ?viewSwitch=1 is the way in`,
+    );
+    return "off";
+  }
+  return want;
+}
+
+/**
+ * Whether the views exist on this screen at all — i.e. whether the modules and
+ * the concerts sidecar are fetched. Either entry brings them in; neither means
+ * the shipped kiosk, byte-identical on the wire.
+ */
+export function viewsEnabled(config) {
+  return Boolean(config.viewSwitch) || bandTapFor(config) !== "off";
 }
 
 export { DEFAULTS };

@@ -1,7 +1,59 @@
 import { type Page, expect } from '@playwright/test';
+import * as fs from 'fs';
 import * as path from 'path';
+import { env } from './env';
 
 export const FIXTURES_DIR = path.resolve(__dirname, '../fixtures');
+
+/**
+ * The origin the JSON fixtures are written against (alignment.json's meiUri).
+ * The harness itself follows APP_BASE_URL everywhere, and a fixture that
+ * reaches the app by any route other than the Flask fixture endpoint (which
+ * rewrites it, see app/routes.py) is localised here — so a tree under test on
+ * another port never fetches its MEI from whatever server holds :5001.
+ */
+export const FIXTURE_ORIGIN = 'http://localhost:5001';
+
+/** Rewrite a fixture's absolute URLs to the server under test (no-op by default). */
+export function localiseFixtureText(text: string): string {
+  return env.baseUrl === FIXTURE_ORIGIN ? text : text.split(FIXTURE_ORIGIN).join(env.baseUrl);
+}
+
+/** A JSON fixture (name, or absolute path) parsed with its URLs localised. */
+export function readFixtureJson(file: string): any {
+  const abs = path.isAbsolute(file) ? file : path.join(FIXTURES_DIR, file);
+  return JSON.parse(localiseFixtureText(fs.readFileSync(abs, 'utf8')));
+}
+
+const UPLOAD_MIME: Record<string, string> = {
+  '.json': 'application/json',
+  '.mp3': 'audio/mpeg',
+  '.aac': 'audio/aac',
+  '.wav': 'audio/wav',
+  '.mei': 'application/xml',
+};
+
+/**
+ * Fixtures as file-chooser payloads: JSON is localised in memory, other files
+ * are read as-is. A chooser takes paths OR payloads, never a mix, so every
+ * file becomes a payload once any needs rewriting.
+ */
+export function fixtureUploads(
+  files: string[], // absolute paths or filenames relative to FIXTURES_DIR
+): { name: string; mimeType: string; buffer: Buffer }[] {
+  return files.map((f) => {
+    const abs = path.isAbsolute(f) ? f : path.join(FIXTURES_DIR, f);
+    const ext = path.extname(abs).toLowerCase();
+    const raw = fs.readFileSync(abs);
+    const buffer =
+      ext === '.json' ? Buffer.from(localiseFixtureText(raw.toString('utf8'))) : raw;
+    return {
+      name: path.basename(abs),
+      mimeType: UPLOAD_MIME[ext] ?? 'application/octet-stream',
+      buffer,
+    };
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Navigation helpers
@@ -56,7 +108,7 @@ export async function loadLocalAlignment(page: Page, filename = 'alignment.json'
   await stubExternalMei(page);
   // useLocal overrides the audio base URL so that relative filenames in the
   // alignment JSON resolve to /static/test/ (where test fixtures are served).
-  await page.goto(`/?align=http://localhost:5001/static/test/${filename}&useLocal=http://localhost:5001/static/test`);
+  await page.goto(`/?align=${env.baseUrl}/static/test/${filename}&useLocal=${env.baseUrl}/static/test`);
 }
 
 /**
@@ -67,15 +119,12 @@ export async function loadViaFilePicker(
   page: Page,
   files: string[], // absolute paths or filenames relative to FIXTURES_DIR
 ) {
-  const resolved = files.map((f) =>
-    path.isAbsolute(f) ? f : path.join(FIXTURES_DIR, f),
-  );
   await page.goto('/?useFiles');
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
     page.click('#file-picker-files-btn'),
   ]);
-  await chooser.setFiles(resolved);
+  await chooser.setFiles(fixtureUploads(files));
 }
 
 /**

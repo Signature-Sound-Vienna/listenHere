@@ -5,9 +5,18 @@ import * as path from 'path';
 dotenv.config({ path: path.resolve(__dirname, 'tests/.env') });
 
 const BASE_URL = process.env.APP_BASE_URL ?? 'http://localhost:5001';
+// The auto-started server must listen where the suite looks: a tree tested on
+// another port (a worktree beside a main checkout that owns :5001) sets
+// APP_BASE_URL, and every URL the harness builds follows it — see
+// tests/support/env.ts, and app/routes.py's fixture-origin rewrite.
+const PORT = new URL(BASE_URL).port || '80';
 
 export default defineConfig({
   testDir: './tests/e2e',
+  // One suite at a time on this machine: a second run (in any checkout) waits
+  // for the first — see tests/support/e2e-lock.ts. E2E_NO_LOCK=1 bypasses it.
+  globalSetup: require.resolve('./tests/support/e2e-lock'),
+  globalTeardown: require.resolve('./tests/support/e2e-unlock'),
   // Files run in parallel; tests WITHIN a file stay serial and in order, which is
   // what the audio/state tests actually depend on. The Flask dev server is
   // threaded and holds no per-request state, and each worker gets its own
@@ -28,7 +37,7 @@ export default defineConfig({
   // required, not cosmetic: tests/fixtures/ is only served at /static/test/<file>
   // when app.debug is true (see app/routes.py).
   webServer: {
-    command: 'flask run --port=5001',
+    command: `flask run --port=${PORT}`,
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
@@ -60,7 +69,17 @@ export default defineConfig({
         ...devices['Desktop Firefox'],
         // media.volume_scale silences the output stage only — decoding, currentTime
         // and the play/pause events the tests assert on are unaffected.
-        launchOptions: { firefoxUserPrefs: { 'media.volume_scale': '0.0' } },
+        // The cache prefs keep each worker's throwaway profile small: with the
+        // defaults Firefox fills its disk cache and its 500 MB media cache with
+        // the fixture audio, and a run left 400–660 MB per profile in the temp
+        // folder (2026-09-02: 19 stale profiles, 6 GB, a full disk).
+        launchOptions: {
+          firefoxUserPrefs: {
+            'media.volume_scale': '0.0',
+            'browser.cache.disk.enable': false,
+            'media.cache_size': 16384,
+          },
+        },
       },
     },
     {

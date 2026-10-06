@@ -63,7 +63,7 @@ test.describe('1. Application Load & Initialisation', () => {
   // browser form restoration which Playwright's reload() may not trigger,
   // so we only test localStorage-backed state here.
   test('1.8 fieldset collapse state persists across reload', async ({ page }) => {
-    await page.goto(`/?align=http://localhost:5001/static/test/${ALIGNMENT_JSON}`);
+    await page.goto(`/?align=${env.baseUrl}/static/test/${ALIGNMENT_JSON}`);
     // Collapse the Settings fieldset
     await page.locator('#playback-panel legend').click();
     await expect(page.locator('#playback-panel')).toHaveClass(/collapsed/);
@@ -75,7 +75,7 @@ test.describe('1. Application Load & Initialisation', () => {
 
   // 1.9 Malformed alignment JSON
   test('1.9 malformed alignment JSON shows error, does not crash', async ({ page }) => {
-    await page.goto(`/?align=http://localhost:5001/static/test/${ALIGNMENT_MALFORMED}`);
+    await page.goto(`/?align=${env.baseUrl}/static/test/${ALIGNMENT_MALFORMED}`);
     // Should show an error page or element — not the waveform interface
     await expect(page.locator('#audios')).not.toBeVisible();
     // No uncaught JS exceptions
@@ -88,7 +88,7 @@ test.describe('1. Application Load & Initialisation', () => {
   test('1.10 missing alignment JSON (404) shows error gracefully', async ({ page }) => {
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(e.message));
-    await page.goto('/?align=http://localhost:5001/static/test/does-not-exist.json');
+    await page.goto(`/?align=${env.baseUrl}/static/test/does-not-exist.json`);
     await expect(page.locator('#audios')).not.toBeVisible();
     expect(errors).toHaveLength(0);
   });

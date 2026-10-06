@@ -118,9 +118,21 @@
           <div id="align-file-list-container" style="display:none">
             <h3>Selected files</h3>
             <table id="align-file-table">
-              <thead><tr><th>File</th><th style="text-align:right;">Duration</th><th>Ref</th></tr></thead>
+              <thead><tr><th>File</th><th style="text-align:right;">Duration</th><th>Ref</th>
+                <th title="Ignore audio at the start or end of this recording that has no counterpart in the reference. Follows the setting below until you change it here.">Trim ends</th></tr></thead>
               <tbody></tbody>
             </table>
+            <div id="align-open-ends-row">
+              <label>
+                <input type="checkbox" id="align-open-ends-checkbox" checked />
+                Ignore audio at the start or end that isn’t in the reference —
+                applause, announcements, or tuning
+              </label>
+              <p id="align-open-ends-hint">
+                Set a single recording differently in the <em>Trim ends</em>
+                column above.
+              </p>
+            </div>
           </div>
         </div>
 
@@ -187,11 +199,6 @@
                   </select>
                   <span class="align-param-help">Downsampling factor for score alignment. 1 = full resolution, slower but more accurate.</span>
                 </div>
-                <div class="align-param-row align-score-param">
-                  <label for="align-param-onset-weight">Onset emphasis</label>
-                  <input type="number" id="align-param-onset-weight" min="0" max="5" step="0.5" />
-                  <span class="align-param-help">How strongly note attacks are emphasised. Higher = alignment anchors more firmly to clear onsets.</span>
-                </div>
               </div>
             </details>
           </div>
@@ -250,6 +257,12 @@
           </div>
           <div id="align-results" style="display:none">
             <h3>Alignment complete!</h3>
+            <div id="align-open-ends-report"></div>
+            <label id="align-label-row" title="Names the saved file, and helps find unsaved work again">
+              <span>Name this session</span>
+              <input type="text" id="align-label-input" maxlength="120" autocomplete="off"
+                     placeholder="e.g. Fledermaus overture, five recordings" />
+            </label>
             <button id="align-download-btn">Save data</button>
             <button id="align-open-btn">Listen!</button>
           </div>
@@ -293,6 +306,12 @@
           </div>
           <p class="file-picker-drop-hint">or drag &amp; drop files anywhere on this panel</p>
           <div id="file-picker-json-status"></div>
+          <label id="file-picker-label-row" hidden>
+            <span>Name this session <span class="fp-label-hint">(helps find it again)</span></span>
+            <input type="text" id="file-picker-label" maxlength="120" autocomplete="off"
+                   placeholder="e.g. Fledermaus, expert set, files in Desktop/Fledermaus" />
+          </label>
+          <div id="file-picker-recovery" class="recovery-ui" hidden></div>
           <div id="file-picker-status">
             <div id="file-picker-progress"></div>
             <ul id="file-picker-list"></ul>
@@ -341,7 +360,8 @@
             </a>
             <div id="transport">
               <button id="skip-back" class="transport-btn" title="Skip to start">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+                <svg class="icon-listen-mode" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+                <svg class="icon-fix-mode" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 5v14H9l-5-7 5-7z"/><path d="M15 9l-3 3 3 3"/></svg>
               </button>
               <button id="seek-back" class="transport-btn" title="Rewind 10s (Shift: 5s, Shift+Alt: 1s)">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6 8.5 6V6l-8.5 6z"/></svg>
@@ -354,7 +374,8 @@
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
               </button>
               <button id="skip-end" class="transport-btn" title="Skip to end">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6z"/></svg>
+                <svg class="icon-listen-mode" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6z"/></svg>
+                <svg class="icon-fix-mode" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5v14h11l5-7-5-7z"/><path d="M9 9l3 3-3 3"/></svg>
               </button>
               <button id="mark" class="transport-btn" data-mode="place" title="Place a marker at the current playback position (M)">
                 <svg class="icon-mark" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 0 1 0-5 2.5 2.5 0 0 1 0 5z"/></svg>
@@ -463,39 +484,13 @@
                         <input type="checkbox" id="drag-markers-cb" title="Enable marker dragging"/>
                         <label for="drag-markers-cb" title="Enable marker dragging">Enable dragging</label>
                       </span>
-                      <div class="tools-row">
-                        <span>
-                          <input type="radio" name="drag-mode" id="drag-mode-move" value="move" checked title="Drag marker to reposition it in time"/>
-                          <label for="drag-mode-move" title="Drag marker to reposition it in time">Move marker</label>
-                        </span>
-                        <span>
-                          <input type="radio" name="drag-mode" id="drag-mode-fix" value="fix" title="Drag marker to adjust the alignment grid"/>
-                          <label for="drag-mode-fix" title="Drag marker to adjust the alignment grid">Fix alignment</label>
-                        </span>
-                      </div>
-                      <fieldset id="radius-fieldset" disabled>
-                        <legend title="Controls the width of the affected area of alignment grid edits (radius of Gaussian kernel)">Fix alignment: Range</legend>
-                        <div class="tools-row">
-                          <span>
-                            <input type="radio" name="radius" id="radius-narrow" value="50" title="Adjustment influence: 50ms (Narrow radius)"/>
-                            <label for="radius-narrow" title="Adjustment influence: 50ms (Narrow radius)">Narrow</label>
-                          </span>
-                          <span>
-                            <input type="radio" name="radius" id="radius-medium" value="100" checked title="Adjustment influence: 100ms (Medium radius)"/>
-                            <label for="radius-medium" title="Adjustment influence: 100ms (Medium radius)">Medium</label>
-                          </span>
-                          <span>
-                            <input type="radio" name="radius" id="radius-wide" value="200" title="Adjustment influence: 200ms (Wide radius)"/>
-                            <label for="radius-wide" title="Adjustment influence: 200ms (Wide radius)">Wide</label>
-                          </span>
-                        </div>
-                      </fieldset>
                     </div>
                   </fieldset>
                   <hr class="tools-divider"/>
                   <button id="undo-btn" disabled title="Undo last action (Ctrl+Z)">Undo</button>
                   <button id="redo-btn" disabled title="Redo last action (Ctrl+Shift+Z)">Redo</button>
                   <button id="revert-all-btn" disabled title="Revert all manual edits to the original alignment">Revert alignment edits</button>
+                  <button id="fix-chooser-open" hidden title="Correct the alignment (experimental): the score against the reference recording first, then each recording against the reference">Correct alignment…</button>
                 </div>
               </fieldset>
             </div>

@@ -36,6 +36,18 @@
 // recording, and verification excludes those zones from its exactness
 // assertion while reporting their residual separately.
 //
+// Unscored-audio GAPS (plan §14 cluster B1; header.corrections.gaps, laid in
+// fix mode with G): between two adjacent onsets the recording holds audio the
+// score has no notes for — applause, a pause, an unwritten repeat. The ~36 s
+// zones above are exactly this, and without a label the tool can only stretch
+// the quarter (or clamp it). With the label the span keeps the LOCAL tempo
+// (the median of its neighbours') and the surplus is inserted as SILENCE:
+// every event from the resume onset on shifts later by that many ticks, a
+// note held across the boundary ends where the silence starts, and
+// verification holds the shifted file to the same ideal times. Planned per
+// recording, since the surplus is each recording's own. --no-gap-silence
+// restores the stretch for comparison.
+//
 // Usage:
 //   node tools/make_standins.mjs --alignment ExhibitAnnots/Alignment_Fledermaus_HQ.json \
 //     [--mei app/static/exhibit/data/fledermaus.mei]  (default: fetch header.meiUri)
@@ -50,6 +62,7 @@
 //                                 Misalignment is heard as inter-ear flams.
 //                                 Requires ffmpeg on PATH; ~50 MB each)
 //     [--no-dynamics]            (skip peaks-derived velocity shaping)
+//     [--no-gap-silence]         (ignore header.corrections.gaps: stretch, do not insert silence)
 //     [--no-verify]              (skip reparse-and-check of written files)
 //     [--force]                  (proceed past a failed provenance check)
 
@@ -84,6 +97,7 @@ function parseArgs(argv) {
     stereo: false,
     audioDir: null,
     dynamics: true,
+    gapSilence: true,
     verify: true,
     force: false,
   };
@@ -98,6 +112,7 @@ function parseArgs(argv) {
     else if (a === "--stereo") args.stereo = true;
     else if (a === "--audio-dir") args.audioDir = argv[++i];
     else if (a === "--no-dynamics") args.dynamics = false;
+    else if (a === "--no-gap-silence") args.gapSilence = false;
     else if (a === "--no-verify") args.verify = false;
     else if (a === "--force") args.force = true;
     else if (a === "--help" || a === "-h") {
@@ -430,11 +445,124 @@ function buildTempoEvents(knotTicks, knotTimes, tpq) {
 }
 
 /**
+ * Unscored-audio gaps for ONE recording's timeline: between the two adjacent
+ * onsets a gap names, the recording holds more audio than the score's quarters
+ * at any plausible tempo. The span keeps the LOCAL tempo — the median
+ * seconds-per-quarter of its neighbouring segments (±8, gap spans excluded;
+ * fix mode's estimator) — and the surplus becomes inserted silence:
+ * `silenceTicks` extra ticks before the resume onset, so that
+ *   (dq × tpq + silenceTicks) / tpq × spq ≈ spanS.
+ * Returns the shifts (at the resume onset's ORIGINAL tick) and per-gap stats.
+ */
+function planGapSilence(gapTicks, knotTicks, knotTimes, tpq) {
+  const shifts = [];
+  const gaps = [];
+  const indexOf = new Map(knotTicks.map((t, i) => [t, i]));
+  const gapSpanStarts = new Set(gapTicks.map((g) => g.tickA));
+  for (const g of gapTicks) {
+    const kA = indexOf.get(g.tickA);
+    const kB = indexOf.get(g.tickB);
+    if (kA === undefined || kB === undefined || kB !== kA + 1) continue;
+    const dq = (knotTicks[kB] - knotTicks[kA]) / tpq;
+    const spanS = knotTimes[kB] - knotTimes[kA];
+    const rates = [];
+    for (let k = Math.max(0, kA - 8); k < Math.min(knotTicks.length - 1, kB + 8); k++) {
+      if (gapSpanStarts.has(knotTicks[k])) continue;
+      const q = (knotTicks[k + 1] - knotTicks[k]) / tpq;
+      const s = knotTimes[k + 1] - knotTimes[k];
+      if (q > 1e-9 && s > 0.02) rates.push(s / q);
+    }
+    let spq = spanS / Math.max(dq, 1e-9); // no neighbours: the span's own rate, no silence
+    if (rates.length) {
+      rates.sort((a, b) => a - b);
+      const mid = rates.length >> 1;
+      spq = rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
+    }
+    const silenceTicks = Math.max(0, Math.round((spanS / spq - dq) * tpq));
+    gaps.push({
+      eventIx: g.i,
+      qEnd: g.qA,
+      qResume: g.qB,
+      spanS: +spanS.toFixed(4),
+      localSecondsPerQuarter: +spq.toFixed(4),
+      silenceTicks,
+      spanSecondsPerQuarter: +(spanS / (dq + silenceTicks / tpq)).toFixed(4),
+    });
+    if (silenceTicks > 0) shifts.push({ atTick: g.tickB, n: silenceTicks });
+  }
+  shifts.sort((a, b) => a.atTick - b.atTick);
+  return { shifts, gaps };
+}
+
+/**
+ * The tick shifter of a silence plan: `at(t)` is the written tick of original
+ * tick t (every boundary at or before t adds its silence); `before(t)` is the
+ * same but excluding a boundary AT t — where a note held across the gap ends.
+ */
+function makeTickShifter(shifts) {
+  const sum = (t, inclusive) => {
+    let s = 0;
+    for (const sh of shifts) {
+      if (inclusive ? sh.atTick <= t : sh.atTick < t) s += sh.n;
+      else break;
+    }
+    return s;
+  };
+  return {
+    active: shifts.length > 0,
+    boundaries: shifts.map((s) => s.atTick),
+    at: (t) => t + sum(t, true),
+    before: (t) => t + sum(t, false),
+  };
+}
+
+/**
+ * Move one track's events into the written tick space of a silence plan:
+ * every event at or after a gap's resume onset shifts by the silence inserted
+ * there; a note-off whose note began before a boundary and reaches it is
+ * clamped to the boundary (before the silence) instead — nothing rings
+ * through the applause. Note-ons and -offs are matched per channel and pitch
+ * in tick order (FIFO), so a pitch re-struck after the gap keeps its own off.
+ */
+function shiftForSilence(events, shifter) {
+  const open = new Map(); // "channel:pitch" → open note-on ticks (original)
+  const out = [];
+  for (const e of events) {
+    if (e.status === undefined) {
+      out.push({ ...e, tick: shifter.at(e.tick) });
+      continue;
+    }
+    const kind = e.status & 0xf0;
+    const key = `${e.status & 0x0f}:${e.d1}`;
+    const isOn = kind === 0x90 && e.d2 > 0;
+    const isOff = kind === 0x80 || (kind === 0x90 && e.d2 === 0);
+    if (isOn) {
+      if (!open.has(key)) open.set(key, []);
+      open.get(key).push(e.tick);
+      out.push({ ...e, tick: shifter.at(e.tick) });
+    } else if (isOff) {
+      const stack = open.get(key);
+      const onTick = stack && stack.length ? stack.shift() : null;
+      let tick = shifter.at(e.tick);
+      if (onTick !== null) {
+        const b = shifter.boundaries.find((bt) => bt > onTick && bt <= e.tick);
+        if (b !== undefined) tick = shifter.before(b);
+      }
+      out.push({ ...e, tick });
+    } else {
+      out.push({ ...e, tick: shifter.at(e.tick) });
+    }
+  }
+  return out;
+}
+
+/**
  * Rewrite the SMF: strip every existing tempo event, insert the new tempo
  * track into track 0, and (when velocityOf is given) reshape note-on
- * velocities. Note ticks, channels, programs, and track structure untouched.
+ * velocities. Channels, programs, and track structure untouched; note ticks
+ * too, unless a silence plan shifts the events after a labelled gap.
  */
-function warpSmf(smf, tempoEvents, velocityOf) {
+function warpSmf(smf, tempoEvents, velocityOf, shifter = null) {
   const tracks = smf.tracks.map((events, ti) => {
     let out = events.filter((e) => e.meta !== 0x51);
     const eot = out.filter((e) => e.meta === 0x2f);
@@ -444,7 +572,8 @@ function warpSmf(smf, tempoEvents, velocityOf) {
         e.status !== undefined && (e.status & 0xf0) === 0x90 && e.d2 > 0
           ? { ...e, d2: velocityOf(e.tick, e.d1, e.d2) }
           : e,
-      );
+      ); // on ORIGINAL ticks — the envelope was sampled at the original knots
+    if (shifter && shifter.active) out = shiftForSilence(out, shifter);
     if (ti === 0)
       out = out.concat(
         tempoEvents.map(({ tick, tempo }) => ({
@@ -459,7 +588,8 @@ function warpSmf(smf, tempoEvents, velocityOf) {
       );
     out.sort((a, b) => a.tick - b.tick); // stable: same-tick original order kept
     const lastTick = out.length ? out[out.length - 1].tick : 0;
-    const eotTick = eot.length ? Math.max(eot[0].tick, lastTick) : lastTick;
+    const eotSrc = eot.length ? (shifter ? shifter.at(eot[0].tick) : eot[0].tick) : lastTick;
+    const eotTick = Math.max(eotSrc, lastTick);
     out.push({ tick: eotTick, meta: 0x2f, data: new Uint8Array(0) });
     return out;
   });
@@ -536,6 +666,38 @@ async function main() {
     );
   }
 
+  // Unscored-audio gaps from fix mode (header.corrections.gaps, increment 4),
+  // resolved to the render's onset ticks; one that resolves to nothing is
+  // reported and left out, never guessed at.
+  const gapTicks = [];
+  const corr = header.corrections;
+  if (corr && Array.isArray(corr.gaps) && corr.gaps.length) {
+    const tickSet = new Set(onsetTicks);
+    for (const g of corr.gaps) {
+      const qA = score.score_onset[g.i];
+      const qB = score.score_onset[g.i + 1];
+      const tickA = Math.round(qA * tpq);
+      const tickB = Math.round(qB * tpq);
+      if (
+        Number.isFinite(qA) &&
+        Number.isFinite(qB) &&
+        tickB > tickA &&
+        tickSet.has(tickA) &&
+        tickSet.has(tickB)
+      ) {
+        gapTicks.push({ i: g.i, qA, qB, tickA, tickB });
+      } else {
+        console.warn(`  gap at event ${g.i}: no matching onset ticks in the render — ignored`);
+      }
+    }
+    console.log(
+      `Corrections: ${(corr.anchors || []).length} anchors, ${corr.gaps.length} unscored-audio gap(s)` +
+        (args.gapSilence
+          ? ` → rendered as silence at the local tempo (${gapTicks.length} resolved)`
+          : " — --no-gap-silence: stretched across the span as before"),
+    );
+  }
+
   const outDir = path.resolve(args.out || path.join(path.dirname(alignPath), "standins"));
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -556,6 +718,8 @@ async function main() {
       verovioOptions: header.verovioOptions || null,
     },
     dynamics: args.dynamics,
+    gapSilence: args.gapSilence,
+    gaps: gapTicks.length,
     tpq,
     notes: notes.length,
     onsets: renderedQ.length,
@@ -576,8 +740,16 @@ async function main() {
     const knotTicks = onsetTicks.slice();
     if (maxEndTick > knotTicks[knotTicks.length - 1]) knotTicks.push(maxEndTick);
     const knotTimes = knotTicks.map((t) => map.quartersToSec(t / tpq));
+    // Labelled gaps become silence in THIS recording's timeline: the knots
+    // after each gap move later in tick space, their ideal times unchanged,
+    // so the span's tempo is the local one instead of the stretch.
+    const plan =
+      args.gapSilence && gapTicks.length
+        ? planGapSilence(gapTicks, knotTicks, knotTimes, tpq)
+        : { shifts: [], gaps: [] };
+    const shifter = makeTickShifter(plan.shifts);
     const { events, clamped, missedKnots } = buildTempoEvents(
-      knotTicks,
+      knotTicks.map(shifter.at),
       knotTimes,
       tpq,
     );
@@ -606,12 +778,13 @@ async function main() {
       };
     }
 
-    const warped = warpSmf(smf, events, velocityOf);
+    const warped = warpSmf(smf, events, velocityOf, shifter);
     const outBytes = writeSmf(warped);
     const base = name.replace(/\.wav$/i, "").replace(/[/\\]/g, "_");
     const midPath = path.join(outDir, `${base}.standin.mid`);
     fs.writeFileSync(midPath, outBytes);
 
+    const silenceTicks = plan.shifts.reduce((n, s) => n + s.n, 0);
     const stats = {
       mid: path.relative(ROOT, midPath),
       tempoEvents: events.length,
@@ -619,15 +792,21 @@ async function main() {
       catchUpKnots: missedKnots.length,
       durationS: +knotTimes[knotTimes.length - 1].toFixed(3),
     };
+    if (plan.gaps.length) {
+      stats.gaps = plan.gaps;
+      stats.silenceTicks = silenceTicks;
+    }
 
-    // Verification: reparse the written file and hold it to the map's word.
+    // Verification: reparse the written file and hold it to the map's word —
+    // the onsets at their (possibly shifted) ticks, the ideal times the map's.
     if (args.verify) {
       const re = parseMidi(fs.readFileSync(midPath));
       const reTicks = [...new Set(re.notes.map((n) => n.s))].sort((a, b) => a - b);
+      const expectTicks = onsetTicks.map(shifter.at);
       if (
         re.notes.length !== notes.length ||
-        reTicks.length !== onsetTicks.length ||
-        reTicks.some((t, i) => t !== onsetTicks[i])
+        reTicks.length !== expectTicks.length ||
+        reTicks.some((t, i) => t !== expectTicks[i])
       )
         throw new Error(`${name}: warped file's notes/ticks differ from the source render`);
       const missed = new Set(missedKnots.map((k) => k.tick));
@@ -635,10 +814,10 @@ async function main() {
         maxErrClamped = 0;
       for (let i = 0; i < onsetTicks.length; i++) {
         const err = Math.abs(
-          tickToSec(onsetTicks[i], re.tpq, re.tempoChanges) -
+          tickToSec(expectTicks[i], re.tpq, re.tempoChanges) -
             map.quartersToSec(onsetTicks[i] / tpq),
         );
-        if (missed.has(onsetTicks[i])) {
+        if (missed.has(expectTicks[i])) {
           if (err > maxErrClamped) maxErrClamped = err;
         } else if (err > maxErr) maxErr = err;
       }
@@ -681,6 +860,11 @@ async function main() {
       `${name}: ${events.length} tempo events` +
         (clamped
           ? `, ${clamped} over-ceiling segments clamped (${missedKnots.length} catch-up knots)`
+          : "") +
+        (plan.gaps.length
+          ? `, ${plan.gaps.length} gap(s) → ${silenceTicks} ticks of silence (` +
+            plan.gaps.map((g) => `${g.spanS} s at q ${g.qEnd}`).join(", ") +
+            ")"
           : "") +
         (stats.maxOnsetErrorMs !== undefined
           ? `, max onset error ${stats.maxOnsetErrorMs} ms`

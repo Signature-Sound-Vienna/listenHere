@@ -66,6 +66,11 @@ import { resolveGroupFor, safeColor, groupTextColor } from "../js/engine/groupin
  *   which region, the turn machine) is the caller's business — this component
  *   only reports the tap with the shown annotation's id.
  * @param {(annId: string) => void} [opts.onJumpTap]
+ * @param {boolean} [opts.showMark]  render the MARK button beside the jump
+ *   (?marker=glass only): the caller places its marker on the annotation's
+ *   first region. Same division of labour as the jump — this component only
+ *   reports the tap with the shown annotation's id.
+ * @param {(annId: string) => void} [opts.onMarkTap]
  * @returns {{el: HTMLElement, chipsEl: HTMLElement, bodyEl: HTMLElement,
  *   update: (annotations: object[], focus: object|null, opts?: object) => void}}
  */
@@ -77,6 +82,8 @@ export function createAnnotationList({
   showTitle = false,
   showJump = false,
   onJumpTap,
+  showMark = false,
+  onMarkTap,
 }) {
   const el = document.createElement("div");
   el.className = "ann-panel";
@@ -112,12 +119,62 @@ export function createAnnotationList({
   jump.addEventListener("click", () => {
     if (lastShownId) onJumpTap?.(lastShownId);
   });
-  head.append(title, jump);
+  // The MARK button. It reads as a CONTROL, not as the marker: the same pill
+  // chrome as the jump beside it, a word, and a plain line-art glyph — none of
+  // the glass's brass ring, leather wrap, or held tilt. The draggable object is
+  // the one on the hook, and a visitor must never be tempted to pull this one
+  // off the panel.
+  const mark = document.createElement("button");
+  mark.type = "button";
+  mark.className = "ann-mark";
+  mark.hidden = true;
+  const markIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  markIcon.setAttribute("viewBox", "0 0 16 16");
+  markIcon.setAttribute("aria-hidden", "true");
+  markIcon.classList.add("ann-mark-icon");
+  markIcon.innerHTML =
+    "<circle cx='6.5' cy='6.5' r='4.6' fill='none' stroke='currentColor' " +
+    "stroke-width='1.6'/>" +
+    "<path d='M10 10 L14 14' stroke='currentColor' stroke-width='1.6' " +
+    "stroke-linecap='round'/>";
+  const markLabel = document.createElement("span");
+  markLabel.textContent = t("panel.markAnnotation", language);
+  mark.append(markIcon, markLabel);
+  mark.title = t("panel.markAnnotationLong", language);
+  mark.setAttribute("aria-label", t("panel.markAnnotationLong", language));
+  mark.addEventListener("click", () => {
+    if (lastShownId) onMarkTap?.(lastShownId);
+  });
+  head.append(title, jump, mark);
   const detail = document.createElement("p");
   detail.className = "ann-detail";
+  // THE PER-RECORDING NOTE (`targets[].description`, surfaced 2026-09-01). The
+  // shared description says what the annotation is about; this says what the
+  // annotator heard in the ONE recording you are listening to — "Here it stays
+  // on E6, as in every VPO recording before 2002" — and until now the exhibit
+  // fetched all 31 of them and rendered none.
+  //
+  // It sits OUTSIDE the scrolling description, below it, for the same reason
+  // the title sits above: it is the answer to "what about THIS one", and an
+  // answer you have to scroll to find is not one. That also keeps it out of the
+  // Q13 problem — the long descriptions overflow their box, and a note attached
+  // to the bottom of that overflow would inherit the overflow.
+  //
+  // Its heading is the recording's own strip caption (conductor · year), which
+  // needs no translation — the same argument that keeps labels off the middle
+  // band (plan §6.3) — so the note can name its subject without picking a
+  // language for it.
+  const target = document.createElement("div");
+  target.className = "ann-target";
+  target.hidden = true;
+  const targetWho = document.createElement("span");
+  targetWho.className = "ann-target-who";
+  const targetNote = document.createElement("span");
+  targetNote.className = "ann-target-note";
+  target.append(targetWho, targetNote);
   const groups = document.createElement("div");
   groups.className = "ann-groups";
-  textCol.append(head, detail);
+  textCol.append(head, detail, target);
   body.append(textCol, groups);
   el.append(chips, body);
 
@@ -157,7 +214,11 @@ export function createAnnotationList({
    *   label. Whether that stays legible without cluttering the chips is
    *   exactly what the Oct/Nov user testing is for.
    */
-  function update(annotations, focus, { markAudience = false } = {}) {
+  function update(
+    annotations,
+    focus,
+    { markAudience = false, targetFile = null, targetLabel = "" } = {},
+  ) {
     const { paintIds = [], shownId = null, pinned = false } = focus || {};
     const sameList =
       annotations.length > 0 &&
@@ -245,7 +306,8 @@ export function createAnnotationList({
       title.hidden = true;
     }
     jump.hidden = !(showJump && shown);
-    head.hidden = title.hidden && jump.hidden;
+    mark.hidden = !(showMark && shown);
+    head.hidden = title.hidden && jump.hidden && mark.hidden;
     // A NEW annotation's text starts at its beginning, not wherever the last
     // reader left the previous one — but only on an actual change of what is
     // shown: a re-render of the same text (a resize re-derivation, a zoom
@@ -253,6 +315,25 @@ export function createAnnotationList({
     // the top.
     if (shownId !== lastShownId) detail.scrollTop = 0;
     lastShownId = shownId;
+
+    // The per-recording note, for whichever recording is audible. Absent for
+    // most (recording, annotation) pairs — 31 of 61 targets carry one — and an
+    // absent note hides the block entirely rather than leaving an empty heading
+    // where the annotator happened not to write anything.
+    const targeted =
+      shown && targetFile
+        ? (shown.targets || []).find((t) => t.file === targetFile)
+        : null;
+    const noteText = targeted ? resolveText(targeted.description, { language }) : "";
+    if (noteText) {
+      targetWho.textContent = targetLabel || "";
+      targetNote.textContent = noteText;
+      target.hidden = false;
+    } else {
+      target.hidden = true;
+      targetWho.textContent = "";
+      targetNote.textContent = "";
+    }
 
     renderGroups(shown);
   }

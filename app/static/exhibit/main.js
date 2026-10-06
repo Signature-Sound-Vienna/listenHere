@@ -18,26 +18,31 @@
 // tests/e2e/33-exhibit-boundary.spec.ts, ratcheted at zero. Anything the engine
 // will not give us gets copied WITH A ROW IN ENGINE-WANTS.md.
 
-import { readConfig, rotationFor, DEFAULTS } from "./config.js";
+import {
+  readConfig, rotationFor, bandOrientationFor, bandTapFor, viewsEnabled, DEFAULTS,
+} from "./config.js";
 import { resolveText, setDebug, t } from "./strings.js";
 import {
   getClosestAlignmentIx,
   getCorrespondingTime,
 } from "../js/engine/align-core.js";
 import { configureGroupingCore, safeColor } from "../js/engine/grouping-core.js";
-import { AUDIENCES, loadExhibitData, metadataFor } from "./payload.js";
+import { AUDIENCES, loadExhibitData, metadataFor, portraitUrl } from "./payload.js";
 import { mountStrips } from "./strips.js";
 import { createStrap } from "./strap.js";
 import { createMarkerLayer } from "./marker.js";
 import { syncRegions } from "./regions.js";
 import { Transport } from "./audio.js";
-import { TurnTaking } from "./turns.js";
+import { TurnTaking, bandTapViewport } from "./turns.js";
 import { createArbiter } from "./arbiter.js";
 import { AudienceStore, buildAudienceSwitch } from "./audience.js";
 import { createViewportZoom } from "./zoom.js";
 import { applyTheme, annotationSeries, recolorAnnotations } from "./themes.js";
 import { createMiddleBand } from "./middle-band.js";
 import { createAnnotationList, groupForFileIn, hasGroupStory } from "./annotation-list.js";
+import { loadConcerts, loadDyk } from "./concerts.js";
+import { createAttractLoop } from "./attract.js";
+import { createRoom, ghostAngleFor, roomViewportId } from "./room.js";
 
 const config = readConfig();
 setDebug(config.debug);
@@ -52,7 +57,23 @@ const data = {
   alignment: null, // the merged exhibit payload, once the loader has run
   grids: {}, // filename -> number[] of times, for align-core
   exhibit: null, // the indexed view of it, from payload.js
+  // The transport, for the few module-level renderers that need to know what
+  // is AUDIBLE rather than what a viewport chose — the per-recording note is
+  // the first (renderAnnotations). Same holder idiom as the payload above,
+  // rather than threading the transport through every render signature.
+  transport: null,
+  // The turn machine, for the same reason: the by-year explorer's "listen"
+  // tap is a bare recording switch made from a module-level view.
+  turns: null,
+  // The audience store, for the same reason again: an explorer's "did you
+  // know?" story is told in the register its own reader is set to.
+  audience: null,
 };
+
+/** The recording the shared clock is on, or null before the first selection. */
+function activeFileForNotes() {
+  return data.transport?.activeFile || null;
+}
 
 configureGroupingCore({
   getAlignment: () => data.alignment,
@@ -131,8 +152,9 @@ function buildScreen(root) {
   // a taller band by default — but an EXPLICIT ?middleBandHeight= always wins,
   // because the whole point of the orientation switch is comparing variants
   // whose geometry the user can still pin down per URL.
+  const bandOrientation = bandOrientationFor(config);
   const bandHeight =
-    config.bandOrientation === "rotated" && config.middleBandHeight === DEFAULTS.middleBandHeight
+    bandOrientation === "rotated" && config.middleBandHeight === DEFAULTS.middleBandHeight
       ? config.middleBandHeightRotated
       : config.middleBandHeight;
   root.style.setProperty("--middle-band-height", bandHeight + "px");
@@ -152,6 +174,26 @@ function buildScreen(root) {
 
   const viewports = [];
   const bands = [];
+  // ONE BAND PER GAP is the two-sided rule, and with a single viewport there is
+  // no gap — which used to mean no band at all. That was never a decision: the
+  // band is also the only place the exhibit carries the discographic identity
+  // (conductor, orchestra, year, portrait) and the ONLY play/pause and time
+  // readout anywhere in the interface, so a single-viewport screen lost the
+  // transport with them (Chanda, demo feedback 2026-09-01). The band is built
+  // either way, so the whole bug was that nothing ever mounted it.
+  //
+  // It goes at the TOP for one reader — the "now playing" position — which
+  // needs the plain column direction: the two-sided layout is column-REVERSE so
+  // that viewport 0 sits at the near edge, and under that a first child renders
+  // at the bottom. One viewport has nothing to reverse, so the attribute turns
+  // the reversal off and DOM order is reading order again.
+  if (config.viewports === 1) {
+    root.dataset.singleViewport = "1";
+    const slot = document.createElement("div");
+    slot.className = "middle-band-slot";
+    root.appendChild(slot);
+    bands.push(slot);
+  }
   for (let i = 0; i < config.viewports; i++) {
     if (i > 0) {
       // One band per gap. It is built later than the viewports because it needs
@@ -168,6 +210,7 @@ function buildScreen(root) {
     // Per-viewport, because the two halves resolve audience and language
     // independently and may differ at the same moment.
     vp.dataset.audience = config.audiences[i] ?? config.audiences[0];
+    vp.dataset.activeStrip = config.activeStrip;
     vp.dataset.language = config.languages[i] ?? config.languages[0];
     // Set BEFORE any strip mounts, like the side slot below: the strap's
     // reserved padding narrows the strips column, and WaveSurfer sizes its
@@ -186,6 +229,16 @@ function buildScreen(root) {
     // itself (the CSS unions the two selectors into one padding), and it must
     // do so HERE for the same canvas-sizing reason as the strap above.
     if (config.marker === "glass") vp.dataset.marker = "glass";
+    // Set BEFORE any strip mounts, like the strap and the side slot above: the
+    // caption column reserves the note dot's width, and reserving it later
+    // would shift ten captions sideways after the visitor could already read
+    // them. Pure paint, so unlike the strap it costs no canvas re-measure.
+    if (config.targetNotes === "on") vp.dataset.targetNotes = "on";
+    // The grouping edge's WIDTH is part of the strip's border box, so a
+    // waveform sized at creation would be a few pixels wrong if this arrived
+    // later — the same before-any-strip-mounts rule as the strap above, and
+    // the reason this is set here rather than when a grouping first paints.
+    if (config.groupIndicator !== "edge") vp.dataset.groupIndicator = config.groupIndicator;
     const rot = rotationFor(config, i);
     if (rot) vp.style.transform = `rotate(${rot}deg)`;
 
@@ -232,6 +285,9 @@ function buildScreen(root) {
     root.appendChild(vp);
     viewports.push({
       index: i,
+      // This viewport's id in the ROOM (room.js): screen × viewports + index,
+      // so the two windows of one PC name four viewports, 0–3.
+      roomId: roomViewportId(config, i),
       el: vp,
       stripsEl: strips,
       statusEl: status,
@@ -273,6 +329,8 @@ function buildScreen(root) {
       pinDeadline: null,
       pinTotalMs: 0,
       pinTicker: 0,
+      turnTicker: 0,     // the grant ring's tick (paintTurn)
+      turnPending: null, // the request the turn element currently shows
       expiryEl: null,
       ringRearm: null,
       // ?detailFade: the shown text's lifecycle — when it went on show, its
@@ -298,9 +356,310 @@ function buildScreen(root) {
       focusPinned: false,
       followLast: null,
       panelOpen: false,
+      // ?views / ?viewSwitch / ?bandTap (plan §11): which view this half
+      // shows, the toolbar switch that changes it (the fallback entry), and
+      // the explorers once built, by name — kept across switches so a
+      // re-entry costs no rebuild.
+      view: "listen",
+      viewSwitchEl: null,
+      views: {},
     });
   }
   return { viewports, bands };
+}
+
+// ---------------------------------------------------------------------------
+// Views (plan §11). "listen" is the shipped interface; "years" and "conductors"
+// draw an explorer OVER this viewport's strips and commentary (years-view.js
+// says why over rather than instead). Per viewport and in-session: one half
+// explores while the other keeps listening, and nothing reloads (user ruling
+// 2026-09-02). The modules and the sidecar are fetched only when an entry is
+// configured — the toolbar switch, or the band's tappable facts — so the
+// default kiosk stays byte-identical on the wire.
+//
+// TWO WAYS IN, ONE WAY BACK (plan §11(f), ruled 2026-09-02). The ruled entry is
+// the MIRRORED BAND: tap the year, tap the conductor, and the tapping reader's
+// half opens the matching explorer on that fact — "current" is the audible
+// recording's, which is what the band shows. The toolbar switch of 0.50.0
+// stays as the debug and fallback entry (`?viewSwitch=1`). The way back is
+// INSIDE the overlay: a close control this file adds to every explorer (the
+// side panel's × precedent), so an explorer opened from the band can always be
+// left, switch or no switch.
+// ---------------------------------------------------------------------------
+const VIEWS = ["listen", "years", "conductors"];
+let viewModules = null;   // { years, conductors }: Promise<module> each, once an entry is configured
+let concertsData;         // Promise<Concerts|null> once asked; undefined = never asked
+let concertsResolved;     // the settled value of the above; undefined until it lands
+let dykData;              // Promise<Dyk|null> — the museum's "did you know?" text, same rules
+let dykResolved;          // its settled value; undefined until it lands
+let bandHandle = null;    // the middle band, once built (its facts re-ask when the sidecar lands)
+let attractLoop = null;   // the attract loop, once created (the study panel's demo button drives it)
+
+/**
+ * The series' conductor of a payload recording, or null when the series does
+ * not know them — the payload's own name, checked against the sidecar's index
+ * (the two archives spell every conductor the way the payload does today; a
+ * spelling the series lacks simply makes the fact not tappable, never wrong).
+ */
+function concertConductorOf(file) {
+  const name = file && data.exhibit ? metadataFor(data.exhibit, file).conductor : "";
+  return name && concertsResolved?.byConductor.has(name) ? name : null;
+}
+
+function positionView(vp) {
+  // THE OVERLAY FILLS THE HALF (user, 2026-09-18) and keeps a STRIP clear at the
+  // top for the audience switch, which is painted over it (exhibit.css).
+  //
+  // It used to START below the toolbar, which left the strap showing above it,
+  // below it, and down both sides — the overlay read as a panel that had landed
+  // there rather than as the half's own content. Now the box is the half and the
+  // strip is padding inside it, so the only thing above the overlay is the band.
+  //
+  // Layout values, not painted ones: the far half is rotated 180°, and
+  // offsetTop/offsetHeight do not know that, which is exactly what makes them
+  // right here.
+  const bar = vp.el.querySelector(".vp-toolbar");
+  if (!bar) return;
+  vp.el.style.setProperty("--vp-view-strip", `${bar.offsetTop + bar.offsetHeight + 4}px`);
+  reserveBack(vp, bar);
+  fitViewStrip(vp);
+}
+
+/**
+ * Keep the toolbar's controls clear of the explorer's Back button, which shares
+ * their strip but is not one of them — it belongs to the overlay, which is drawn
+ * UNDER the toolbar, so a control that reaches it simply paints over it.
+ *
+ * The first cut relied on the zoom control, standing down behind the overlay,
+ * holding 137 px at that end. That was an assumption and it was wrong: the zoom
+ * buttons are configurable (`?zoomControls=0`, spec 35.16), and without them the
+ * audience switch ran to the toolbar's edge and swallowed the Back button whole
+ * — reported from a kiosk where the control simply was not there.
+ *
+ * So the room is RESERVED, and measured from the button rather than guessed:
+ * its own width plus the gap, as padding on the bar. Set before fitViewStrip
+ * reads the controls' positions, because this moves them.
+ */
+function reserveBack(vp, bar) {
+  const back = vp.el.querySelector(".vp-view .view-back");
+  if (!back) return;
+  vp.el.style.setProperty("--vp-view-back", `${Math.ceil(back.offsetWidth) + 24}px`);
+}
+
+/**
+ * Lift the explorer's heading INTO the toolbar's strip when it fits beside the
+ * controls — reclaiming its own row, and the row-gap under it, for the content.
+ *
+ * WHAT IT IS WORTH, measured at the kiosk geometry: 28 px, which is the heading
+ * (22) plus the gap (6). Not the 56 px the strip is tall — the content still
+ * cannot start until the strip ends, or the card would slide under the audience
+ * switch painted over it. 28 px is close to what item 4's taller year cells took
+ * (30), so this returns roughly that and no more.
+ *
+ * WHETHER IT FITS IS MEASURED, NOT ASSUMED, because it does not always. The
+ * by-year heading is 424 px wide at the kiosk's 1 rem and the by-conductor one
+ * 329 — and with `?viewSwitch=1` the toolbar carries a third control that eats
+ * the room. Below roughly 730 px of half-width nothing fits either. So the
+ * heading only moves where there is a measured gap for it, and stays on its own
+ * row otherwise; a title is not a thing to truncate.
+ *
+ * A Range, not `scrollWidth`: the heading is a block filling the overlay, so its
+ * scrollWidth is the overlay's width and says nothing about the TEXT.
+ */
+function fitViewStrip(vp) {
+  const bar = vp.el.querySelector(".vp-toolbar");
+  const view = vp.el.querySelector(".vp-view");
+  if (!bar || !view) return;
+  delete view.dataset.stripHeading;
+  const heading = view.querySelector(".yv-heading, .cv-heading");
+  if (!heading) return;
+  // The leftmost control the heading has to clear. A control standing down
+  // behind the overlay (the zoom) is hidden but still holds its place, so it
+  // counts as an obstacle exactly as much as a visible one does.
+  let guard = Infinity;
+  for (const control of bar.children) guard = Math.min(guard, control.offsetLeft);
+  if (!Number.isFinite(guard)) return;
+  const range = document.createRange();
+  range.selectNodeContents(heading);
+  const text = range.getBoundingClientRect().width;
+  const padding = parseFloat(getComputedStyle(view).paddingLeft) || 0;
+  // 24 px of air between the title and the first control, so the two read as
+  // two things rather than one crowded line.
+  if (padding + text + 24 <= guard) view.dataset.stripHeading = "1";
+}
+
+function paintViewSwitch(vp) {
+  if (!vp.viewSwitchEl) return;
+  for (const b of vp.viewSwitchEl.querySelectorAll(".view-btn")) {
+    const on = b.dataset.view === vp.view;
+    b.classList.toggle("is-on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
+function buildViewSwitch(vp) {
+  const bar = document.createElement("div");
+  bar.className = "view-switch";
+  bar.dataset.viewport = String(vp.index);
+  for (const name of VIEWS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "view-btn";
+    b.dataset.view = name;
+    b.textContent = t("view." + name, vp.language);
+    b.addEventListener("click", () => setView(vp, name));
+    bar.appendChild(b);
+  }
+  vp.viewSwitchEl = bar;
+  paintViewSwitch(vp);
+  return bar;
+}
+
+/**
+ * Where an explorer opens: the fact the visitor tapped when there is one
+ * (`opening.year` / `opening.conductor`, from the band), else what the audible
+ * recording says — the band's own reading of "current" (§11(f)). Null leaves
+ * the view its own resting choice.
+ */
+function openingFor(name, opening) {
+  const file = data.transport?.activeFile;
+  if (name === "years") return opening.year ?? concertsResolved?.yearOf(file) ?? null;
+  if (name === "conductors") return opening.conductor ?? concertConductorOf(file);
+  return null;
+}
+
+/** Build an explorer for `vp`, with the close control that is its way back. */
+function buildView(name, m, vp, concerts, dyk, opening) {
+  const exhibit = data.exhibit;
+  const common = {
+    viewport: vp.index,
+    language: vp.language,
+    concerts,
+    // The museum's "did you know?" text, and the two things it needs to tell a
+    // story in the right voice: this reader's audience (the store, so the
+    // explorer re-renders when they change register without leaving it), and
+    // whether the placeholder figures are drawn.
+    dyk,
+    audienceStore: data.audience,
+    dykImages: config.dykImages !== "off",
+    dykFont: config.dykFont,
+    dykSkin: config.dykSkin,
+    dykWidth: config.dykWidth,
+    dykTilt: config.dykTilt,
+    piece: exhibit.piece,
+    portraitUrl: (path) => portraitUrl({ portrait: path }),
+    // The way from a concert into its music: the BARE aligned switch a strip
+    // tap makes (turns.request with no time — a standing marker catches it,
+    // per the marker ruling), then back to the listening view so the reader
+    // sees the recording they asked for.
+    onListen: (file) => {
+      if (vp.bareSwitch) vp.bareSwitch(file);
+      else data.turns?.request(vp.roomId, file, undefined);
+      setView(vp, "listen");
+    },
+    // THE EXPLORERS INTERLINK (user, 2026-09-18) — plan §11(f)'s "the facets
+    // are marks, not buttons" is REVERSED, deliberately and by name: "I cannot
+    // imagine that inter-explorer-navigation will not be wanted". A year on a
+    // conductor's card opens by-year on that concert; the conductor on a year's
+    // card opens by-conductor on them. Same viewport, replacing the overlay.
+    //
+    // Both explorers' modules are imported together the moment any entry is
+    // configured (viewModules), so the far side of a link can never be missing
+    // while the near side is on screen.
+    onExplore: (view, at) => setView(vp, view, at),
+  };
+  const at = openingFor(name, opening);
+  const handle =
+    name === "years"
+      ? m.createYearsView({ ...common, initialYear: at })
+      : m.createConductorsView({ ...common, initialConductor: at });
+  // The way back, inside the overlay (plan §11(f)): the band is the way in and
+  // the toolbar switch only the fallback, so the overlay itself must be
+  // leavable.
+  //
+  // IT SAYS "BACK" RATHER THAN "×" (user, 2026-09-19). An × says "dismiss this
+  // thing" and leaves open what is underneath; this control returns to the
+  // listening view, which is a destination, so it names the move. The explorers
+  // are the surfaces ALLOWED to carry words — they live on one reader's half and
+  // may speak that reader's language, unlike the shared band (§6.3).
+  //
+  // The user weighed the obvious objection and accepted it: "Back" can be read
+  // as "the screen before", which since the explorers interlink might be the
+  // other explorer rather than the music. Their reasoning is that a visitor who
+  // wants the previous explorer has the reciprocal link right there on the card
+  // — 1987 back to Karajan — and would reach for that in preference.
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "view-back";
+  back.textContent = t("view.back", vp.language);
+  // The longer sentence for a screen reader, which cannot see what it returns
+  // to. It CONTAINS the visible word, so the two do not disagree.
+  back.setAttribute("aria-label", t("view.close", vp.language));
+  back.addEventListener("click", () => setView(vp, "listen"));
+  handle.el.appendChild(back);
+  return handle;
+}
+
+/**
+ * Switch one viewport's view, optionally onto a fact (`opening.year` /
+ * `opening.conductor` — a band tap). Async only because the explorers' modules
+ * and data load lazily; the switch paints at once, the overlay lands when
+ * ready. Asking for the view already up is not a no-op when a fact comes with
+ * it: the explorer moves to that fact, which is what a second band tap means.
+ */
+async function setView(vp, name, opening = {}) {
+  if (!VIEWS.includes(name)) {
+    console.warn(`exhibit: unknown view "${name}" — ignored`);
+    return;
+  }
+  if (name !== "listen" && !viewModules) {
+    console.warn(`exhibit: view "${name}" asked for with no entry configured — ignored`);
+    return;
+  }
+  if (vp.view === name) {
+    if (name !== "listen" && vp.views[name]) {
+      const at = openingFor(name, opening);
+      if (at != null) vp.views[name].select(at);
+    }
+    return;
+  }
+  // THE UNION PSEUDO-AUDIENCE DOES NOT SURVIVE THE DOOR (user, 2026-09-18).
+  // "All" unions the annotation LISTS, which is a listening-view idea; a "did
+  // you know?" story has no union — the three registers are three tellings of
+  // one fact, and dyk.js has been quietly reading All as adults since 0.66.0.
+  // So the control is made to agree with the content: entering an explorer
+  // moves this reader to adults, and the position is hidden while they are in
+  // there (exhibit.css). It does NOT revert on the way out (user): silently
+  // restoring a control the reader can see would be the worse surprise.
+  if (name !== "listen" && data.audience?.get(vp.index) === "all") {
+    data.audience.set(vp.index, "adults");
+  }
+  const leaving = vp.view;
+  vp.view = name;
+  vp.el.dataset.view = name;
+  paintViewSwitch(vp);
+  // This reader's band copy stands its cue down on the fact that opened the
+  // view (mirrored only; the band decides). Also pushed when the band is built.
+  bandHandle?.setCurrentView(vp.index, name);
+  vp.views[leaving]?.el.remove();
+  if (name === "listen") return;
+  let handle = vp.views[name];
+  if (!handle) {
+    const [m, concerts, dyk] = await Promise.all([viewModules[name], concertsData, dykData]);
+    if (vp.view !== name) return; // switched away while loading
+    handle = vp.views[name] = buildView(name, m, vp, concerts, dyk, opening);
+  } else {
+    // Re-entering: onto the tapped fact, else the audible recording's.
+    const at = openingFor(name, opening);
+    if (at != null) handle.select(at);
+  }
+  // Append FIRST: positionView now also measures the overlay's own heading
+  // against the toolbar (fitViewStrip), which it cannot do before the overlay is
+  // in the document — and the strip it sets changes the height `refit` fits to,
+  // so refit goes last.
+  vp.el.appendChild(handle.el);
+  positionView(vp);
+  handle.refit?.();
 }
 
 const root = document.getElementById("screen");
@@ -320,7 +679,12 @@ document.title = t("app.title", config.languages[0]);
 // never even fetch the module.
 if (config.studyPanel) {
   import("./study-panel.js")
-    .then((m) => m.mountStudyPanel(config))
+    .then((m) =>
+      m.mountStudyPanel(config, {
+        // Staff shortcut: start the loop now, whatever the idle clock says.
+        attractNow: () => (attractLoop ? (attractLoop.force(), true) : false),
+      }),
+    )
     .catch((e) => console.warn("exhibit: study panel failed to load", e));
 }
 
@@ -347,6 +711,13 @@ window._exhibitTest = {
   annotationPalette,
   projectPlayhead,
   positionsFor,
+  // Views (plan §11): which view each half shows, a programmatic switch (the
+  // readingClock.advance precedent — the semantic path without the tap), and
+  // the explorer's own state.
+  view: (i) => viewports[i]?.view ?? null,
+  setView: (i, name, opening) => setView(viewports[i], name, opening),
+  yearsView: (i) => viewports[i]?.views.years?.state() ?? null,
+  conductorsView: (i) => viewports[i]?.views.conductors?.state() ?? null,
   ready: new Promise((resolve) => {
     _signalReady = resolve;
   }),
@@ -378,6 +749,33 @@ async function boot() {
   data.grids = exhibit.grids;
   window._exhibitTest.exhibit = exhibit;
 
+  // The explorers' modules and the concerts sidecar, started now so the first
+  // tap is instant — but only when an entry is configured (the toolbar switch
+  // or the band's tappable facts): the shipped kiosk never fetches any of it.
+  if (viewsEnabled(config)) {
+    viewModules = {
+      years: import("./years-view.js"),
+      conductors: import("./conductors-view.js"),
+    };
+    concertsData = loadConcerts({ debug: config.debug });
+    concertsData.then((c) => {
+      concertsResolved = c;
+      window._exhibitTest.concerts = c;
+      // The band's facts could not lead anywhere until now.
+      bandHandle?.refresh();
+    });
+    // The museum's "did you know?" text rides with the sidecar: same gate, so
+    // the shipped listening kiosk still fetches neither.
+    dykData = loadDyk({ debug: config.debug });
+    dykData.then((d) => {
+      dykResolved = d;
+      window._exhibitTest.dyk = d;
+    });
+    window.addEventListener("resize", () => {
+      for (const vp of viewports) if (vp.view !== "listen") positionView(vp);
+    });
+  }
+
   const store = new AudienceStore(
     Array.from({ length: config.viewports }, (_, i) =>
       config.audiences[i] ?? config.audiences[0],
@@ -389,6 +787,10 @@ async function boot() {
     config.audienceAll ? [...AUDIENCES, "all"] : AUDIENCES,
   );
   window._exhibitTest.audience = store;
+  // The same holder idiom as the transport and the turn machine above: the
+  // explorers are built from a module-level function, and the story they tell
+  // is told in the reader's own register (dyk.js).
+  data.audience = store;
 
   const transport = new Transport({
     audio: exhibit.audio,
@@ -401,6 +803,8 @@ async function boot() {
     debug: config.debug,
   });
   window._exhibitTest.transport = transport;
+  // The module-level holder, so renderAnnotations can ask what is audible.
+  data.transport = transport;
 
   // THE READING CLOCK (ruled 2026-08-25): every fade and expiry window counts
   // only time the music actually runs. The pause button freezes a reader's
@@ -429,45 +833,132 @@ async function boot() {
     },
   };
 
+  // The room (room.js): the channel the windows of one PC share and the clock
+  // that runs on it — the sync from the audible window, the muted mirror on the
+  // others, the touch hand-off — and, under ?room=shared, the link to the room's
+  // SharedWorker (room-worker.js), which holds the turn state and the speakers
+  // for every window. Inert unless ?room=shared or the attract loop is
+  // configured, so the shipped single kiosk opens no channel.
+  const room = createRoom({ config, transport, store, viewports, exhibit });
+  window._exhibitTest.room = room;
+
   // Every strip tap goes through the turn-taking machine (turns.js), which
   // decides — by the ?turnPolicy in force — whether it reaches the transport
   // now, announced, or as a request the other side grants. The default policy
   // is a transparent pass-through, so the shipped tap behaviour is unchanged.
+  // Viewports are named by their ROOM ids (vp.roomId): with the room's worker
+  // the machine is shared by every window of the PC and a take is executed on
+  // the window that owns the taking viewport; without it the machine is this
+  // window's and room ids equal local indices.
   const turns = new TurnTaking({
     transport,
+    room,
     policy: config.turnPolicy,
     grantMs: config.turnGrantMs,
+    denyCooldownMs: config.turnDenyCooldownMs,
   });
   window._exhibitTest.turns = turns;
+  data.turns = turns;
+  // The resolved configuration, so a spec can assert against the value in
+  // force rather than restating it — the same discipline as reading the shown
+  // set from the payload instead of hardcoding eight (the 34.13/38.4 lesson).
+  window._exhibitTest.config = config;
 
   // Room-level audio arbitration (arbiter.js): claim on every silence-to-sound
-  // transition, pause when another screen claims. The default "local" arbiter
-  // is inert, so this wiring costs nothing until ?arbiter=broadcast opts in.
-  // The claim hangs off the transport's own state rather than off the taps, so
-  // the band's shared play button claims exactly like a strip tap does.
-  const arbiter = createArbiter(config.arbiter);
+  // transition, yield when another screen's claim wins. The default "local"
+  // arbiter is inert, so this wiring costs nothing until ?arbiter=broadcast
+  // opts in. The claim hangs off the transport's own state rather than off the
+  // taps, so the band's shared play button claims exactly like a strip tap does.
+  // AUDIBLE means playing AND not muted: a window mirroring the room's sound
+  // muted (room.js, ruling R7) is not on the speakers and claims nothing.
+  // The KIND is the loop's while a pass is driving the transport, a visitor's
+  // otherwise — a visitor's claim outranks the loop's (arbiter.js).
+  // Under the room machine the worker holds the speakers for every window
+  // (arbiter.js RoomArbiter, the broadcast ranking); a room without its worker
+  // still upgrades "local" to "broadcast" — a local arbiter there would let two
+  // windows sound at once.
+  const arbiterKind = room.worker
+    ? "room"
+    : room.universal && config.arbiter === "local"
+      ? "broadcast"
+      : config.arbiter;
+  if (arbiterKind !== config.arbiter) {
+    console.info(`exhibit: room=shared — arbiter "${config.arbiter}" replaced by "${arbiterKind}"`);
+  }
+  const arbiter = createArbiter(arbiterKind, room);
   window._exhibitTest.arbiter = arbiter;
-  arbiter.onRevoked(() => transport.pause());
+  arbiter.onRevoked(() => {
+    // A window that loses the speakers does not fall silent when the room's
+    // clock can carry it: under the room machine, or on an idle screen with its
+    // band up (R7), it mutes and mirrors what the room now hears. A live table
+    // under room=off, as before, pauses.
+    if (room.yieldAudio()) return;
+    transport.pause();
+  });
   {
     let wasAudible = false;
     transport.subscribe((state) => {
-      if (state.playing && !wasAudible) arbiter.claim();
-      wasAudible = state.playing;
+      const audible = state.playing && !state.muted;
+      if (audible && !wasAudible) arbiter.claim(attractLoop?.drivesAudio() ? "loop" : "visitor");
+      // Stopped on its own (the piece ended, a pause): stop defending the
+      // speakers, or a finished visitor would still outrank the next pass.
+      else if (!audible && wasAudible) arbiter.release();
+      wasAudible = audible;
     });
   }
 
   // The middle band, once the sidecar is known. Shared per screen: there is one
   // audible recording, so there is one thing for it to say. The piece title's
   // language follows viewport 0 — see the documented tension in middle-band.js.
+  const bandOrientation = bandOrientationFor(config);
   const band = createMiddleBand(exhibit, {
     language: config.languages[0],
-    orientation: config.bandOrientation,
+    // The RESOLVED orientation, the same one buildScreen reserved height for
+    // (config.js bandOrientationFor) — a single viewport cannot mirror or flip.
+    orientation: bandOrientation,
+    // How many readers the band faces: with one, its single cluster IS that
+    // reader's, so a fact tap is attributable whatever the orientation.
+    viewports: config.viewports,
+    // A turn mark needs somebody to take a turn FROM: with one viewport the
+    // holder is always the only reader, so the mark would be decoration that
+    // never changes. Suppressed there rather than painted permanently.
+    turnIndicator: config.viewports > 1 ? config.turnIndicator : "off",
+    flipMotion: config.bandFlipMotion,
     // The band's shared play/pause. toggle() needs a fallback for the very
     // first tap of a session, before anything is active — the same resting
     // recording preselect names below.
     onToggle: () => transport.toggle(exhibit.piece.ref || exhibit.order[0]),
+    // THE BAND AS THE INTERFACE (?bandTap; plan §11(f)). Resolved by config.js
+    // to "off" unless the band is mirrored, because only mirrored copies can
+    // say who tapped (turns.js bandTapViewport). A fact is tappable only
+    // where the series can follow it: the year when the audible recording IS
+    // that year's concert (a 1950 studio session is not one; nor is another
+    // orchestra's 2010), the conductor when the series knows them — so a tap
+    // never opens a card about something the visitor is not hearing.
+    tap: bandTapFor(config),
+    tappable: (fact, meta, file) => {
+      const c = concertsResolved;
+      if (!c) return false;
+      if (fact === "year") return c.yearOf(file) != null;
+      if (fact === "conductor") return Boolean(meta.conductor) && c.byConductor.has(meta.conductor);
+      return false;
+    },
+    // Opens the TAPPING reader's half on the fact. The clock is untouched: a
+    // view is per-viewport state, so this is not a turn (turns.js).
+    onFact: (cluster, fact, meta, file) => {
+      const ix = bandTapViewport(bandOrientation, cluster, config.viewports);
+      const vp = ix == null ? null : viewports[ix];
+      if (!vp || !concertsResolved) return;
+      if (fact === "year") setView(vp, "years", { year: concertsResolved.yearOf(file) });
+      else if (fact === "conductor") setView(vp, "conductors", { conductor: meta.conductor });
+    },
   });
   for (const slot of bands) slot.replaceWith(band.el);
+  bandHandle = band;
+  // A half may already be in a view (?views=…) before the band exists.
+  for (const vp of viewports) band.setCurrentView(vp.index, vp.view);
+  // The sidecar may have landed before the band existed: ask its facts again.
+  if (concertsResolved !== undefined) band.refresh();
   window._exhibitTest.band = band;
   window._exhibitTest.marker = (i) => viewports[i]?.marker?.state() ?? null;
   // Programmatic placement for the specs (the readingClock.advance precedent):
@@ -517,29 +1008,65 @@ async function boot() {
   let markerSeek = null; // { file, time } of the last marker-driven jump
   const markerJump = (vp, file, time) => {
     markerSeek = { file, time };
-    turns.jump(vp.index, file, time);
+    turns.jump(vp.roomId, file, time);
+  };
+  // THE ROOM'S MARKERS. Every viewport's marker is published to the room's
+  // worker (room-worker.js) as it changes, and every viewport's GHOSTS are the
+  // other viewports' markers — this screen's other half from local truth
+  // (synchronous, as before the room), the other windows' from the worker's
+  // latest snapshot — each turned so its hilt points at its source (room.js
+  // ghostAngleFor). Without the worker the room is this screen alone.
+  const publishMarker = (vp) =>
+    room.worker?.send({ type: "marker", viewport: vp.roomId, ix: vp.markerIx, file: vp.markerFile });
+  const roomMarkers = () => {
+    const out = {};
+    const remote = room.state().snapshot?.markers ?? {};
+    for (const [id, m] of Object.entries(remote)) if (m && m.ix != null && m.file) out[id] = m;
+    for (const vp of viewports) {
+      if (vp.markerIx != null) out[vp.roomId] = { ix: vp.markerIx, file: vp.markerFile };
+      else delete out[vp.roomId];
+    }
+    return out;
   };
   const syncGhosts = () => {
+    const all = roomMarkers();
+    const local = new Set(viewports.map((v) => v.roomId));
     for (const vp of viewports) {
-      const other = viewports.find((o) => o.index !== vp.index && o.markerIx != null);
-      vp.marker?.setGhost(other ? other.markerIx : null, other ? other.markerFile : null);
+      const list = [];
+      for (const [idStr, m] of Object.entries(all)) {
+        const source = Number(idStr);
+        if (source === vp.roomId) continue;
+        list.push({ source, ix: m.ix, file: m.file, angle: ghostAngleFor(config, vp.roomId, source) });
+      }
+      // This screen's other half first: the one ghost a single screen has.
+      list.sort((a, b) => Number(local.has(b.source)) - Number(local.has(a.source)) || a.source - b.source);
+      vp.marker?.setGhosts(list);
     }
   };
   const placeMarker = (vp, file, time) => {
     vp.markerIx = getClosestAlignmentIx(exhibit.grids, time, file);
     vp.markerFile = file;
     vp.marker.setMarker(vp.markerIx, file);
+    publishMarker(vp);
     syncGhosts();
     markerJump(vp, file, time);
   };
-  const adoptMarker = (vp) => {
-    const other = viewports.find((o) => o.index !== vp.index && o.markerIx != null);
-    // The ghost can vanish mid-gesture (the other side pulled their glass
-    // off): repaint what is true rather than adopting a moment that is gone.
+  const adoptMarker = (vp, source) => {
+    const all = roomMarkers();
+    // The ghost names its source. It can vanish mid-gesture (its owner pulled
+    // their glass off): then repaint what is true rather than adopting a moment
+    // that is gone — never another reader's. A call without a source (nothing
+    // in the exhibit makes one) takes whichever other marker stands.
+    const key =
+      source != null
+        ? all[source] ? source : null
+        : Object.keys(all).map(Number).find((id) => id !== vp.roomId);
+    const other = key != null ? all[key] : null;
     if (!other) return vp.marker.setMarker(vp.markerIx, vp.markerFile);
-    vp.markerIx = other.markerIx;
-    vp.markerFile = other.markerFile;
+    vp.markerIx = other.ix;
+    vp.markerFile = other.file;
     vp.marker.setMarker(vp.markerIx, vp.markerFile);
+    publishMarker(vp);
     syncGhosts();
     const landing = getCorrespondingTime(exhibit.grids, vp.markerFile, vp.markerIx);
     if (Number.isFinite(landing)) markerJump(vp, vp.markerFile, landing);
@@ -548,12 +1075,13 @@ async function boot() {
     vp.markerIx = null;
     vp.markerFile = null;
     vp.marker.setMarker(null, null);
+    publishMarker(vp);
     syncGhosts();
   };
   const markerSnapSwitch = (vp, file) => {
     const landing = getCorrespondingTime(exhibit.grids, file, vp.markerIx);
     // A grid gap degrades to the aligned carry rather than a dead button.
-    if (!Number.isFinite(landing)) return turns.request(vp.index, file, undefined);
+    if (!Number.isFinite(landing)) return turns.request(vp.roomId, file, undefined);
     markerJump(vp, file, landing);
   };
 
@@ -574,10 +1102,15 @@ async function boot() {
         if (vp.markerIx == null || vp.markerFile === state.file) continue;
         vp.markerFile = state.file;
         vp.marker?.setMarker(vp.markerIx, state.file);
+        publishMarker(vp);
         moved = true;
       }
       if (moved) syncGhosts();
     });
+    // The other windows' markers arrive with the room's snapshots: repaint the
+    // ghosts on every one (a window leaving takes its glasses with it, and
+    // that snapshot carries no marker event of its own).
+    room.worker?.onMessage(() => syncGhosts());
   }
 
   const stripsReady = [];
@@ -603,14 +1136,14 @@ async function boot() {
           // seeking, and the second tap places AND plays (R3). Aligned mode
           // below keeps the ruled snap semantics untouched.
           if (vp.markerIx != null) return vp.marker.lift();
-          return turns.jump(vp.index, file, time);
+          return turns.jump(vp.roomId, file, time);
         }
         // Aligned mode: a cross-strip tap is a bare switch, so a standing
         // marker catches it; a same-strip tap keeps its explicit time (ruled).
         if (vp.markerIx != null && file !== transport.activeFile) {
           return markerSnapSwitch(vp, file);
         }
-        return turns.request(vp.index, file, time);
+        return turns.request(vp.roomId, file, time);
       },
       labelFor: (file) => stripLabel(exhibit, file, vp.language),
       colors: themeColors,
@@ -629,11 +1162,15 @@ async function boot() {
       const bareSwitch = (file) =>
         vp.markerIx != null
           ? markerSnapSwitch(vp, file)
-          : turns.request(vp.index, file, undefined);
+          : turns.request(vp.roomId, file, undefined);
       vp.strap = createStrap(vp.stripsEl, {
         files: [...mounted.strips.keys()],
         labelFor: (file) => strapLabel(exhibit, file),
         titleFor: (file) => stripLabel(exhibit, file, vp.language),
+        // The medallion the initials were standing in for (plan §5.5). Same
+        // resolver as the band's, so the two surfaces cannot end up showing a
+        // recording two different faces.
+        portraitFor: (file) => portraitUrl(metadataFor(exhibit, file)),
         onPick: bareSwitch,
         // The arrows: the same aligned switch, one strip up or down from the
         // audible recording, wrapping at the ends (always set post-boot — the
@@ -658,12 +1195,8 @@ async function boot() {
       vp.marker = createMarkerLayer({
         stripsEl: vp.stripsEl,
         strips: mounted.strips,
-        // The oval lens spans one strip top-to-bottom when placed.
+        // The lens spans one strip top-to-bottom when placed.
         stripHeight: config.stripHeight,
-        // The magnifier draws from the payload's own peaks, in the active-
-        // waveform ink so the lens reads as focusing on the same material.
-        peaksFor: (file) => exhibit.peaks[file],
-        lensWave: themeColors?.waveActive,
         ixFor: (file, time) => getClosestAlignmentIx(exhibit.grids, time, file),
         timeFor: (file, ix) => getCorrespondingTime(exhibit.grids, file, ix),
         // For the drag's client→local mapping: the viewport's own rotation
@@ -675,7 +1208,7 @@ async function boot() {
           ghost: t("marker.ghost", vp.language),
         },
         onPlace: (file, time) => placeMarker(vp, file, time),
-        onAdopt: () => adoptMarker(vp),
+        onAdopt: (source) => adoptMarker(vp, source),
         onRemove: () => removeMarker(vp),
       });
     }
@@ -710,7 +1243,17 @@ async function boot() {
     // The buttons are optional (config.zoomControls); the controller above is
     // not — scroll sync and the setLevel API work with or without them.
     if (config.zoomControls) toolbar.append(vp.zoom.el);
+    // The view switch (plan §11), first on the bar: it changes what the whole
+    // half shows, so it reads before the controls that belong to one view.
+    if (config.viewSwitch) toolbar.prepend(buildViewSwitch(vp));
     vp.el.insertBefore(toolbar, vp.stripsEl);
+    // The BARE recording switch, as one per-viewport function so a view built
+    // outside this scope (the by-year explorer) makes exactly the switch a
+    // strip tap or strap pick makes: a standing marker catches it
+    // (markerSnapSwitch, the marker ruling); otherwise the aligned carry
+    // through the turn machine, with no time.
+    vp.bareSwitch = (file) =>
+      vp.markerIx != null ? markerSnapSwitch(vp, file) : turns.request(vp.roomId, file, undefined);
 
     vp.annList = createAnnotationList({
       viewport: vp.index,
@@ -732,7 +1275,22 @@ async function boot() {
           vp.currentAnnotations?.find((a) => a.id === annId),
           vp,
         );
-        if (spot) turns.jump(vp.index, spot.file, spot.time);
+        if (spot) turns.jump(vp.roomId, spot.file, spot.time);
+      },
+      // The MARK button lands this reader's marker on the annotation's first
+      // region — the same target the jump uses, so the two buttons agree about
+      // where the annotation "starts". Only offered when there is a marker to
+      // place. It goes through placeMarker, so the audio follows exactly as it
+      // does for a drag or a tap-placement: a placed glass plays there, by
+      // ruling, and a marker that arrived silently would be the odd one out.
+      showMark: config.marker === "glass",
+      onMarkTap: (annId) => {
+        if (!vp.marker) return;
+        const spot = jumpTarget(
+          vp.currentAnnotations?.find((a) => a.id === annId),
+          vp,
+        );
+        if (spot) placeMarker(vp, spot.file, spot.time);
       },
       // What a chip tap MEANS depends on the layout, so the machine lives
       // here, not in the component. Below the strips (default): a plain focus
@@ -820,6 +1378,11 @@ async function boot() {
       vp.sideSlotEl.append(close, SIDE_TENANTS[config.sideSlot](vp));
     }
     vp.statusEl.textContent = "";
+    // ?views=years,listen — this half starts in the explorer. Not awaited: the
+    // overlay lands when its module and sidecar arrive; the strips beneath
+    // finish booting regardless.
+    const startView = config.views[vp.index] ?? config.views[0];
+    if (startView && startView !== "listen") setView(vp, startView);
   }
 
   // Every renderer has to know its own duration before a single region is added:
@@ -861,10 +1424,24 @@ async function boot() {
   // — the two halves see different things at the same moment.
   turns.subscribe((state, event) => {
     for (const vp of viewports) {
-      const chosen = state.selected[vp.index];
+      const chosen = state.selected[vp.roomId];
       for (const [file, strip] of vp.strips) strip.setSelected(file === chosen);
       paintTurn(vp, state, event, turns);
     }
+    // …and the shared band, which is the surface both sides read: it carries
+    // the turn mark in every orientation, and under ?bandOrientation=flip it
+    // also turns to face the holder. The rotation comes from the viewport's
+    // own configured angle, never a hardcoded 180 — the table's geometry is
+    // configuration (§7.8), and a two-sided assumption here would be the one
+    // place the exhibit stopped being one build.
+    // A holder on the OTHER table has no edge of this band: no mark (agreed
+    // 2026-09-11; an "elsewhere" mark is a possible later A/B).
+    const holderHere = viewports.find((v) => v.roomId === state.holder) ?? null;
+    band.setTurn(
+      holderHere ? holderHere.index : null,
+      holderHere ? rotationFor(config, holderHere.index) : 0,
+      config.turnPolicy,
+    );
   });
 
   // ?focus=playhead: the follow machinery. One subscriber watches the shared
@@ -925,7 +1502,7 @@ async function boot() {
     // the playhead is back inside the shown annotation's spans. Only
     // fade-tracked text takes part: pins answer to pinExpiry alone, and
     // detailFade=off text stays immortal.
-    const mine = !jump || jump.initiator == null || jump.initiator === vp.index;
+    const mine = !jump || jump.initiator == null || jump.initiator === vp.roomId;
     const tracked = vp.shownId && vp.shownAt != null && !vp.focusPinned;
     const stealGuard = jump && !mine && tracked;
     if (jump && tracked && !ids.includes(vp.shownId)) {
@@ -1315,7 +1892,7 @@ async function boot() {
     }
   });
 
-  transport.subscribe(onTransport(band));
+  transport.subscribe(onTransport(band, store));
 
   // The resting state: the reference recording is the subject, so the band has a
   // conductor to show and one strip is marked as what a tap would play. No audio
@@ -1340,6 +1917,52 @@ async function boot() {
     console.log("exhibit: config", config);
     installFrameProbe(transport);
   }
+  // THE ATTRACT LOOP (attract.js; plan §4.4, ruled 2026-09-07). Created only
+  // when ?attractAfterIdleMs is set — the shipped default is off — so the
+  // kiosk without it neither listens for idleness nor opens a channel. The
+  // sweep is the loop's "tidy the table": every viewport back to the listening
+  // view with nothing shown, pinned, marked, or zoomed, the glasses on their
+  // hooks, and nobody holding the clock.
+  if (config.attractAfterIdleMs > 0) {
+    const sweepTable = () => {
+      for (const vp of viewports) {
+        setView(vp, "listen");
+        vp.marker?.reset();
+        // The physical reset put the glass on its hook; the SEMANTIC marker
+        // goes with it, or the next bare switch would snap to a moment nobody
+        // can see (a v1 gap, closed with the room machine).
+        if (vp.markerIx != null) {
+          vp.markerIx = null;
+          vp.markerFile = null;
+          publishMarker(vp);
+        }
+        vp.zoom?.setLevel(config.zoomLevels[0] ?? 1);
+        clearWash(vp);
+        vp.shownId = null;
+        vp.focusPinned = false;
+        cancelPinExpiry(vp);
+        cancelDetailFade(vp);
+        setPanelOpen(vp, false);
+        renderAnnotations(vp, store);
+      }
+      if (config.marker === "glass") syncGhosts();
+      turns.reset();
+    };
+    attractLoop = createAttractLoop({
+      config,
+      exhibit,
+      transport,
+      room,
+      viewports,
+      store,
+      host: root,
+      bandEl: band.el,
+      ixFor: (file, time) => getClosestAlignmentIx(data.grids, time, file),
+      timeFor: (file, ix) => getCorrespondingTime(data.grids, file, ix),
+      sweep: sweepTable,
+    });
+    window._exhibitTest.attract = attractLoop;
+  }
   return true;
 }
 
@@ -1354,7 +1977,7 @@ async function boot() {
  * numeral are the things that need no translation (plan §6.3). Without them the
  * stack is eight identical grey rectangles, which makes "compare these
  * interpretations" an instruction nobody can follow. Conductor FIRST, because
- * five of the eight share an orchestra and a shared prefix would bury the one
+ * most of the set shares an orchestra and a shared prefix would bury the one
  * word that tells the strips apart. The filename is the fallback so a missing
  * sidecar is visible rather than blank.
  */
@@ -1378,20 +2001,27 @@ function stripLabel(exhibit, file, language) {
  * (plan §5.5): conductor initials and the year — "HvK ’87", "CK ’89" (ruled
  * 2026-08-26). Initials keep each name part's own case, so the particle in
  * "Herbert von Karajan" reads as the lowercase v it is, and hyphenated
- * surnames contribute each half ("Franz Bauer-Theussl" → FBT). All eight
- * conductors are distinct where four ensembles are not, which is why the
- * conductor and not the ensemble. The filename fallback keeps a missing
- * sidecar visible, the stripLabel precedent.
+ * surnames contribute each half ("Franz Bauer-Theussl" → FBT). The conductors
+ * are distinct where several ensembles are not, which is why the conductor and
+ * not the ensemble. The filename fallback keeps a missing sidecar visible, the
+ * stripLabel precedent.
  */
 function strapLabel(exhibit, file) {
   const meta = metadataFor(exhibit, file);
+  // A YEAR THAT IS NOT A PLAIN FOUR DIGITS gets no apostrophe-year: the medallion
+  // is built by taking the last two characters, so a range like "1951–1954" would
+  // print "CK ’54" and assert one concert out of four. Initials alone are honest.
+  // No curated recording needs this today — VPO-1951-1954's performance year came
+  // off the liner notes as 1950 — but a compilation with an unresolved year is the
+  // normal case for this corpus, so the guard stays.
+  const yr = /^\d{4}$/.test(String(meta.year ?? "")) ? String(meta.year) : null;
   // An identity DECIDED to be unknown (the Scholz b-shape ruling, 2026-08-27,
-  // pending Chanda's confirmation) is not a missing sidecar: the medallion
+  // confirmed by the author 2026-09-01) is not a missing sidecar: the medallion
   // owns up with a "?" rather than minting initials from a pseudonymous
   // filename. Distinguished from genuine absence by the display fields the
   // decision authored, so a broken sidecar still fails visibly below.
   if (!meta.conductor && (meta.displayShort || meta.displayNote)) {
-    return meta.year ? `? ’${String(meta.year).slice(-2)}` : "?";
+    return yr ? `? ’${yr.slice(-2)}` : "?";
   }
   const name = meta.conductor || file.replace(/\.wav$/i, "");
   const initials = name
@@ -1399,7 +2029,7 @@ function strapLabel(exhibit, file) {
     .filter(Boolean)
     .map((part) => part[0])
     .join("");
-  return meta.year ? `${initials} ’${String(meta.year).slice(-2)}` : initials;
+  return yr ? `${initials} ’${yr.slice(-2)}` : initials;
 }
 
 /**
@@ -1422,24 +2052,39 @@ function setPanelOpen(vp, open) {
 /**
  * One viewport's turn surface (turns.js). Three shapes share the element: the
  * holder's prompt with the grant and deny buttons, the requester's waiting
- * note, and the transient notices ("taken", "denied") that outlive the state
+ * note, and the transient notices ("taken", "denied", "cooldown") that outlive the state
  * that raised them by config.turnNoticeMs. The transients are addressed to ONE
  * side — the events carry the viewport they are for — while the pending shapes
  * are derived from state, so a repaint mid-notice must not clear a notice the
  * new state knows nothing about: hence the turnNotice guard on the clear.
+ *
+ * THE GRANT RING (user, 2026-09-15: the auto-grant "feels a bit of a rug-pull"):
+ * while a request stands with a deadline (turnGrantMs > 0), both shapes carry a
+ * depleting ring — the "Keep reading…" ring's twin — driven from the machine's
+ * `pending.expiresAt`, a wall-clock stamp both windows of the room read, so the
+ * holder and the requester see the same countdown. The pending shapes are
+ * REBUILT ONLY WHEN THE REQUEST CHANGES (viewport, file, deadline): every
+ * snapshot from the room's worker repaints, and recreating the buttons under
+ * a finger on each would lose the press.
  */
 function paintTurn(vp, state, event, turns) {
-  if (event?.type === "taken" && event.from === vp.index) {
+  if (event?.type === "taken" && event.from === vp.roomId) {
     flashTurnNotice(vp, t("turn.taken", vp.language));
     return;
   }
-  if (event?.type === "denied" && event.to === vp.index) {
+  if (event?.type === "denied" && event.to === vp.roomId) {
+    flashTurnNotice(vp, t("turn.denied", vp.language));
+    return;
+  }
+  // A tap inside the denial's cooldown: the same words, nobody prompted.
+  if (event?.type === "cooldown" && event.to === vp.roomId) {
     flashTurnNotice(vp, t("turn.denied", vp.language));
     return;
   }
   const pending = state.pending;
-  if (pending && vp.index === state.holder) {
+  if (pending && vp.roomId === state.holder) {
     cancelTurnNotice(vp);
+    if (samePendingShape(vp, pending, "prompt")) return;
     vp.turnEl.textContent = "";
     const label = document.createElement("span");
     label.textContent = t("turn.prompt", vp.language);
@@ -1456,20 +2101,73 @@ function paintTurn(vp, state, event, turns) {
     vp.turnEl.append(label, grant, deny);
     vp.turnEl.dataset.role = "prompt";
     vp.turnEl.hidden = false;
-  } else if (pending && vp.index === pending.viewport) {
+    armTurnRing(vp, pending, "prompt");
+  } else if (pending && vp.roomId === pending.viewport) {
     cancelTurnNotice(vp);
-    vp.turnEl.textContent = t("turn.waiting", vp.language);
+    if (samePendingShape(vp, pending, "waiting")) return;
+    vp.turnEl.textContent = "";
+    const words = document.createElement("span");
+    words.textContent = t("turn.waiting", vp.language);
+    vp.turnEl.append(words);
     vp.turnEl.dataset.role = "waiting";
     vp.turnEl.hidden = false;
+    armTurnRing(vp, pending, "waiting");
   } else if (!vp.turnNotice) {
+    cancelTurnRing(vp);
     vp.turnEl.hidden = true;
     vp.turnEl.textContent = "";
     delete vp.turnEl.dataset.role;
   }
 }
 
+/** The element already shows this very request in this shape: leave it (and its buttons) alone. */
+function samePendingShape(vp, pending, role) {
+  const p = vp.turnPending;
+  return (
+    p != null &&
+    p.role === role &&
+    vp.turnEl.dataset.role === role &&
+    p.viewport === pending.viewport &&
+    p.file === pending.file &&
+    p.expiresAt === pending.expiresAt
+  );
+}
+
+/**
+ * The countdown ring on a pending shape, when the request has a deadline
+ * (turnGrantMs > 0; none with explicit grants only). The fraction left of
+ * the configured grant window, ticked every 200 ms like the pin's ring; the
+ * machine's grant at the deadline repaints the element away.
+ */
+function armTurnRing(vp, pending, role) {
+  cancelTurnRing(vp);
+  vp.turnPending = { viewport: pending.viewport, file: pending.file, expiresAt: pending.expiresAt ?? null, role };
+  if (pending.expiresAt == null) return; // explicit grants only: no deadline, no ring
+  const expiresAt = Number(pending.expiresAt);
+  if (!Number.isFinite(expiresAt)) return;
+  const total = Math.max(1, Number(config.turnGrantMs) || expiresAt - Date.now());
+  const ring = document.createElement("span");
+  ring.className = "turn-ring";
+  ring.setAttribute("aria-hidden", "true");
+  vp.turnEl.prepend(ring);
+  const tick = () => {
+    const left = expiresAt - Date.now();
+    ring.style.setProperty("--turn-frac", String(Math.max(0, Math.min(1, left / total))));
+    if (left <= 0) cancelTurnRing(vp, { keepPending: true });
+  };
+  vp.turnTicker = setInterval(tick, 200);
+  tick();
+}
+
+function cancelTurnRing(vp, { keepPending = false } = {}) {
+  if (vp.turnTicker) clearInterval(vp.turnTicker);
+  vp.turnTicker = 0;
+  if (!keepPending) vp.turnPending = null;
+}
+
 function flashTurnNotice(vp, text) {
   cancelTurnNotice(vp);
+  cancelTurnRing(vp);
   vp.turnEl.textContent = text;
   vp.turnEl.dataset.role = "notice";
   vp.turnEl.hidden = false;
@@ -1529,10 +2227,18 @@ function renderAnnotations(vp, store) {
       : paintIds.includes(vp.shownId)
         ? vp.shownId
         : (paintIds[0] ?? null);
+  // The per-recording note follows the AUDIBLE recording, not this viewport's
+  // selection: the note explains what you are hearing, and under the request
+  // policy a side's selection can be a recording nobody is playing yet.
+  const audible = config.targetNotes === "on" ? activeFileForNotes() : null;
   vp.annList.update(
     annotations,
     { paintIds, shownId: vp.shownId, pinned: vp.focusPinned },
-    { markAudience: showAll },
+    {
+      markAudience: showAll,
+      targetFile: audible,
+      targetLabel: audible ? stripLabel(data.exhibit, audible, vp.language) : "",
+    },
   );
   syncRegions(vp.strips, annotations, {
     minRegionPx: config.minRegionPx,
@@ -1540,6 +2246,43 @@ function renderAnnotations(vp, store) {
   });
   paintGroups(vp, annotations, paintPrimary);
   paintDim(vp, annotations, paintIds);
+  paintTargetNotes(vp, annotations, paintIds);
+}
+
+/**
+ * Mark the strips that the painted annotation has something to say ABOUT.
+ *
+ * The exhibit's question is "the same moment, ten interpretations" — so the
+ * question a visitor has, looking at ten stacked waveforms, is which of them
+ * the annotator actually commented on. That fact is in the payload
+ * (`targets[].description`) and was invisible: the strips looked identical
+ * whether the annotator wrote 235 characters about a recording or nothing at
+ * all. A dot, not text: a 38 px strip cannot hold a sentence, and the sentence
+ * itself belongs in the panel where it can be read.
+ *
+ * Follows the WASH, like the group edges and the dimming, so the marks appear
+ * with the annotation they belong to and leave with it — a permanent dot would
+ * be claiming something about the strip rather than about this annotation. At
+ * overlaps any painted annotation with a note for the strip lights it, the
+ * same union rule paintDim uses.
+ */
+function paintTargetNotes(vp, annotations, paintIds) {
+  const painted =
+    config.targetNotes === "on" ? annotations.filter((a) => paintIds.includes(a.id)) : [];
+  for (const [file, strip] of vp.strips) {
+    const has = painted.some((a) =>
+      (a.targets || []).some((t) => t.file === file && _hasNote(t.description)),
+    );
+    strip.el.classList.toggle("has-note", has);
+  }
+}
+
+/** A non-empty authored value — plain string or language map (the list's rule). */
+function _hasNote(v) {
+  if (typeof v === "string") return v.trim() !== "";
+  if (v && typeof v === "object")
+    return Object.values(v).some((s) => typeof s === "string" && s.trim() !== "");
+  return false;
 }
 
 /** Empty the wash set and its hold bookkeeping — every unfocus path's job. */
@@ -1689,12 +2432,145 @@ function paintDim(vp, annotations, paintIds) {
 }
 
 /**
+ * THE SWITCH CUE (?switchCue=arrow; alpha-tester feedback 2026-09-10). A switch
+ * of the audible recording, or a jump of more than a second within it, that a
+ * viewport did not make itself — the other side's take, or the attract loop's —
+ * is drawn on that viewport as an arrow FROM THE POSITION THAT WAS PLAYING to
+ * the one now playing (user, 2026-09-10: time jumps as much as switches), then
+ * gone. The taker's own viewport gets nothing: they chose the jump. Attribution
+ * is turns.js's `lastTake` — a take within the last moments for this file names
+ * its viewport; anything else (the loop calls the transport directly) is
+ * nobody's, and every viewport is shown.
+ *
+ * Geometry in the strip stack's own coordinates (offsets, never client rects:
+ * the far half is rotated), x from the same formula marker.js uses.
+ */
+function cueJump(fromFile, fromTime, toFile, toTime) {
+  const take = data.turns?.lastTake;
+  const taker = take && take.file === toFile && Date.now() - take.at < 2500 ? take.viewport : null;
+  for (const vp of viewports) {
+    if (vp.roomId === taker) continue;
+    const a = vp.strips.get(fromFile);
+    const b = vp.strips.get(toFile);
+    if (!a || !b) continue;
+    drawSwitchArrow(vp, a, fromTime, b, toTime);
+  }
+}
+
+function stripPoint(strip, time) {
+  const wrapper = strip.ws.getWrapper?.();
+  const full = wrapper?.clientWidth || strip.host.clientWidth;
+  const inner = Number.isFinite(time) && full
+    ? Math.max(0, Math.min(strip.host.clientWidth, (time / strip.duration) * full - (strip.ws.getScroll?.() || 0)))
+    : strip.host.clientWidth / 2;
+  return {
+    x: strip.el.offsetLeft + strip.host.offsetLeft + inner,
+    y: strip.el.offsetTop + strip.el.offsetHeight / 2,
+  };
+}
+
+function drawSwitchArrow(vp, fromStrip, fromTime, toStrip, toTime) {
+  const NS = "http://www.w3.org/2000/svg";
+  // The overlay exists ONLY while an arrow is on screen. Left in place it sat
+  // over ten canvases repainting sixty times a second, and the far half — a
+  // rotated layer — paid for it as visible jitter (alpha tester, 2026-09-10).
+  if (!vp.cueEl) {
+    vp.cueEl = document.createElementNS(NS, "svg");
+    vp.cueEl.classList.add("switch-cue");
+    vp.cueEl.setAttribute("aria-hidden", "true");
+    vp.stripsEl.appendChild(vp.cueEl);
+  }
+  const p1 = stripPoint(fromStrip, fromTime);
+  const p2 = stripPoint(toStrip, toTime);
+  // Between rows: a loop out to the right and back, so the eye reads "left this
+  // row, landed on that one" rather than a straight line through the strips
+  // between. Within a row (a time jump): an arch over the strip from the old
+  // position to the new. The head follows the curve's final tangent either way.
+  let c1, c2;
+  if (fromStrip === toStrip) {
+    const lift = 34;
+    const third = (p2.x - p1.x) / 3;
+    c1 = { x: p1.x + third, y: p1.y - lift };
+    c2 = { x: p2.x - third, y: p2.y - lift };
+  } else {
+    const bulge = 64;
+    c1 = { x: p1.x + bulge, y: p1.y };
+    c2 = { x: p2.x + bulge, y: p2.y };
+  }
+  const d = `M${p1.x},${p1.y} C${c1.x},${c1.y} ${c2.x},${c2.y} ${p2.x},${p2.y}`;
+  const g = document.createElementNS(NS, "g");
+  g.classList.add("cue");
+  // Two strokes on one curve: a pale halo under a vermilion line, so the arrow
+  // reads as drawn ON the interface, in no palette's colour, over any waveform
+  // (user, 2026-09-10: offset it clearly; "foreign" is fine).
+  const under = document.createElementNS(NS, "path");
+  under.classList.add("cue-under");
+  under.setAttribute("d", d);
+  // A fainter copy that retreats a beat behind the line, so the retreating
+  // edge fades over that beat instead of cutting off (a stroke cannot fade
+  // along its own length).
+  const ghost = document.createElementNS(NS, "path");
+  ghost.classList.add("cue-ghost");
+  ghost.setAttribute("d", d);
+  const path = document.createElementNS(NS, "path");
+  path.classList.add("cue-line");
+  path.setAttribute("d", d);
+  const dot = document.createElementNS(NS, "circle");
+  dot.classList.add("cue-dot");
+  dot.setAttribute("cx", p1.x);
+  dot.setAttribute("cy", p1.y);
+  dot.setAttribute("r", 5);
+  // The head points along the curve's final tangent (towards p2 from the last control point).
+  const ang = Math.atan2(p2.y - c2.y, p2.x - c2.x) * (180 / Math.PI);
+  const head = document.createElementNS(NS, "path");
+  head.classList.add("cue-head");
+  head.setAttribute("d", "M0,0 L-11,-6 L-8,0 L-11,6 Z");
+  head.setAttribute("transform", `translate(${p2.x},${p2.y}) rotate(${ang})`);
+  g.append(under, ghost, dot, path, head);
+  vp.cueEl.appendChild(g);
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const len = path.getTotalLength?.() || 200;
+  if (!reduced && path.animate) {
+    for (const p of [under, ghost, path]) {
+      p.style.strokeDasharray = String(len);
+      p.animate([{ strokeDashoffset: len }, { strokeDashoffset: 0 }], { duration: 480, easing: "ease-out", fill: "forwards" });
+    }
+    head.animate([{ opacity: 0 }, { opacity: 0, offset: 0.7 }, { opacity: 1 }], { duration: 520, fill: "forwards" });
+  }
+  // The arrow leaves the way it came: the line retreats from A towards B (the
+  // dash slides forward along the path), the dot going first and the head last
+  // (user, 2026-09-10). Reduced motion fades it as one instead.
+  const linger = reduced ? 1600 : 1100;
+  const wipe = 240; // twice the speed it appeared at (user, 2026-09-10: 160 felt aggressive)
+  const tail = 40; // the ghost lags this much: the fading edge
+  setTimeout(() => {
+    if (g.animate && !reduced) {
+      for (const p of [under, path]) {
+        p.animate([{ strokeDashoffset: 0 }, { strokeDashoffset: -len }], { duration: wipe, easing: "ease-in", fill: "forwards" });
+      }
+      ghost.animate([{ strokeDashoffset: 0 }, { strokeDashoffset: -len }], { duration: wipe, delay: tail, easing: "ease-in", fill: "forwards" });
+      dot.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 60, fill: "forwards" });
+      head.animate([{ opacity: 1 }, { opacity: 1, offset: 0.75 }, { opacity: 0 }], { duration: wipe, fill: "forwards" });
+    } else if (g.animate) {
+      g.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 400, fill: "forwards" });
+    }
+    setTimeout(() => {
+      g.remove();
+      if (vp.cueEl && vp.cueEl.childElementCount === 0) {
+        vp.cueEl.remove();
+        vp.cueEl = null;
+      }
+    }, reduced ? 420 : wipe + tail + 20);
+  }, linger);
+}
+
+/**
  * The per-frame handler. Positions every cursor, and touches the band and the
  * active-strip styling only when the audible recording actually changes — those
  * are DOM writes and a re-render, and doing them sixty times a second for a value
  * that changes on a tap is how a 60 fps interface stops being one.
  */
-function onTransport(band) {
+function onTransport(band, store) {
   let lastFile = null;
   let lastLoading = null;
   let graceTimer = 0;
@@ -1704,8 +2580,15 @@ function onTransport(band) {
       vp.statusEl.dataset.state = show ? "loading" : "";
     }
   };
+  let lastPlaying = null;
+  let lastTime = null;
   return (state) => {
     const positions = positionsFor(state.time, state.file);
+    // For the "now playing" bars (?activeStrip=bars): one attribute, on change.
+    if (state.playing !== lastPlaying) {
+      lastPlaying = state.playing;
+      root.dataset.playing = String(Boolean(state.playing));
+    }
     for (const vp of viewports) {
       for (const [file, strip] of vp.strips) {
         const at = positions[file];
@@ -1716,13 +2599,31 @@ function onTransport(band) {
     // inside tick(), like everything else this handler drives per frame.
     band.tick(state);
     if (state.file !== lastFile) {
+      const from = lastFile;
       lastFile = state.file;
       for (const vp of viewports) {
         for (const [file, strip] of vp.strips) strip.setActive(file === state.file);
         vp.strap?.setActive(state.file);
       }
+      if (from && config.switchCue === "arrow") cueJump(from, lastTime, state.file, state.time);
       band.update(state.file);
+      // The per-recording note is about the AUDIBLE recording, so a switch
+      // changes which note (if any) the panel should be showing — the same
+      // re-derivation a chip tap does, at tap frequency, not per frame. The
+      // guard above is what keeps it there.
+      if (config.targetNotes === "on") {
+        for (const vp of viewports) renderAnnotations(vp, store);
+      }
     }
+    else if (
+      config.switchCue === "arrow" && lastTime != null && Number.isFinite(state.time) &&
+      Math.abs(state.time - lastTime) > 1
+    ) {
+      // A jump within the same recording — a seek, not playback (the same one-
+      // second rule the playhead focus uses for a discontinuity).
+      cueJump(state.file, lastTime, state.file, state.time);
+    }
+    lastTime = state.time;
     // Guarded like the band above, and for the same reason: this runs per frame
     // while playing, and the loading flag changes on a tap, not sixty times a
     // second. ?loadingGrace delays the text: a warm switch that completes

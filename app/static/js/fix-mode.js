@@ -1,0 +1,7327 @@
+// fix-mode.js — the alignment-correction screen (plan §14, increment 2).
+//
+// A per-waveform correction mode for a loaded score alignment: activating it on
+// the score row or the reference row opens SCORE↔REF correction (the mode that
+// edits ref_onset). The content pane is replaced by the full score rendered
+// page-fit (~85% height, Verovio renderToSVG — the Spike B pattern) over a
+// single waveform strip (~15%) showing the reference recording, whose viewport
+// tracks the current score page's time span. Every onset of the current page
+// draws as a faint tick with a connector from its score position; ◀/▶ skip the
+// selection between onsets, and a score note-click selects its onset.
+//
+// Opt-in via the ?fixMode query parameter while experimental: without it, no
+// entry affordance exists and the app is byte-identical (the A/B policy).
+//
+// Increment 2 built the SCREEN — inspection, selection, paging, and the
+// correction-engine bootstrap (ref-audio decode + the worker's fix_begin).
+// Increment 3 adds THE LOOP on top of it:
+//   - the ORIENTATION slice: L/R audition playback (left = the real reference
+//     recording, right = the score synth rendered through the CURRENT
+//     corrected map, sample-locked — §13 ruling 2's construction, live), a
+//     playback-following sounding-onset highlight, and seek-to-selected-note;
+//   - the EDIT gestures: dragging a strip tick lays a hard anchor
+//     (auto-realign of the flanking segments on release via the worker's
+//     fix_realign, then auto-replay from just before the previous anchor),
+//     and Enter APPROVEs the selected onset as a zero-drag anchor;
+//   - GLOBAL undo: fix-anchor entries ride listen.js's unified stack with
+//     snapshot semantics (before/after values stored — undo and redo never
+//     need the alignment worker).
+//
+// Entry is gated by the item-T guard (plan §14 D1): the header's Verovio
+// stamps must be compatible with the live toolkit, and a freshly rendered
+// MIDI's event quarters must match the stored score_onset exactly — anchors
+// laid on a skewed quarters basis are poisoned data, so a mismatch refuses
+// entry with an error naming the stamp.
+
+import {
+  tk,
+  scoreAlignment,
+  loadedAlignmentJSON,
+  alignmentGrids,
+  waveformPeaks,
+  wavesurfers,
+  fileBlobs,
+  timemap,
+  SYNTH_MEI_KEY,
+  getReferenceAudioIx,
+  getMeiXml,
+  resolveAudioUrl,
+  pushFixUndoEntry,
+  refreshSynthAlignmentGrid,
+  refreshRecordingGrid,
+} from "./listen.js";
+import {
+  verifyQuarters,
+  createCorrections,
+  findAnchor,
+  findGap,
+  neighbourAnchors,
+  setAnchor,
+  setGap,
+  removeGap,
+  syncGapTimes,
+  applySegment,
+  applyAnchorValue,
+  targetAnchors,
+  targetSlot,
+  hasTargetAnchors,
+  findTargetAnchor,
+  neighbourTargetAnchors,
+  setTargetAnchor,
+  applyGridSegment,
+  applyTargetAnchorValue,
+  rasterAfter,
+  rasterBefore,
+  REF_T_EPS,
+  serialize as serializeCorrections,
+  deserialize as deserializeCorrections,
+} from "./engine/correction-model.js";
+import { parseMidi } from "./engine/mei-synth.js";
+import { updateTransportIcons } from "./engine/transport.js";
+import { confirmDialog } from "./annotation/ui-common.js";
+import WaveSurfer from "../vendor/wavesurfer.esm.js";
+
+// ---------------------------------------------------------------------------
+// Tunables (deliberately module constants, not options — measure, then tune).
+// ---------------------------------------------------------------------------
+
+/** Verovio scale for the page-fit render. Revisit if orchestral systems are
+ *  illegible at pane-fit (plan §14 flags the page-turn model for that case). */
+const FIX_SCALE = 40;
+/** Strip viewport padding around the page's time span: at least this many
+ *  seconds, or this fraction of the span, whichever is larger. */
+const STRIP_PAD_SEC = 1.5;
+const STRIP_PAD_FRAC = 0.08;
+/** Tick hit radius for selecting an onset by clicking the strip (CSS px). */
+const TICK_HIT_PX = 8;
+/** Peak count for strip peaks derived from the bootstrap's decoded samples. */
+const STRIP_PEAK_COUNT = 8000;
+/** The aligner's sample rate — fix_begin expects ref samples at this rate. */
+const FIX_SR = 22050;
+/** The granular time-stretch worklet behind the nav's speed slider. */
+const FIX_STRETCH_WORKLET_URL = "/static/js/fix-stretch-worklet.js";
+/**
+ * The audition's minimum SOUNDING length, the renderer's alone — it never
+ * touches ref_offset. Alignment data legitimately holds very short notes
+ * (11.6% of the Fledermaus HQ corpus is under 70 ms, 2.3% under 20 ms, the
+ * shortest 0.6 ms: tremolo strokes, grace notes, collapsed offsets), and a
+ * correction can shrink a note to the gap it was dropped into. Rendered at
+ * their true length those notes are inaudible, and silence is the worst
+ * possible symptom for a data problem: it reads as the tool ignoring the fix.
+ * A floored note is heard as a short click — the problem stays audible AS a
+ * problem, while the commit log and the degenerate canary name it.
+ *
+ * The floor is bounded by the gap to the next onset, because it is only the
+ * ISOLATED short note that goes missing. 96% of that corpus's sub-70 ms notes
+ * have their next onset within 70 ms (median 15 ms) — tremolo strokes and fast
+ * runs — and lengthening each of those would smear the passage into a cluster
+ * chord while fixing nothing: their neighbours already sound around them.
+ */
+const MIN_SOUND_SEC = 0.07;
+
+/** Seek-to-selected-note lands the playhead this far before the onset. */
+const SEEK_PREROLL_SEC = 0.5;
+/** Auto-replay after a fix starts this far before the previous anchor. */
+const REPLAY_PREROLL_SEC = 0.5;
+/** ...but never more than this before the fix itself. The previous anchor can
+ *  be a page away when anchoring into virgin territory, and the replay's
+ *  principled start (the whole invalidated span) is then unusable — this is
+ *  the ceiling that makes it predictable. */
+const MAX_RUNUP_SEC = 2;
+/** A mousedown that travels less than this is a tick CLICK, not a drag. */
+const DRAG_THRESHOLD_PX = 3;
+/**
+ * The playhead BRACKET: two filled arrowheads marking the position from
+ * either side of the waveform, with no line drawn across it. A vertical line
+ * is the alignment tick's own shape, and the two read as one another on a
+ * screen whose whole job is judging instants. Two opposed marks also read
+ * more precisely than one — the eye interpolates the line between them.
+ *
+ * The TOP arrowhead sits just inside the strip's top edge rather than above
+ * it: every onset group's score connector terminates exactly at the strip
+ * top, so above the strip is the busiest region on the screen. The bottom
+ * edge is clear, and the waveform stops short of it (`--fix-strip-gutter`)
+ * so the lower arrowhead sits outside the waveform entirely.
+ *
+ * Shape vocabulary, which does more disambiguating work than colour:
+ * hairline = alignment tick, filled triangle = playhead. That is also why
+ * the selected tick's own cap is a bar, not the triangle it used to be.
+ */
+const PH_ARROW_HALF_W = 5.5;
+const PH_ARROW_H = 8;
+/** Keyboard nudge steps (the app's marker-nudge convention: Shift = coarse,
+ *  Shift+Alt = fine). Nudges accumulate while any nudge key is held and
+ *  commit as ONE anchor on full release — the keyup that leaves no nudge key
+ *  down (per-keystroke realigns would spam worker and undo stack, and a
+ *  quiet-period timer cut in while the user was still adjusting). */
+const NUDGE_COARSE_SEC = 0.1;
+const NUDGE_FINE_SEC = 0.02;
+/** Arrow keys physically down right now (modifier state rides each keyup). */
+const _heldArrows = new Set();
+/** Anchor times clamp this far inside the neighbouring anchors' times. */
+const ANCHOR_EPS_SEC = 0.01;
+
+// The v2 lanes (plan §14 Layout Q2): the strip is a LANE STACK under the
+// waveform's one time→x mapping. The worker computes both lanes from the
+// resident reference audio AFTER fix_ready, so arming never waits for them.
+/** Lane resolution: samples per column at FIX_SR (~23 ms). */
+const LANE_HOP = 512;
+const LANE_N_MELS = 64;
+/** The onset curve is drawn relative to its running maximum over ±this many
+ *  seconds (floored), so a quiet passage's onsets read at full height. */
+const LANE_NORM_WIN_SEC = 2;
+const LANE_NORM_FLOOR = 0.05;
+/** Below this fraction of the mel range the spectrogram fades to transparent,
+ *  so the theme's ground shows through the quiet parts on any theme. */
+const LANE_ALPHA_KNEE = 0.25;
+/** Detected onsets hang from the onset lane's top as marks this tall. */
+const LANE_PEAK_MARK_H = 5;
+/** Snap-to-onset: a dragged tick within this many px of a detected onset lands
+ *  on it (Alt while dragging bypasses; the nav checkbox is the sticky switch). */
+const SNAP_RADIUS_PX = 8;
+/** "Move to nearest onset" (S) looks this far either side of each onset. */
+const SNAP_CMD_RADIUS_SEC = 0.25;
+/** Resizing: a lane keeps at least this much, and the score pane SCORE_MIN_PX. */
+const LANE_MIN_PX = 12;
+const SCORE_MIN_PX = 160;
+/** Score zoom: + / − step, and the range, in percent of the page-fit size. */
+const SCORE_ZOOM_STEP = 25;
+const SCORE_ZOOM_MIN = 25;
+const SCORE_ZOOM_MAX = 400;
+/** Auto-scroll keeps the selected notes this far inside the scroller's edges. */
+const SCORE_SCROLL_MARGIN_PX = 24;
+/** A detected onset within this much of an existing anchor is CLAIMED: it
+ *  attracts no other mark (drag magnet and S alike). */
+const OCCUPIED_EPS_SEC = 0.02;
+/** Dispersal (S on several marks): two moved marks may not land closer than
+ *  this fraction of their score-implied interval at the local tempo… */
+const DISPERSE_ALPHA = 0.5;
+/** …never closer than this; a mild penalty for tempo deviation; and the cost
+ *  of leaving a mark to the realign instead (a move within the radius, which
+ *  costs < 1, is always preferred to that). */
+const DISPERSE_MIN_GAP_SEC = 0.03;
+const DISPERSE_KAPPA = 0.25;
+const DISPERSE_NONE_COST = 1.0;
+
+/** Quantised quarter key — the 1e-6 rounding every quarters consumer uses. */
+const qKey = (q) => Math.round(q * 1e6);
+
+// ---------------------------------------------------------------------------
+// Module state
+// ---------------------------------------------------------------------------
+
+/** The active fix session, or null. One at a time by construction. */
+let _fix = null;
+/** The last entry refusal message (test surface; cleared per attempt). */
+let _lastRefusal = null;
+/** The correction worker. Outlives a fix session (Pyodide is expensive to
+ *  boot), disposed of its audio state on exit, terminated on piece reset. */
+let _worker = null;
+let _workerHasSession = false;
+/**
+ * Piece-derived state that outlives a fix session: the guard's fresh event
+ * table, the onset groups, and the page model + SVG cache for the current
+ * pane size. Built by the load-idle prewarm (or by the first entry) so that
+ * entering fix mode costs milliseconds, not the measured ~2 s of Verovio
+ * layout + page attribution on an orchestral score. Invalidated whenever a
+ * piece (re)loads.
+ */
+let _derived = null;
+let _prewarmTimer = null;
+/** How the last entry went (test + telemetry surface). */
+let _lastEntry = { usedPrewarm: false, spinnerShown: false, ms: 0 };
+/**
+ * Piece-scoped correction state (plan §14 cluster B): the anchor/gap model
+ * and the as-loaded ref tables for Revert (captured lazily at the first
+ * commit). All of it outlives a fix-mode exit and dies with the piece
+ * (fixModePrewarm resets it per load).
+ */
+let _corrections = createCorrections();
+let _pristine = null; // { on: number[], off: number[] } — as-loaded ref tables
+/** Recordings whose grids an audio-to-audio session changed and the main
+ *  view has not redrawn yet (cluster C: once, at exit). */
+const _dirtyGridFiles = new Set();
+/** Base-alignment provenance for header.corrections (item-T's data). */
+let _correctionsBase = null;
+/** The as-loaded correction record, for Revert and dirtiness (JSON of
+ *  {a: anchors, g: gaps}; "no record" is the empty pair, not null). */
+let _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {} });
+/** The one in-flight fix_realign request, or null (the worker is serial). */
+let _pendingRealign = null;
+/** Bumped on every change to the correction record or the tables it governs;
+ *  exit compares it with the entry value to decide the main-view recompute
+ *  (plan §14 cluster C: once, via the corrected-tables path). */
+let _correctionsEpoch = 0;
+/** The gap band's diagonal hatch, cached per tick colour. */
+let _hatch = null;
+/** The last off-screen undo/redo announcement (test surface). */
+let _lastAnnounce = null;
+let _announceTimer = null;
+/** Audition L/R balance, −1 (recording only) … +1 (synth only); 0 = even.
+ *  A listening-ergonomics preference, so it survives sessions and pieces. */
+let _audBalance = 0;
+/** Page-only playback: the audition stops at the current page's boundary
+ *  instead of turning it (sticky across fix sessions, like the balance). */
+let _pageOnly = false;
+/** Suppress the AUTO-replay after a commit (sticky, like _pageOnly). The
+ *  commit itself always happens: it is being dragged back through the span
+ *  that gets in the way in a tight cluster, not the anchoring. A sticky mode
+ *  rather than a held modifier, because the nudge already owns Shift and
+ *  Shift+Alt and commits on the keyup that leaves no nudge key down. */
+let _replaySuppressed = false;
+/** The v2 lanes and snap-to-onset: sticky across fix sessions, like the two
+ *  above. The lane switches also size the strip (see _stripClassName). */
+let _laneSpec = true;
+let _laneOnset = true;
+let _snapOnsets = true;
+/** Spectrogram configuration (sticky): FFT size, window, overlap, mel bands. */
+let _specCfg = {
+  nFft: 2048,
+  window: "hann",
+  overlap: 0.75,
+  nMels: 64,
+  scale: "mel", // mel | log | linear
+  labels: false, // Hz labels on the lane's left edge (display only)
+};
+/** Score zoom (sticky): fit | width | height | pct (percent of the fit). */
+let _scoreZoom = { mode: "fit", pct: 100 };
+/** What a snap lands on: the detected onset ("flux") or the perceived attack. */
+let _snapTarget = "flux";
+/**
+ * Re-alignment after a fix (Werner Goebl's feedback, 2026-09-29). NOTHING
+ * BEHIND A FIX MOVES: a fix never refills the span before it — only the
+ * previous notes' offsets follow, linearly — and a tick cannot be dragged
+ * before the previous one. The refill runs AHEAD, to the next anchor or the
+ * HORIZON, whichever comes first; the note at the horizon keeps its current
+ * time as the refill's corner (unsaved). Measured on the HQ corpus before the
+ * rule: an unbounded refill ran to the piece end at a ~96 ms hop and moved
+ * ~99 % of all later events. Both settings sticky, like the ones above.
+ */
+let _autoRealign = true;
+let _horizonSec = 30;
+/** The horizon select's choices, seconds of the strip's audio (∞ = up to the
+ *  next anchor or the end of the aligned music, the pre-2026-09-29 reach). */
+const HORIZON_CHOICES = [10, 30, 60, 120, Infinity];
+/** A user-resized strip (px) and lane weights; null = the CSS defaults. Both
+ *  sticky, and both part of what the prewarm probe must reproduce. */
+let _stripHeightPx = null;
+let _laneWeights = null;
+/** A running "move to nearest onset" batch: its commits collect into ONE
+ *  history entry and replay once at the end. */
+let _batch = null;
+/** The last committed fix's replay span, so R can replay it on demand. */
+let _lastReplay = null;
+
+// ---------------------------------------------------------------------------
+// Entry affordance
+// ---------------------------------------------------------------------------
+
+let _paramChecked = null;
+function _fixModeParamPresent() {
+  if (_paramChecked === null) {
+    _paramChecked = new URLSearchParams(window.location.search).has("fixMode");
+  }
+  return _paramChecked;
+}
+
+/**
+ * Whether `name` can be the TARGET of an audio-to-audio session: it has a
+ * grid on the reference raster (same length as the reference's own grid).
+ */
+function _targetGridUsable(name) {
+  const rg = alignmentGrids?.[getReferenceAudioIx()];
+  const tg = alignmentGrids?.[name];
+  return (
+    Array.isArray(rg) && Array.isArray(tg) && rg.length === tg.length && rg.length >= 2
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The entry: ONE nav button opens the chooser (plan §14's "wizard-like
+// entry", ruled 2026-08-30, shaped 2026-09-11). Step 1 is the score ↔
+// reference correction; step 2, the recordings against the reference, stays
+// LOCKED until step 1 has been opened this load — or the file already carries
+// a score↔ref record — or the user says the score↔ref alignment is already
+// good. The order is not pedantry: the right ear in an audio-to-audio session
+// is the score synth through the COMPOSED map, so a score↔ref error would be
+// heard as the recording's. The per-row buttons this replaces were the
+// provisional entry of increments 2–5. A score-less alignment (a later
+// iteration) will show step 2 alone.
+// ---------------------------------------------------------------------------
+
+/** Step 1 counts as reviewed this load: opened, carried in from the file's
+ *  record, or explicitly skipped. Reset per load (fixModePrewarm). */
+let _scoreRefReviewed = false;
+/** The open chooser's overlay, or null. */
+let _chooserEl = null;
+
+/** Whether the loaded alignment can be corrected here at all. This increment
+ *  renders the score pane in both modes, so a score is required. */
+function _entryUsable() {
+  return (
+    _fixModeParamPresent() &&
+    !!scoreAlignment?.score_onset?.length &&
+    !!scoreAlignment?.ref_onset?.length &&
+    Array.isArray(alignmentGrids?.[getReferenceAudioIx()])
+  );
+}
+
+/**
+ * Show or hide the nav's "Correct alignment…" button for the loaded piece.
+ * Called at the end of every completed load (fixModePrewarm). The button is
+ * hidden in the template, so without ?fixMode nothing appears (the A/B rule).
+ */
+export function installFixEntry() {
+  const btn = document.getElementById("fix-chooser-open");
+  if (!btn) return;
+  btn.hidden = !_entryUsable();
+  if (!btn.dataset.fixWired) {
+    btn.dataset.fixWired = "1";
+    btn.addEventListener("click", () => _openChooser());
+  }
+}
+
+/** Step 2's rows: every recording in the alignment but the reference and the synth. */
+function _targetCandidates() {
+  const ref = getReferenceAudioIx();
+  return Object.keys(alignmentGrids || {}).filter((k) => k !== SYNTH_MEI_KEY && k !== ref);
+}
+
+function _openChooser() {
+  if (_fix || _chooserEl || !_entryUsable()) return;
+  const overlay = document.createElement("div");
+  overlay.className = "fix-chooser-overlay";
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) _closeChooser();
+  });
+  const card = document.createElement("div");
+  card.className = "fix-chooser";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-labelledby", "fix-chooser-title");
+  overlay.appendChild(card);
+  // Escape closes; captured so listen.js's global handler never sees it.
+  overlay._onKey = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      _closeChooser();
+    }
+  };
+  document.addEventListener("keydown", overlay._onKey, true);
+  _chooserEl = overlay;
+  document.body.appendChild(overlay);
+  _renderChooser(card);
+}
+
+function _closeChooser() {
+  const overlay = _chooserEl;
+  if (!overlay) return;
+  _chooserEl = null;
+  document.removeEventListener("keydown", overlay._onKey, true);
+  overlay.remove();
+}
+
+function _renderChooser(card) {
+  const ref = getReferenceAudioIx();
+  const reviewed = _scoreRefReviewed;
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  card.innerHTML = "";
+
+  const head = document.createElement("div");
+  head.className = "fix-chooser-head";
+  const title = document.createElement("h2");
+  title.id = "fix-chooser-title";
+  title.textContent = "Correct alignment";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "fix-chooser-close";
+  close.textContent = "✕";
+  close.setAttribute("aria-label", "Close");
+  close.addEventListener("click", () => _closeChooser());
+  head.append(title, close);
+
+  // Step 1: the score against the reference recording.
+  const s1 = document.createElement("section");
+  s1.className = "fix-chooser-step";
+  s1.dataset.step = "1";
+  const h1 = document.createElement("h3");
+  h1.textContent = "1 · Score ↔ reference";
+  const row1 = document.createElement("div");
+  row1.className = "fix-chooser-row";
+  const name1 = document.createElement("span");
+  name1.className = "fix-chooser-name";
+  name1.textContent = ref;
+  const count1 = document.createElement("span");
+  count1.className = "fix-chooser-count";
+  const na = _corrections.anchors.length;
+  const ng = _corrections.gaps.length;
+  count1.textContent =
+    na || ng
+      ? `${plural(na, "anchor")}, ${plural(ng, "gap")}`
+      : reviewed
+        ? "reviewed, no anchors"
+        : "not yet reviewed";
+  const go1 = document.createElement("button");
+  go1.type = "button";
+  go1.id = "fix-chooser-open-ref";
+  go1.className = "fix-chooser-go";
+  go1.textContent = "Open";
+  go1.title = "Correct the score's alignment to the reference recording";
+  go1.addEventListener("click", () => {
+    _closeChooser();
+    enterFixMode(ref);
+  });
+  row1.append(name1, count1, go1);
+  s1.append(h1, row1);
+
+  // Step 2: each recording against the reference.
+  const s2 = document.createElement("section");
+  s2.className = "fix-chooser-step" + (reviewed ? "" : " fix-chooser-locked");
+  s2.dataset.step = "2";
+  const h2 = document.createElement("h3");
+  h2.textContent = "2 · Recordings against the reference";
+  s2.appendChild(h2);
+  if (!reviewed) {
+    const note = document.createElement("p");
+    note.className = "fix-chooser-note";
+    note.id = "fix-chooser-lock-note";
+    note.textContent =
+      "Review the score ↔ reference alignment first: in these sessions the right ear " +
+      "plays the score through the reference, so a score error would be heard as the " +
+      "recording's.";
+    const skip = document.createElement("button");
+    skip.type = "button";
+    skip.id = "fix-chooser-skip";
+    skip.className = "fix-chooser-skip";
+    skip.textContent = "Skip — the score ↔ reference alignment is already good";
+    skip.addEventListener("click", () => {
+      _scoreRefReviewed = true;
+      _renderChooser(card);
+    });
+    s2.append(note, skip);
+  }
+  const list = document.createElement("div");
+  list.className = "fix-chooser-list";
+  const candidates = _targetCandidates();
+  for (const file of candidates) {
+    const usable = _targetGridUsable(file);
+    const row = document.createElement("div");
+    row.className = "fix-chooser-row";
+    row.dataset.file = file;
+    const name = document.createElement("span");
+    name.className = "fix-chooser-name";
+    name.textContent = file;
+    const count = document.createElement("span");
+    count.className = "fix-chooser-count";
+    const k = targetAnchors(_corrections, file).length;
+    count.textContent = !usable
+      ? "no grid on the reference raster"
+      : k
+        ? plural(k, "anchor")
+        : "no anchors";
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "fix-chooser-go";
+    go.textContent = "Open";
+    go.disabled = !reviewed || !usable;
+    go.title = !usable
+      ? "This recording has no alignment grid on the reference raster"
+      : !reviewed
+        ? "Review the score ↔ reference alignment first, or skip it above"
+        : `Correct ${file}'s alignment to the reference recording`;
+    go.addEventListener("click", () => {
+      _closeChooser();
+      enterFixMode(file);
+    });
+    row.append(name, count, go);
+    list.appendChild(row);
+  }
+  if (!candidates.length) {
+    const none = document.createElement("p");
+    none.className = "fix-chooser-note";
+    none.textContent = "No other recordings in this alignment.";
+    list.appendChild(none);
+  }
+  s2.appendChild(list);
+  card.append(head, s1, s2);
+}
+
+// ---------------------------------------------------------------------------
+// The item-T entry guard (plan §14 D1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a fresh MIDI from the loaded MEI and build the aligner's event table
+ * from it: notes deduplicated per unique (start, end) tick pair, sorted by
+ * that pair — the same construction as score_align and fix_begin.
+ */
+function _freshEventTable() {
+  const midiB64 = tk.renderToMIDI();
+  if (!midiB64) throw new Error("Verovio produced empty MIDI output");
+  const bin = atob(midiB64);
+  const midiBytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) midiBytes[i] = bin.charCodeAt(i);
+  const { tpq, notes } = parseMidi(midiBytes);
+  const seen = new Set();
+  const events = [];
+  for (const n of notes) {
+    const k = n.s + ":" + n.e;
+    if (!seen.has(k)) {
+      seen.add(k);
+      events.push(n);
+    }
+  }
+  events.sort((a, b) => a.s - b.s || a.e - b.e);
+  return {
+    qOn: events.map((e) => e.s / tpq),
+    qOff: events.map((e) => e.e / tpq),
+    midiBytes,
+  };
+}
+
+/** The stamp half of the guard: null when compatible, else the refusal text. */
+function _stampCheck(header) {
+  const opts = header?.verovioOptions || null;
+  // Live semantics are expandNever (no expansion); an absent stamp means the
+  // alignment predates Verovio 6 here, which also rendered without expansion.
+  if (opts && (opts.expand || opts.expandAlways)) {
+    return (
+      "its score MIDI was rendered with Verovio expansion options " +
+      `${JSON.stringify(opts)}, but this app renders without expansion ` +
+      "(expandNever)"
+    );
+  }
+  const live = typeof tk.getVersion === "function" ? tk.getVersion() : null;
+  const stamped = header?.verovioVersion || null;
+  if (stamped && live && stamped !== live) {
+    return (
+      `its score MIDI was rendered by Verovio ${stamped}, but this app ` +
+      `runs Verovio ${live}`
+    );
+  }
+  return null;
+}
+
+/**
+ * Run the full entry guard. Returns the fresh event table on success; throws
+ * with the honest refusal message otherwise.
+ */
+function _entryGuard() {
+  if (!tk) throw new Error("the score renderer (Verovio) is unavailable");
+  if (!getMeiXml()) throw new Error("the score MEI is not loaded");
+  const header = loadedAlignmentJSON?.header;
+  const stampProblem = _stampCheck(header);
+  if (stampProblem) throw new Error(stampProblem);
+  const fresh = _freshEventTable();
+  const stampNote = header?.verovioVersion
+    ? `both stamped and rendered under Verovio ${header.verovioVersion}`
+    : "the alignment carries no Verovio version stamp";
+  for (const [name, stored, freshQ] of [
+    ["score_onset", scoreAlignment.score_onset, fresh.qOn],
+    ["score_offset", scoreAlignment.score_offset, fresh.qOff],
+  ]) {
+    if (!Array.isArray(stored)) continue; // ancient JSONs may lack offsets
+    const v = verifyQuarters(stored, freshQ);
+    if (v.ok) continue;
+    if (v.lengthMismatch) {
+      throw new Error(
+        `the freshly rendered score MIDI has ${freshQ.length} events but ` +
+          `the stored alignment has ${stored.length} — the score rendering ` +
+          `has changed since this alignment was made (${stampNote})`,
+      );
+    }
+    const f = v.firstMismatch;
+    throw new Error(
+      `${v.mismatchCount} of ${stored.length} ${name} quarters differ from ` +
+        `the freshly rendered score MIDI (first at event ${f.index}: stored ` +
+        `${f.stored}, fresh ${f.fresh}); ${stampNote}`,
+    );
+  }
+  return fresh;
+}
+
+function _refuse(message, detail = null) {
+  _lastRefusal = message;
+  console.warn("fix mode refused:", message);
+  return confirmDialog({
+    title: "Cannot correct this alignment",
+    body: [
+      `Correction mode refused: ${message}.`,
+      detail ??
+        "Corrections made against a score rendering that differs from the " +
+          "one the aligner saw would silently corrupt the alignment, so fix " +
+          "mode only opens when the two match exactly.",
+    ],
+    confirmLabel: "Close",
+    cancelLabel: null,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Entry / exit
+// ---------------------------------------------------------------------------
+
+export function isFixModeActive() {
+  return !!_fix;
+}
+
+/** Whether a fix's segment realign is in flight (undo/redo must wait: the
+ *  commit's continuation still holds the data it will splice). */
+export function fixRealignBusy() {
+  return !!_fix?.realignBusy;
+}
+
+/** Let the just-shown loading overlay actually paint before synchronous
+ *  Verovio work blocks the thread. rAF suspends in hidden panes, so a plain
+ *  timeout races it as the backstop. */
+function _paintFrame() {
+  return Promise.race([
+    new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0))),
+    new Promise((r) => setTimeout(r, 60)),
+  ]);
+}
+
+/** The current pane size matches the derived cache closely enough to reuse
+ *  it — the viewBox scaling absorbs small deltas as letterboxing. */
+function _derivedFitsPane(w, h) {
+  if (!_derived || !_derived.dims) return false;
+  const dw = Math.abs(_derived.dims.w - w);
+  // Height is deliberately NOT compared: with one system per page and the page
+  // box tracking content, the pane's height never enters the page model — the
+  // CSS fit absorbs it as scale — so a sticky strip height (or a lane drag)
+  // must not cost a cold entry. Width does break systems, so it is compared.
+  void h;
+  return dw <= Math.max(8, w * 0.02);
+}
+
+/** Enter score↔ref fix mode from a row's entry button. */
+export async function enterFixMode(entryFile) {
+  if (_fix) return;
+  _lastRefusal = null;
+  const t0 = performance.now();
+
+  const refFile = getReferenceAudioIx();
+  const waveformsEl = document.getElementById("waveforms");
+  const contentEl = document.getElementById("content");
+  if (!waveformsEl || !contentEl) return;
+
+  // The mode follows the row (plan §14 Q1): the score or reference row edits
+  // ref_onset; any other recording edits THAT recording's grid against the
+  // reference, on the same score pane with every onset projected through
+  // the composed map into the recording's timeline.
+  const audioMode = entryFile !== SYNTH_MEI_KEY && entryFile !== refFile;
+  if (audioMode && !_targetGridUsable(entryFile)) {
+    await _refuse(
+      `${entryFile} has no alignment grid on the reference raster`,
+      "An audio-to-audio correction edits the recording's grid against the " +
+        "reference; without one there is nothing to correct. Re-run the " +
+        "alignment with this recording included.",
+    );
+    return;
+  }
+
+  _fix = {
+    mode: audioMode ? "audio" : "score-ref",
+    entryFile,
+    refFile,
+    /** The recording being corrected (audio mode), or null. */
+    targetFile: audioMode ? entryFile : null,
+    /** Whose audio the strip and the audition's left ear carry. */
+    stripFile: audioMode ? entryFile : refFile,
+    targetInfo: null, // the worker's fix_target_ready {name, duration}
+    fixReady: false, // fix_ready arrived (the reference session)
+    targetReady: !audioMode, // fix_target_ready arrived (audio mode only)
+    projOn: null, // audio mode: every event's onset projected into the target
+    projOff: null,
+    freeAnchorsDrawn: 0, // test surface: target anchors off any tick, drawn
+    qOn: null,
+    qOff: null,
+    midiBytes: null,
+    nEvents: 0,
+    groups: [],
+    page: 1,
+    pageCount: 1,
+    selGroupIx: 0,
+    pageSvgCache: new Map(),
+    pageIndex: new Map(), // xml:id → element, for the CURRENT page only
+    stripWS: null,
+    stripSource: null,
+    stripPps: 0,
+    chipState: "idle",
+    els: {},
+    resizeObserver: null,
+    resizeDebounce: null,
+    lastPaneSize: null,
+    raf: 0,
+    aud: null, // the L/R audition (built by the bootstrap's decode)
+    drag: null, // an in-progress tick drag, or null
+    engineReady: false, // fix_ready arrived with a matching event count
+    realignBusy: false,
+    soundingGroupIx: null,
+    followFloor: null, // { ix, untilT } — holds the follower after a seek
+    pageOnlyPassUntilT: null, // a replay may cross pages until here
+    keydownHandler: null,
+    keyupHandler: null,
+    blurHandler: null,
+    lastCommit: null, // test surface: what the last anchor commit did
+    lanes: null, // the worker's fix_lanes reply (mel, onset curve, peaks)
+    lanesError: null,
+    lastDrag: null, // test surface: { rawT, t, snapped } of the last mouse drag
+    multiSel: new Set(), // marquee / Shift+click selection of onset groups
+    marquee: null, // an in-progress marquee drag on the strip
+    resizing: null, // an in-progress strip or lane resize drag
+    lastBatch: null, // test surface: the last "move to nearest onset" run
+    /** Fixes whose span AHEAD still waits for Re-align (auto re-align off):
+     *  {i} (score↔ref) or {refT} (audio). Session-scoped: exit refills them. */
+    pending: [],
+    exitFlushTried: false, // an exit whose refill failed lets the next one through
+    lastRealign: null, // test surface: the last Re-align of pending spans
+    lastGap: null, // test surface: the last G (lay / remove)
+    gapBands: 0, // test surface: gap bands painted on the last redraw
+    epochAtEntry: _correctionsEpoch, // the exit recompute's baseline
+    relayouts: 0, // test surface: Verovio relayouts since entry (pane resizes)
+    refits: 0, // test surface: light re-fits since entry (strip / lane drags)
+    lastLoading: null, // test surface: { text, corner } of the last overlay
+  };
+  const f = _fix;
+
+  // The skeleton (with its loading overlay) goes up BEFORE any Verovio work,
+  // so a slow entry looks like loading instead of a hang; one painted frame
+  // is yielded for it. The prewarmed path removes the overlay ~instantly.
+  _buildDom(contentEl, waveformsEl);
+  const w = f.els.scoreEl.clientWidth;
+  const h = f.els.scoreEl.clientHeight;
+  const usePrewarm = _derivedFitsPane(w, h);
+  if (!usePrewarm) {
+    _showFixLoading("Preparing correction view…");
+    _lastEntry = { usedPrewarm: false, spinnerShown: true, ms: 0 };
+    await _paintFrame();
+    if (_fix !== f) return; // exited (or replaced) during the yield
+  } else {
+    _lastEntry = { usedPrewarm: true, spinnerShown: false, ms: 0 };
+  }
+
+  if (!_derived) {
+    // No (valid) prewarm: run the guard now. Refusal tears the skeleton down.
+    let fresh;
+    try {
+      fresh = _entryGuard();
+    } catch (e) {
+      _teardownFixDom(f);
+      await _refuse(e.message);
+      return;
+    }
+    _derived = {
+      fresh,
+      groups: _buildGroupsFrom(fresh.qOn),
+      dims: null,
+      pageCount: 0,
+      svgCache: new Map(),
+    };
+  }
+  f.qOn = _derived.fresh.qOn;
+  f.qOff = _derived.fresh.qOff;
+  f.midiBytes = _derived.fresh.midiBytes;
+  f.nEvents = f.qOn.length;
+  f.groups = _derived.groups;
+  f.pageSvgCache = _derived.svgCache; // shared: survives exit for re-entry
+  if (f.mode === "audio") _recomputeProjection(f);
+
+  if (!usePrewarm || !_derived.pageCount) {
+    // Layout for THIS pane size (the expensive part prewarm normally covers).
+    _applyFixLayoutAt(w, h);
+    _derived.dims = { w, h };
+    _derived.pageCount = tk.getPageCount();
+    _derived.svgCache.clear();
+    _assignGroupPages(f.groups);
+  }
+  f.pageCount = _derived.pageCount;
+  // Opening the score↔ref correction is what "reviewing" it means to the
+  // chooser's lock — whether or not an anchor is laid.
+  if (f.mode === "score-ref") _scoreRefReviewed = true;
+
+  _buildStrip(_stripSource());
+  _renderPage(f.groups[0]?.page || 1);
+  _select(0);
+  _hideFixLoading();
+  _lastEntry.ms = Math.round(performance.now() - t0);
+  console.log(
+    `fix mode: entered in ${_lastEntry.ms} ms` +
+      (_lastEntry.usedPrewarm ? " (prewarmed)" : " (cold: layout + guard ran now)"),
+  );
+
+  // The score pane can resize without a window resize — the nav collapsing,
+  // the annotation drawer pushing, the pane becoming visible at all — and
+  // every one of those invalidates the page-fit geometry wholesale.
+  const paneSizeKey = () =>
+    `${f.els.scoreEl.clientWidth}x${f.els.scoreEl.clientHeight}|` +
+    `${f.els.stripWs.clientWidth}`;
+  f.lastPaneSize = paneSizeKey();
+  f.resizeObserver = new ResizeObserver(() => {
+    if (_fix !== f) return;
+    if (f.resizing) return; // a resize drag re-fits once, at its end
+    const size = paneSizeKey();
+    // A hidden (zero-sized) pane must not re-lay-out to the fallback page
+    // dimensions; the relayout runs when it comes back.
+    if (size === f.lastPaneSize || size.startsWith("0x0")) return;
+    const prevW = f.lastPaneSize ? parseInt(f.lastPaneSize, 10) : null;
+    f.lastPaneSize = size;
+    const widthChanged = prevW === null || prevW !== parseInt(size, 10);
+    clearTimeout(f.resizeDebounce);
+    f.resizeDebounce = setTimeout(() => {
+      if (_fix !== f) return;
+      // One system per page with the page box tracking content: the pane's
+      // HEIGHT never changes the page model, only the on-screen scale (the
+      // CSS fit) — so a height-only change takes the light re-fit, and only
+      // a width change pays for a relayout.
+      if (widthChanged) _onResize();
+      else _refitScorePane();
+    }, 150);
+  });
+  f.resizeObserver.observe(f.els.scoreEl);
+  f.resizeObserver.observe(f.els.stripWs);
+
+  // Fix mode owns the keyboard while it is open: listen.js's global handler
+  // stands down via isFixModeActive() (the conscious resolution of the
+  // increment-2 deferral), and this document-level handler takes over.
+  // Ctrl+Z / Ctrl+Shift+Z stay with listen.js — undo is GLOBAL by ruling.
+  f.keydownHandler = (e) => _onFixKeydown(e);
+  document.addEventListener("keydown", f.keydownHandler);
+  // A floating keyboard nudge commits on full release (see _onFixKeyup); a
+  // window blur can eat that keyup, so it commits the nudge instead — a
+  // pending nudge is never silently abandoned.
+  f.keyupHandler = (e) => _onFixKeyup(e);
+  document.addEventListener("keyup", f.keyupHandler);
+  f.blurHandler = () => {
+    _heldArrows.clear();
+    _commitPendingNudge();
+  };
+  window.addEventListener("blur", f.blurHandler);
+
+  // The engine bootstrap (decode + fix_begin) runs in the background; the
+  // screen is usable for inspection while it loads, and the loop's realign
+  // and audition wait on it.
+  _bootstrap().catch((e) => {
+    console.error("fix-mode bootstrap failed:", e);
+    _setChip("error", `Correction engine unavailable: ${e.message}`);
+  });
+}
+
+/** Remove a session's DOM and renderer without any toolkit work. */
+function _teardownFixDom(f) {
+  if (_fix === f) _fix = null;
+  f.resizeObserver?.disconnect();
+  clearTimeout(f.resizeDebounce);
+  if (f.raf) cancelAnimationFrame(f.raf);
+  if (f.keydownHandler) {
+    document.removeEventListener("keydown", f.keydownHandler);
+    f.keydownHandler = null;
+  }
+  if (f.keyupHandler) {
+    document.removeEventListener("keyup", f.keyupHandler);
+    f.keyupHandler = null;
+  }
+  if (f.blurHandler) {
+    window.removeEventListener("blur", f.blurHandler);
+    f.blurHandler = null;
+  }
+  _heldArrows.clear();
+  _endDrag(f);
+  _endMarquee(f);
+  _endResize(f);
+  _auditionDispose(f);
+  if (_pendingRealign) {
+    _pendingRealign.reject(new Error("fix mode exited"));
+    _pendingRealign = null;
+  }
+  try {
+    f.stripWS?.destroy();
+  } catch (_) {}
+  f.els.root?.remove();
+  _returnNavActions(); // before the region goes, or they go with it
+  f.els.navRegion?.remove();
+  _restoreTransport();
+  document.body.classList.remove("fix-mode-open");
+  const waveformsEl = document.getElementById("waveforms");
+  if (waveformsEl) waveformsEl.style.display = "";
+}
+
+/**
+ * Leave fix mode. Deliberately NO toolkit restore: under ?fixMode the fix
+ * layout stays RESIDENT between sessions (every remaining toolkit consumer —
+ * renderToMIDI, timemap, getTimesForElement — is layout-independent), which
+ * is what makes exit and re-entry cost milliseconds instead of a full
+ * relayout each way. Without ?fixMode this module never touches the toolkit.
+ */
+export function exitFixMode({ discardPending = false } = {}) {
+  if (!_fix) return;
+  const f = _fix;
+  // Spans still waiting for Re-align are refilled first, so the session never
+  // closes half-applied (user ruling, 2026-09-29). Should that refill fail, the
+  // screen stays open with the error, and the next exit goes through.
+  if (!discardPending && f.pending.length && !f.exitFlushTried) {
+    f.exitFlushTried = true;
+    _realignPending().then((ok) => {
+      if (_fix !== f) return;
+      if (ok) exitFixMode();
+      else {
+        _announce(
+          "Re-align failed, so the correction screen stays open; close it again " +
+            "to leave the spans ahead as they are.",
+        );
+      }
+    });
+    return;
+  }
+  // The replay span belongs to THIS session's recording: a re-entry (or a
+  // different reference row) must not let R seek to times that no longer
+  // mean anything. The suppression MODE is deliberately sticky, unlike this.
+  _lastReplay = null;
+  _teardownFixDom(f);
+  // The main view recomputes via the corrected-tables path ONCE, here, when
+  // anything about the corrections changed during the session (cluster C) —
+  // the synth grid for score↔ref edits, the edited recordings' grids for
+  // audio-to-audio ones.
+  if (_correctionsEpoch !== f.epochAtEntry || _dirtyGridFiles.size) _refreshMainView();
+  // The worker keeps its Pyodide runtime for a cheap re-entry, but drops the
+  // session's resident audio.
+  if (_worker && _workerHasSession) {
+    _workerHasSession = false;
+    try {
+      _worker.postMessage({ type: "fix_dispose" });
+    } catch (_) {}
+  }
+}
+
+/**
+ * Save data's hook (listen.js): Re-align any spans still pending first, so a
+ * saved file is never half-applied. Resolves false when that failed — the
+ * save should not go ahead.
+ */
+export async function fixFlushPending() {
+  if (!_fix || !_fix.pending.length) return true;
+  return _realignPending();
+}
+
+/**
+ * Piece teardown hook, called from listen.js's resetSession: a new piece
+ * invalidates the fix session, the derived caches, AND the worker's resident
+ * audio wholesale.
+ */
+export function fixModeOnPieceReset() {
+  exitFixMode({ discardPending: true });
+  _closeChooser();
+  _derived = null;
+  clearTimeout(_prewarmTimer);
+  if (_worker) {
+    try {
+      _worker.terminate();
+    } catch (_) {}
+    _worker = null;
+    _workerHasSession = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Load-idle prewarm
+// ---------------------------------------------------------------------------
+
+/**
+ * Called by listen.js at the end of every completed load (setGrids): the old
+ * derived state is stale now; under ?fixMode, rebuild it once the load has
+ * settled, so the first entry into fix mode is instant. The prewarm runs the
+ * guard, builds the onset groups, applies the fix layout (which then stays
+ * resident), attributes groups to pages, and renders the first page — the
+ * measured ~2 s of entry work, moved to idle time.
+ */
+export function fixModePrewarm() {
+  _derived = null;
+  // A (re)loaded piece invalidates the piece-scoped correction state too.
+  _corrections = createCorrections();
+  _pristine = null;
+  _lastAnnounce = null;
+  _correctionsBase = null;
+  _dirtyGridFiles.clear();
+  _scoreRefReviewed = false;
+  _closeChooser();
+  _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {} });
+  if (_pendingRealign) {
+    _pendingRealign.reject(new Error("piece replaced"));
+    _pendingRealign = null;
+  }
+  if (!_fixModeParamPresent()) return;
+  // A previously saved correction record resumes: its anchors join the live
+  // model so this session's edits EXTEND the durable record instead of
+  // clobbering it on the next save. (Without ?fixMode the record just rides
+  // through loadedAlignmentJSON untouched.)
+  const record = loadedAlignmentJSON?.header?.corrections;
+  if (record) {
+    try {
+      const { state, base } = deserializeCorrections(record);
+      _corrections = state;
+      _correctionsBase = base;
+      _loadedCorrectionsJson = JSON.stringify({
+        a: _corrections.anchors,
+        g: _corrections.gaps,
+        u: _corrections.audio,
+      });
+      const targets = Object.values(state.audio || {}).reduce(
+        (n, s) => n + s.anchors.length,
+        0,
+      );
+      console.log(
+        `fix mode: resumed ${state.anchors.length} anchors, ${state.gaps.length} gaps, ` +
+          `and ${targets} audio-to-audio anchors from header.corrections`,
+      );
+      // A file that already carries score↔ref corrections has had its step 1.
+      if (state.anchors.length || state.gaps.length) _scoreRefReviewed = true;
+    } catch (e) {
+      console.warn("fix mode: could not resume header.corrections —", e.message);
+    }
+  }
+  installFixEntry();
+  clearTimeout(_prewarmTimer);
+  _schedulePrewarm(2000, 20);
+}
+
+/**
+ * Run the prewarm at idle after `delayMs`. `retries` covers the pane being
+ * hidden (zero-sized) when the moment comes — a tab loaded in the background
+ * measures 0×0 until the user switches to it, so the attempt reschedules
+ * itself for a while instead of silently never prewarming.
+ */
+function _schedulePrewarm(delayMs, retries) {
+  _prewarmTimer = setTimeout(() => {
+    const run = () => {
+      try {
+        const outcome = _runPrewarm();
+        if (outcome === "retry" && retries > 0) _schedulePrewarm(3000, retries - 1);
+      } catch (e) {
+        console.warn("fix mode: prewarm failed (entry will do the work):", e);
+      }
+    };
+    if (typeof requestIdleCallback === "function") {
+      requestIdleCallback(run, { timeout: 10000 });
+    } else {
+      setTimeout(run, 0);
+    }
+  }, delayMs);
+}
+
+function _runPrewarm() {
+  if (_fix || _derived) return; // entered already, or a prewarm landed
+  if (!tk || !getMeiXml()) return;
+  if (!scoreAlignment?.score_onset?.length || !scoreAlignment?.ref_onset?.length)
+    return;
+  const t0 = performance.now();
+  let fresh;
+  try {
+    fresh = _entryGuard();
+  } catch (e) {
+    // The guard would refuse entry; leave everything untouched so the entry
+    // click raises the honest dialog itself.
+    console.warn("fix mode: prewarm skipped, guard refuses —", e.message);
+    return;
+  }
+  const dims = _measurePaneDims();
+  if (!dims) return "retry"; // hidden/zero pane — try again once it has size
+  const groups = _buildGroupsFrom(fresh.qOn);
+  _applyFixLayoutAt(dims.w, dims.h);
+  const pageCount = tk.getPageCount();
+  _assignGroupPages(groups);
+  const svgCache = new Map();
+  const firstPage = groups[0]?.page || 1;
+  svgCache.set(firstPage, tk.renderToSVG(firstPage, {}));
+  _derived = { fresh, groups, dims, pageCount, svgCache };
+  // The engine's runtime is the other half of a slow entry: warm it now too.
+  _warmRuntime();
+  console.log(
+    `fix mode: prewarmed in ${Math.round(performance.now() - t0)} ms ` +
+      `(${pageCount} pages at ${dims.w}×${dims.h}; layout resident)`,
+  );
+}
+
+/**
+ * What the score pane WILL measure once fix mode's DOM exists, read from a
+ * hidden throwaway skeleton laid out by the same CSS.
+ */
+function _measurePaneDims() {
+  const content = document.getElementById("content");
+  if (!content || !content.clientWidth || !content.clientHeight) return null;
+  const probe = document.createElement("div");
+  probe.id = "fix-mode";
+  probe.style.cssText =
+    "position:absolute;visibility:hidden;pointer-events:none;left:0;top:0;" +
+    `width:${content.clientWidth}px;height:${content.clientHeight}px;`;
+  // No header: the correction controls live in the nav, so the content pane
+  // is score + gap + strip and nothing else. Keep this skeleton in step with
+  // _buildDom's — a divergence here silently costs every entry its prewarm.
+  const score = document.createElement("div");
+  score.className = "fix-score";
+  const gap = document.createElement("div");
+  gap.className = "fix-gap";
+  const strip = document.createElement("div");
+  _applyStripSizing(strip); // the lane switches and any user resize size the strip
+  probe.append(score, gap, strip);
+  content.appendChild(probe);
+  const dims = { w: score.clientWidth, h: score.clientHeight };
+  probe.remove();
+  return dims.w && dims.h ? dims : null;
+}
+
+// ---------------------------------------------------------------------------
+// The event → onset-group model
+// ---------------------------------------------------------------------------
+
+/**
+ * Group alignment events by distinct onset quarter. Events sharing an onset
+ * (chord notes with different offsets) are one visual onset: one tick, one
+ * connector, one selection stop — their ref_onset values coincide by
+ * construction. Each group carries its member event indices (the anchor
+ * model's unit in increment 3) and the xml:ids sounding at that quarter.
+ * Pure derivation from the event quarters + the session timemap, so the
+ * prewarm can build it outside any fix session.
+ */
+/** MIDI quarters that may differ between the rendered MIDI and the timemap
+ *  for the SAME notated event: grace notes land a tick or two apart, so the
+ *  match is nearest-within-tolerance, far below any real inter-onset gap. */
+const GROUP_MATCH_TOL_Q = 0.02;
+/** A sounding event with no notated entry of its own (a tremolo stroke: the
+ *  MIDI expands measured tremolos, the timemap only carries the written
+ *  note) inherits the ids of the preceding notated event, if it is close
+ *  enough to plausibly be its generator. */
+const GROUP_INHERIT_MAX_Q = 4;
+
+function _buildGroupsFrom(qOn) {
+  // Do NOT filter out entries carrying measureOn (as the tempo derivation
+  // does): a measure boundary coincides with a note onset, so such entries
+  // carry the very ids this map exists for — q=0 always among them.
+  const entries = timemap
+    .filter((e) => "qstamp" in e && Array.isArray(e.on) && e.on.length)
+    .map((e) => ({ q: e.qstamp, on: e.on }))
+    .sort((a, b) => a.q - b.q);
+  const nearestEntry = (q) => {
+    let lo = 0;
+    let hi = entries.length - 1;
+    if (hi < 0) return null;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (entries[mid].q < q) lo = mid + 1;
+      else hi = mid;
+    }
+    let best = entries[lo];
+    if (lo > 0 && Math.abs(entries[lo - 1].q - q) < Math.abs(best.q - q)) {
+      best = entries[lo - 1];
+    }
+    return Math.abs(best.q - q) <= GROUP_MATCH_TOL_Q ? best : null;
+  };
+  const groups = [];
+  let cur = null;
+  let lastNotated = null; // { q, ids } of the last directly matched group
+  let inherited = 0;
+  let orphaned = 0;
+  for (let i = 0; i < qOn.length; i++) {
+    const k = qKey(qOn[i]);
+    if (!cur || cur.k !== k) {
+      const q = qOn[i];
+      const entry = nearestEntry(q);
+      let ids;
+      if (entry) {
+        ids = entry.on;
+        lastNotated = { q, ids };
+      } else if (lastNotated && q - lastNotated.q <= GROUP_INHERIT_MAX_Q) {
+        ids = lastNotated.ids; // e.g. the 2nd/3rd strokes of a tremolo
+        inherited++;
+      } else {
+        ids = [];
+        orphaned++;
+      }
+      cur = { k, q, eventIxs: [], ids, page: 0, xScore: null };
+      groups.push(cur);
+    }
+    cur.eventIxs.push(i);
+  }
+  _lastGroupStats = { matched: groups.length - inherited - orphaned, inherited, orphaned };
+  if (inherited || orphaned) {
+    console.log(
+      `fix mode: of ${groups.length} onsets, ${inherited} have no own ` +
+        `timemap entry and attach to their generating note (tremolo ` +
+        `strokes), ${orphaned} found nothing to attach to`,
+    );
+  }
+  return groups;
+}
+
+/** How the last group build resolved score elements (test surface). */
+let _lastGroupStats = null;
+
+/**
+ * A group's CURRENT time on the STRIP's timeline — read live, so refills show
+ * through. Score↔ref: the reference onset itself. Audio-to-audio: that onset
+ * projected through the target recording's live grid (score → ref → target,
+ * the composed map). The strip, the ticks, the follower, the audition, and
+ * every gesture read this and nothing else, so the two modes share the loop.
+ */
+function _groupStripTime(group) {
+  return _eventStripTime(group.eventIxs[0]);
+}
+
+function _eventStripTime(i) {
+  const f = _fix;
+  if (f?.mode === "audio") return f.projOn ? f.projOn[i] : _refToTarget(scoreAlignment.ref_onset[i]);
+  return scoreAlignment.ref_onset[i];
+}
+
+function _eventStripOff(i) {
+  const f = _fix;
+  const off = scoreAlignment.ref_offset;
+  if (!Array.isArray(off)) return undefined;
+  if (f?.mode === "audio") return f.projOff ? f.projOff[i] : _refToTarget(off[i]);
+  return off[i];
+}
+
+/**
+ * Reference time → the target recording's time through its LIVE grid:
+ * piecewise-linear over the reference raster, edge-slope extrapolation beyond
+ * it (engine/time-map.js's discipline — never clamped, since a late-starting
+ * recording legitimately maps the reference's opening to negative seconds).
+ */
+function _refToTarget(refT) {
+  const f = _fix;
+  if (!Number.isFinite(refT) || !f?.targetFile) return refT;
+  const rg = alignmentGrids[f.refFile];
+  const tg = alignmentGrids[f.targetFile];
+  if (!rg || !tg || rg.length !== tg.length || rg.length < 2) return refT;
+  let k = _lowerBound(rg, refT); // first raster index with rg[k] >= refT
+  if (k <= 0) k = 1;
+  if (k >= rg.length) k = rg.length - 1;
+  const x0 = rg[k - 1];
+  const x1 = rg[k];
+  return tg[k - 1] + ((refT - x0) / Math.max(x1 - x0, 1e-9)) * (tg[k] - tg[k - 1]);
+}
+
+/**
+ * Audio mode: every event's onset and offset projected into the target's
+ * timeline, refreshed after any change to the target's grid (commit, undo,
+ * redo, revert). The audition renders from these tables and the ticks read
+ * them, so what is heard and what is drawn come from one projection.
+ */
+function _recomputeProjection(f) {
+  if (f.mode !== "audio") return;
+  const on = scoreAlignment.ref_onset;
+  const off = scoreAlignment.ref_offset;
+  const n = on.length;
+  const pOn = new Array(n);
+  const pOff = new Array(n);
+  for (let i = 0; i < n; i++) {
+    pOn[i] = _refToTarget(on[i]);
+    pOff[i] = Array.isArray(off) ? _refToTarget(off[i]) : undefined;
+  }
+  f.projOn = pOn;
+  f.projOff = pOff;
+}
+
+/** The onset/offset tables the audition renders from: the live ref tables
+ *  (score↔ref) or the projection into the target (audio-to-audio). */
+function _audTables(f) {
+  if (f.mode === "audio" && f.projOn) return { on: f.projOn, off: f.projOff };
+  return { on: scoreAlignment.ref_onset, off: scoreAlignment.ref_offset };
+}
+
+/** The target recording's live grid (audio mode), looked up on every use:
+ *  "Revert all" replaces the array, and the alignment JSON aliases it. */
+function _targetGrid() {
+  const f = _fix;
+  return f?.targetFile ? alignmentGrids[f.targetFile] : null;
+}
+
+/** The STRIP recording's duration — the correction model's upper corner.
+ *  The decoded audition is exact; the worker's readiness reply and the stored
+ *  strip peaks agree to within a frame, which is all the corner bound needs. */
+function _refDuration() {
+  const f = _fix;
+  return (
+    f?.aud?.duration ??
+    (f?.mode === "audio" ? f?.targetInfo?.duration : f?.workerEvents?.ref_duration) ??
+    f?.stripSource?.duration ??
+    0
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DOM skeleton
+// ---------------------------------------------------------------------------
+
+/**
+ * A nav checkbox in listen mode's own shape: <span><input><label></span>.
+ * Returns [row, input] — the input keeps the id the specs and CSS know it by,
+ * and `checked` is the state (these were aria-pressed buttons before).
+ * It blurs itself after a click for the reason the sliders do: a focused
+ * control swallows the keys fix mode's own handler needs (Space above all).
+ */
+function _navCheckbox(id, labelText, title, checked, onChange) {
+  const row = document.createElement("span");
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.id = id;
+  input.title = title;
+  input.checked = checked;
+  const label = document.createElement("label");
+  label.htmlFor = id;
+  label.title = title;
+  label.textContent = labelText;
+  input.addEventListener("change", () => {
+    onChange(input.checked);
+    input.blur();
+  });
+  row.append(input, label);
+  return [row, input];
+}
+
+/** A slider's end label: an emoji hint, in the manner of the zoom control's
+ *  icon. Decorative — every slider carries its own aria-label. */
+function _sliderIcon(glyph, title) {
+  const el = document.createElement("span");
+  el.className = "fix-slider-icon";
+  el.textContent = glyph;
+  el.title = title;
+  el.setAttribute("aria-hidden", "true");
+  return el;
+}
+
+/** Nav buttons on loan to the correction region, with the place to put each
+ *  back (the parent AND the next sibling, so the row order survives). */
+const FIX_BORROWED_IDS = [
+  "undo-btn",
+  "redo-btn",
+  "revert-all-btn",
+  "download-json-btn",
+];
+let _borrowedNav = null;
+
+function _borrowNavActions(slots, fallback) {
+  _borrowedNav = [];
+  for (const id of FIX_BORROWED_IDS) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    _borrowedNav.push({ el, parent: el.parentElement, next: el.nextSibling });
+    (slots[id] || fallback).appendChild(el);
+  }
+}
+
+function _returnNavActions() {
+  for (const b of _borrowedNav || []) {
+    try {
+      b.parent?.insertBefore(b.el, b.next);
+    } catch (_) {
+      b.parent?.appendChild(b.el);
+    }
+  }
+  _borrowedNav = null;
+}
+
+function _buildDom(contentEl, waveformsEl) {
+  const f = _fix;
+  waveformsEl.style.display = "none";
+  // Annotation chrome stands down while correcting: the ribbon is irrelevant
+  // here AND is fixed to the viewport bottom, where it covered the strip's
+  // lower 40 px — the anchor glyphs among them. The pencil tab goes with it,
+  // because the drawer it opens pads the body by 380 px, which would resize
+  // the score pane (and its prewarmed fit) mid-session.
+  document.body.classList.add("fix-mode-open");
+
+  const root = document.createElement("div");
+  root.id = "fix-mode";
+
+  // The correction controls live in the LEFT NAV, not in a header strip over
+  // the score. Neither of the nav's own regions means anything while
+  // correcting — Controls drives the hidden waveform pane, Waveforms lists
+  // recordings that cannot be switched to — so both stand down (CSS, on
+  // body.fix-mode-open) and this region takes their place. Two consequences
+  // the build depends on: the content pane belongs entirely to the score and
+  // the strip (no header, so _measurePaneDims has none either), and the main
+  // transport stays exactly where it is and drives the audition instead of
+  // the hidden recording (see fixTransport).
+  const navRegion = document.createElement("div");
+  navRegion.className = "nav-region";
+  navRegion.id = "region-fix";
+  const navCard = document.createElement("div");
+  navCard.className = "nav-card";
+  const navHead = document.createElement("div");
+  navHead.className = "nav-section-header";
+  navHead.textContent = "Correction";
+  const navBody = document.createElement("div");
+  navBody.className = "nav-section-body grow";
+  navCard.append(navHead, navBody);
+  navRegion.appendChild(navCard);
+
+  // The exit is a round × at the score pane's top-right corner (user,
+  // 2026-09-03: in a short window the nav's last button fell off screen), not
+  // a nav button; Escape is its keyboard twin. Absolutely positioned inside
+  // the root, so the pane's layout — and the prewarm fit — never move for it.
+  const exitBtn = document.createElement("button");
+  exitBtn.type = "button";
+  exitBtn.id = "fix-exit";
+  exitBtn.className = "fix-exit-corner";
+  exitBtn.textContent = "✕";
+  exitBtn.setAttribute("aria-label", "Exit correction mode");
+  exitBtn.title =
+    "Exit correction mode (Escape): closes the correction screen and returns " +
+    "to the listening mode. Edits stay in the loaded alignment until you save.";
+  exitBtn.addEventListener("click", () => exitFixMode());
+
+  // The audition has no play button of its own: the main transport's is it
+  // (fixTransport routes the click, _updatePlayBtn owns its glyph and its
+  // disabled state while the session lasts, and _restoreTransport puts both
+  // back at exit).
+  const playBtn = document.getElementById("playpause");
+
+  // Page-only playback toggle: play stops at the current page's boundary.
+  const [pageOnlyRow, pageOnlyBtn] = _navCheckbox(
+    "fix-page-only",
+    "Page only",
+    "Play only the current page — playback stops at the page boundary",
+    _pageOnly,
+    (on) => {
+      _pageOnly = on;
+      if (_fix) _fix.pageOnlyPassUntilT = null;
+    },
+  );
+
+  // Auto-replay suppression (sticky). Checked = no replay after a commit;
+  // R replays the last fix on demand.
+  const [replayRow, replayBtn] = _navCheckbox(
+    "fix-replay-off",
+    "Replay off",
+    "Suppress the automatic replay after each fix (the fix is still " +
+      "committed) — R replays the last fix on demand",
+    _replaySuppressed,
+    (on) => {
+      _replaySuppressed = on;
+    },
+  );
+
+  // Snap-to-onset (sticky): a dragged tick lands on the nearest onset detected
+  // in the recording within a few pixels; Alt while dragging places freely.
+  const [snapRow] = _navCheckbox(
+    "fix-snap-onsets",
+    "Magnet on drag",
+    "A dragged onset snaps to the nearest detected onset within a few pixels — " +
+      "hold Alt while dragging to place freely",
+    _snapOnsets,
+    (on) => {
+      _snapOnsets = on;
+    },
+  );
+
+  // The v2 lanes (sticky): each adds a lane beneath the waveform at the same
+  // time→x mapping, and the strip grows to hold it.
+  const [specRow] = _navCheckbox(
+    "fix-lane-spec",
+    "Spectrogram",
+    "Show a mel spectrogram of the recording beneath the waveform",
+    _laneSpec,
+    (on) => _setLane("spec", on),
+  );
+  const [onsetRow] = _navCheckbox(
+    "fix-lane-onset",
+    "Onset curve",
+    "Show the recording's onset-strength curve with its detected onsets " +
+      "(the snap targets)",
+    _laneOnset,
+    (on) => _setLane("onset", on),
+  );
+
+  /** A compact nav select (blurs after a choice, like the checkboxes). */
+  const mkSelect = (id, title, options, value, onChange) => {
+    const sel = document.createElement("select");
+    sel.id = id;
+    sel.title = title;
+    sel.setAttribute("aria-label", title);
+    for (const [v, label] of options) {
+      const o = document.createElement("option");
+      o.value = String(v);
+      o.textContent = label;
+      sel.appendChild(o);
+    }
+    sel.value = String(value);
+    sel.addEventListener("change", () => {
+      onChange(sel.value);
+      sel.blur();
+    });
+    return sel;
+  };
+
+  // What a snap lands on: the detected (spectral-flux) onset, or the perceived
+  // attack — usually a little EARLIER, since the flux peaks late in the rise
+  // (82 % of the Fledermaus corpus's onsets, median 24 ms; measured 2026-09-29).
+  // Radios in the listening interface's own shape (user, round 2), on their
+  // own row under the switch.
+  const snapTargetRow = document.createElement("span");
+  snapTargetRow.className = "fix-snap-target-row";
+  snapTargetRow.id = "fix-snap-target";
+  for (const [v, label, title] of [
+    ["flux", "detected", "Snap to the detected onset (the spectral-flux peak)"],
+    [
+      "perceived",
+      "perceived",
+      "Snap to the perceived attack — usually a little earlier than the detected onset",
+    ],
+  ]) {
+    const r = document.createElement("input");
+    r.type = "radio";
+    r.name = "fix-snap-target";
+    r.id = `fix-snap-target-${v}`;
+    r.value = v;
+    r.checked = _snapTarget === v;
+    r.title = title;
+    r.addEventListener("change", () => {
+      if (!r.checked) return;
+      _snapTarget = v;
+      r.blur();
+      _scheduleRedraw();
+    });
+    const l = document.createElement("label");
+    l.htmlFor = r.id;
+    l.title = title;
+    l.textContent = label;
+    snapTargetRow.append(r, l);
+  }
+
+  // "Move to nearest onset" as an icon (arrow into a magnet) at the end of the
+  // Snap row — the words live in its tooltip; S is the keyboard twin.
+  const snapBtn = document.createElement("button");
+  snapBtn.type = "button";
+  snapBtn.id = "fix-snap-sel";
+  snapBtn.className = "fix-icon-btn";
+  snapBtn.textContent = "⚡\u{1F9F2}";
+  snapBtn.setAttribute("aria-label", "Move to nearest onset");
+  snapBtn.title =
+    "Move to nearest onset (S): the selected onset — or the marquee / Shift+click " +
+    "selection, A for the page — each to its nearest onset within 250 ms";
+  snapBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  snapBtn.addEventListener("click", () => {
+    _snapSelectionToOnsets().catch((err) =>
+      console.error("fix mode: move to onset failed:", err),
+    );
+  });
+  snapRow.appendChild(snapBtn);
+
+  // Spectrogram configuration (sticky, re-requested from the engine on change;
+  // shown only while the lane is).
+  const specCfg = document.createElement("div");
+  specCfg.className = "fix-spec-cfg";
+  specCfg.hidden = !_laneSpec;
+  const cfgRow1 = document.createElement("span");
+  const cfgRow2 = document.createElement("span");
+  cfgRow1.append(
+    mkSelect(
+      "fix-spec-nfft",
+      "Spectrogram window size (FFT)",
+      [
+        [512, "512"],
+        [1024, "1024"],
+        [2048, "2048"],
+        [4096, "4096"],
+      ],
+      _specCfg.nFft,
+      (v) => _setSpecCfg({ nFft: Number(v) }),
+    ),
+    mkSelect(
+      "fix-spec-window",
+      "Spectrogram window type",
+      [
+        ["hann", "Hann"],
+        ["hamming", "Hamming"],
+        ["blackman", "Blackman"],
+        ["rect", "Rect."],
+      ],
+      _specCfg.window,
+      (v) => _setSpecCfg({ window: v }),
+    ),
+  );
+  cfgRow2.append(
+    mkSelect(
+      "fix-spec-overlap",
+      "Spectrogram window overlap",
+      [
+        [0.5, "50 %"],
+        [0.75, "75 %"],
+        [0.875, "87.5 %"],
+      ],
+      _specCfg.overlap,
+      (v) => _setSpecCfg({ overlap: Number(v) }),
+    ),
+    mkSelect(
+      "fix-spec-mels",
+      "Spectrogram mel bands",
+      [
+        [32, "32 bands"],
+        [64, "64 bands"],
+        [96, "96 bands"],
+        [128, "128 bands"],
+      ],
+      _specCfg.nMels,
+      (v) => _setSpecCfg({ nMels: Number(v) }),
+    ),
+  );
+  // Frequency scale and the optional Hz labels (labels are display-only).
+  const cfgRow3 = document.createElement("span");
+  cfgRow3.append(
+    mkSelect(
+      "fix-spec-scale",
+      "Spectrogram frequency scale",
+      [
+        ["mel", "mel"],
+        ["log", "log"],
+        ["linear", "linear"],
+      ],
+      _specCfg.scale,
+      (v) => _setSpecCfg({ scale: v }),
+    ),
+  );
+  const [labelsRow] = _navCheckbox(
+    "fix-spec-labels",
+    "Hz",
+    "Label the spectrogram's frequency axis",
+    _specCfg.labels,
+    (on) => _setSpecCfg({ labels: on }),
+  );
+  labelsRow.className = "fix-spec-labels-row";
+  cfgRow3.appendChild(labelsRow);
+  specCfg.append(cfgRow1, cfgRow2, cfgRow3);
+
+  // Playback speed (pitch preserved via the stretch worklet). The % button
+  // is the "back to 100%" affordance and lights up whenever speed ≠ 100%.
+  const speed = document.createElement("span");
+  speed.className = "fix-speed";
+  speed.title =
+    "Playback speed (pitch preserved) — click the % to return to 100%";
+  const speedInput = document.createElement("input");
+  speedInput.type = "range";
+  speedInput.min = "50";
+  speedInput.max = "100";
+  speedInput.step = "5";
+  speedInput.value = "100";
+  speedInput.disabled = true; // enabled once the stretch worklet attaches
+  speedInput.setAttribute("aria-label", "Playback speed (%)");
+  const speedSlow = _sliderIcon("\u{1F422}", "Slower");
+  const speedFast = _sliderIcon("\u{1F483}", "Full speed");
+  const speedReset = document.createElement("button");
+  speedReset.type = "button";
+  speedReset.className = "fix-speed-reset";
+  speedReset.textContent = "100%";
+  speedReset.title = "Back to full speed";
+  speedReset.disabled = true;
+  speedInput.addEventListener("input", () => {
+    _audSetRate(Number(speedInput.value) / 100);
+  });
+  // Give the keyboard back once the thumb is released (as the balance does).
+  speedInput.addEventListener("pointerup", () => speedInput.blur());
+  speedReset.addEventListener("mousedown", (e) => e.preventDefault());
+  speedReset.addEventListener("click", () => {
+    _audSetRate(1);
+  });
+  speed.append(speedSlow, speedInput, speedFast, speedReset);
+
+  // Real-time L/R balance: left ear = the recording, right ear = the synth.
+  const balance = document.createElement("span");
+  balance.className = "fix-balance";
+  balance.title =
+    "Audition balance — left ear: the recording, right ear: the aligned synth";
+  const balanceL = _sliderIcon("\u{1F3BB}", "Left ear: the recording");
+  const balanceInput = document.createElement("input");
+  balanceInput.type = "range";
+  balanceInput.min = "-100";
+  balanceInput.max = "100";
+  balanceInput.step = "5";
+  balanceInput.value = String(Math.round(_audBalance * 100));
+  balanceInput.setAttribute("aria-label", "Audition balance (recording ↔ synth)");
+  const balanceR = _sliderIcon("\u{1F4BB}", "Right ear: the aligned synth");
+  balanceInput.addEventListener("input", () => {
+    _audBalance = Number(balanceInput.value) / 100;
+    if (_fix?.aud) _applyAudBalance(_fix.aud);
+  });
+  // Give the keyboard back to the fix screen once the thumb is released
+  // (a focused range input would otherwise swallow the arrow keys).
+  balanceInput.addEventListener("pointerup", () => balanceInput.blur());
+  balance.append(balanceL, balanceInput, balanceR);
+
+  const title = document.createElement("span");
+  title.className = "fix-title";
+  // The card is already headed "Correction", so the line carries only what
+  // that header cannot: which two things are being aligned.
+  title.textContent =
+    f.mode === "audio" ? `${f.refFile} ↔ ${f.targetFile}` : `score ↔ ${f.refFile}`;
+
+  // Page arrows of its own would duplicate the transport's skip buttons,
+  // which turn pages while the session is open; what is left here is the
+  // READOUT, beside the controls it belongs with.
+  const pageCtl = document.createElement("span");
+  pageCtl.className = "fix-page-ctl";
+  const pageLabel = document.createElement("span");
+  pageLabel.className = "fix-page-label";
+  // Score zoom beside the page readout: fit, fill width / height, or a
+  // percentage of the fit (+ / − step it); the pane scrolls when it overflows.
+  const zoomSel = mkSelect(
+    "fix-score-zoom",
+    "Score zoom: fit the page, fill the width or height, or a percentage of the fit (+ / −)",
+    [
+      ["fit", "Fit page"],
+      ["width", "Fill width"],
+      [75, "75 %"],
+      [100, "100 %"],
+      [125, "125 %"],
+      [150, "150 %"],
+      [200, "200 %"],
+      [300, "300 %"],
+    ],
+    _scoreZoom.mode === "pct" ? _scoreZoom.pct : _scoreZoom.mode,
+    (v) => {
+      if (v === "fit" || v === "width") _setScoreZoom(v);
+      else _setScoreZoom("pct", Number(v));
+    },
+  );
+  pageCtl.append(pageLabel, zoomSel);
+
+  const chip = document.createElement("span");
+  chip.className = "fix-chip";
+  chip.dataset.state = "idle";
+
+  // The controls in FIELDSETS, the listening interface's own shape (user,
+  // round 3): collapsible legends (listen.js's document-level delegation
+  // toggles them and persists the state by id; the state is restored here),
+  // one group per concern. Exit sits last, away from the controls used while
+  // correcting.
+  const fieldset = (id, label, title) => {
+    const fs = document.createElement("fieldset");
+    fs.className = "collapsible-fieldset fix-fs";
+    fs.id = id;
+    const legend = document.createElement("legend");
+    legend.title = title;
+    legend.append(label, " ");
+    const arrow = document.createElement("span");
+    arrow.className = "collapse-arrow";
+    arrow.textContent = "▾";
+    legend.appendChild(arrow);
+    const body = document.createElement("div");
+    body.className = "fieldset-body";
+    fs.append(legend, body);
+    try {
+      if (localStorage.getItem(`fieldset-collapsed-${id}`) === "true") {
+        fs.classList.add("collapsed");
+      }
+    } catch (_) {}
+    return { fs, body };
+  };
+  const fsScore = fieldset("fix-fs-score", "Score", "Collapse / expand the score controls");
+  fsScore.body.append(pageCtl);
+  const fsPlayback = fieldset("fix-fs-playback", "Playback", "Collapse / expand playback options");
+  fsPlayback.body.append(pageOnlyRow, replayRow, speed, balance);
+  const fsSnap = fieldset("fix-fs-snap", "Snap to onsets", "Collapse / expand the snap-to-onset controls");
+  fsSnap.body.append(snapRow, snapTargetRow);
+  const fsLanes = fieldset("fix-fs-lanes", "Lanes", "Collapse / expand the strip's lanes");
+  fsLanes.body.append(specRow, specCfg, onsetRow);
+  // Undo, redo, revert, and Save data are NOT listen-mode controls that
+  // happen to sit in the nav — a correction session needs every one of them
+  // (undo is unified onto listen.js's stack by ruling, and an unsaveable
+  // session would be pointless). They are borrowed from the Controls region
+  // rather than duplicated, so their enable/disable wiring keeps working
+  // untouched, and handed back at exit.
+  const fsEdits = fieldset("fix-fs-edits", "Edits", "Collapse / expand undo, revert, and save");
+  const undoRow = document.createElement("div");
+  undoRow.className = "fix-nav-row";
+  // Unscored-audio gaps (increment 4): the button twin of G.
+  const gapRow = document.createElement("div");
+  gapRow.className = "fix-nav-row";
+  const gapBtn = document.createElement("button");
+  gapBtn.type = "button";
+  gapBtn.id = "fix-gap-btn";
+  gapBtn.textContent = "Gap (G)";
+  gapBtn.title =
+    "Unscored audio (G): lay a gap from the selected onset to the next — applause, a " +
+    "pause, an unwritten repeat — or remove the gap the selected onset bounds. Drag " +
+    "either endpoint to place its boundary.";
+  gapBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  gapBtn.addEventListener("click", () => _toggleGap());
+  if (f.mode === "audio") {
+    gapBtn.disabled = true;
+    gapBtn.title = "Unscored-audio gaps are laid in the score ↔ reference correction.";
+  }
+  gapRow.appendChild(gapBtn);
+  // Re-alignment: at once or on demand, and how far
+  // ahead. Nothing behind a fix moves either way (see _autoRealign).
+  const [autoRow] = _navCheckbox(
+    "fix-auto-realign",
+    "Re-align automatically",
+    "Re-align the span ahead of each fix at once. Off: a fix only pins its tick, " +
+      "which then moves only between its neighbours, and the span ahead waits for " +
+      "Re-align (Shift+R). Nothing behind a fix ever moves.",
+    _autoRealign,
+    (on) => {
+      _autoRealign = on;
+      _syncRealignUi();
+    },
+  );
+  const realignRow = document.createElement("div");
+  realignRow.className = "fix-nav-row";
+  const realignBtn = document.createElement("button");
+  realignBtn.type = "button";
+  realignBtn.id = "fix-realign-btn";
+  realignBtn.title =
+    "Re-align the spans ahead of the fixes pinned since the last re-alignment (Shift+R)";
+  realignBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  realignBtn.addEventListener("click", () => {
+    _realignPending().catch((err) => console.error("fix mode: re-align failed:", err));
+  });
+  const horizonSel = mkSelect(
+    "fix-horizon",
+    "How far ahead of a fix the re-alignment reaches: to the next anchor or this " +
+      "far, whichever comes first — the note there keeps its time",
+    HORIZON_CHOICES.map((s) => [
+      String(s),
+      !Number.isFinite(s) ? "to next anchor" : s >= 60 ? `${s / 60} min ahead` : `${s} s ahead`,
+    ]),
+    _horizonSec,
+    (v) => {
+      _horizonSec = Number(v);
+      _scheduleRedraw();
+    },
+  );
+  realignRow.appendChild(realignBtn);
+  const horizonRow = document.createElement("div");
+  horizonRow.className = "fix-nav-row fix-horizon-row";
+  const horizonLabel = document.createElement("label");
+  horizonLabel.htmlFor = "fix-horizon";
+  horizonLabel.textContent = "Reach";
+  horizonLabel.title = horizonSel.title;
+  horizonRow.append(horizonLabel, horizonSel);
+  fsEdits.body.append(undoRow, gapRow, autoRow, realignRow, horizonRow);
+  navBody.append(title, chip, fsScore.fs, fsPlayback.fs, fsSnap.fs, fsLanes.fs, fsEdits.fs);
+  _borrowNavActions({ "undo-btn": undoRow, "redo-btn": undoRow }, fsEdits.body);
+
+  const score = document.createElement("div");
+  score.className = "fix-score";
+  // The zoom's scroller sits INSIDE the measured pane, so a zoomed page and
+  // its scrollbars never change the box the prewarm fit was measured against.
+  const scoreScroll = document.createElement("div");
+  scoreScroll.className = "fix-score-scroll";
+  const scoreSvg = document.createElement("div");
+  scoreSvg.className = "fix-score-svg";
+  scoreScroll.appendChild(scoreSvg);
+  score.appendChild(scoreScroll);
+  scoreSvg.addEventListener("click", (e) => _onScoreClick(e));
+  scoreScroll.addEventListener("scroll", () => _onScoreScroll(), { passive: true });
+
+  // The gap doubles as the handle that drags the lane stack against the score.
+  const gap = document.createElement("div");
+  gap.className = "fix-gap";
+  gap.title = "Drag to resize the lanes against the score; double-click to reset";
+  gap.addEventListener("pointerdown", (e) => _onGapPointerDown(e));
+  gap.addEventListener("dblclick", () => _resetStripHeight());
+
+  const strip = document.createElement("div");
+  _applyStripSizing(strip);
+  // The lane stack: waveform, mel spectrogram, onset curve — one column above
+  // the playhead's gutter, all three at the waveform's zoom + scroll.
+  const lanes = document.createElement("div");
+  lanes.className = "fix-lanes";
+  const stripWs = document.createElement("div");
+  stripWs.className = "fix-strip-ws";
+  const laneSpec = document.createElement("canvas");
+  laneSpec.className = "fix-lane-spec";
+  laneSpec.hidden = !_laneSpec;
+  const laneOnset = document.createElement("canvas");
+  laneOnset.className = "fix-lane-onset";
+  laneOnset.hidden = !_laneOnset;
+  lanes.append(stripWs, laneSpec, laneOnset);
+  // "Work is happening": while a spectrogram recompute is pending the lane
+  // dims and this badge sits on it (placed by _layoutLaneBadge).
+  const laneBadge = document.createElement("div");
+  laneBadge.className = "fix-lane-badge";
+  laneBadge.hidden = true;
+  const badgeSpin = document.createElement("span");
+  badgeSpin.className = "fix-spin";
+  badgeSpin.textContent = "⟳";
+  laneBadge.append(badgeSpin, " spectrogram…");
+  lanes.appendChild(laneBadge);
+  _applyLaneWeights({ stripWs, laneSpec, laneOnset });
+  // Handles between neighbouring visible lanes (placed by _layoutLaneHandles;
+  // they sit above the tick canvas, which otherwise takes every strip click).
+  const handleA = document.createElement("div");
+  handleA.className = "fix-lane-handle";
+  handleA.title = "Drag to resize the lanes; double-click to reset";
+  const handleB = document.createElement("div");
+  handleB.className = "fix-lane-handle";
+  handleB.title = handleA.title;
+  for (const h of [handleA, handleB]) {
+    h.addEventListener("pointerdown", (e) => _onLaneHandlePointerDown(e, h));
+    h.addEventListener("dblclick", () => _resetLaneWeights());
+  }
+  const ticks = document.createElement("canvas");
+  ticks.className = "fix-ticks";
+  ticks.addEventListener("mousedown", (e) => _onTickMouseDown(e));
+  // The playhead (and drag ghosting) repaints every frame during playback; it
+  // gets its own canvas so the tick/connector rebuild stays selection-rate.
+  const playhead = document.createElement("canvas");
+  playhead.className = "fix-playhead";
+  const skipPrev = document.createElement("button");
+  skipPrev.type = "button";
+  skipPrev.className = "fix-onset-skip fix-onset-prev";
+  skipPrev.title = "Previous onset";
+  skipPrev.textContent = "◀";
+  const skipNext = document.createElement("button");
+  skipNext.type = "button";
+  skipNext.className = "fix-onset-skip fix-onset-next";
+  skipNext.title = "Next onset";
+  skipNext.textContent = "▶";
+  skipPrev.addEventListener("mousedown", (e) => e.preventDefault());
+  skipNext.addEventListener("mousedown", (e) => e.preventDefault());
+  skipPrev.addEventListener("click", () => _skipOnset(-1));
+  skipNext.addEventListener("click", () => _skipOnset(1));
+  strip.append(lanes, ticks, playhead, handleA, handleB, skipPrev, skipNext);
+
+  // Connector overlay spans the whole fix container so a polyline can run
+  // from a note in the score pane down across the gap into the strip.
+  const conn = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  conn.classList.add("fix-connectors");
+
+  // Loading overlay: shown before any synchronous Verovio work, so a cold
+  // entry (or a relayout after a resize) reads as loading, not a hang.
+  const loading = document.createElement("div");
+  loading.className = "fix-loading";
+  loading.hidden = true;
+  const loadingSpin = document.createElement("div");
+  loadingSpin.className = "fix-loading-spin";
+  const loadingText = document.createElement("div");
+  loadingText.className = "fix-loading-text";
+  loading.append(loadingSpin, loadingText);
+
+  root.append(score, gap, strip, conn, loading, exitBtn);
+  contentEl.appendChild(root);
+  // The region goes where Controls and Waveforms were, above the footer.
+  const navFooter = document.getElementById("nav-footer");
+  navFooter?.parentElement?.insertBefore(navRegion, navFooter);
+  _takeOverTransport();
+
+  f.els = {
+    root,
+    navRegion,
+    scoreEl: score,
+    scoreSvg,
+    gap,
+    scoreScroll,
+    zoomSel,
+    strip,
+    lanes,
+    stripWs,
+    laneSpec,
+    laneOnset,
+    laneBadge,
+    laneHandles: [handleA, handleB],
+    specCfg,
+    ticks,
+    playhead,
+    conn,
+    pageLabel,
+    chip,
+    title,
+    playBtn,
+    speedWrap: speed,
+    speedInput,
+    speedReset,
+    loading,
+    loadingText,
+    realignBtn,
+  };
+  _syncRealignUi();
+  f.playheadColor =
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--color-playhead")
+      .trim() || "#2563eb";
+}
+
+// ---------------------------------------------------------------------------
+// The main transport, while a session is open
+// ---------------------------------------------------------------------------
+
+/**
+ * What each transport button means while correcting. Not invented here: every
+ * one of these is the button's KEYBOARD twin in _onFixKeydown, so the two
+ * routes cannot drift. The icons for the outer pair swap (CSS, on
+ * body.fix-mode-open) because "to the start/end" would be a lie about a page
+ * turn; the inner pair keep theirs, since a step icon still steps — one
+ * onset instead of ten seconds.
+ */
+const FIX_TRANSPORT_TITLES = {
+  "skip-back": "Previous page (Up arrow)",
+  "seek-back": "Previous onset (Left arrow)",
+  playpause:
+    "Play audition (left ear: the recording, right ear: the aligned synth) — Space",
+  "seek-fwd": "Next onset (Right arrow)",
+  "skip-end": "Next page (Down arrow)",
+};
+
+/** Titles displaced by the takeover, restored verbatim at exit. */
+let _transportTitles = null;
+
+function _takeOverTransport() {
+  _transportTitles = {};
+  for (const [id, title] of Object.entries(FIX_TRANSPORT_TITLES)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    _transportTitles[id] = el.title;
+    el.title = title;
+  }
+  // The audition is not playable until its buffers exist; _updatePlayBtn
+  // releases the button when they do.
+  const pp = document.getElementById("playpause");
+  if (pp) pp.disabled = true;
+  // A recording still playing when the session opens would have no stop:
+  // the transport now belongs to the audition and the keyboard stands down.
+  Object.values(wavesurfers).forEach((ws) => {
+    try {
+      if (ws?.isPlaying?.()) ws.pause();
+    } catch (_) {}
+  });
+}
+
+function _restoreTransport() {
+  for (const [id, title] of Object.entries(_transportTitles || {})) {
+    const el = document.getElementById(id);
+    if (el) el.title = title;
+  }
+  _transportTitles = null;
+  const pp = document.getElementById("playpause");
+  if (pp) {
+    pp.disabled = false;
+    updateTransportIcons(false);
+  }
+}
+
+/**
+ * listen.js's transport handlers hand their click here first. Returns true
+ * when a fix session took it, so the caller stops; false leaves listen mode's
+ * behaviour untouched.
+ */
+export function fixTransport(action) {
+  if (!_fix) return false;
+  switch (action) {
+    case "playpause":
+      _commitPendingNudge();
+      _audToggle();
+      break;
+    case "seek-back":
+      _skipOnset(-1);
+      break;
+    case "seek-fwd":
+      _skipOnset(1);
+      break;
+    case "skip-back":
+      _turnPage(-1);
+      break;
+    case "skip-end":
+      _turnPage(1);
+      break;
+    case "mark":
+      // The mark button is hidden while correcting (CSS, on
+      // body.fix-mode-open); a click that reaches here anyway is swallowed,
+      // or listen mode would lay a marker on the hidden waveform pane.
+      break;
+    default:
+      return false;
+  }
+  return true;
+}
+
+/**
+ * The loading overlay. Default: the full blanking overlay (entry, where there
+ * is nothing to show yet). `corner`: a small spinner in the pane's top-right
+ * with the stale page kept visible and dimmed beneath it — for a relayout
+ * mid-session, where a stale page beats a blank one (user, 2026-09-03).
+ */
+function _showFixLoading(text, { corner = false } = {}) {
+  if (!_fix) return;
+  _fix.els.loadingText.textContent = text;
+  _fix.els.loading.classList.toggle("fix-loading-corner", corner);
+  _fix.els.root.classList.toggle("fix-relayout", corner);
+  _fix.els.loading.hidden = false;
+  _fix.lastLoading = { text, corner };
+}
+
+function _hideFixLoading() {
+  if (!_fix) return;
+  _fix.els.loading.hidden = true;
+  _fix.els.loading.classList.remove("fix-loading-corner");
+  _fix.els.root.classList.remove("fix-relayout");
+}
+
+function _setChip(state, text, full) {
+  if (!_fix) return;
+  _fix.chipState = state;
+  _fix.els.chip.dataset.state = state;
+  _fix.els.chip.textContent = text;
+  // The chip is ellipsised on purpose (the nav column is narrow), so the
+  // untruncated message lives in the tooltip — `full` when the short form
+  // dropped something.
+  _fix.els.chip.title = full || text;
+}
+
+/**
+ * While the engine is arming, the strip reads as not-yet-live: the ticks dim
+ * and the cursor says wait. The marker a user reaches for first is in the
+ * strip and the chip is over in the nav, so "why will this not move" has to
+ * be answerable without looking away from the marker.
+ */
+function _syncReadyAffordance() {
+  const f = _fix;
+  if (!f) return;
+  const pending = !f.engineReady;
+  f.els.strip.classList.toggle("fix-strip-pending", pending);
+  f.els.ticks.classList.toggle("fix-ticks-pending", pending);
+}
+
+// ---------------------------------------------------------------------------
+// Verovio layout + page model
+// ---------------------------------------------------------------------------
+
+function _redoLayout() {
+  if (typeof tk.redoLayout === "function") tk.redoLayout();
+  else tk.loadData(getMeiXml());
+}
+
+/**
+ * Size the Verovio page to a score-pane box (page-fit) and re-lay-out.
+ * adjustPageHeight is ON so the page box tracks actual content: a full
+ * orchestral system can be TALLER than the target page height, and with a
+ * fixed box Verovio overflows it — the viewBox then clips the overflow
+ * instead of scaling it. With the box tracking content, svgViewBox + the
+ * pane's CSS shrink every page fully into view (page heights — and so the
+ * on-screen scale — may vary a little between pages).
+ */
+function _applyFixLayoutAt(w, h) {
+  const factor = 100 / FIX_SCALE;
+  tk.setOptions({
+    scale: FIX_SCALE,
+    pageWidth: Math.max(400, Math.floor((w || 800) * factor)),
+    pageHeight: Math.max(400, Math.floor((h || 500) * factor)),
+    adjustPageHeight: true,
+    // ONE system per page (user ruling, feedback round 2): several systems on
+    // one page make the connectors cross along x, so a "page" in fix mode is
+    // a single system — broken where the encoder put the sb/pb when the MEI
+    // has encoded breaks, else where Verovio's auto layout breaks (an MEI
+    // with no breaks at all must not collapse into one giant system).
+    breaks: /<[sp]b[\s/>]/.test(getMeiXml() || "") ? "line" : "auto",
+    systemMaxPerPage: 1,
+    footer: "none",
+    header: "none",
+    svgViewBox: true,
+  });
+  _redoLayout();
+}
+
+function _pageOfGroup(g) {
+  for (const id of g.ids) {
+    try {
+      const p = tk.getPageWithElement(id);
+      if (p > 0) return p;
+    } catch (_) {
+      /* try the next id */
+    }
+  }
+  return 0;
+}
+
+/**
+ * Ask the laid-out toolkit which page each onset group renders on. Score
+ * order means pages are monotone over the groups, so the boundaries are
+ * found by divide-and-conquer instead of one wasm call per group — measured
+ * at ~0.7 ms per getPageWithElement call, the naive loop was ~1 s on the
+ * Fledermaus corpus (~1,500 groups), most of the old entry cost after
+ * layout.
+ */
+function _assignGroupPages(groups) {
+  const known = [];
+  for (let i = 0; i < groups.length; i++) {
+    groups[i].page = 0;
+    if (groups[i].ids.length) known.push(i);
+  }
+  if (known.length) {
+    const first = known[0];
+    const last = known[known.length - 1];
+    groups[first].page = _pageOfGroup(groups[first]) || 1;
+    groups[last].page = _pageOfGroup(groups[last]) || groups[first].page;
+    const fill = (loK, hiK) => {
+      if (hiK - loK <= 1) return;
+      const pLo = groups[known[loK]].page;
+      const pHi = groups[known[hiK]].page;
+      if (pLo === pHi) {
+        for (let k = loK + 1; k < hiK; k++) groups[known[k]].page = pLo;
+        return;
+      }
+      const midK = (loK + hiK) >> 1;
+      groups[known[midK]].page = _pageOfGroup(groups[known[midK]]) || pLo;
+      fill(loK, midK);
+      fill(midK, hiK);
+    };
+    fill(0, known.length - 1);
+  }
+  // Groups with no resolvable element inherit their neighbourhood's page,
+  // so paging and the strip window stay monotonic.
+  let lastPage = 1;
+  for (const g of groups) {
+    if (g.page > 0) lastPage = g.page;
+    else g.page = lastPage;
+  }
+}
+
+function _groupsOnPage(page) {
+  return _fix.groups.filter((g) => g.page === page);
+}
+
+/** Render (or re-show) one score page and rebuild its per-page caches. */
+function _renderPage(page) {
+  const f = _fix;
+  page = Math.min(Math.max(1, page), f.pageCount);
+  f.page = page;
+  let svg = f.pageSvgCache.get(page);
+  if (!svg) {
+    svg = tk.renderToSVG(page, {});
+    f.pageSvgCache.set(page, svg);
+  }
+  f.els.scoreSvg.innerHTML = svg;
+  // Per-page id → element index (scoped lookup, the Spike B pattern).
+  f.pageIndex.clear();
+  f.els.scoreSvg.querySelectorAll("g[id]").forEach((g) => {
+    f.pageIndex.set(g.id, g);
+  });
+  _applyScoreZoom(); // size the page BEFORE the geometry reads its rects
+  _buildPageGeometry(page);
+  f.els.pageLabel.textContent = `Page ${page} / ${f.pageCount}`;
+  _updateStripWindow();
+  _scheduleRedraw();
+  _schedulePlayheadFrame();
+}
+
+/**
+ * The outer page svg's letterboxed content box: where its viewBox actually
+ * paints, in screen coordinates, plus the px-per-viewBox-unit scale. Plain
+ * meet arithmetic on getBoundingClientRect + viewBox — deliberately NOT
+ * getScreenCTM, which proved unreliable for nested SVGs across browsers
+ * (Firefox mapped underlay x positions to the far left of the page; both
+ * feedback-round bugs in this geometry traced to platform CTM reads).
+ */
+function _scoreContentBox() {
+  const outer = _fix?.els.scoreSvg.querySelector("svg");
+  if (!outer) return null;
+  const oRect = outer.getBoundingClientRect();
+  const vb = outer.viewBox?.baseVal;
+  if (!(vb && vb.width > 0 && vb.height > 0 && oRect.width && oRect.height)) {
+    return null;
+  }
+  const scale = Math.min(oRect.width / vb.width, oRect.height / vb.height);
+  if (!(scale > 0)) return null;
+  return {
+    outer,
+    scale,
+    vbWidth: vb.width,
+    vbHeight: vb.height,
+    left: oRect.left + (oRect.width - vb.width * scale) / 2,
+    top: oRect.top + (oRect.height - vb.height * scale) / 2,
+  };
+}
+
+/**
+ * Per-page connector geometry. The IN-SCORE part of each connector is a
+ * vertical line spanning from the HIGHEST element sounding at the onset down
+ * to the page box's bottom, injected into the page SVG as its first-painted
+ * child — beneath every score element (staff lines included: one line cannot
+ * sit between all staves' lines and all their notes in SVG paint order, and
+ * at this width the difference is invisible). The lines live in the OUTER
+ * svg's viewBox units, converted from screen rects by _scoreContentBox's
+ * arithmetic. The overlay polyline continues from the content bottom to the
+ * strip.
+ */
+/**
+ * Where the letterboxed score content ends vertically, in SCREEN coordinates.
+ * Computed fresh at every use — a value cached while the pane was hidden or
+ * mid-transition paints connectors from the wrong height for the whole page.
+ */
+function _scoreContentBottomScreen() {
+  const box = _scoreContentBox();
+  return box ? box.top + box.vbHeight * box.scale : null;
+}
+
+function _buildPageGeometry(page) {
+  const f = _fix;
+  const rootRect = f.els.root.getBoundingClientRect();
+  f.underlayByGroup = new Map();
+  f.els.scoreSvg.querySelector(".fix-underlay")?.remove(); // idempotent
+  const box = _scoreContentBox();
+  // px per viewBox unit, inverted: attribute values (stroke width included)
+  // are in the outer svg's user units.
+  f.underlayUnitsPerPx = box ? 1 / box.scale : 0;
+  const svgNS = "http://www.w3.org/2000/svg";
+  const underlay = document.createElementNS(svgNS, "g");
+  underlay.classList.add("fix-underlay");
+  for (const g of f.groups) {
+    g.xScore = null;
+    if (g.page !== page || !g.ids.length) continue;
+    let xSum = 0;
+    let n = 0;
+    let yTopScreen = Infinity;
+    for (const id of g.ids) {
+      const el = f.pageIndex.get(id);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      xSum += r.x + r.width / 2;
+      yTopScreen = Math.min(yTopScreen, r.top);
+      n++;
+    }
+    if (!n) continue;
+    const xScreen = xSum / n;
+    g.xScore = xScreen - rootRect.x;
+    if (box) {
+      // Screen → outer viewBox units by the same meet arithmetic that placed
+      // the content. The bottom end is the page box's own bottom — a pure
+      // SVG-space value, immune to whatever the pane was doing on screen.
+      const x = (xScreen - box.left) / box.scale;
+      const y1 = (yTopScreen - box.top) / box.scale;
+      if (!(y1 < box.vbHeight)) continue; // degenerate geometry: no line
+      const line = document.createElementNS(svgNS, "line");
+      line.setAttribute("x1", x.toFixed(1));
+      line.setAttribute("y1", y1.toFixed(1));
+      line.setAttribute("x2", x.toFixed(1));
+      line.setAttribute("y2", box.vbHeight.toFixed(1));
+      f.underlayByGroup.set(g, line);
+      underlay.appendChild(line);
+    }
+  }
+  // First-painted child of the page svg: beneath the definition-scale svg
+  // that holds every score element (desc/defs/style render nothing).
+  if (underlay.childNodes.length && box) {
+    box.outer.insertBefore(underlay, box.outer.firstChild);
+  }
+  _applyUnderlaySelection();
+}
+
+/** The selected onset's in-score line is emphasised; the rest stay faint. */
+function _applyUnderlaySelection() {
+  const f = _fix;
+  if (!f?.underlayByGroup) return;
+  const sel = f.groups[f.selGroupIx];
+  for (const [g, line] of f.underlayByGroup) {
+    const selected = g === sel;
+    line.classList.toggle("fix-underlay-sel", selected);
+    line.setAttribute(
+      "stroke-width",
+      ((selected ? 1.8 : 1.2) * f.underlayUnitsPerPx).toFixed(1),
+    );
+  }
+}
+
+function _turnPage(delta) {
+  const f = _fix;
+  _commitPendingNudge();
+  const page = Math.min(Math.max(1, f.page + delta), f.pageCount);
+  if (page === f.page) return;
+  // Keep the selection meaningful: land it on the new page's first onset.
+  const first = f.groups.findIndex((g) => g.page === page);
+  if (first !== -1) _select(first, { seek: true });
+  else _renderPage(page);
+}
+
+// ---------------------------------------------------------------------------
+// The strip (peaks-only WaveSurfer, the exhibit's proven pattern)
+// ---------------------------------------------------------------------------
+
+/** Best available peaks + duration for the reference recording. */
+function _stripSource() {
+  const pk = waveformPeaks[_fix.stripFile];
+  if (pk?.peaks?.length && pk?.duration) {
+    return { peaks: pk.peaks, duration: pk.duration };
+  }
+  const ws = wavesurfers[_fix.stripFile];
+  if (ws) {
+    try {
+      const duration = ws.getDuration();
+      const exported = ws.exportPeaks?.({ maxLength: STRIP_PEAK_COUNT });
+      if (duration && exported?.[0]?.length) {
+        return { peaks: exported[0], duration };
+      }
+    } catch (_) {
+      /* no decoded data — the bootstrap's decode will fill this in */
+    }
+  }
+  return null;
+}
+
+function _buildStrip(source) {
+  const f = _fix;
+  if (f.stripWS) {
+    try {
+      f.stripWS.destroy();
+    } catch (_) {}
+    f.stripWS = null;
+  }
+  f.stripSource = source;
+  f.els.stripWs.innerHTML = "";
+  if (!source) {
+    f.els.stripWs.dataset.placeholder =
+      "Reference waveform appears when the audio has decoded…";
+    return;
+  }
+  delete f.els.stripWs.dataset.placeholder;
+  const style = getComputedStyle(document.documentElement);
+  f.stripWS = WaveSurfer.create({
+    container: f.els.stripWs,
+    height: f.els.stripWs.clientHeight || 96,
+    waveColor: style.getPropertyValue("--color-waveform").trim() || "violet",
+    progressColor:
+      style.getPropertyValue("--color-waveform-progress").trim() || "purple",
+    cursorWidth: 0,
+    normalize: false,
+    interact: false,
+    autoScroll: false,
+    autoCenter: false,
+    peaks: [source.peaks],
+    duration: source.duration,
+  });
+  const scrollEl = f.stripWS.getWrapper().parentElement;
+  scrollEl.addEventListener("scroll", () => _scheduleRedraw(), {
+    passive: true,
+  });
+  // WaveSurfer decodes ASYNCHRONOUSLY even when the peaks and duration are
+  // handed over at construction (loadAudio awaits before setting decodedData),
+  // so the synchronous call below is refused — `zoom()` throws "No audio
+  // loaded" — and the strip was left at whole-piece zoom until the next page
+  // turn happened to call this again. The ticks meanwhile used the page
+  // window's scale, so the waveform under them was a DIFFERENT stretch of
+  // audio: the shape disagreed with every tick and with the playhead, which
+  // is what "the playhead lags" turned out to be on first entry (user repro,
+  // 2026-08-31: enter → page forward → page back gives three different
+  // waveforms for the same page). Applying it again on `ready` is the fix;
+  // the synchronous attempt stays because it sets the tick scale immediately.
+  const ws = f.stripWS;
+  ws.once("ready", () => {
+    if (_fix !== f || f.stripWS !== ws) return;
+    _updateStripWindow();
+    _scheduleRedraw();
+  });
+  _updateStripWindow();
+}
+
+/** The current page's reference-time window (span of its onsets + padding). */
+function _pageWindow() {
+  const f = _fix;
+  const times = _groupsOnPage(f.page)
+    .map((g) => _groupStripTime(g))
+    .filter((t) => Number.isFinite(t));
+  const duration = f.stripSource?.duration || 0;
+  if (!times.length) return { t0: 0, t1: duration || 1 };
+  let t0 = Math.min(...times);
+  let t1 = Math.max(...times);
+  const pad = Math.max(STRIP_PAD_SEC, (t1 - t0) * STRIP_PAD_FRAC);
+  return { t0: t0 - pad, t1: t1 + pad };
+}
+
+/** Zoom + scroll the strip so the current page's window fills it. */
+function _updateStripWindow() {
+  const f = _fix;
+  if (!f.stripWS || !f.stripSource) return;
+  const w = f.els.stripWs.clientWidth;
+  if (!w) return;
+  const { t0, t1 } = _pageWindow();
+  const span = Math.max(t1 - t0, 0.5);
+  const pps = w / span;
+  f.stripPps = pps;
+  f.stripWindow = { t0, t1 };
+  try {
+    f.stripWS.zoom(pps);
+  } catch (_) {
+    return; // renderer not ready yet; the next window update will land
+  }
+  const scrollEl = f.stripWS.getWrapper().parentElement;
+  // scrollLeft floors at 0, so a window opening before t=0 (a negative first
+  // onset, or padding past the start) shows from 0 — ticks stay honest
+  // because the mapping below reads the actual scrollLeft.
+  scrollEl.scrollLeft = Math.max(0, t0 * pps);
+}
+
+/** Reference time → x in strip-viewport (and container) coordinates. */
+function _timeToStripX(t) {
+  const f = _fix;
+  if (!f.stripWS) return null;
+  const scrollEl = f.stripWS.getWrapper().parentElement;
+  return t * f.stripPps - scrollEl.scrollLeft;
+}
+
+function _stripXToTime(x) {
+  const f = _fix;
+  if (!f.stripWS || !f.stripPps) return null;
+  const scrollEl = f.stripWS.getWrapper().parentElement;
+  return (x + scrollEl.scrollLeft) / f.stripPps;
+}
+
+// ---------------------------------------------------------------------------
+// Ticks + connectors + selection
+// ---------------------------------------------------------------------------
+
+function _scheduleRedraw() {
+  const f = _fix;
+  if (!f || f.raf) return;
+  f.raf = requestAnimationFrame(() => {
+    if (!_fix) return;
+    _fix.raf = 0;
+    _redrawOverlays();
+  });
+}
+
+/**
+ * The lane stack's bottom edge inside the strip. The strip is taller than its
+ * lanes by the CSS gutter the playhead's lower arrowhead lives in; ticks,
+ * anchor glyphs and drag ghosts all stop here so that gutter stays the
+ * playhead's alone. (Ticks deliberately cross every lane: a tick against the
+ * spectrogram's attack edge is the comparison the lanes exist for.) Derived
+ * from the two elements rather than a duplicated constant: the CSS is the
+ * single source of the gutter's size.
+ */
+function _lanesBottomY() {
+  const f = _fix;
+  const h = f.els.strip.clientHeight;
+  const lanesH = f.els.lanes?.clientHeight || 0;
+  return lanesH > 0 && lanesH <= h ? lanesH : h;
+}
+
+// ---------------------------------------------------------------------------
+// The v2 lanes: spectrogram + onset curve beneath the waveform, one time→x map
+// ---------------------------------------------------------------------------
+
+/**
+ * The strip's class list. The lane switches ride on it so CSS sizes the strip
+ * — and so the score pane — BEFORE anything is measured; _buildDom and the
+ * prewarm probe _measurePaneDims must both use this, or the fit diverges and
+ * every entry silently loses its prewarm.
+ */
+function _stripClassName() {
+  return (
+    "fix-strip" +
+    (_laneSpec ? " fix-lanes-spec" : "") +
+    (_laneOnset ? " fix-lanes-onset" : "")
+  );
+}
+
+/**
+ * A lane switch: resize the stack, rebuild the waveform at its new height (a
+ * WaveSurfer sizes itself at creation), repaint. The score pane's height moved
+ * too, and its ResizeObserver re-fits the page.
+ */
+function _setLane(which, on) {
+  if (which === "spec") _laneSpec = on;
+  else _laneOnset = on;
+  const f = _fix;
+  if (!f) return;
+  _applyStripSizing(f.els.strip);
+  f.els.laneSpec.hidden = !_laneSpec;
+  f.els.laneOnset.hidden = !_laneOnset;
+  f.els.specCfg.hidden = !_laneSpec;
+  _buildStrip(f.stripSource);
+  _scheduleRedraw();
+}
+
+/** A spectrogram configuration change: sticky, and the mel is re-requested
+ *  from the engine (the onset lane and its peaks are kept). */
+function _setSpecCfg(patch) {
+  _specCfg = { ..._specCfg, ...patch };
+  const f = _fix;
+  if (!f) return;
+  const displayOnly = Object.keys(patch).every((k) => k === "labels");
+  if (displayOnly) {
+    if (f.lanes) f.lanes.lastKey = null; // repaint the lane, no recompute
+    _scheduleRedraw();
+  } else if (f.engineReady) {
+    _requestLanes(f, "mel");
+  }
+}
+
+/** The spectrogram's hop from its FFT size and overlap. */
+function _melHop() {
+  return Math.max(64, Math.round(_specCfg.nFft * (1 - _specCfg.overlap)));
+}
+
+/** Ask the worker for the lanes: everything, or the mel alone after a
+ *  configuration change. The onset lane's hop is fixed (its peaks are the
+ *  snap targets, at a resolution the spectrogram's choices must not move). */
+function _requestLanes(f, what) {
+  f.lanesPending = true;
+  _scheduleRedraw(); // the spectrogram shows its busy state
+  _ensureWorker().postMessage({
+    type: "fix_lanes",
+    what,
+    which: f.mode === "audio" ? "target" : "ref", // the audio on the strip
+    hop: LANE_HOP,
+    nMels: _specCfg.nMels,
+    nFft: _specCfg.nFft,
+    window: _specCfg.window,
+    scale: _specCfg.scale,
+    melHop: _melHop(),
+  });
+}
+
+// --- Score zoom-and-scroll (fit | fill width | fill height | percent) ---
+
+/** Size the rendered page for the zoom mode; fit lets the CSS letterbox it. */
+function _applyScoreZoom() {
+  const f = _fix;
+  if (!f) return;
+  if (_scoreZoom.mode === "height") _scoreZoom = { mode: "fit", pct: 100 }; // dropped (round 3)
+  const svg = f.els.scoreSvg.querySelector("svg");
+  const sc = f.els.scoreScroll;
+  const zoomed = _scoreZoom.mode !== "fit";
+  f.els.scoreEl.classList.toggle("fix-score-zoomed", zoomed);
+  _syncZoomSelect();
+  if (!svg) return;
+  if (!zoomed) {
+    svg.style.width = "";
+    svg.style.height = "";
+    f.els.scoreSvg.style.width = "";
+    f.els.scoreSvg.style.height = "";
+    sc.scrollLeft = 0;
+    sc.scrollTop = 0;
+    return;
+  }
+  const vb = svg.viewBox?.baseVal;
+  const W = sc.clientWidth;
+  const H = sc.clientHeight;
+  if (!(vb && vb.width > 0 && vb.height > 0 && W && H)) return;
+  const sFit = Math.min(W / vb.width, H / vb.height);
+  const s = _scoreZoom.mode === "width" ? W / vb.width : (sFit * _scoreZoom.pct) / 100;
+  const w = Math.round(vb.width * s);
+  const h = Math.round(vb.height * s);
+  svg.style.width = `${w}px`;
+  svg.style.height = `${h}px`;
+  f.els.scoreSvg.style.width = `${w}px`;
+  f.els.scoreSvg.style.height = `${h}px`;
+}
+
+/** The current zoom as a percentage of the fit (fill modes included). */
+function _effectiveZoomPct() {
+  if (_scoreZoom.mode === "pct") return _scoreZoom.pct;
+  if (_scoreZoom.mode === "fit") return 100;
+  const f = _fix;
+  const svg = f?.els.scoreSvg.querySelector("svg");
+  const sc = f?.els.scoreScroll;
+  const vb = svg?.viewBox?.baseVal;
+  if (!(vb && vb.width > 0 && vb.height > 0 && sc?.clientWidth && sc?.clientHeight)) return 100;
+  const sFit = Math.min(sc.clientWidth / vb.width, sc.clientHeight / vb.height);
+  return Math.round((sc.clientWidth / vb.width / sFit) * 100); // "width"
+}
+
+function _setScoreZoom(mode, pct) {
+  _scoreZoom = { mode, pct: mode === "pct" ? pct : mode === "fit" ? 100 : _scoreZoom.pct };
+  const f = _fix;
+  if (!f) return;
+  _applyScoreZoom();
+  _scrollScoreToSelection();
+  _updateScoreX();
+  _scheduleRedraw();
+}
+
+/** + / −: step the percentage from wherever the current mode effectively is. */
+function _stepZoom(delta) {
+  const cur = _effectiveZoomPct();
+  const next = Math.min(
+    SCORE_ZOOM_MAX,
+    Math.max(SCORE_ZOOM_MIN, Math.round(cur / SCORE_ZOOM_STEP) * SCORE_ZOOM_STEP + delta),
+  );
+  _setScoreZoom("pct", next);
+}
+
+/** The select shows the mode; a stepped percentage gets an option of its own. */
+function _syncZoomSelect() {
+  const sel = _fix?.els.zoomSel;
+  if (!sel) return;
+  const v = _scoreZoom.mode === "pct" ? String(_scoreZoom.pct) : _scoreZoom.mode;
+  if (![...sel.options].some((o) => o.value === v)) {
+    const o = document.createElement("option");
+    o.value = v;
+    o.textContent = `${v} %`;
+    const after = [...sel.options].find((x) => Number(x.value) > Number(v));
+    sel.insertBefore(o, after || null);
+  }
+  sel.value = v;
+}
+
+/** A zoomed page scrolled: the connectors' score-side x moved. */
+function _onScoreScroll() {
+  const f = _fix;
+  if (!f) return;
+  _updateScoreX();
+  _scheduleRedraw();
+}
+
+/** The score-side x of every page group, from the notes' current screen rects
+ *  (the connector overlay's anchors; a zoom or a scroll moves them). */
+function _updateScoreX() {
+  const f = _fix;
+  if (!f) return;
+  const rootRect = f.els.root.getBoundingClientRect();
+  for (const g of _groupsOnPage(f.page)) {
+    let xSum = 0;
+    let n = 0;
+    for (const id of g.ids) {
+      const el = f.pageIndex.get(id);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      xSum += r.x + r.width / 2;
+      n++;
+    }
+    g.xScore = n ? xSum / n - rootRect.x : null;
+  }
+}
+
+/** Zoomed: scroll the selected notes into the scroller's view (with margin). */
+function _scrollScoreToSelection() {
+  const f = _fix;
+  if (!f || _scoreZoom.mode === "fit") return;
+  const sc = f.els.scoreScroll;
+  const sels = f.els.scoreSvg.querySelectorAll(".fix-note-sel");
+  if (!sels.length) return;
+  let left = Infinity;
+  let right = -Infinity;
+  let top = Infinity;
+  let bottom = -Infinity;
+  for (const el of sels) {
+    const r = el.getBoundingClientRect();
+    left = Math.min(left, r.left);
+    right = Math.max(right, r.right);
+    top = Math.min(top, r.top);
+    bottom = Math.max(bottom, r.bottom);
+  }
+  if (!Number.isFinite(left)) return;
+  const sr = sc.getBoundingClientRect();
+  const m = SCORE_SCROLL_MARGIN_PX;
+  if (left < sr.left + m) sc.scrollLeft -= sr.left + m - left;
+  else if (right > sr.right - m) sc.scrollLeft += right - (sr.right - m);
+  if (top < sr.top + m) sc.scrollTop -= sr.top + m - top;
+  else if (bottom > sr.bottom - m) sc.scrollTop += bottom - (sr.bottom - m);
+}
+
+/** Boot the worker's Python runtime ahead of a session (idempotent there) —
+ *  at the load-idle prewarm, and at entry before the decode, so the seconds
+ *  it takes overlap work instead of being waited for. */
+function _warmRuntime() {
+  try {
+    _ensureWorker().postMessage({ type: "fix_boot" });
+  } catch (e) {
+    console.warn("fix mode: runtime warm-up failed (entry will boot it):", e);
+  }
+}
+
+// --- Resizing: the lane stack against the score, and the lanes against each other ---
+
+/** The strip's classes and (when the user resized it) its fixed height. Both
+ *  _buildDom and the prewarm probe go through here — see _stripClassName. */
+function _applyStripSizing(el) {
+  el.className = _stripClassName() + (_stripHeightPx ? " fix-strip-sized" : "");
+  if (_stripHeightPx) el.style.setProperty("--fix-strip-h", `${Math.round(_stripHeightPx)}px`);
+  else el.style.removeProperty("--fix-strip-h");
+}
+
+/** User lane weights as inline flex-grow (px-proportional); none = CSS. */
+function _applyLaneWeights(els) {
+  const w = _laneWeights;
+  els.stripWs.style.flexGrow = w ? String(w.wave) : "";
+  els.laneSpec.style.flexGrow = w ? String(w.spec) : "";
+  els.laneOnset.style.flexGrow = w ? String(w.onset) : "";
+}
+
+function _visibleLanes(f) {
+  return [
+    [f.els.stripWs, "wave"],
+    [f.els.laneSpec, "spec"],
+    [f.els.laneOnset, "onset"],
+  ].filter(([el]) => !el.hidden);
+}
+
+/** The spectrogram's busy state: a pending RECOMPUTE (a configuration change)
+ *  dims the lane and shows the badge over it; the first computation has the
+ *  lane's own "computing…" placeholder instead. */
+function _layoutLaneBadge(f) {
+  const b = f.els.laneBadge;
+  if (!b) return;
+  const busy = !!(f.lanesPending && f.lanes && !f.els.laneSpec.hidden);
+  f.els.laneSpec.classList.toggle("fix-lane-busy", busy);
+  b.hidden = !busy;
+  if (busy) b.style.top = `${f.els.laneSpec.offsetTop + 3}px`;
+}
+
+/** Realigning (a drag's commit, or S over several marks): the tick canvas
+ *  pulses, the strip's cursor says so, and the magnet button stands down. */
+function _setRealignBusy(f, on) {
+  f.realignBusy = on;
+  f.els.strip?.classList.toggle("fix-realigning", on);
+  const btn = document.getElementById("fix-snap-sel");
+  if (btn) btn.disabled = on;
+  _syncRealignUi();
+}
+
+/** One handle per boundary between visible lanes, on that boundary. */
+function _layoutLaneHandles(f) {
+  const vis = _visibleLanes(f);
+  f.els.laneHandles.forEach((h, k) => {
+    const upper = vis[k];
+    const lower = vis[k + 1];
+    if (!upper || !lower) {
+      h.hidden = true;
+      return;
+    }
+    h.hidden = false;
+    h.style.top = `${upper[0].offsetTop + upper[0].offsetHeight}px`;
+    h.dataset.upper = upper[1];
+    h.dataset.lower = lower[1];
+  });
+}
+
+function _onGapPointerDown(e) {
+  const f = _fix;
+  if (!f || e.button !== 0 || f.resizing) return;
+  e.preventDefault();
+  const paneH = f.els.root.clientHeight;
+  const minH = _visibleLanes(f).length * LANE_MIN_PX + 12 + 8;
+  f.resizing = {
+    kind: "strip",
+    startY: e.clientY,
+    startH: f.els.strip.clientHeight,
+    minH,
+    maxH: Math.max(minH, paneH - f.els.gap.clientHeight - SCORE_MIN_PX),
+    ..._wsHostAtDragStart(f),
+    moved: false,
+    onMove: (ev) => _onResizeMove(ev),
+    onUp: (ev) => _onResizeUp(ev),
+  };
+  window.addEventListener("pointermove", f.resizing.onMove);
+  window.addEventListener("pointerup", f.resizing.onUp);
+}
+
+function _onLaneHandlePointerDown(e, h) {
+  const f = _fix;
+  if (!f || e.button !== 0 || h.hidden || f.resizing) return;
+  e.preventDefault();
+  const heights = {};
+  for (const [el, k] of _visibleLanes(f)) heights[k] = el.clientHeight;
+  if (!(h.dataset.upper in heights) || !(h.dataset.lower in heights)) return;
+  f.resizing = {
+    kind: "lanes",
+    startY: e.clientY,
+    upper: h.dataset.upper,
+    lower: h.dataset.lower,
+    heights,
+    ..._wsHostAtDragStart(f),
+    moved: false,
+    onMove: (ev) => _onResizeMove(ev),
+    onUp: (ev) => _onResizeUp(ev),
+  };
+  window.addEventListener("pointermove", f.resizing.onMove);
+  window.addEventListener("pointerup", f.resizing.onUp);
+}
+
+function _onResizeMove(e) {
+  const f = _fix;
+  const r = f?.resizing;
+  if (!r) return;
+  const dy = e.clientY - r.startY;
+  if (Math.abs(dy) >= 1) r.moved = true;
+  if (r.kind === "strip") {
+    _stripHeightPx = Math.min(r.maxH, Math.max(r.minH, r.startH - dy));
+    _applyStripSizing(f.els.strip);
+  } else {
+    const total = r.heights[r.upper] + r.heights[r.lower];
+    const up = Math.min(total - LANE_MIN_PX, Math.max(LANE_MIN_PX, r.heights[r.upper] + dy));
+    // Pixels as weights: every visible lane keeps its height, the two
+    // neighbours trade; a hidden lane keeps a default-proportioned weight.
+    const w = { ...(_laneWeights || {}) };
+    for (const k of Object.keys(r.heights)) w[k] = r.heights[k];
+    w[r.upper] = up;
+    w[r.lower] = total - up;
+    const def = { wave: 10, spec: 10, onset: 4 };
+    for (const k of Object.keys(def)) if (w[k] == null) w[k] = (def[k] * total) / 24;
+    _laneWeights = w;
+    _applyLaneWeights(f.els);
+  }
+  // The lanes are canvases repainted per frame; the WaveSurfer is sized at
+  // creation and rebuilt on release. Until then, scale its host to the
+  // waveform lane's live height so the strip follows the drag as one piece
+  // (user, 2026-09-03); the rebuild replaces the scaled host.
+  if (r.wsHost && r.wsH0) {
+    const h = f.els.stripWs.clientHeight;
+    r.wsHost.style.transformOrigin = "top left";
+    r.wsHost.style.transform =
+      h > 0 && Math.abs(h - r.wsH0) >= 1 ? `scaleY(${(h / r.wsH0).toFixed(4)})` : "";
+  }
+  _scheduleRedraw();
+}
+
+/** The WaveSurfer's host element and the waveform lane's height at a drag's start. */
+function _wsHostAtDragStart(f) {
+  return {
+    wsHost: f.stripWS ? f.els.stripWs.firstElementChild : null,
+    wsH0: f.els.stripWs.clientHeight,
+  };
+}
+
+function _onResizeUp() {
+  const f = _fix;
+  const r = f?.resizing;
+  if (!r) return;
+  _endResize(f);
+  if (!r.moved) return;
+  _buildStrip(f.stripSource); // a WaveSurfer sizes itself at creation
+  // The score pane moved: the LIGHT re-fit (the observer stood down during
+  // the drag, and the CSS fit has already sized the page — no relayout).
+  if (r.kind === "strip") _refitScorePane();
+  _scheduleRedraw();
+}
+
+function _endResize(f) {
+  const r = f.resizing;
+  if (!r) return;
+  window.removeEventListener("pointermove", r.onMove);
+  window.removeEventListener("pointerup", r.onUp);
+  f.resizing = null;
+}
+
+function _resetStripHeight() {
+  _stripHeightPx = null;
+  const f = _fix;
+  if (!f) return;
+  _applyStripSizing(f.els.strip);
+  _buildStrip(f.stripSource);
+  _refitScorePane();
+}
+
+function _resetLaneWeights() {
+  _laneWeights = null;
+  const f = _fix;
+  if (!f) return;
+  _applyLaneWeights(f.els);
+  _buildStrip(f.stripSource);
+  _scheduleRedraw();
+}
+
+/** Keep the worker's lanes for the session, derive the display curve, paint. */
+function _installLanes(f, d) {
+  const melPart = {
+    sr: d.sr,
+    nMels: d.n_mels,
+    nFft: d.n_fft,
+    window: d.window,
+    scale: d.scale || "mel",
+    bandHz: d.band_hz || null,
+    labelsDrawn: 0,
+    melHop: d.mel_hop,
+    melFrames: d.mel_frames,
+    melT0: d.mel_t0,
+    mel: d.mel,
+    img: null,
+    scratch: null,
+    lastKey: null,
+  };
+  if (d.what === "mel" && f.lanes) {
+    // A configuration change: the onset lane and its peaks are kept.
+    f.lanes = { ...f.lanes, ...melPart };
+  } else {
+    const onset = d.onset || new Float32Array(0);
+    f.lanes = {
+      ...melPart,
+      onsetHop: d.onset_hop,
+      onsetFrames: d.onset_frames ?? onset.length,
+      onsetT0: d.onset_t0,
+      onset,
+      onsetNorm: _localNormalise(
+        onset,
+        Math.round((LANE_NORM_WIN_SEC * d.sr) / d.onset_hop),
+      ),
+      peaks: Float64Array.from(d.peaks || []),
+      pat: Float64Array.from(d.pat || []),
+    };
+  }
+  f.lanesError = null;
+  f.lanesPending = false;
+  _scheduleRedraw();
+}
+
+/** onset / its running maximum over ±win frames (floored): the tutti no longer
+ *  flattens a quiet passage's onsets to nothing. ~n·win ops, once per session. */
+function _localNormalise(onset, win) {
+  const n = onset.length;
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let m = 0;
+    const lo = Math.max(0, i - win);
+    const hi = Math.min(n - 1, i + win);
+    for (let j = lo; j <= hi; j++) if (onset[j] > m) m = onset[j];
+    out[i] = Math.min(1, onset[i] / Math.max(m, LANE_NORM_FLOOR));
+  }
+  return out;
+}
+
+let _melLutCache = null;
+/** A 256-entry RGBA ramp (inferno-like), fading to transparent below the knee
+ *  so the theme's ground shows through the quiet parts, light or dark. */
+function _melLut() {
+  if (_melLutCache) return _melLutCache;
+  const stops = [
+    [0.0, 0, 0, 4],
+    [0.13, 31, 12, 72],
+    [0.25, 85, 15, 109],
+    [0.38, 136, 34, 106],
+    [0.5, 186, 54, 85],
+    [0.63, 227, 89, 51],
+    [0.75, 249, 140, 10],
+    [0.88, 249, 201, 50],
+    [1.0, 252, 255, 164],
+  ];
+  const lut = new Uint8ClampedArray(256 * 4);
+  for (let v = 0; v < 256; v++) {
+    const x = v / 255;
+    let k = 0;
+    while (k < stops.length - 2 && x > stops[k + 1][0]) k++;
+    const [x0, r0, g0, b0] = stops[k];
+    const [x1, r1, g1, b1] = stops[k + 1];
+    const u = (x - x0) / (x1 - x0);
+    lut[v * 4] = r0 + (r1 - r0) * u;
+    lut[v * 4 + 1] = g0 + (g1 - g0) * u;
+    lut[v * 4 + 2] = b0 + (b1 - b0) * u;
+    lut[v * 4 + 3] = Math.min(1, x / LANE_ALPHA_KNEE) * 255;
+  }
+  _melLutCache = lut;
+  return lut;
+}
+
+/** Paint both lanes for the current window (called from _redrawOverlays, so
+ *  every scroll, zoom, resize, or selection redraw lands here too). */
+function _paintLanes() {
+  const f = _fix;
+  if (!f?.els.lanes) return;
+  _layoutLaneHandles(f);
+  _layoutLaneBadge(f);
+  const L = f.lanes;
+  for (const [el, kind] of [
+    [f.els.laneSpec, "spec"],
+    [f.els.laneOnset, "onset"],
+  ]) {
+    if (el.hidden) continue;
+    const w = el.clientWidth;
+    const h = el.clientHeight;
+    if (!w || !h) continue;
+    if (el.width !== w) el.width = w;
+    if (el.height !== h) el.height = h;
+    const ctx = el.getContext("2d");
+    if (!L || !f.stripWS || !f.stripPps) {
+      ctx.clearRect(0, 0, w, h);
+      _paintLanePlaceholder(ctx, w, h, kind, f.lanesError);
+      continue;
+    }
+    if (kind === "spec") _paintSpectrogram(ctx, L, w, h);
+    else _paintOnsetLane(ctx, L, w, h);
+  }
+}
+
+function _paintLanePlaceholder(ctx, w, h, kind, error) {
+  const style = getComputedStyle(document.documentElement);
+  ctx.fillStyle = style.getPropertyValue("--color-text-muted").trim() || "#64748b";
+  ctx.globalAlpha = 0.8;
+  ctx.font = "11px sans-serif";
+  ctx.textBaseline = "middle";
+  const what = kind === "spec" ? "spectrogram" : "onsets";
+  ctx.fillText(`${what} — ${error ? "unavailable" : "computing…"}`, 8, h / 2);
+  ctx.globalAlpha = 1;
+}
+
+/**
+ * The mel lane: the visible frames are looked up through the colour ramp into
+ * an ImageData the size of the window (a few hundred to a few thousand
+ * columns × the mel bins), put onto a scratch canvas, and drawn scaled onto
+ * the lane with a fractional source rectangle so frame edges land exactly on
+ * the waveform's time→x. The whole recording is never rasterised at once: a
+ * ten-minute piece is ~26k columns, past what a canvas may be wide. Cached on
+ * the (scroll, zoom, size) key — a selection or drag redraw costs nothing.
+ */
+function _paintSpectrogram(ctx, L, w, h) {
+  const f = _fix;
+  const scrollEl = f.stripWS.getWrapper().parentElement;
+  const key = `${scrollEl.scrollLeft}|${f.stripPps}|${w}|${h}|${_specCfg.labels ? 1 : 0}`;
+  if (L.lastKey === key) return;
+  L.lastKey = key;
+  ctx.clearRect(0, 0, w, h);
+  L.labelsDrawn = 0;
+  const t0 = _stripXToTime(0);
+  const t1 = _stripXToTime(w);
+  if (t0 === null || t1 === null) return;
+  const fr = L.sr / L.melHop;
+  // Frame i is centred at i / fr + melT0 and owns the cell [i − ½, i + ½).
+  const F0 = Math.max(0, Math.floor((t0 - L.melT0) * fr - 0.5));
+  const F1 = Math.min(L.melFrames, Math.ceil((t1 - L.melT0) * fr + 0.5) + 1);
+  if (F1 <= F0) return;
+  const nF = F1 - F0;
+  const nM = L.nMels;
+  if (!L.img || L.img.width !== nF) L.img = new ImageData(nF, nM);
+  const data = L.img.data;
+  const lut = _melLut();
+  const mel = L.mel;
+  const stride = L.melFrames;
+  for (let m = 0; m < nM; m++) {
+    let o = (nM - 1 - m) * nF * 4; // the lowest band at the bottom
+    let s = m * stride + F0;
+    for (let i = 0; i < nF; i++, o += 4, s++) {
+      const v = mel[s] * 4;
+      data[o] = lut[v];
+      data[o + 1] = lut[v + 1];
+      data[o + 2] = lut[v + 2];
+      data[o + 3] = lut[v + 3];
+    }
+  }
+  if (!L.scratch) L.scratch = document.createElement("canvas");
+  const sc = L.scratch;
+  if (sc.width !== nF) sc.width = nF;
+  if (sc.height !== nM) sc.height = nM;
+  sc.getContext("2d").putImageData(L.img, 0, 0);
+  const sx0 = (t0 - L.melT0) * fr + 0.5 - F0;
+  const sx1 = (t1 - L.melT0) * fr + 0.5 - F0;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(sc, sx0, 0, sx1 - sx0, nM, 0, 0, w, h);
+  if (_specCfg.labels && L.bandHz?.length) L.labelsDrawn = _drawHzLabels(ctx, L, w, h);
+}
+
+/** Frequency labels on the lane's left edge: round values that have a band
+ *  near them, spaced to stay legible, kept clear of the ◀ onset-skip button. */
+function _drawHzLabels(ctx, L, w, h) {
+  const f = _fix;
+  const nB = L.bandHz.length;
+  const yOf = (m) => h * (1 - (m + 0.5) / nB);
+  // The ◀ onset-skip button sits over the strip's middle, i.e. over this lane
+  // in the default stack: labels start just right of it then (a vertical
+  // exclusion zone starved a 49 px lane of every label but one).
+  let x0 = 2;
+  const btn = f.els.strip.querySelector(".fix-onset-prev");
+  if (btn) {
+    const br = btn.getBoundingClientRect();
+    const lr = f.els.laneSpec.getBoundingClientRect();
+    if (br.bottom > lr.top && br.top < lr.bottom) x0 = Math.max(2, br.right - lr.left + 4);
+  }
+  const wanted = [50, 100, 200, 500, 1000, 2000, 5000, 10000];
+  ctx.save();
+  ctx.font = "9px sans-serif";
+  ctx.textBaseline = "middle";
+  let lastY = -Infinity;
+  let drawn = 0;
+  for (const hz of wanted) {
+    let best = -1;
+    let bestErr = Infinity;
+    for (let m = 0; m < nB; m++) {
+      const err = Math.abs(Math.log(L.bandHz[m] / hz));
+      if (err < bestErr) {
+        bestErr = err;
+        best = m;
+      }
+    }
+    if (best < 0 || bestErr > Math.log(1.3)) continue; // no band near this value
+    const y = yOf(best);
+    if (y < 6 || y > h - 6 || Math.abs(y - lastY) < 11) continue; // y falls as Hz rises
+    const text = hz >= 1000 ? `${hz / 1000} kHz` : `${hz} Hz`;
+    const tw = ctx.measureText(text).width;
+    ctx.globalAlpha = 0.72;
+    ctx.fillStyle = "#000";
+    ctx.fillRect(x0, y - 6, tw + 6, 12);
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = "#fff";
+    ctx.fillText(text, x0 + 3, y);
+    lastY = y;
+    drawn++;
+  }
+  ctx.restore();
+  return drawn;
+}
+
+/**
+ * The onset lane: the locally normalised onset curve as a filled area, the
+ * detected onsets as marks hanging from the lane's top (they are the snap
+ * targets), and a ring on the one a drag is currently snapped to.
+ */
+function _paintOnsetLane(ctx, L, w, h) {
+  const f = _fix;
+  ctx.clearRect(0, 0, w, h);
+  const t0 = _stripXToTime(0);
+  const t1 = _stripXToTime(w);
+  if (t0 === null || t1 === null) return;
+  if (!L.onsetFrames) return;
+  const fr = L.sr / L.onsetHop;
+  const F0 = Math.max(0, Math.floor((t0 - L.onsetT0) * fr) - 1);
+  const F1 = Math.min(L.onsetFrames, Math.ceil((t1 - L.onsetT0) * fr) + 2);
+  if (F1 <= F0) return;
+  const style = getComputedStyle(document.documentElement);
+  const fill = style.getPropertyValue("--color-waveform").trim() || "violet";
+  const tickColor =
+    style.getPropertyValue("--color-alignment").trim() || "rgb(140,90,90)";
+  const top = LANE_PEAK_MARK_H + 1; // the curve keeps below the marks' row
+  ctx.beginPath();
+  ctx.moveTo(_timeToStripX(F0 / fr + L.onsetT0), h);
+  for (let i = F0; i < F1; i++) {
+    ctx.lineTo(_timeToStripX(i / fr + L.onsetT0), h - L.onsetNorm[i] * (h - top));
+  }
+  ctx.lineTo(_timeToStripX((F1 - 1) / fr + L.onsetT0), h);
+  ctx.closePath();
+  ctx.globalAlpha = 0.55;
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.globalAlpha = 0.85;
+  ctx.fillStyle = tickColor;
+  const pk = _snapTargetList() || [];
+  for (let k = _lowerBound(pk, t0 - 1); k < pk.length && pk[k] <= t1 + 1; k++) {
+    const x = _timeToStripX(pk[k]);
+    ctx.fillRect(Math.round(x) - 1, 0, 2, LANE_PEAK_MARK_H);
+  }
+  const snapT = f.drag?.snapT;
+  if (snapT != null) {
+    const x = _timeToStripX(snapT);
+    ctx.globalAlpha = 0.95;
+    ctx.fillStyle = f.playheadColor;
+    ctx.beginPath();
+    ctx.arc(x, LANE_PEAK_MARK_H, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** The active snap-target list — detected onsets, or perceived attacks — or null. */
+function _snapTargetList() {
+  const L = _fix?.lanes;
+  if (!L) return null;
+  const list = _snapTarget === "perceived" && L.pat?.length ? L.pat : L.peaks;
+  return list?.length ? list : null;
+}
+
+/** The nearest UNCLAIMED active snap target within `radius` seconds of t, or
+ *  null. A target within OCCUPIED_EPS_SEC of another group's anchor is that
+ *  anchor's: it attracts no second mark (the drag magnet and S alike). */
+function _nearestOnsetPeak(t, radius, groupIx = null) {
+  return _nearestIn(_snapTargetList(), t, radius, _occupiedTimes(groupIx));
+}
+
+/** Anchor times other than the given group's own (or than the given groups'). */
+function _occupiedTimes(groupIxOrSet) {
+  const f = _fix;
+  if (!f) return [];
+  const ixs =
+    groupIxOrSet instanceof Set
+      ? [...groupIxOrSet]
+      : groupIxOrSet != null
+        ? [groupIxOrSet]
+        : [];
+  if (f.mode === "audio") {
+    const ownRef = new Set();
+    for (const ix of ixs) {
+      const g = f.groups[ix];
+      if (g) ownRef.add(Math.round(scoreAlignment.ref_onset[g.eventIxs[0]] * 1e6));
+    }
+    return targetAnchors(_corrections, f.targetFile)
+      .filter((a) => !ownRef.has(Math.round(a.refT * 1e6)))
+      .map((a) => a.t);
+  }
+  const own = new Set();
+  for (const ix of ixs) {
+    const g = f.groups[ix];
+    if (g) own.add(_anchorEventOf(g));
+  }
+  return _corrections.anchors.filter((a) => !own.has(a.i)).map((a) => a.t);
+}
+
+function _isOccupied(t, occupied) {
+  for (const o of occupied) if (Math.abs(o - t) < OCCUPIED_EPS_SEC) return true;
+  return false;
+}
+
+function _nearestIn(pk, t, radius, occupied = []) {
+  if (!pk?.length) return null;
+  const k = _lowerBound(pk, t);
+  let best = null;
+  let bestD = radius;
+  for (let j = Math.max(0, k - 3); j <= Math.min(pk.length - 1, k + 2); j++) {
+    const c = pk[j];
+    const dd = Math.abs(c - t);
+    if (dd <= bestD && !_isOccupied(c, occupied)) {
+      bestD = dd;
+      best = c;
+    }
+  }
+  return best;
+}
+
+/** Every unclaimed target within `radius` of t, in time order. */
+function _targetsWithin(pk, t, radius, occupied) {
+  const out = [];
+  if (!pk?.length) return out;
+  let j = _lowerBound(pk, t - radius);
+  for (; j < pk.length && pk[j] <= t + radius; j++) {
+    if (!_isOccupied(pk[j], occupied)) out.push(pk[j]);
+  }
+  return out;
+}
+
+/**
+ * The local tempo as seconds per quarter — the yardstick for how far apart two
+ * moved marks should end up. The MEDIAN of the consecutive inter-onset rates
+ * (Δt/Δq) in the current alignment around events iLo..iHi (±8): a fitted
+ * slope over that window was 3× off on the fixture (the window straddles a
+ * tempo change), and a median also shrugs off the piled-up pairs the
+ * dispersal exists to separate (they have Δt ≈ 0 and are skipped).
+ */
+function _localSecondsPerQuarter(iLo, iHi) {
+  const f = _fix;
+  const refOn = scoreAlignment?.ref_onset;
+  if (!f || !refOn) return 0.5;
+  const lo = Math.max(0, iLo - 8);
+  const hi = Math.min(f.nEvents - 1, iHi + 8);
+  const rates = [];
+  let prevQ = null;
+  let prevT = null;
+  for (let i = lo; i <= hi; i++) {
+    const q = f.qOn[i];
+    const t = _eventStripTime(i); // the STRIP recording's tempo
+    if (!Number.isFinite(q) || !Number.isFinite(t)) continue;
+    if (prevQ !== null && q > prevQ + 1e-6 && t > prevT + 0.02) {
+      rates.push((t - prevT) / (q - prevQ));
+    }
+    prevQ = q;
+    prevT = t;
+  }
+  if (!rates.length) return 0.5;
+  rates.sort((a, b) => a - b);
+  const mid = rates.length >> 1;
+  const med = rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
+  return med > 0.05 ? med : 0.5;
+}
+
+/**
+ * Which mark takes which target, for S on several marks: a monotonic
+ * assignment (marks in time order, each target used once, targets in order)
+ * minimising moved distance plus a mild tempo-deviation penalty, under the
+ * dispersal constraint — two moved marks may not land closer than
+ * DISPERSE_ALPHA × their score-implied interval at the local tempo. A mark
+ * may be left unassigned (null) at DISPERSE_NONE_COST; the realign of its
+ * neighbour's segment then places it from the audio. Shortest path over
+ * (mark, candidate) nodes; N marks × M candidates is tiny.
+ */
+function _assignSnapTargets(marks, cands, spq) {
+  const N = marks.length;
+  const best = cands.map((cs) => cs.map(() => Infinity));
+  const prev = cands.map((cs) => cs.map(() => null));
+  const expected = (k, i) => {
+    const dq = marks[i].q - marks[k].q;
+    return dq > 0 ? dq * spq : 0;
+  };
+  const feasible = (k, ck, i, ci) => {
+    const dt = ci.t - ck.t;
+    if (dt <= 0) return false;
+    return dt >= Math.max(DISPERSE_MIN_GAP_SEC, DISPERSE_ALPHA * expected(k, i));
+  };
+  const penalty = (k, ck, i, ci) => {
+    const exp = expected(k, i);
+    return exp > 0 ? DISPERSE_KAPPA * Math.abs(Math.log((ci.t - ck.t) / exp)) : 0;
+  };
+  for (let i = 0; i < N; i++) {
+    for (let c = 0; c < cands[i].length; c++) {
+      const ci = cands[i][c];
+      let b = i * DISPERSE_NONE_COST + ci.cost; // straight from the start
+      let p = null;
+      for (let k = 0; k < i; k++) {
+        for (let ck = 0; ck < cands[k].length; ck++) {
+          if (!Number.isFinite(best[k][ck])) continue;
+          const pk = cands[k][ck];
+          if (!feasible(k, pk, i, ci)) continue;
+          const v =
+            best[k][ck] + (i - k - 1) * DISPERSE_NONE_COST + ci.cost + penalty(k, pk, i, ci);
+          if (v < b) {
+            b = v;
+            p = [k, ck];
+          }
+        }
+      }
+      best[i][c] = b;
+      prev[i][c] = p;
+    }
+  }
+  let bestEnd = N * DISPERSE_NONE_COST; // nobody moves
+  let end = null;
+  for (let i = 0; i < N; i++) {
+    for (let c = 0; c < cands[i].length; c++) {
+      const v = best[i][c] + (N - 1 - i) * DISPERSE_NONE_COST;
+      if (v < bestEnd) {
+        bestEnd = v;
+        end = [i, c];
+      }
+    }
+  }
+  const chosen = new Array(N).fill(null);
+  for (let node = end; node; node = prev[node[0]][node[1]]) {
+    chosen[node[0]] = cands[node[0]][node[1]].t;
+  }
+  return chosen;
+}
+
+/** First index whose value is ≥ v in a sorted array (the array's length if none). */
+function _lowerBound(arr, v) {
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (arr[mid] < v) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function _redrawOverlays() {
+  const f = _fix;
+  if (!f) return;
+  const strip = f.els.strip;
+  const canvas = f.els.ticks;
+  const w = strip.clientWidth;
+  const h = strip.clientHeight;
+  const wb = _lanesBottomY();
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+
+  _paintLanes();
+
+  const rootRect = f.els.root.getBoundingClientRect();
+  const stripRect = strip.getBoundingClientRect();
+  const stripTopY = stripRect.y - rootRect.y;
+  const scoreRect = f.els.scoreEl.getBoundingClientRect();
+  const scoreBottomY = scoreRect.bottom - rootRect.y;
+  const _cbs = _scoreContentBottomScreen();
+  const contentBottomY = _cbs === null ? null : _cbs - rootRect.y;
+
+  const style = getComputedStyle(document.documentElement);
+  const tickColor =
+    style.getPropertyValue("--color-alignment").trim() || "rgb(140,90,90)";
+
+  // Connectors rebuilt wholesale — a page has at most a few hundred onsets.
+  const conn = f.els.conn;
+  conn.setAttribute("viewBox", `0 0 ${f.els.root.clientWidth} ${f.els.root.clientHeight}`);
+  conn.setAttribute("width", f.els.root.clientWidth);
+  conn.setAttribute("height", f.els.root.clientHeight);
+  while (conn.firstChild) conn.removeChild(conn.firstChild);
+
+  // No strip scale yet (the pane was zero-sized when the window was last
+  // computed): draw nothing rather than a fan collapsed onto x = 0. The next
+  // page render or resize recomputes the window and redraws.
+  if (!f.stripPps) {
+    f.ticksOnPage = 0;
+    return;
+  }
+  const pageGroups = _groupsOnPage(f.page);
+  const selGroup = f.groups[f.selGroupIx] || null;
+  const dragGroup =
+    f.drag && f.drag.moved && f.drag.editable
+      ? f.groups[f.drag.groupIx]
+      : null;
+  let ticksDrawn = 0;
+
+  // Unscored-audio gaps: a hatched band across the lanes between the two
+  // endpoint ticks — a SPAN, so none of the point glyphs — labelled when there
+  // is room. Painted first, so ticks and glyphs sit on top of it. They live
+  // on the REFERENCE's timeline: an audio-to-audio session shows none.
+  let gapBands = 0;
+  for (const gp of f.mode === "audio" ? [] : _corrections.gaps) {
+    const xa = _timeToStripX(gp.tEnd);
+    const xb = _timeToStripX(gp.tResume);
+    if (xa === null || xb === null) continue;
+    const a = Math.max(0, Math.min(xa, xb));
+    const b = Math.min(w, Math.max(xa, xb));
+    if (b - a < 1) continue;
+    ctx.globalAlpha = 0.32;
+    ctx.fillStyle = _hatchPattern(ctx, tickColor);
+    ctx.fillRect(a, 0, b - a, wb);
+    if (b - a > 72) {
+      ctx.globalAlpha = 0.85;
+      ctx.fillStyle = tickColor;
+      ctx.font = "10px sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "top";
+      ctx.fillText("unscored", (a + b) / 2, 5);
+      ctx.textAlign = "start";
+      ctx.textBaseline = "alphabetic";
+    }
+    gapBands++;
+  }
+  f.gapBands = gapBands;
+  // Spans waiting for Re-align (auto re-align off): a tinted band from each
+  // pinned fix to where its refill will reach — the next anchor or the
+  // horizon, as they stand now — so what the button will change is on screen.
+  const pendingSpans = [];
+  for (const p of f.pending) {
+    const a =
+      f.mode === "audio"
+        ? findTargetAnchor(_corrections, f.targetFile, p.refT)
+        : findAnchor(_corrections, p.i);
+    if (!a) continue;
+    const tB = f.mode === "audio" ? _aheadGridSpan(a.refT, a.t).tB : _aheadSpan(a.i, a.t).tB;
+    pendingSpans.push({ t0: a.t, t1: tB });
+    const xa = _timeToStripX(a.t);
+    const xb = _timeToStripX(tB);
+    if (xa === null || xb === null) continue;
+    const lo = Math.max(0, xa);
+    const hi = Math.min(w, xb);
+    if (hi - lo < 1) continue;
+    ctx.globalAlpha = 0.14;
+    ctx.fillStyle = "#d97706";
+    ctx.fillRect(lo, 0, hi - lo, wb);
+    ctx.globalAlpha = 0.9;
+    ctx.fillRect(lo, 0, hi - lo, 2);
+    if (hi - lo > 110) {
+      ctx.font = "10px sans-serif";
+      ctx.textBaseline = "top";
+      ctx.fillText("waits for Re-align", lo + 6, 5);
+      ctx.textBaseline = "alphabetic";
+    }
+  }
+  f.pendingSpans = pendingSpans;
+  ctx.globalAlpha = 1;
+
+  for (const g of pageGroups) {
+    const dragging = g === dragGroup;
+    const t = dragging ? f.drag.curT : _groupStripTime(g);
+    if (!Number.isFinite(t)) continue;
+    const x = _timeToStripX(t);
+    if (x === null) continue;
+    const selected = g === selGroup;
+    const multi = f.multiSel.size > 0 && f.multiSel.has(f.groups.indexOf(g));
+    const anchor =
+      f.mode === "audio"
+        ? findTargetAnchor(_corrections, f.targetFile, scoreAlignment.ref_onset[g.eventIxs[0]])
+        : findAnchor(_corrections, _anchorEventOf(g));
+    // Tick: the vertical line on the strip — the loop's drag handle.
+    if (x >= -1 && x <= w + 1) {
+      ctx.beginPath();
+      ctx.lineWidth = selected || anchor || multi ? 2 : 1;
+      ctx.strokeStyle = tickColor;
+      ctx.globalAlpha = selected || dragging || multi ? 0.95 : anchor ? 0.7 : 0.35;
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, wb);
+      ctx.stroke();
+      if (selected) {
+        // A CAP, not the arrowhead this used to be: the filled triangle now
+        // belongs to the playhead alone, and the two sat at the same height
+        // in the same few pixels.
+        ctx.globalAlpha = 0.95;
+        ctx.fillStyle = tickColor;
+        ctx.fillRect(x - 5, 0, 10, 3);
+      } else if (multi) {
+        // The multi-selection's members wear the cap in outline.
+        ctx.globalAlpha = 0.95;
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = tickColor;
+        ctx.strokeRect(x - 4.5, 0.75, 9, 2.5);
+      }
+      if (anchor) {
+        // Anchored onsets carry a base glyph: solid square for a drag anchor,
+        // open square for an approve (zero-drag) anchor, and a bracket facing
+        // the unscored audio for a gap endpoint.
+        ctx.globalAlpha = 0.95;
+        ctx.beginPath();
+        if (anchor.kind === "gap") {
+          const dir = _corrections.gaps.some((gp) => gp.i === anchor.i) ? 1 : -1;
+          ctx.lineWidth = 1.6;
+          ctx.moveTo(x + dir * 4, wb - 9);
+          ctx.lineTo(x - dir * 1, wb - 9);
+          ctx.lineTo(x - dir * 1, wb - 2);
+          ctx.lineTo(x + dir * 4, wb - 2);
+          ctx.stroke();
+        } else {
+          ctx.rect(x - 3.5, wb - 9, 7, 7);
+          if (anchor.kind === "approve") {
+            ctx.lineWidth = 1.6;
+            ctx.stroke();
+          } else {
+            ctx.fillStyle = tickColor;
+            ctx.fill();
+          }
+        }
+      }
+      ticksDrawn++;
+    }
+    if (dragging) {
+      // Ghost of the pre-drag position plus a live delta readout.
+      const gx = _timeToStripX(f.drag.startT);
+      if (gx !== null && gx >= -1 && gx <= w + 1) {
+        ctx.beginPath();
+        ctx.setLineDash([3, 3]);
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = tickColor;
+        ctx.moveTo(gx, 0);
+        ctx.lineTo(gx, wb);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      const delta = f.drag.curT - f.drag.startT;
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = tickColor;
+      ctx.font = "11px sans-serif";
+      ctx.textAlign = x > w - 60 ? "right" : "left";
+      ctx.fillText(
+        `${delta >= 0 ? "+" : ""}${delta.toFixed(3)} s` +
+          (f.drag.snapT != null ? " · onset" : ""),
+        x + (x > w - 60 ? -6 : 6),
+        14,
+      );
+      ctx.textAlign = "left";
+    }
+    ctx.globalAlpha = 1;
+    // Connector continuation: the in-score half lives INSIDE the page SVG
+    // (the underlay, beneath the score elements); this polyline takes over at
+    // the rendered content's bottom edge, drops to the pane bottom, and bends
+    // across the gap onto the strip tick (faint, selected emphasised).
+    if (g.xScore !== null) {
+      const xt = stripRect.x - rootRect.x + x;
+      if (xt < -40 || xt > f.els.root.clientWidth + 40) continue;
+      // A zoomed page: a note scrolled out of the pane has no connector, and
+      // one scrolled partly out starts at the pane's edge, not above it.
+      const xs = g.xScore + rootRect.x;
+      if (xs < scoreRect.left - 2 || xs > scoreRect.right + 2) continue;
+      const yFrom = Math.max(
+        scoreRect.top - rootRect.y,
+        Math.min(contentBottomY ?? scoreBottomY, scoreBottomY),
+      );
+      const line = document.createElementNS(
+        "http://www.w3.org/2000/svg",
+        "polyline",
+      );
+      line.setAttribute(
+        "points",
+        `${g.xScore},${yFrom} ${g.xScore},${scoreBottomY} ${xt},${stripTopY}`,
+      );
+      line.setAttribute("class", selected ? "fix-conn fix-conn-sel" : "fix-conn");
+      conn.appendChild(line);
+    }
+  }
+  // Audio mode: a target anchor whose reference time no longer sits on any
+  // tick (a later score↔ref edit moved the onset it was laid on) still
+  // constrains the grid; it draws as a base glyph on a short stem, off any
+  // tick, where the grid now carries it.
+  let freeAnchors = 0;
+  if (f.mode === "audio") {
+    const onTicks = new Set(
+      pageGroups.map((g) => Math.round(scoreAlignment.ref_onset[g.eventIxs[0]] * 1e6)),
+    );
+    for (const a of targetAnchors(_corrections, f.targetFile)) {
+      if (onTicks.has(Math.round(a.refT * 1e6))) continue;
+      const x = _timeToStripX(_refToTarget(a.refT));
+      if (x === null || x < -4 || x > w + 4) continue;
+      ctx.globalAlpha = 0.8;
+      ctx.strokeStyle = tickColor;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, wb - 16);
+      ctx.lineTo(x, wb - 9);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.rect(x - 3.5, wb - 9, 7, 7);
+      if (a.kind === "approve") {
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = tickColor;
+        ctx.fill();
+      }
+      freeAnchors++;
+    }
+    ctx.globalAlpha = 1;
+  }
+  f.freeAnchorsDrawn = freeAnchors;
+  // A marquee in progress: the span it will select, over the lanes.
+  if (f.marquee) {
+    const a = Math.min(f.marquee.x0, f.marquee.x1);
+    const b = Math.max(f.marquee.x0, f.marquee.x1);
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = tickColor;
+    ctx.fillRect(a, 0, b - a, wb);
+    ctx.globalAlpha = 0.7;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = tickColor;
+    ctx.strokeRect(a + 0.5, 0.5, Math.max(0, b - a - 1), wb - 1);
+  }
+  ctx.globalAlpha = 1;
+  f.ticksOnPage = ticksDrawn;
+}
+
+/**
+ * Select onset group `ix`, turning the page to it when needed. A user gesture
+ * passes `seek: true` — seek-to-selected-note, the orientation ruling: the
+ * audition playhead lands just before the onset so pressing (or continuing)
+ * play audits exactly the selected moment. The playback follower selects with
+ * `seek: false` (it IS the playhead) and the entry/resize paths do too.
+ */
+function _select(ix, { seek = false } = {}) {
+  const f = _fix;
+  if (!f.groups.length) return;
+  ix = Math.min(Math.max(0, ix), f.groups.length - 1);
+  f.selGroupIx = ix;
+  const g = f.groups[ix];
+  if (g.page !== f.page) {
+    _renderPage(g.page);
+  }
+  // Score highlight: clear the previous onset's notes, mark this one's.
+  f.els.scoreSvg.querySelectorAll(".fix-note-sel").forEach((el) => {
+    el.classList.remove("fix-note-sel");
+    el.classList.remove("fix-note-sounding");
+  });
+  for (const id of g.ids) {
+    const el = f.pageIndex.get(id);
+    if (el) el.classList.add("fix-note-sel");
+  }
+  _applyUnderlaySelection();
+  if (_scoreZoom.mode !== "fit") {
+    _scrollScoreToSelection();
+    _updateScoreX();
+  }
+  _scheduleRedraw();
+  if (seek) {
+    const t = _groupStripTime(g);
+    if (Number.isFinite(t) && f.aud?.ready) {
+      // Hold the follower until the playhead reaches the selected onset, or
+      // the very next preroll frame would re-select the PREVIOUS group and
+      // yank the user's choice away.
+      f.followFloor = { ix, untilT: t };
+      f.pageOnlyPassUntilT = null; // an explicit selection ends any pass
+      _audSeek(Math.max(0, t - SEEK_PREROLL_SEC));
+    }
+  }
+}
+
+function _skipOnset(delta) {
+  const f = _fix;
+  _commitPendingNudge();
+  _select(f.selGroupIx + delta, { seek: true });
+}
+
+function _onScoreClick(e) {
+  const f = _fix;
+  _commitPendingNudge();
+  // Walk up from the clicked SVG node to an element the page index knows,
+  // then to the onset group that sounds it.
+  let el = e.target;
+  while (el && el !== f.els.scoreSvg) {
+    if (el.id && f.pageIndex.has(el.id)) {
+      const ix = f.groups.findIndex((g) => g.ids.includes(el.id));
+      if (ix !== -1) {
+        _select(ix, { seek: true });
+        return;
+      }
+    }
+    el = el.parentElement;
+  }
+}
+
+/** The onset group whose tick is nearest to canvas-x, within the hit radius. */
+function _tickHit(x) {
+  const f = _fix;
+  let best = -1;
+  let bestDist = TICK_HIT_PX + 1;
+  const pageGroups = _groupsOnPage(f.page);
+  for (const g of pageGroups) {
+    const t = _groupStripTime(g);
+    if (!Number.isFinite(t)) continue;
+    const gx = _timeToStripX(t);
+    const d = Math.abs(gx - x);
+    if (d < bestDist) {
+      bestDist = d;
+      best = f.groups.indexOf(g);
+    }
+  }
+  return best;
+}
+
+// ---------------------------------------------------------------------------
+// Tick dragging — the correction gesture (a drag lays a hard anchor)
+// ---------------------------------------------------------------------------
+
+/**
+ * The dragged tick's allowed time range: strictly between the neighbouring
+ * anchors (open interval, ANCHOR_EPS inside), non-strictly within the piece
+ * corners — the same bounds correction-model's validateAnchorTime enforces,
+ * applied as a clamp so the gesture can never build an invalid anchor. And,
+ * since nothing behind a fix moves, never before the PREVIOUS TICK; with auto
+ * re-align off, never past the NEXT one either (the span ahead only follows
+ * at Re-align, so a crossed tick would sit out of order until then).
+ */
+function _dragBounds(groupIx) {
+  const f = _fix;
+  const hasPrev = groupIx > 0;
+  const hasNext = groupIx + 1 < f.groups.length;
+  if (f.mode === "audio") {
+    // Neighbouring TARGET anchors (strict by reference time, so the group's
+    // own anchor is never its own neighbour); the corners are the grid's
+    // first and last samples, frozen.
+    const refT = scoreAlignment.ref_onset[f.groups[groupIx].eventIxs[0]];
+    const { prev, next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
+    const tg = _targetGrid();
+    let lo = prev ? prev.t : tg[0];
+    let hi = next ? next.t : tg[tg.length - 1];
+    if (hasPrev) lo = Math.max(lo, _leftGridSpan(groupIx, refT, null).tFloor);
+    if (!_autoRealign && hasNext) hi = Math.min(hi, _nextLocalGridSpan(groupIx, refT, null).tCeil);
+    lo += ANCHOR_EPS_SEC;
+    hi -= ANCHOR_EPS_SEC;
+    return { lo, hi: Math.max(lo, hi) };
+  }
+  const i = _anchorEventOf(f.groups[groupIx]);
+  const { prev, next } = neighbourAnchors(_corrections, i);
+  const own = findAnchor(_corrections, i);
+  const dur = _refDuration();
+  // The corners stay ANCHOR_EPS inside [0, duration] too: an anchor at
+  // exactly 0 or exactly the duration makes its corner segment a zero-width
+  // span, which the worker rejects as reversed.
+  let lo = prev && prev !== own ? prev.t : 0;
+  let hi = next && next !== own ? next.t : dur;
+  if (hasPrev) lo = Math.max(lo, _groupStripTime(f.groups[groupIx - 1]));
+  if (!_autoRealign && hasNext) hi = Math.min(hi, _groupStripTime(f.groups[groupIx + 1]));
+  lo += ANCHOR_EPS_SEC;
+  hi -= ANCHOR_EPS_SEC;
+  return { lo, hi: Math.max(lo, hi) };
+}
+
+function _onTickMouseDown(e) {
+  const f = _fix;
+  _commitPendingNudge();
+  if (e.button !== 0 || f.drag) return;
+  const rect = f.els.ticks.getBoundingClientRect();
+  const x = e.clientX - rect.x;
+  const hit = _tickHit(x);
+  if (hit === -1) {
+    // Empty strip: a marquee selects the ticks it spans; a plain click clears.
+    e.preventDefault();
+    f.marquee = {
+      x0: x,
+      x1: x,
+      startX: e.clientX,
+      onMove: (ev) => _onMarqueeMove(ev),
+      onUp: (ev) => _onMarqueeUp(ev),
+    };
+    window.addEventListener("mousemove", f.marquee.onMove);
+    window.addEventListener("mouseup", f.marquee.onUp);
+    return;
+  }
+  e.preventDefault();
+  if (e.shiftKey) {
+    // Shift+click toggles the tick's membership in the multi-selection.
+    if (f.multiSel.has(hit)) f.multiSel.delete(hit);
+    else f.multiSel.add(hit);
+    _scheduleRedraw();
+    return;
+  }
+  // Editing needs the engine (auto-realign on release); before it is ready a
+  // mousedown is only ever a click-select. Deliberately NOT the chip state:
+  // a failed realign leaves an error chip standing, but the engine session
+  // is intact and the next drag must stay possible (latching editing off on
+  // the first error is how the first real-corpus run got stuck).
+  const editable = f.engineReady && !f.realignBusy;
+  const t0 = _groupStripTime(f.groups[hit]);
+  f.drag = {
+    groupIx: hit,
+    startX: e.clientX,
+    startT: t0,
+    curT: t0,
+    moved: false,
+    editable,
+    bounds: editable ? _dragBounds(hit) : null,
+    onMove: (ev) => _onTickMouseMove(ev),
+    onUp: (ev) => _onTickMouseUp(ev),
+  };
+  window.addEventListener("mousemove", f.drag.onMove);
+  window.addEventListener("mouseup", f.drag.onUp);
+}
+
+function _onTickMouseMove(e) {
+  const f = _fix;
+  const d = f?.drag;
+  if (!d) return;
+  if (!d.moved && Math.abs(e.clientX - d.startX) < DRAG_THRESHOLD_PX) return;
+  d.moved = true;
+  if (!d.editable) {
+    if (!d.refused) {
+      d.refused = true; // once per gesture, not once per mousemove
+      _announce(_notEditableWhy());
+    }
+    return;
+  }
+  const rect = f.els.ticks.getBoundingClientRect();
+  const raw = _stripXToTime(e.clientX - rect.x);
+  if (raw === null) return;
+  // Snap-to-onset: magnetic within SNAP_RADIUS_PX of a detected onset, unless
+  // Alt is held (free placement) or the sticky switch is off. The ghost shows
+  // where the tick WILL land, so the release holds no surprise.
+  let t = raw;
+  d.snapT = null;
+  if (_snapOnsets && !e.altKey) {
+    const p = _nearestOnsetPeak(raw, SNAP_RADIUS_PX / f.stripPps, d.groupIx);
+    if (p !== null) {
+      t = p;
+      d.snapT = p;
+    }
+  }
+  d.rawT = raw;
+  d.curT = Math.min(Math.max(t, d.bounds.lo), d.bounds.hi);
+  if (d.curT !== t) d.snapT = null; // clamped off the onset by a neighbour
+  _scheduleRedraw();
+}
+
+function _onTickMouseUp(e) {
+  const f = _fix;
+  const d = f?.drag;
+  if (!d) return;
+  _endDrag(f);
+  if (!d.moved) {
+    // A plain click: select (and seek to) the grabbed onset.
+    _select(d.groupIx, { seek: true });
+    return;
+  }
+  if (!d.editable || !Number.isFinite(d.curT) || d.curT === d.startT) {
+    _scheduleRedraw();
+    return;
+  }
+  f.lastDrag = { rawT: d.rawT ?? d.curT, t: d.curT, snapped: d.snapT != null };
+  _select(d.groupIx, { seek: false });
+  _commitAnchor(d.groupIx, d.curT, "drag").catch((err) => {
+    console.error("fix mode: drag commit failed:", err);
+  });
+}
+
+/** Why the marker would not move — the answer a refused gesture gives. */
+function _notEditableWhy() {
+  const f = _fix;
+  if (f && !f.engineReady) {
+    return f.chipState === "error"
+      ? "Corrections are unavailable: the correction engine failed."
+      : "Not ready yet — the correction engine is still preparing.";
+  }
+  return "Still realigning the last fix — one moment.";
+}
+
+/** Detach a drag's window listeners (teardown-safe). */
+function _endDrag(f) {
+  const d = f.drag;
+  if (!d) return;
+  if (d.onMove) window.removeEventListener("mousemove", d.onMove);
+  if (d.onUp) window.removeEventListener("mouseup", d.onUp);
+  f.drag = null;
+}
+
+// --- Marquee selection (a drag on empty strip), the multi-selection's gesture ---
+
+function _onMarqueeMove(e) {
+  const f = _fix;
+  const m = f?.marquee;
+  if (!m) return;
+  const rect = f.els.ticks.getBoundingClientRect();
+  m.x1 = e.clientX - rect.x;
+  _scheduleRedraw();
+}
+
+function _onMarqueeUp(e) {
+  const f = _fix;
+  const m = f?.marquee;
+  if (!m) return;
+  _endMarquee(f);
+  const rect = f.els.ticks.getBoundingClientRect();
+  const x1 = e.clientX - rect.x;
+  if (Math.abs(e.clientX - m.startX) < DRAG_THRESHOLD_PX) {
+    f.multiSel.clear(); // a plain click on empty strip deselects
+    _scheduleRedraw();
+    return;
+  }
+  const a = Math.min(m.x0, x1);
+  const b = Math.max(m.x0, x1);
+  const picked = [];
+  for (const g of _groupsOnPage(f.page)) {
+    const t = _groupStripTime(g);
+    if (!Number.isFinite(t)) continue;
+    const gx = _timeToStripX(t);
+    if (gx !== null && gx >= a && gx <= b) picked.push(f.groups.indexOf(g));
+  }
+  f.multiSel = new Set(picked);
+  if (picked.length && !f.multiSel.has(f.selGroupIx)) _select(picked[0], { seek: false });
+  _scheduleRedraw();
+}
+
+function _endMarquee(f) {
+  const m = f.marquee;
+  if (!m) return;
+  window.removeEventListener("mousemove", m.onMove);
+  window.removeEventListener("mouseup", m.onUp);
+  f.marquee = null;
+}
+
+/** A: every onset on the page joins the multi-selection; again, none. */
+function _toggleSelectAllOnPage() {
+  const f = _fix;
+  if (!f) return;
+  const ixs = _groupsOnPage(f.page).map((g) => f.groups.indexOf(g));
+  const all = ixs.length > 0 && ixs.every((ix) => f.multiSel.has(ix));
+  f.multiSel = all ? new Set() : new Set(ixs);
+  _scheduleRedraw();
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard nudging — a drag by arrows (Shift = coarse, Shift+Alt = fine)
+// ---------------------------------------------------------------------------
+
+/**
+ * Move the selected onset's alignment point by one step. Nudges accumulate
+ * into the SAME provisional drag state the mouse gesture uses (ghost + delta
+ * readout on the strip) and commit as one anchor when the keyboard is fully
+ * released (_onFixKeyup) — the keyboard twin of the mouse drag's mouseup, so
+ * holding Shift keeps the nudge floating for as long as the user is thinking.
+ */
+function _nudge(dir, fine) {
+  const f = _fix;
+  if (!f) return;
+  if (!f.engineReady || f.realignBusy) {
+    _announce(_notEditableWhy());
+    return;
+  }
+  if (f.drag && !f.drag.keyboard) return; // a mouse drag owns the gesture
+  const g = f.groups[f.selGroupIx];
+  if (!g) return;
+  if (!f.drag) {
+    const t0 = _groupStripTime(g);
+    if (!Number.isFinite(t0)) return;
+    f.drag = {
+      groupIx: f.selGroupIx,
+      startT: t0,
+      curT: t0,
+      moved: true,
+      editable: true,
+      keyboard: true,
+      bounds: _dragBounds(f.selGroupIx),
+      onMove: null,
+      onUp: null,
+    };
+  }
+  const d = f.drag;
+  const step = (fine ? NUDGE_FINE_SEC : NUDGE_COARSE_SEC) * dir;
+  d.curT = Math.min(Math.max(d.curT + step, d.bounds.lo), d.bounds.hi);
+  _scheduleRedraw();
+}
+
+/**
+ * The nudge's "mouseup": on every keyup, once no nudge key is left down —
+ * no modifier (the keyup's own state) and no arrow (_heldArrows) — a
+ * floating nudge commits. Runs unfiltered so a keyup can never be missed;
+ * it only acts when a keyboard nudge is actually floating.
+ */
+function _onFixKeyup(e) {
+  const f = _fix;
+  if (!f) return;
+  if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+    _heldArrows.delete(e.code);
+  }
+  if (!f.drag?.keyboard) return;
+  if (!e.shiftKey && !e.altKey && _heldArrows.size === 0) {
+    _commitPendingNudge();
+  }
+}
+
+/** Commit an accumulated keyboard nudge now (also called before any other
+ *  gesture, so a pending nudge can never be silently abandoned). */
+function _commitPendingNudge() {
+  const f = _fix;
+  const d = f?.drag;
+  if (!d?.keyboard) return;
+  f.drag = null;
+  if (!Number.isFinite(d.curT) || d.curT === d.startT) {
+    _scheduleRedraw();
+    return;
+  }
+  _commitAnchor(d.groupIx, d.curT, "drag").catch((err) => {
+    console.error("fix mode: nudge commit failed:", err);
+  });
+}
+
+/** Escape during a pending nudge drops it (the tick springs back). */
+function _cancelPendingNudge() {
+  const f = _fix;
+  if (f?.drag?.keyboard) {
+    f.drag = null;
+    _scheduleRedraw();
+  }
+}
+
+/**
+ * The LIGHT re-fit, after a strip or lane drag (user, 2026-09-03: "everything
+ * disappears on mouse-up"): the CSS fit has already sized the page to the new
+ * pane (fit mode fills the box; the zoom modes size themselves), so nothing
+ * about the resident layout changes — only the geometry that was measured in
+ * screen pixels is stale, the connectors' score-side x's. No relayout, no
+ * overlay; ticks and connectors redraw on the next frame.
+ */
+function _refitScorePane() {
+  const f = _fix;
+  if (!f) return;
+  _applyScoreZoom();
+  _buildPageGeometry(f.page);
+  f.refits = (f.refits || 0) + 1;
+  _updateStripWindow();
+  _scheduleRedraw();
+  _schedulePlayheadFrame();
+}
+
+async function _onResize() {
+  const f = _fix;
+  if (!f) return;
+  // A pane resize (window, nav collapse, drawer) changes the page geometry
+  // wholesale: re-lay-out, re-derive the page model, and re-render around the
+  // current selection. On a large score that is seconds of synchronous wasm,
+  // so the corner spinner goes up (and paints) first — over the stale page,
+  // which stays visible and dimmed rather than blanked.
+  _showFixLoading("Re-fitting the score…", { corner: true });
+  await _paintFrame();
+  if (_fix !== f) return;
+  f.relayouts = (f.relayouts || 0) + 1;
+  const w = f.els.scoreEl.clientWidth;
+  const h = f.els.scoreEl.clientHeight;
+  _applyFixLayoutAt(w, h);
+  _assignGroupPages(f.groups);
+  // Keep the shared derived cache describing the CURRENT resident layout.
+  if (_derived) {
+    _derived.dims = { w, h };
+    _derived.pageCount = tk.getPageCount();
+    _derived.svgCache.clear();
+  }
+  f.pageCount = tk.getPageCount();
+  const g = f.groups[f.selGroupIx];
+  _renderPage(g ? g.page : 1);
+  _select(f.selGroupIx);
+  _hideFixLoading();
+}
+
+// ---------------------------------------------------------------------------
+// The L/R audition (left ear = the recording, right = the corrected-map synth)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the audition: one stereo AudioBuffer at the aligner's rate whose left
+ * channel is the decoded reference recording and whose right channel is the
+ * score synth rendered THROUGH THE CURRENT CORRECTED MAP — every MIDI note
+ * (chord voices included) plays from its event's live ref_onset to its
+ * ref_offset, so the two ears are sample-locked by construction (§13 ruling
+ * 2, the stand-in tool's mix, live in-app). Misalignment is heard as
+ * inter-ear flams; after each fix only the changed span re-renders.
+ *
+ * The synchronous prefix copies the samples into the buffer BEFORE the caller
+ * transfers them to the worker; the synth render then proceeds in yielded
+ * chunks so a large score never freezes the screen.
+ */
+function _buildAudition(f, refSamples) {
+  const refOff = scoreAlignment.ref_offset;
+  if (!Array.isArray(refOff)) {
+    console.warn("fix mode: no ref_offset table — audition disabled");
+    return Promise.resolve();
+  }
+  // Every MIDI note maps to its event index by the SAME (start, end)-tick
+  // dedup + sort that built the event table, so chord voices ride their
+  // event's corrected times.
+  const { notes } = parseMidi(f.midiBytes);
+  const keys = new Set();
+  const uniq = [];
+  for (const n of notes) {
+    const k = n.s + ":" + n.e;
+    if (!keys.has(k)) {
+      keys.add(k);
+      uniq.push([n.s, n.e, k]);
+    }
+  }
+  uniq.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const ixByKey = new Map(uniq.map((u, ix) => [u[2], ix]));
+  if (uniq.length !== f.nEvents) {
+    console.warn(
+      `fix mode: audition event table disagrees (${uniq.length} vs ` +
+        `${f.nEvents}) — audition disabled`,
+    );
+    return Promise.resolve();
+  }
+  const audNotes = notes.map((n) => ({
+    p: n.p,
+    v: n.v,
+    ix: ixByKey.get(n.s + ":" + n.e),
+  }));
+
+  // A default-rate context resamples on output; the buffer itself lives at
+  // FIX_SR so positions stay sample-locked to the aligner's timeline.
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const n = refSamples.length;
+  const buffer = ctx.createBuffer(2, n, FIX_SR);
+  buffer.copyToChannel(refSamples, 0);
+  // Persistent per-ear gain graph: source → splitter → gainL/gainR → merger
+  // → out. The gains move in real time from the nav's balance slider.
+  const splitter = ctx.createChannelSplitter(2);
+  const gainL = ctx.createGain();
+  const gainR = ctx.createGain();
+  const merger = ctx.createChannelMerger(2);
+  splitter.connect(gainL, 0);
+  splitter.connect(gainR, 1);
+  gainL.connect(merger, 0, 0);
+  gainR.connect(merger, 0, 1);
+  merger.connect(ctx.destination);
+  f.aud = {
+    ctx,
+    buffer,
+    splitter,
+    gainL,
+    gainR,
+    synthCh: new Float32Array(n), // raw synth; master gain applied on copy
+    duration: n / FIX_SR,
+    notes: audNotes,
+    gain: 1,
+    ready: false,
+    rendering: true,
+    playing: false,
+    pos: 0,
+    startedAt: 0,
+    srcToken: 0,
+    src: null,
+    raf: 0,
+    lastRenderWindow: null,
+    stretch: null, // the time-stretch worklet node (null = source fallback)
+    rate: 1, // playback speed, 1 = full; pitch preserved by the worklet
+    workletPos: null, // the worklet's own head (test surface, ~12 Hz)
+  };
+  _applyAudBalance(f.aud);
+  return _finishAuditionRender(f);
+}
+
+/** The synth ear's typical level relative to the recording's (median frame
+ *  RMS over non-silent frames): a little UNDER it, so the recording leads
+ *  and the balance slider's middle is a real middle. */
+const AUD_SYNTH_LEVEL = 0.7;
+/** ~93 ms frames at FIX_SR; frames below this RMS count as silence. */
+const AUD_LEVEL_FRAME = 2048;
+const AUD_SILENCE_RMS = 1e-4;
+
+/** Median RMS over the non-silent ~93 ms frames of a channel (0 if none). */
+function _medianFrameRms(ch) {
+  const vals = [];
+  for (let i = 0; i + AUD_LEVEL_FRAME <= ch.length; i += AUD_LEVEL_FRAME) {
+    let s = 0;
+    for (let k = i; k < i + AUD_LEVEL_FRAME; k++) s += ch[k] * ch[k];
+    const r = Math.sqrt(s / AUD_LEVEL_FRAME);
+    if (r > AUD_SILENCE_RMS) vals.push(r);
+  }
+  if (!vals.length) return 0;
+  vals.sort((x, y) => x - y);
+  const mid = vals.length >> 1;
+  return vals.length % 2 ? vals[mid] : (vals[mid - 1] + vals[mid]) / 2;
+}
+
+/** Constant-sum pan: the boosted ear stays at 1, the other attenuates. */
+function _applyAudBalance(a) {
+  a.gainL.gain.value = _audBalance > 0 ? 1 - _audBalance : 1;
+  a.gainR.gain.value = _audBalance < 0 ? 1 + _audBalance : 1;
+}
+
+async function _finishAuditionRender(f) {
+  const a = f.aud;
+  const STEP_SEC = 5;
+  for (let s = 0; s < a.duration; s += STEP_SEC) {
+    if (_fix !== f || f.aud !== a) return;
+    _renderSynthWindow(f, s, Math.min(a.duration, s + STEP_SEC));
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  if (_fix !== f || f.aud !== a) return;
+  // Master gain from the full render, kept for every later window re-render
+  // so amplitude never steps at a re-render boundary. LEVEL-MATCHED to the
+  // recording (user, 2026-09-03: "the sawtooth overwhelms the audio"): a
+  // sawtooth peak-normalised to 0.9 has an RMS near 0.5, some 10 dB above a
+  // classical recording's decoded samples, so the synth drowned the ear it
+  // was meant to be compared with at every slider position. The synth's
+  // typical frame level is set to AUD_SYNTH_LEVEL × the recording's — median
+  // frame RMS over the non-silent frames of each, robust to lead-in silence
+  // and to dynamics — and never past the peak clamp.
+  const recLevel = _medianFrameRms(a.buffer.getChannelData(0));
+  const synLevel = _medianFrameRms(a.synthCh);
+  let peak = 0;
+  for (let i = 0; i < a.synthCh.length; i++) {
+    const v = Math.abs(a.synthCh[i]);
+    if (v > peak) peak = v;
+  }
+  const peakGain = peak > 1e-6 ? 0.9 / peak : 1;
+  a.gain =
+    recLevel > 1e-5 && synLevel > 1e-6
+      ? Math.min(peakGain, (AUD_SYNTH_LEVEL * recLevel) / synLevel)
+      : peakGain;
+  a.levels = { rec: recLevel, syn: synLevel, gain: a.gain, peakGain };
+  console.log(
+    `fix mode: audition levels — recording ${recLevel.toFixed(4)} RMS, synth ` +
+      `${synLevel.toFixed(4)} raw → gain ${a.gain.toFixed(4)} (peak clamp ${peakGain.toFixed(3)})`,
+  );
+  _copySynthToBuffer(f, 0, a.duration);
+  await _attachStretch(f, a);
+  if (_fix !== f || f.aud !== a) return;
+  a.rendering = false;
+  a.ready = true;
+  _updatePlayBtn();
+  _schedulePlayheadFrame();
+}
+
+/**
+ * Pitch-preserving speed: a granular time-stretch worklet feeds the balance
+ * graph instead of a per-play BufferSource (which could only speed-change by
+ * shifting pitch). On any failure the audition keeps the source path and the
+ * speed control hides. Costs one more stereo copy of the piece (~2 × n
+ * floats) held inside the worklet.
+ */
+async function _attachStretch(f, a) {
+  try {
+    await a.ctx.audioWorklet.addModule(FIX_STRETCH_WORKLET_URL);
+    if (_fix !== f || f.aud !== a) return;
+    const node = new AudioWorkletNode(a.ctx, "fix-stretch", {
+      numberOfInputs: 0,
+      outputChannelCount: [2],
+    });
+    node.port.onmessage = (e) => {
+      if (_fix !== f || f.aud !== a) return;
+      const m = e.data;
+      if (m.type === "pos") {
+        a.workletPos = m.pos;
+      } else if (m.type === "probe") {
+        // What the worklet holds IS what the ear hears; the AudioBuffer beside
+        // it can be right while this copy is stale.
+        a.lastProbe = m;
+        const pending = a.probePending;
+        a.probePending = null;
+        pending?.(m);
+      } else if (m.type === "ended") {
+        a.playing = false;
+        a.pos = a.duration;
+        _updatePlayBtn();
+        _schedulePlayheadFrame();
+      }
+    };
+    const ch0 = new Float32Array(a.buffer.getChannelData(0));
+    const ch1 = _scaledSynth(a, 0, a.synthCh.length);
+    node.port.postMessage({ type: "load", ch0, ch1, srcRate: FIX_SR }, [
+      ch0.buffer,
+      ch1.buffer,
+    ]);
+    node.connect(a.splitter);
+    a.stretch = node;
+    f.els.speedInput.disabled = false;
+    f.els.speedReset.disabled = false;
+  } catch (err) {
+    console.warn(
+      "fix mode: time-stretch worklet unavailable — speed control disabled:",
+      err,
+    );
+    if (f.els.speedWrap) f.els.speedWrap.hidden = true;
+  }
+}
+
+/** Set the audition speed (pitch preserved). Re-anchors the position clock. */
+function _audSetRate(v) {
+  const f = _fix;
+  const a = f?.aud;
+  if (!a?.stretch) {
+    _updateSpeedUi();
+    return;
+  }
+  if (a.playing) {
+    a.pos = _audPos();
+    a.startedAt = a.ctx.currentTime;
+  }
+  a.rate = v;
+  a.stretch.port.postMessage({ type: "rate", value: v });
+  _updateSpeedUi();
+}
+
+function _updateSpeedUi() {
+  const f = _fix;
+  if (!f?.els.speedReset) return;
+  const pct = Math.round((f.aud?.rate ?? 1) * 100);
+  f.els.speedReset.textContent = `${pct}%`;
+  f.els.speedReset.classList.toggle("fix-speed-off-unity", pct !== 100);
+  if (Number(f.els.speedInput.value) !== pct) {
+    f.els.speedInput.value = String(pct);
+  }
+}
+
+/**
+ * How long event k actually SOUNDS in the audition: its own length, floored
+ * for audibility but never reaching past the next onset (see MIN_SOUND_SEC).
+ * The single answer for the renderer, the commit audit, and the re-render
+ * window — they must agree or the audit measures the wrong span.
+ */
+function _soundingDur(refOn, refOff, k) {
+  const ts = refOn[k];
+  const te = Array.isArray(refOff) ? refOff[k] : undefined;
+  const natural = Number.isFinite(te) ? te - ts : 0;
+  // ref onsets are monotone in event index (an alignment invariant), so the
+  // next distinct onset is a short scan away — a chord's width at most.
+  let gap = Infinity;
+  for (let j = k + 1; j < refOn.length; j++) {
+    if (refOn[j] > ts) {
+      gap = refOn[j] - ts;
+      break;
+    }
+  }
+  return Math.max(natural, Math.min(MIN_SOUND_SEC, gap));
+}
+
+/** (Re)render the raw synth channel for [t0, t1): zero the window, then add
+ *  every note's contribution clipped to it — envelope and phase are
+ *  deterministic in the distance from the note's own start, so a clipped
+ *  re-render reproduces the identical samples. */
+function _renderSynthWindow(f, t0, t1) {
+  const a = f.aud;
+  const out = a.synthCh;
+  const iLo = Math.max(0, Math.floor(t0 * FIX_SR));
+  const iHi = Math.min(out.length, Math.ceil(t1 * FIX_SR));
+  if (iHi <= iLo) return;
+  out.fill(0, iLo, iHi);
+  // The tables the right ear follows: the live ref tables, or (audio mode)
+  // every event projected through the composed map into the target.
+  const { on: refOn, off: refOff } = _audTables(f);
+  const ATK_S = Math.round(0.01 * FIX_SR);
+  const REL_S = Math.round(0.03 * FIX_SR);
+  for (const note of a.notes) {
+    const ts = refOn[note.ix];
+    if (!Number.isFinite(ts)) continue;
+    const noteDur = _soundingDur(refOn, refOff, note.ix);
+    const iStart = Math.round(ts * FIX_SR);
+    // The envelope is shaped on the note's INTENDED length, so a window that
+    // clips the tail still reproduces the identical samples.
+    const nFull = Math.max(1, Math.round(noteDur * FIX_SR));
+    const iEnd = Math.min(out.length, iStart + nFull);
+    const lo = Math.max(iStart, iLo);
+    const hi = Math.min(iEnd, iHi);
+    if (hi <= lo) continue;
+    const amp = (note.v / 127) * 0.12;
+    const phaseInc = (440 * Math.pow(2, (note.p - 69) / 12)) / FIX_SR;
+    // Attack and release always FIT: a short note reaches full amplitude
+    // instead of being caught mid-release (a 20 ms note used to peak at 0.47
+    // of its amplitude, which is most of why a collapsed note vanished).
+    const atk = Math.max(1, Math.min(ATK_S, Math.floor(nFull * 0.25)));
+    const rel = Math.max(1, Math.min(REL_S, nFull - atk));
+    const relStart = nFull - rel;
+    let phase = ((lo - iStart) * phaseInc) % 1;
+    for (let i = lo; i < hi; i++) {
+      phase += phaseInc;
+      if (phase >= 1) phase -= 1;
+      const saw = 2 * phase - 1;
+      const si = i - iStart;
+      let env;
+      if (si < atk) env = si / atk;
+      else if (si >= relStart) env = Math.max(0, (nFull - si) / rel);
+      else env = 1;
+      out[i] += saw * amp * env;
+    }
+  }
+}
+
+/** Master-gained clip of the raw synth over [iLo, iHi) sample indices. */
+function _scaledSynth(a, iLo, iHi) {
+  const scaled = new Float32Array(iHi - iLo);
+  for (let i = 0; i < scaled.length; i++) {
+    const v = a.synthCh[iLo + i] * a.gain;
+    scaled[i] = v > 1 ? 1 : v < -1 ? -1 : v;
+  }
+  return scaled;
+}
+
+/** Master-gained copy of a synth window into the stereo buffer's right ear
+ *  (copyToChannel, not getChannelData writes — acquired-content semantics
+ *  can never leave a playing buffer stale) AND, when the stretch worklet is
+ *  attached, the same window patched into its own copy. */
+function _copySynthToBuffer(f, t0, t1) {
+  const a = f.aud;
+  const iLo = Math.max(0, Math.floor(t0 * FIX_SR));
+  const iHi = Math.min(a.synthCh.length, Math.ceil(t1 * FIX_SR));
+  if (iHi <= iLo) return;
+  const scaled = _scaledSynth(a, iLo, iHi);
+  a.buffer.copyToChannel(scaled, 1, iLo);
+  a.stretch?.port.postMessage({ type: "patch", ch: 1, offset: iLo, data: scaled }, [
+    scaled.buffer,
+  ]);
+}
+
+/** Ask the stretch worklet for peak/RMS over [t0, t1) of ITS OWN copy — the
+ *  content playback actually reads. Null when the worklet is not attached. */
+function _workletProbe(t0, t1) {
+  const a = _fix?.aud;
+  if (!a?.stretch) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    a.probePending = resolve;
+    a.stretch.port.postMessage({ type: "probe", t0, t1, tag: "audit" });
+  });
+}
+
+/** One note's live span and the signal actually present in the synth ear over
+ *  it — the audition's own answer to "why can I not hear the note I fixed". */
+function _noteAudit(k) {
+  const a = _fix?.aud;
+  const tables = _fix ? _audTables(_fix) : { on: scoreAlignment.ref_onset, off: scoreAlignment.ref_offset };
+  const on = tables.on[k];
+  const off = Array.isArray(tables.off) ? tables.off[k] : undefined;
+  const out = {
+    i: k,
+    on,
+    off,
+    dur: Number.isFinite(on) && Number.isFinite(off) ? off - on : null,
+    bufferPeak: null,
+    samples: 0,
+    soundingEnd: null,
+  };
+  if (!a?.ready || !Number.isFinite(on)) return out;
+  // Measure exactly the span the renderer wrote, floor included.
+  const hi = on + _soundingDur(tables.on, tables.off, k);
+  out.soundingEnd = hi;
+  const data = a.buffer.getChannelData(1);
+  const lo = Math.max(0, Math.floor(on * FIX_SR));
+  const end = Math.min(data.length, Math.ceil(hi * FIX_SR));
+  let peak = 0;
+  for (let s = lo; s < end; s++) {
+    const v = data[s] < 0 ? -data[s] : data[s];
+    if (v > peak) peak = v;
+  }
+  out.bufferPeak = peak;
+  out.samples = Math.max(0, end - lo);
+  return out;
+}
+
+/** Re-render the right ear for the span a fix (or an undo hop) changed. */
+function _auditionRerender(t0, t1) {
+  const f = _fix;
+  const a = f?.aud;
+  if (!a?.ready) return;
+  const pad = 0.05;
+  t0 = Math.max(0, t0 - pad);
+  t1 = Math.min(a.duration, t1 + pad);
+  _renderSynthWindow(f, t0, t1);
+  _copySynthToBuffer(f, t0, t1);
+  a.lastRenderWindow = { t0, t1 };
+}
+
+function _auditionDispose(f) {
+  const a = f.aud;
+  if (!a) return;
+  f.aud = null;
+  if (a.raf) cancelAnimationFrame(a.raf);
+  a.srcToken++;
+  try {
+    a.src?.stop();
+  } catch (_) {}
+  a.src = null;
+  try {
+    a.ctx?.close();
+  } catch (_) {}
+}
+
+/** The audition playhead position in seconds. */
+function _audPos() {
+  const a = _fix?.aud;
+  if (!a) return 0;
+  return a.playing
+    ? Math.min(
+        a.duration,
+        a.pos + (a.ctx.currentTime - a.startedAt) * (a.stretch ? a.rate : 1),
+      )
+    : a.pos;
+}
+
+function _audPlay() {
+  const f = _fix;
+  const a = f?.aud;
+  if (!a?.ready || a.playing) return;
+  if (a.ctx.state === "suspended") a.ctx.resume().catch(() => {});
+  if (a.pos >= a.duration - 0.01) a.pos = 0;
+  if (a.stretch) {
+    a.stretch.port.postMessage({ type: "seek", pos: a.pos });
+    a.stretch.port.postMessage({ type: "play" });
+    a.startedAt = a.ctx.currentTime;
+    a.playing = true;
+    _updatePlayBtn();
+    _schedulePlayheadFrame();
+    return;
+  }
+  const src = a.ctx.createBufferSource();
+  src.buffer = a.buffer;
+  src.connect(a.splitter);
+  const token = ++a.srcToken;
+  src.onended = () => {
+    // Natural end of the recording (seek/pause disarm via the token).
+    if (_fix !== f || f.aud !== a || a.srcToken !== token) return;
+    a.playing = false;
+    a.pos = a.duration;
+    a.src = null;
+    _updatePlayBtn();
+    _schedulePlayheadFrame();
+  };
+  src.start(0, a.pos);
+  a.src = src;
+  a.startedAt = a.ctx.currentTime;
+  a.playing = true;
+  _updatePlayBtn();
+  _schedulePlayheadFrame();
+}
+
+function _audPause() {
+  const a = _fix?.aud;
+  if (!a?.playing) return;
+  a.pos = _audPos();
+  if (a.stretch) {
+    a.stretch.port.postMessage({ type: "pause" });
+    a.playing = false;
+    _updatePlayBtn();
+    return;
+  }
+  a.srcToken++;
+  try {
+    a.src?.stop();
+  } catch (_) {}
+  a.src = null;
+  a.playing = false;
+  _updatePlayBtn();
+}
+
+function _audSeek(t) {
+  const a = _fix?.aud;
+  if (!a?.ready) return;
+  t = Math.min(Math.max(0, t), a.duration);
+  if (a.stretch) {
+    a.pos = t;
+    a.stretch.port.postMessage({ type: "seek", pos: t });
+    if (a.playing) a.startedAt = a.ctx.currentTime;
+    else _schedulePlayheadFrame();
+    return;
+  }
+  if (a.playing) {
+    a.srcToken++;
+    try {
+      a.src?.stop();
+    } catch (_) {}
+    a.src = null;
+    a.playing = false;
+    a.pos = t;
+    _audPlay();
+  } else {
+    a.pos = t;
+    _schedulePlayheadFrame();
+  }
+}
+
+/**
+ * The current page's playback slice: from its first group's live onset to
+ * the next non-empty page's first onset (a page owns the music up to where
+ * the next system begins; the last page runs to the end of the recording).
+ * Null when the page carries no finite onset. Distinct from _pageWindow,
+ * the strip's PADDED display window.
+ */
+function _pageTimeSlice() {
+  const f = _fix;
+  const own = _groupsOnPage(f.page);
+  if (!own.length) return null;
+  const startT = _groupStripTime(own[0]);
+  if (!Number.isFinite(startT)) return null;
+  let endT = f.aud?.duration ?? Infinity;
+  for (let p = f.page + 1; p <= f.pageCount; p++) {
+    const next = _groupsOnPage(p);
+    if (next.length) {
+      endT = _groupStripTime(next[0]);
+      break;
+    }
+  }
+  return { startT, endT };
+}
+
+/** In page-only mode an explicit play starts inside the page: a position
+ *  outside the current page's slice snaps to its first onset − preroll. */
+function _snapIntoPage() {
+  const f = _fix;
+  const w = _pageTimeSlice();
+  if (!w) return;
+  const pos = _audPos();
+  if (pos >= w.startT - SEEK_PREROLL_SEC - 0.05 && pos < w.endT - 0.05) return;
+  const ix = _groupIxAtTime(w.startT);
+  if (ix !== -1) f.followFloor = { ix, untilT: w.startT };
+  f.pageOnlyPassUntilT = null;
+  _audSeek(Math.max(0, w.startT - SEEK_PREROLL_SEC));
+}
+
+function _audToggle() {
+  const a = _fix?.aud;
+  if (!a?.ready) return;
+  if (a.playing) _audPause();
+  else {
+    if (_pageOnly) _snapIntoPage();
+    _audPlay();
+  }
+}
+
+function _updatePlayBtn() {
+  const f = _fix;
+  if (!f || !f.els.playBtn) return;
+  f.els.playBtn.disabled = !f.aud?.ready;
+  updateTransportIcons(!!f.aud?.playing);
+}
+
+// ---------------------------------------------------------------------------
+// Playback following (the orientation loop)
+// ---------------------------------------------------------------------------
+
+/** One playhead frame; keeps itself scheduled while playing. */
+function _schedulePlayheadFrame() {
+  const f = _fix;
+  const a = f?.aud;
+  if (!a || a.raf) return;
+  a.raf = requestAnimationFrame(() => {
+    if (_fix !== f || f.aud !== a) return;
+    a.raf = 0;
+    _paintPlayhead();
+    if (a.playing) {
+      _followPlayback();
+      _schedulePlayheadFrame();
+    }
+  });
+}
+
+function _paintPlayhead() {
+  const f = _fix;
+  const canvas = f.els.playhead;
+  const w = f.els.strip.clientWidth;
+  const h = f.els.strip.clientHeight;
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  const a = f.aud;
+  if (!a?.ready) return;
+  const x = _timeToStripX(_audPos());
+  if (x === null || x < -PH_ARROW_HALF_W || x > w + PH_ARROW_HALF_W) return;
+  // The bracket: one arrowhead just inside the top edge pointing down, one in
+  // the gutter beneath the waveform pointing up, and nothing between them.
+  ctx.fillStyle = f.playheadColor;
+  ctx.globalAlpha = 0.95;
+  _fillArrowhead(ctx, x, 1, 1);
+  _fillArrowhead(ctx, x, h - 1, -1);
+}
+
+/** One filled arrowhead: base of width 2·PH_ARROW_HALF_W on `yBase`, apex
+ *  PH_ARROW_H away in direction `dir` (+1 down, −1 up), apex exactly on x. */
+function _fillArrowhead(ctx, x, yBase, dir) {
+  ctx.beginPath();
+  ctx.moveTo(x - PH_ARROW_HALF_W, yBase);
+  ctx.lineTo(x + PH_ARROW_HALF_W, yBase);
+  ctx.lineTo(x, yBase + dir * PH_ARROW_H);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/**
+ * The last onset group at or before reference time t (the groups' live ref
+ * onsets are monotone — an alignment invariant), or -1 before the first.
+ */
+function _groupIxAtTime(t) {
+  const gs = _fix.groups;
+  if (!gs.length || _groupStripTime(gs[0]) > t) return -1;
+  let lo = 0;
+  let hi = gs.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (_groupStripTime(gs[mid]) <= t) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/**
+ * Selection follows the sounding onset during playback (pages turn with it),
+ * and the sounding state — on at onset, off at offset, both read through the
+ * corrected map — drives the score highlight's emphasis. After an explicit
+ * seek-to-selected, the follower holds until the playhead reaches the
+ * selected onset so the preroll cannot yank the selection backwards.
+ */
+function _followPlayback() {
+  const f = _fix;
+  const t = _audPos();
+  const ix = _groupIxAtTime(t);
+  if (ix === -1) {
+    _setSounding(false);
+    return;
+  }
+  const floor = f.followFloor;
+  if (floor && t < floor.untilT - 1e-3) {
+    if (ix < floor.ix) {
+      _setSounding(false);
+      return;
+    }
+  } else if (floor) {
+    f.followFloor = null;
+  }
+  if (f.pageOnlyPassUntilT !== null && t >= f.pageOnlyPassUntilT - 1e-3) {
+    f.pageOnlyPassUntilT = null;
+  }
+  // Page-only playback: pause at the page boundary instead of turning the
+  // page — unless a commit replay is deliberately crossing.
+  if (
+    _pageOnly &&
+    f.pageOnlyPassUntilT === null &&
+    f.groups[ix].page > f.page
+  ) {
+    _audPause();
+    _audSeek(Math.max(0, _groupStripTime(f.groups[ix]) - 0.01));
+    return;
+  }
+  if (ix !== f.selGroupIx) _select(ix, { seek: false });
+  const g = f.groups[ix];
+  let offEnd = Infinity;
+  if (Array.isArray(scoreAlignment.ref_offset)) {
+    offEnd = -Infinity;
+    for (const e of g.eventIxs) {
+      const v = _eventStripOff(e);
+      if (Number.isFinite(v) && v > offEnd) offEnd = v;
+    }
+  }
+  _setSounding(t >= _groupStripTime(g) - 1e-3 && t <= offEnd);
+}
+
+function _setSounding(on) {
+  const f = _fix;
+  const target = on ? f.selGroupIx : null;
+  if (f.soundingGroupIx === target) return;
+  f.soundingGroupIx = target;
+  f.els.scoreSvg.querySelectorAll(".fix-note-sel").forEach((el) => {
+    el.classList.toggle("fix-note-sounding", on);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Anchor commits: model + worker realign + undo entry (the edit loop's core)
+// ---------------------------------------------------------------------------
+
+/** Ask the worker to refill one segment; single in-flight by construction. */
+function _realignSegmentViaWorker(segment, priorRef) {
+  const worker = _ensureWorker();
+  return new Promise((resolve, reject) => {
+    _pendingRealign = { resolve, reject };
+    worker.postMessage({
+      type: "fix_realign",
+      iA: segment.iA,
+      tA: segment.tA,
+      iB: segment.iB,
+      tB: segment.tB,
+      priorRef,
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The spans a fix changes (Werner Goebl's feedback, 2026-09-29): nothing
+// BEHIND a fix moves — behind it only the offsets follow, linearly, and in
+// audio mode the raster between the ticks; AHEAD, the refill reaches the next
+// anchor or the horizon (auto re-align), or only the fix's own group until
+// Re-align (auto re-align off). See _autoRealign.
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the reference's aligned music ends — the corner of a refill with no
+ * anchor or horizon ahead. Open-ended alignment's alignedTo, not the file's
+ * end: a corner there pulled the last notes +4.4 s into the applause on the
+ * HQ corpus (2026-09-29).
+ */
+function _pieceEndT(tA) {
+  const dur = _refDuration();
+  const rec = loadedAlignmentJSON?.body?.audio?.[_fix.refFile];
+  const to = rec && !Array.isArray(rec) ? Number(rec.alignedTo) : NaN;
+  return Number.isFinite(to) && to > tA + ANCHOR_EPS_SEC && to < dur ? to : dur;
+}
+
+/** Score↔ref: the span behind a fix of event i — from the previous group's
+ *  anchor event to i, its onsets KEPT, its offsets following linearly. Null
+ *  for the first group. */
+function _leftSpan(groupIx, i, t) {
+  const prevG = _fix.groups[groupIx - 1];
+  if (!prevG) return null;
+  const iA = _anchorEventOf(prevG);
+  if (!(iA < i)) return null;
+  return {
+    iA,
+    tA: scoreAlignment.ref_onset[iA],
+    iB: i,
+    tB: t,
+    interiorCount: i - iA - 1,
+    local: true,
+    keepOnsets: true,
+  };
+}
+
+/** Score↔ref: the refill ahead of event i at time t — to the next anchor or
+ *  the first onset group at or past the horizon, whichever comes first (that
+ *  group's current time is the corner), else to where the music ends. */
+function _aheadSpan(i, t) {
+  const f = _fix;
+  const refOn = scoreAlignment.ref_onset;
+  const { next } = neighbourAnchors(_corrections, i);
+  let iB = next ? next.i : f.nEvents;
+  let horizon = false;
+  if (Number.isFinite(_horizonSec)) {
+    const tH = t + _horizonSec;
+    for (let e = i + 1; e < iB; e++) {
+      if (refOn[e] >= tH && f.qOn[e] > f.qOn[e - 1]) {
+        iB = e;
+        horizon = true;
+        break;
+      }
+    }
+  }
+  const tB = horizon ? refOn[iB] : next ? next.t : _pieceEndT(t);
+  return { iA: i, tA: t, iB, tB, interiorCount: Math.max(0, iB - i - 1), horizon };
+}
+
+/** Score↔ref, auto re-align off: the fix's own group follows it, up to the
+ *  next group, which stays put until Re-align. */
+function _nextLocalSpan(groupIx, i, t) {
+  const f = _fix;
+  const nextG = f.groups[groupIx + 1];
+  const { next } = neighbourAnchors(_corrections, i);
+  let iB = nextG ? nextG.eventIxs[0] : f.nEvents;
+  if (next && next.i < iB) iB = next.i;
+  const tB = iB < f.nEvents ? scoreAlignment.ref_onset[iB] : _pieceEndT(t);
+  return { iA: i, tA: t, iB, tB, interiorCount: Math.max(0, iB - i - 1), local: true };
+}
+
+/**
+ * Audio mode: the raster samples behind a fix at refT that follow it
+ * linearly. The first sample past the previous tick is KEPT, and it is the
+ * fill's left knot, so the previous tick's projection (interpolated from the
+ * samples around it) cannot move. `tFloor` is the lowest target time the fix
+ * may take: past the previous tick and past that kept sample.
+ */
+function _leftGridSpan(groupIx, refT, t) {
+  const f = _fix;
+  const refGrid = alignmentGrids[f.refFile];
+  const grid = _targetGrid();
+  const prevG = f.groups[groupIx - 1];
+  const { prev } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
+  let refPrev = prevG ? scoreAlignment.ref_onset[prevG.eventIxs[0]] : refGrid[0];
+  if (prev && prev.refT > refPrev) refPrev = prev.refT;
+  const k0 = rasterAfter(refGrid, refPrev);
+  const kHi = rasterBefore(refGrid, refT);
+  let tFloor = prev && prev.refT >= refPrev - REF_T_EPS ? prev.t : _refToTarget(refPrev);
+  if (k0 <= kHi) tFloor = Math.max(tFloor, grid[k0]);
+  const kLo = k0 + 1;
+  return {
+    refA: k0 <= kHi ? refGrid[k0] : refPrev,
+    tA: k0 <= kHi ? grid[k0] : tFloor,
+    refB: refT,
+    tB: t,
+    kLo,
+    kHi,
+    interiorCount: Math.max(0, kHi - kLo + 1),
+    local: true,
+    tFloor,
+  };
+}
+
+/** Audio mode, auto re-align off: the raster samples between a fix and the
+ *  next tick follow it linearly; the last sample before the next tick is kept
+ *  (the next tick's projection cannot move). `tCeil` mirrors _leftGridSpan's
+ *  floor. */
+function _nextLocalGridSpan(groupIx, refT, t) {
+  const f = _fix;
+  const refGrid = alignmentGrids[f.refFile];
+  const grid = _targetGrid();
+  const last = refGrid.length - 1;
+  const nextG = f.groups[groupIx + 1];
+  const { next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
+  let refNext = nextG ? scoreAlignment.ref_onset[nextG.eventIxs[0]] : refGrid[last];
+  if (next && next.refT < refNext) refNext = next.refT;
+  const k1 = rasterBefore(refGrid, refNext);
+  const kLo = rasterAfter(refGrid, refT);
+  let tCeil = next && next.refT <= refNext + REF_T_EPS ? next.t : _refToTarget(refNext);
+  if (k1 >= kLo) tCeil = Math.min(tCeil, grid[k1]);
+  const kHi = k1 - 1;
+  return {
+    refA: refT,
+    tA: t,
+    refB: k1 >= kLo ? refGrid[k1] : refNext,
+    tB: k1 >= kLo ? grid[k1] : tCeil,
+    kLo,
+    kHi,
+    interiorCount: Math.max(0, kHi - kLo + 1),
+    local: true,
+    tCeil,
+  };
+}
+
+/** Audio mode: the grid refill ahead of a fix at (refT, t) — to the next
+ *  target anchor or the first raster sample at or past the horizon, whichever
+ *  comes first (that sample keeps its value as the corner), else to the
+ *  grid's frozen last sample. */
+function _aheadGridSpan(refT, t) {
+  const f = _fix;
+  const refGrid = alignmentGrids[f.refFile];
+  const grid = _targetGrid();
+  const last = refGrid.length - 1;
+  const { next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
+  const kLo = rasterAfter(refGrid, refT);
+  let kHi = next ? rasterBefore(refGrid, next.refT) : last - 1;
+  let refB = next ? next.refT : refGrid[last];
+  let tB = next ? next.t : grid[last];
+  let horizon = false;
+  if (Number.isFinite(_horizonSec)) {
+    const tH = t + _horizonSec;
+    for (let k = kLo; k <= kHi; k++) {
+      if (grid[k] >= tH) {
+        refB = refGrid[k];
+        tB = grid[k];
+        kHi = k - 1;
+        horizon = true;
+        break;
+      }
+    }
+  }
+  return {
+    refA: refT,
+    tA: t,
+    refB,
+    tB,
+    kLo,
+    kHi,
+    interiorCount: Math.max(0, kHi - kLo + 1),
+    horizon,
+  };
+}
+
+/** The pending (not yet re-aligned) fixes: add / drop one by its key. */
+function _addPending(f, key) {
+  const same = (p) =>
+    key.refT !== undefined ? Math.abs(p.refT - key.refT) <= REF_T_EPS : p.i === key.i;
+  if (!f.pending.some(same)) f.pending.push({ ...key });
+  f.exitFlushTried = false; // a new wait deserves its own refill at exit
+}
+function _dropPending(f, key) {
+  f.pending = f.pending.filter((p) =>
+    key.refT !== undefined ? Math.abs(p.refT - key.refT) > REF_T_EPS : p.i !== key.i,
+  );
+}
+
+/**
+ * Commit an anchor on a group: 'drag' pins event i at a new time t and
+ * auto-realigns the flanking segments (worker fix_realign on cached features,
+ * stored params — no fast parameters); 'approve' pins the CURRENT value with
+ * zero data change. Both push one fix-anchor snapshot entry onto listen.js's
+ * unified undo stack and re-serialize header.corrections, the durable record.
+ * A drag ends with auto-replay from just before the previous anchor (RULED).
+ */
+async function _commitAnchor(groupIx, t, kind) {
+  const f = _fix;
+  if (!f || f.realignBusy || !Number.isFinite(t)) return;
+  if (f.mode === "audio") return _commitGridAnchor(groupIx, t, kind);
+  const g = f.groups[groupIx];
+  if (!g) return;
+  const i = _anchorEventOf(g);
+  const refOn = scoreAlignment.ref_onset;
+  const refOff = scoreAlignment.ref_offset;
+  if (!Array.isArray(refOff)) {
+    _announce("This alignment has no ref_offset table; corrections need one.");
+    return;
+  }
+  const dur = _refDuration();
+  if (!(dur > 0)) return;
+  const ctx = { nEvents: f.nEvents, refDuration: dur };
+  if (!_pristine) _pristine = { on: refOn.slice(), off: refOff.slice() };
+
+  const prevRecord = findAnchor(_corrections, i);
+  // A gap endpoint STAYS a gap endpoint (increment 4's ruling): a drag, an
+  // approve, or S on it moves that boundary and keeps the label, so the
+  // commit's kind becomes 'gap' — the zero-data branch below still keys on
+  // what the gesture was.
+  const approve = kind === "approve";
+  if (prevRecord?.kind === "gap") kind = "gap";
+  const entry = {
+    type: "fix-anchor",
+    i,
+    q: f.qOn[i],
+    t,
+    kind,
+    barHint: _barOfQuarter(f.qOn[i]),
+    prevAnchor: prevRecord ? { ...prevRecord } : null,
+    dissolvedGaps:
+      prevRecord?.kind === "gap" && kind !== "gap"
+        ? _corrections.gaps
+            .filter((gp) => gp.i === i || gp.i + 1 === i)
+            .map((gp) => ({ ...gp }))
+        : [],
+    selfBefore: { on: refOn[i], off: refOff[i] },
+    selfAfter: null,
+    segments: [],
+    anchorOffsets: [],
+    window: null,
+  };
+  // Nothing behind a fix moves: the drag bounds keep a tick after the
+  // previous one, and a commit that gets here anyway is refused before the
+  // model changes.
+  const left = _leftSpan(groupIx, i, t);
+  if (!approve && left && !(left.tA < t)) {
+    _announce("Cannot anchor here: not before the previous onset.");
+    return;
+  }
+  let segs;
+  try {
+    setAnchor(_corrections, { i, q: entry.q, t, kind, ts: Date.now() }, ctx);
+    segs = [
+      ...(left ? [left] : []),
+      _autoRealign ? _aheadSpan(i, t) : _nextLocalSpan(groupIx, i, t),
+    ];
+  } catch (err) {
+    _announce(`Cannot anchor here: ${err.message}`);
+    return;
+  }
+
+  if (approve) {
+    entry.selfAfter = { ...entry.selfBefore };
+    f.lastCommit = { kind, i, t, realigned: 0, linear: 0, degenerate: 0 };
+    _pushCommitEntry(entry);
+    _syncCorrectionsHeader();
+    _scheduleRedraw();
+    return;
+  }
+
+  _setRealignBusy(f, true);
+  _setChip(
+    "realign",
+    _batch
+      ? `Moving ${_batch.done + 1} of ${_batch.total} — realigning…`
+      : "Realigning around the fix…",
+  );
+  applyAnchorValue(refOn, i, t);
+  let linearFilled = 0;
+  let localFilled = 0;
+  let realigned = 0;
+  try {
+    for (const seg of segs) {
+      let res;
+      if (seg.interiorCount <= 0 || seg.local) {
+        // Nothing to refill, but the left-boundary anchor's own OFFSET
+        // still lives inside this span and must follow it: skipping here
+        // left the offset stale, so a rightward drag beside an existing
+        // anchor could leave offset ≤ onset and the synth rendered the
+        // note as a 20 ms blip (the first-note stutter). A GAP span keeps
+        // the note's length instead of stretching it across the applause.
+        // A LOCAL span (behind the fix, or its own group with auto re-align
+        // off) never goes to the worker: it follows linearly.
+        if (seg.iA < 0) continue;
+        res =
+          seg.interiorCount <= 0 && findGap(_corrections, seg.iA)
+            ? _gapSpanFill(seg, entry)
+            : _linearFill(seg);
+        if (seg.local) localFilled++;
+      } else {
+        const priorRef = refOn.slice(seg.iA + 1, seg.iB);
+        try {
+          const reply = await _realignSegmentViaWorker(seg, priorRef);
+          if (_fix !== f) throw new Error("fix mode exited during the realign");
+          res = reply.result;
+          realigned++;
+        } catch (err) {
+          // A span squeezed between close anchors can have too few analysis
+          // frames for DTW (the worker refuses honestly). At that scale a
+          // linear fill IS the right refill — interior events sit within a
+          // breath of both anchors — so the commit proceeds instead of
+          // failing the whole gesture (first real-corpus session got stuck
+          // exactly here, with every flanking segment eventually tiny).
+          if (_fix === f && /too short to align/.test(err?.message || "")) {
+            res = _linearFill(seg);
+            linearFilled++;
+          } else {
+            throw err;
+          }
+        }
+      }
+      const before = applySegment(refOn, refOff, seg, res.ref_onset, res.ref_offset);
+      entry.segments.push({
+        iA: seg.iA,
+        iB: seg.iB,
+        interiorCount: seg.interiorCount,
+        beforeOn: before.beforeOn,
+        beforeOff: before.beforeOff,
+        afterOn: res.ref_onset.slice(),
+        afterOff: res.ref_offset.slice(),
+      });
+      // The left-boundary anchor's own OFFSET falls inside the segment and
+      // comes back remapped; the dragged event's offset arrives this way too
+      // (as the right segment's iA) and is covered by selfBefore/selfAfter.
+      if (res.anchor_a_offset != null && seg.iA >= 0) {
+        if (seg.iA !== i) {
+          entry.anchorOffsets.push({
+            i: seg.iA,
+            before: refOff[seg.iA],
+            after: res.anchor_a_offset,
+          });
+        }
+        refOff[seg.iA] = res.anchor_a_offset;
+      }
+    }
+  } catch (err) {
+    _rollbackCommit(entry);
+    // The chip truncates; the console gets the whole story (a PythonError
+    // message carries the worker's full traceback).
+    console.error(
+      "fix mode: realign failed, fix rolled back — anchor",
+      { i, t, kind },
+      "segments",
+      segs,
+      "\n",
+      err,
+    );
+    if (_fix === f) {
+      _setRealignBusy(f, false);
+      _setChip(
+        "error",
+        `Realign failed (${err.message}) — the fix was rolled back`,
+      );
+      _scheduleRedraw();
+    }
+    return;
+  }
+  entry.selfAfter = { on: refOn[i], off: refOff[i] };
+  entry.window = { t0: segs[0].tA, t1: segs[segs.length - 1].tB };
+  // Offsets may now legitimately reach past the window's right edge, so the
+  // right ear is re-rendered out to the furthest offset the commit wrote —
+  // otherwise a lengthened note keeps its old, shorter tail. And a canary on
+  // the invariant every degenerate-offset bug has broken so far: an offset at
+  // or before its own onset, which the synth floors at 20 ms and the ear hears
+  // as a dropped note. Two real data bugs hid behind that floor; if this ever
+  // fires there is a third.
+  const iLo = Math.max(0, segs[0].iA);
+  const iHi = Math.min(f.nEvents - 1, segs[segs.length - 1].iB);
+  let degenerate = 0;
+  let renderT1 = entry.window.t1;
+  for (let k = iLo; k <= iHi; k++) {
+    const onK = refOn[k];
+    const offK = refOff[k];
+    if (!Number.isFinite(onK)) continue;
+    if (Number.isFinite(offK) && offK <= onK) degenerate++;
+    // The renderer floors a note's sounding length, so the re-render has to
+    // reach past a short note's data offset as well.
+    const end = onK + _soundingDur(refOn, refOff, k);
+    if (end > renderT1) renderT1 = end;
+  }
+  entry.renderT1 = renderT1;
+  if (degenerate) {
+    console.warn(
+      `fix mode: commit left ${degenerate} event(s) in [${iLo}, ${iHi}] with ` +
+        "ref_offset <= ref_onset — the synth will floor them at 20 ms",
+      { i, t, kind },
+    );
+  }
+  _setRealignBusy(f, false);
+  f.lastCommit = { kind, i, t, realigned, linear: linearFilled, local: localFilled, degenerate };
+  // Auto re-align off: the span ahead waits for Re-align (Shift+R).
+  const pending = !_autoRealign;
+  if (pending) {
+    entry.pendingAhead = true;
+    _addPending(f, { i });
+  }
+  // The commit's console trail. Every "the note I fixed does not sound" report
+  // so far has come down to one of three numbers: the note's duration (a
+  // collapsed offset is floored at 20 ms), the peak actually rendered into the
+  // synth ear, and — separately — what the stretch worklet holds, since
+  // playback reads the worklet's own copy and not the AudioBuffer beside it.
+  const fmt = (v) => (Number.isFinite(v) ? v.toFixed(4) : String(v));
+  const audit = _noteAudit(i);
+  const leftAudit = segs[0].iA >= 0 ? _noteAudit(segs[0].iA) : null;
+  console.log(
+    `fix mode: ${kind} on event ${i} (bar ${entry.barHint ?? "?"}) — onset ` +
+      `${fmt(entry.selfBefore.on)} → ${fmt(audit.on)}, offset ` +
+      `${fmt(entry.selfBefore.off)} → ${fmt(audit.off)}, duration ` +
+      `${fmt(entry.selfBefore.off - entry.selfBefore.on)} → ${fmt(audit.dur)} s` +
+      (audit.soundingEnd !== null && audit.soundingEnd - audit.on > audit.dur + 1e-3
+        ? ` (sounding ${fmt(audit.soundingEnd - audit.on)} s — the audibility floor)`
+        : "") +
+      "; " +
+      `synth ear over the note: peak ${fmt(audit.bufferPeak)} over ` +
+      `${audit.samples} samples; realigned ${realigned}, linear ` +
+      `${linearFilled}, degenerate ${degenerate}; re-render [` +
+      `${fmt(entry.window.t0)}, ${fmt(entry.renderT1)}]` +
+      (leftAudit
+        ? `; previous anchor event ${leftAudit.i}: ${fmt(leftAudit.on)}–` +
+          `${fmt(leftAudit.off)} (dur ${fmt(leftAudit.dur)} s, peak ` +
+          `${fmt(leftAudit.bufferPeak)})`
+        : ""),
+  );
+  if (f.aud?.stretch && Number.isFinite(audit.on)) {
+    const pt1 = audit.soundingEnd ?? audit.on + MIN_SOUND_SEC;
+    _workletProbe(audit.on, pt1)
+      .then((p) => {
+        if (!p?.ch1) return;
+        const stale = audit.bufferPeak > 1e-4 && p.ch1.peak < 1e-4;
+        const line =
+          `fix mode: playback's own copy over event ${i} — synth peak ` +
+          `${fmt(p.ch1.peak)}, recording peak ${fmt(p.ch0?.peak)}`;
+        if (stale) {
+          console.warn(
+            `${line} — MISMATCH: the buffer holds the note but the worklet ` +
+              "playback reads does not, so it will not sound",
+          );
+        } else {
+          console.log(line);
+        }
+      })
+      .catch(() => {});
+  }
+  _pushCommitEntry(entry);
+  _syncCorrectionsHeader();
+  _setChip(
+    "ready",
+    pending ? "Pinned — the span ahead waits for Re-align (Shift+R)" : "Correction engine ready",
+  );
+  _syncRealignUi();
+  _auditionRerender(entry.window.t0, entry.renderT1);
+  _scheduleRedraw();
+  // Auto-replay from just before the previous tick: the changed span starts
+  // there, so the ear re-checks exactly what the fix changed. Kept even when
+  // suppressed, because R replays it on demand.
+  _lastReplay = {
+    t0: entry.window.t0,
+    fixedT: entry.t,
+    passUntilT: entry.window.t1,
+  };
+  if (_batch) {
+    // A batch replays ONCE at its end, from its first fix to its last.
+    _batch.first = _batch.first || _lastReplay;
+    _batch.last = _lastReplay;
+  } else if (!_replaySuppressed) {
+    _replayFix(_lastReplay);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Audio-to-audio commits (increment 5): a (reference time ↔ target time)
+// anchor on the target recording's grid, refilled between its neighbours by
+// the worker's fix_target_realign on the two recordings' cached PCM.
+// ---------------------------------------------------------------------------
+
+/** Ask the worker to refill one grid segment; single in-flight, like the
+ *  score↔ref realign (the same pending slot resolves either reply). */
+function _realignGridViaWorker(seg, rasterRef, priorT) {
+  const worker = _ensureWorker();
+  return new Promise((resolve, reject) => {
+    _pendingRealign = { resolve, reject };
+    worker.postMessage({
+      type: "fix_target_realign",
+      refA: seg.refA,
+      tA: seg.tA,
+      refB: seg.refB,
+      tB: seg.tB,
+      rasterRef,
+      priorT,
+    });
+  });
+}
+
+/** Linear refill of a grid segment between its two anchors (the answer for a
+ *  span too short for DTW, and the audio twin of _linearFill). */
+function _linearGridFill(seg, rasterRef) {
+  const rate = (seg.tB - seg.tA) / Math.max(seg.refB - seg.refA, 1e-9);
+  return rasterRef.map((r) => seg.tA + (r - seg.refA) * rate);
+}
+
+/**
+ * Commit an anchor on the target recording's grid: the selected group's
+ * reference onset ↔ target time t. 'drag' refills the flanking grid segments
+ * (worker, or linear when too short) IN PLACE — the loaded grid and the
+ * alignment JSON's `times` are one array — and re-renders the projected
+ * synth; 'approve' pins the current value with zero data change. One
+ * fix-grid-anchor snapshot entry (grid slices before/after) rides listen.js's
+ * unified stack. The key is the REFERENCE time, not the event, so the anchor
+ * outlives a later score↔ref edit of the tick it was laid on.
+ */
+async function _commitGridAnchor(groupIx, t, kind) {
+  const f = _fix;
+  const g = f.groups[groupIx];
+  if (!g) return;
+  const file = f.targetFile;
+  const grid = _targetGrid();
+  const refGrid = alignmentGrids[f.refFile];
+  if (!grid || !refGrid || grid.length !== refGrid.length) {
+    _announce(`${file} has no grid on the reference raster; nothing to correct.`);
+    return;
+  }
+  const i = g.eventIxs[0];
+  const refT = scoreAlignment.ref_onset[i];
+  if (!Number.isFinite(refT)) return;
+  const tBefore = _eventStripTime(i); // for the trail: the projection is recomputed below
+  const ctx = {
+    refGrid,
+    tLo: grid[0],
+    tHi: grid[grid.length - 1],
+    base: {
+      gridLength: grid.length,
+      duration: waveformPeaks[file]?.duration ?? f.targetInfo?.duration ?? null,
+    },
+  };
+  const prevRecord = findTargetAnchor(_corrections, file, refT);
+  const approve = kind === "approve";
+  const entry = {
+    type: "fix-grid-anchor",
+    file,
+    refT,
+    i,
+    q: f.qOn[i],
+    t,
+    kind,
+    barHint: _barOfQuarter(f.qOn[i]),
+    prevAnchor: prevRecord ? { ...prevRecord } : null,
+    own: null, // {k, before, after} when refT sits ON a raster sample
+    segments: [], // {kLo, kHi, interiorCount, before[], after[]}
+    window: null, // the target-time span the commit changed
+    renderT1: null,
+  };
+  // Nothing behind a fix moves (see _dragBounds and _leftGridSpan).
+  const left = _leftGridSpan(groupIx, refT, t);
+  if (!approve && !(left.tFloor < t)) {
+    _announce("Cannot anchor here: not before the previous onset.");
+    return;
+  }
+  let segs;
+  try {
+    setTargetAnchor(
+      _corrections,
+      file,
+      { refT, t, kind, ts: Date.now(), i, q: entry.q },
+      ctx,
+    );
+    segs = [
+      left,
+      _autoRealign ? _aheadGridSpan(refT, t) : _nextLocalGridSpan(groupIx, refT, t),
+    ];
+  } catch (err) {
+    _announce(`Cannot anchor here: ${err.message}`);
+    return;
+  }
+
+  if (approve) {
+    f.lastCommit = { kind, i, t, refT, file, realigned: 0, linear: 0, degenerate: 0 };
+    _pushCommitEntry(entry);
+    _syncCorrectionsHeader();
+    _scheduleRedraw();
+    return;
+  }
+
+  _setRealignBusy(f, true);
+  _setChip(
+    "realign",
+    _batch
+      ? `Moving ${_batch.done + 1} of ${_batch.total} — realigning…`
+      : "Realigning around the fix…",
+  );
+  const own = applyTargetAnchorValue(grid, refGrid, refT, t);
+  if (own) entry.own = { k: own.k, before: own.before, after: t };
+  let realigned = 0;
+  let linearFilled = 0;
+  let localFilled = 0;
+  try {
+    for (const seg of segs) {
+      if (seg.interiorCount <= 0) continue;
+      const rasterRef = refGrid.slice(seg.kLo, seg.kHi + 1);
+      const priorT = grid.slice(seg.kLo, seg.kHi + 1);
+      let times;
+      if (seg.local) {
+        times = _linearGridFill(seg, rasterRef);
+        localFilled++;
+      } else {
+        try {
+          const reply = await _realignGridViaWorker(seg, rasterRef, priorT);
+          if (_fix !== f) throw new Error("fix mode exited during the realign");
+          times = reply.result.times;
+          realigned++;
+        } catch (err) {
+          if (_fix === f && /too short to align/.test(err?.message || "")) {
+            times = _linearGridFill(seg, rasterRef);
+            linearFilled++;
+          } else {
+            throw err;
+          }
+        }
+      }
+      const before = applyGridSegment(grid, seg, times);
+      entry.segments.push({
+        kLo: seg.kLo,
+        kHi: seg.kHi,
+        interiorCount: seg.interiorCount,
+        before: before.before,
+        after: times.slice(),
+      });
+    }
+  } catch (err) {
+    _rollbackGridCommit(entry);
+    console.error(
+      "fix mode: grid realign failed, fix rolled back — anchor",
+      { file, refT, t, kind },
+      "segments",
+      segs,
+      "\n",
+      err,
+    );
+    if (_fix === f) {
+      _setRealignBusy(f, false);
+      _setChip("error", `Realign failed (${err.message}) — the fix was rolled back`);
+      _scheduleRedraw();
+    }
+    return;
+  }
+  _dirtyGridFiles.add(file);
+  _recomputeProjection(f);
+  // The changed span in the TARGET's time, out to the furthest offset of any
+  // event whose onset the refill moved (the audition's re-render window).
+  const t0 = Math.min(segs[0].tA, entry.own ? Math.min(entry.own.before, t) : t);
+  let t1 = segs[segs.length - 1].tB;
+  const refA = segs[0].refA;
+  const refB = segs[segs.length - 1].refB;
+  const refOn = scoreAlignment.ref_onset;
+  const { on: pOn, off: pOff } = _audTables(f);
+  const iLo = Math.max(0, _lowerBound(refOn, refA) - 1);
+  for (let k = iLo; k < f.nEvents && refOn[k] <= refB + 1e-9; k++) {
+    const end = pOn[k] + _soundingDur(pOn, pOff, k);
+    if (Number.isFinite(end) && end > t1) t1 = end;
+  }
+  entry.window = { t0, t1: segs[segs.length - 1].tB };
+  entry.renderT1 = t1;
+  _setRealignBusy(f, false);
+  f.lastCommit = {
+    kind,
+    i,
+    t,
+    refT,
+    file,
+    realigned,
+    linear: linearFilled,
+    local: localFilled,
+    degenerate: 0,
+  };
+  const pending = !_autoRealign;
+  if (pending) {
+    entry.pendingAhead = true;
+    _addPending(f, { refT });
+  }
+  const fmt = (v) => (Number.isFinite(v) ? v.toFixed(4) : String(v));
+  console.log(
+    `fix mode: ${kind} on ${file} at reference ${fmt(refT)} (event ${i}, bar ` +
+      `${entry.barHint ?? "?"}) — target time ${fmt(tBefore)} → ${fmt(t)}; ` +
+      `realigned ${realigned}, linear ${linearFilled}, raster samples ` +
+      `${entry.segments.reduce((s, x) => s + x.interiorCount, 0)}; re-render [${fmt(t0)}, ${fmt(t1)}]`,
+  );
+  _pushCommitEntry(entry);
+  _syncCorrectionsHeader();
+  _setChip(
+    "ready",
+    pending ? "Pinned — the span ahead waits for Re-align (Shift+R)" : "Correction engine ready",
+  );
+  _syncRealignUi();
+  _auditionRerender(t0, t1);
+  _scheduleRedraw();
+  _lastReplay = { t0, fixedT: t, passUntilT: entry.window.t1 };
+  if (_batch) {
+    _batch.first = _batch.first || _lastReplay;
+    _batch.last = _lastReplay;
+  } else if (!_replaySuppressed) {
+    _replayFix(_lastReplay);
+  }
+}
+
+/** Resolve once no realign or batch is running (an exit or a Save may ask
+ *  for a Re-align while a commit is still in flight). */
+async function _whenIdle(f, timeoutMs = 30000) {
+  const t0 = performance.now();
+  while ((f.realignBusy || _batch) && _fix === f && performance.now() - t0 < timeoutMs) {
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return _fix === f && !f.realignBusy && !_batch;
+}
+
+/**
+ * Re-align (Shift+R, the button; exit and Save call it too): refill the span
+ * AHEAD of every pending fix, in time order, each to its next anchor or the
+ * horizon as they stand now. One `fix-realign` history entry covers the lot,
+ * so undo takes the refill back and leaves the pinned ticks. Resolves true
+ * when nothing is left pending.
+ */
+async function _realignPending() {
+  const f = _fix;
+  if (!f || !f.pending.length) return true;
+  if (!f.engineReady) {
+    _announce(_notEditableWhy());
+    return false;
+  }
+  if (!(await _whenIdle(f))) return false;
+  const audio = f.mode === "audio";
+  const file = f.targetFile;
+  const refOn = scoreAlignment.ref_onset;
+  const refOff = scoreAlignment.ref_offset;
+  const grid = audio ? _targetGrid() : null;
+  const refGrid = audio ? alignmentGrids[f.refFile] : null;
+  const items = f.pending
+    .map((p) => (audio ? findTargetAnchor(_corrections, file, p.refT) : findAnchor(_corrections, p.i)))
+    .filter(Boolean)
+    .sort((a, b) => a.t - b.t);
+  const entry = {
+    type: "fix-realign",
+    mode: f.mode,
+    file: audio ? file : null,
+    keys: f.pending.map((p) => ({ ...p })),
+    spans: [],
+    i: items.length ? items[0].i : null,
+    barHint: items.length && Number.isInteger(items[0].i) ? _barOfQuarter(f.qOn[items[0].i]) : null,
+    window: null,
+    renderT1: null,
+  };
+  _setRealignBusy(f, true);
+  _setChip("realign", `Re-aligning ${items.length} span${items.length === 1 ? "" : "s"} ahead…`);
+  let realigned = 0;
+  let linearFilled = 0;
+  try {
+    for (const a of items) {
+      if (audio) {
+        const seg = _aheadGridSpan(a.refT, a.t);
+        if (seg.interiorCount <= 0) continue;
+        const rasterRef = refGrid.slice(seg.kLo, seg.kHi + 1);
+        const priorT = grid.slice(seg.kLo, seg.kHi + 1);
+        let times;
+        try {
+          const reply = await _realignGridViaWorker(seg, rasterRef, priorT);
+          if (_fix !== f) throw new Error("fix mode exited during the realign");
+          times = reply.result.times;
+          realigned++;
+        } catch (err) {
+          if (_fix !== f || !/too short to align/.test(err?.message || "")) throw err;
+          times = _linearGridFill(seg, rasterRef);
+          linearFilled++;
+        }
+        const before = applyGridSegment(grid, seg, times);
+        entry.spans.push({
+          kLo: seg.kLo,
+          interiorCount: seg.interiorCount,
+          before: before.before,
+          after: times.slice(),
+          tA: seg.tA,
+          tB: seg.tB,
+          refA: seg.refA,
+          refB: seg.refB,
+        });
+        continue;
+      }
+      const seg = _aheadSpan(a.i, a.t);
+      let res;
+      if (seg.interiorCount <= 0) {
+        res = findGap(_corrections, seg.iA) ? _gapSpanFill(seg, { i: -1 }) : _linearFill(seg);
+      } else {
+        try {
+          const reply = await _realignSegmentViaWorker(seg, refOn.slice(seg.iA + 1, seg.iB));
+          if (_fix !== f) throw new Error("fix mode exited during the realign");
+          res = reply.result;
+          realigned++;
+        } catch (err) {
+          if (_fix !== f || !/too short to align/.test(err?.message || "")) throw err;
+          res = _linearFill(seg);
+          linearFilled++;
+        }
+      }
+      const before = applySegment(refOn, refOff, seg, res.ref_onset, res.ref_offset);
+      const span = {
+        iA: seg.iA,
+        iB: seg.iB,
+        interiorCount: seg.interiorCount,
+        beforeOn: before.beforeOn,
+        beforeOff: before.beforeOff,
+        afterOn: res.ref_onset.slice(),
+        afterOff: res.ref_offset.slice(),
+        anchorOffset: null,
+        tA: seg.tA,
+        tB: seg.tB,
+      };
+      if (res.anchor_a_offset != null) {
+        span.anchorOffset = { i: seg.iA, before: refOff[seg.iA], after: res.anchor_a_offset };
+        refOff[seg.iA] = res.anchor_a_offset;
+      }
+      entry.spans.push(span);
+    }
+  } catch (err) {
+    _undoRealignData(entry, { restorePending: false });
+    console.error("fix mode: re-align of the pending spans failed, rolled back", err);
+    if (_fix === f) {
+      _setRealignBusy(f, false);
+      _setChip("error", `Re-align failed (${err.message}) — the spans still wait`);
+      _syncRealignUi();
+      _scheduleRedraw();
+    }
+    return false;
+  }
+  _setRealignBusy(f, false);
+  f.pending = [];
+  f.lastRealign = { spans: entry.spans.length, realigned, linear: linearFilled };
+  if (entry.spans.length) {
+    const t0 = Math.min(...entry.spans.map((s) => s.tA));
+    const t1 = Math.max(...entry.spans.map((s) => s.tB));
+    entry.window = { t0, t1 };
+    entry.renderT1 = _renderEndOf(t1, audio ? entry.spans[0].refA : null, audio ? entry.spans[entry.spans.length - 1].refB : null);
+    if (audio) {
+      _dirtyGridFiles.add(file);
+      _recomputeProjection(f);
+    }
+    pushFixUndoEntry(entry);
+    _syncCorrectionsHeader();
+    _auditionRerender(t0, entry.renderT1);
+    _lastReplay = { t0, fixedT: t0, passUntilT: t1 };
+    if (!_replaySuppressed) _replayFix(_lastReplay);
+  }
+  _setChip("ready", "Correction engine ready");
+  _syncRealignUi();
+  _scheduleRedraw();
+  return true;
+}
+
+/** How far the right ear must be re-rendered after a change ending at t1:
+ *  out to the furthest sounding end of any note starting before it (score↔ref
+ *  onsets, or — audio mode — the projected notes whose reference onsets lie
+ *  in [refA, refB]). */
+function _renderEndOf(t1, refA, refB) {
+  const f = _fix;
+  const refOn = scoreAlignment.ref_onset;
+  let end = t1;
+  if (f.mode === "audio") {
+    const { on: pOn, off: pOff } = _audTables(f);
+    const iLo = Math.max(0, _lowerBound(refOn, refA) - 1);
+    for (let k = iLo; k < f.nEvents && refOn[k] <= refB + 1e-9; k++) {
+      const e = pOn[k] + _soundingDur(pOn, pOff, k);
+      if (Number.isFinite(e) && e > end) end = e;
+    }
+    return end;
+  }
+  const refOff = scoreAlignment.ref_offset;
+  for (let k = 0; k < f.nEvents && refOn[k] <= t1 + 1e-9; k++) {
+    const e = refOn[k] + _soundingDur(refOn, refOff, k);
+    if (Number.isFinite(e) && e > end) end = e;
+  }
+  return end;
+}
+
+/** Undo a Re-align's data (snapshot semantics, reverse order); with a session
+ *  on the same recording open, its spans wait again. */
+function _undoRealignData(entry, { restorePending = true } = {}) {
+  if (entry.mode === "audio") {
+    const grid = alignmentGrids[entry.file];
+    if (grid) {
+      for (let s = entry.spans.length - 1; s >= 0; s--) {
+        const sp = entry.spans[s];
+        for (let k = 0; k < sp.interiorCount; k++) grid[sp.kLo + k] = sp.before[k];
+      }
+      _dirtyGridFiles.add(entry.file);
+    }
+  } else {
+    const refOn = scoreAlignment?.ref_onset;
+    const refOff = scoreAlignment?.ref_offset;
+    if (refOn && refOff) {
+      for (let s = entry.spans.length - 1; s >= 0; s--) {
+        const sp = entry.spans[s];
+        for (let k = 0; k < sp.interiorCount; k++) {
+          refOn[sp.iA + 1 + k] = sp.beforeOn[k];
+          refOff[sp.iA + 1 + k] = sp.beforeOff[k];
+        }
+        if (sp.anchorOffset) refOff[sp.anchorOffset.i] = sp.anchorOffset.before;
+      }
+    }
+  }
+  const f = _fix;
+  if (restorePending && f && _sessionOwns(f, entry)) {
+    for (const k of entry.keys) _addPending(f, k);
+  }
+}
+
+/** Redo a Re-align's data; its spans no longer wait. */
+function _redoRealignData(entry) {
+  if (entry.mode === "audio") {
+    const grid = alignmentGrids[entry.file];
+    if (grid) {
+      for (const sp of entry.spans) {
+        for (let k = 0; k < sp.interiorCount; k++) grid[sp.kLo + k] = sp.after[k];
+      }
+      _dirtyGridFiles.add(entry.file);
+    }
+  } else {
+    const refOn = scoreAlignment?.ref_onset;
+    const refOff = scoreAlignment?.ref_offset;
+    if (refOn && refOff) {
+      for (const sp of entry.spans) {
+        for (let k = 0; k < sp.interiorCount; k++) {
+          refOn[sp.iA + 1 + k] = sp.afterOn[k];
+          refOff[sp.iA + 1 + k] = sp.afterOff[k];
+        }
+        if (sp.anchorOffset) refOff[sp.anchorOffset.i] = sp.anchorOffset.after;
+      }
+    }
+  }
+  const f = _fix;
+  if (f && _sessionOwns(f, entry)) {
+    for (const k of entry.keys) _dropPending(f, k);
+  }
+  _syncCorrectionsHeader();
+}
+
+/** Whether the open session is the one a history entry's pending spans
+ *  belong to (the same mode, and in audio mode the same recording). */
+function _sessionOwns(f, entry) {
+  const audio =
+    entry.type === "fix-grid-anchor" || (entry.type === "fix-realign" && entry.mode === "audio");
+  return audio ? f.mode === "audio" && f.targetFile === entry.file : f.mode !== "audio";
+}
+
+/** A pinned-but-pending fix going back / forward through history: its span
+ *  stops / starts waiting. */
+function _pendingOnHop(entry, redo) {
+  const f = _fix;
+  if (!entry.pendingAhead || !f || !_sessionOwns(f, entry)) return;
+  const key = entry.type === "fix-grid-anchor" ? { refT: entry.refT } : { i: entry.i };
+  if (redo) _addPending(f, key);
+  else _dropPending(f, key);
+}
+
+/** The Re-align button's state: enabled with a count while spans wait. */
+function _syncRealignUi() {
+  const f = _fix;
+  const btn = f?.els?.realignBtn;
+  if (!btn) return;
+  const n = f.pending.length;
+  btn.disabled = !n || f.realignBusy;
+  btn.textContent = n ? `Re-align ${n} (Shift+R)` : "Re-align (Shift+R)";
+}
+
+/** Reverse a partially applied grid commit (worker error, exit mid-flight). */
+function _rollbackGridCommit(entry) {
+  _undoGridEntryData(entry);
+}
+
+/** Put a target anchor's slot back to its pre-entry state. */
+function _restoreTargetAnchorState(entry) {
+  const slot = targetSlot(_corrections, entry.file, true);
+  slot.anchors = slot.anchors.filter((a) => Math.abs(a.refT - entry.refT) > 1e-6);
+  if (entry.prevAnchor) slot.anchors.push({ ...entry.prevAnchor });
+  slot.anchors.sort((a, b) => a.refT - b.refT);
+  _syncCorrectionsHeader();
+}
+
+/** Undo a grid entry's data: the grid slices' before-values (in place) and
+ *  the anchor state. Snapshot semantics — never the worker. */
+function _undoGridEntryData(entry) {
+  const grid = alignmentGrids[entry.file];
+  if (grid && entry.kind !== "approve") {
+    for (const s of entry.segments) {
+      for (let k = 0; k < s.interiorCount; k++) grid[s.kLo + k] = s.before[k];
+    }
+    if (entry.own) grid[entry.own.k] = entry.own.before;
+    _dirtyGridFiles.add(entry.file);
+  }
+  _restoreTargetAnchorState(entry);
+}
+
+/** Redo a grid entry's data: the after-values and the anchor. */
+function _redoGridEntryData(entry) {
+  const grid = alignmentGrids[entry.file];
+  if (grid && entry.kind !== "approve") {
+    for (const s of entry.segments) {
+      for (let k = 0; k < s.interiorCount; k++) grid[s.kLo + k] = s.after[k];
+    }
+    if (entry.own) grid[entry.own.k] = entry.own.after;
+    _dirtyGridFiles.add(entry.file);
+  }
+  const slot = targetSlot(_corrections, entry.file, true);
+  slot.anchors = slot.anchors.filter((a) => Math.abs(a.refT - entry.refT) > 1e-6);
+  slot.anchors.push({ refT: entry.refT, t: entry.t, kind: entry.kind, ts: null, i: entry.i, q: entry.q });
+  slot.anchors.sort((a, b) => a.refT - b.refT);
+  _syncCorrectionsHeader();
+}
+
+/** A commit's history entry: onto listen.js's stack, or into a running batch. */
+function _pushCommitEntry(entry) {
+  if (_batch) _batch.entries.push(entry);
+  else pushFixUndoEntry(entry);
+}
+
+// ---------------------------------------------------------------------------
+// Unscored-audio gaps (increment 4, plan §14 cluster B1): G lays a gap from
+// the selected onset to the next, or removes the gap the selected onset bounds.
+// ---------------------------------------------------------------------------
+
+/**
+ * The event index a group's anchor lives on. Anchors sit on a group's FIRST
+ * event, except a gap's left endpoint, which sits on the group's LAST event
+ * (the gap runs between events i and i+1, and i+1 is the next group's first
+ * event). Chord groups make the two differ; every anchor lookup goes here.
+ */
+function _anchorEventOf(g) {
+  const first = g.eventIxs[0];
+  const last = g.eventIxs[g.eventIxs.length - 1];
+  if (last !== first) {
+    const a = findAnchor(_corrections, last);
+    if (a && a.kind === "gap" && !findAnchor(_corrections, first)) return last;
+  }
+  return first;
+}
+
+/** The gap the group bounds (as either endpoint), or null. */
+function _gapAtGroup(g) {
+  const first = g.eventIxs[0];
+  const last = g.eventIxs[g.eventIxs.length - 1];
+  return _corrections.gaps.find((gp) => gp.i === last || gp.i + 1 === first) || null;
+}
+
+/**
+ * G: lay an unscored-audio gap from the selected onset to the next one, or
+ * remove the gap the selected onset bounds. Laying follows the Approve
+ * precedent — a LABEL, no realign: the endpoints take the two events'
+ * current times (the table already encodes the jump), and the endpoint drags
+ * that follow realign with the right boundaries. The one data change: the
+ * last note before the gap has its tail clamped to its notated length at the
+ * local tempo, so it no longer rings across the applause in the right ear —
+ * a silent right ear across the span is the check by ear that the gap sits
+ * right. Removing a gap restores no tail; it only takes the label off.
+ */
+function _toggleGap() {
+  const f = _fix;
+  if (!f) return;
+  if (f.mode === "audio") {
+    // A gap labels unscored audio on the REFERENCE's timeline; a recording's
+    // own extra or missing audio is two anchors on adjacent raster samples.
+    _announce("Unscored-audio gaps are laid in the score ↔ reference correction.");
+    return;
+  }
+  if (!f.engineReady || f.realignBusy || _batch) {
+    _announce(_notEditableWhy());
+    return;
+  }
+  const ix = f.selGroupIx;
+  const g = f.groups[ix];
+  if (!g) return;
+  const refOn = scoreAlignment.ref_onset;
+  const refOff = scoreAlignment.ref_offset;
+  if (!Array.isArray(refOff)) {
+    _announce("This alignment has no ref_offset table; corrections need one.");
+    return;
+  }
+  const dur = _refDuration();
+  if (!(dur > 0)) return;
+  const ctx = { nEvents: f.nEvents, refDuration: dur };
+  if (!_pristine) _pristine = { on: refOn.slice(), off: refOff.slice() };
+
+  const existing = _gapAtGroup(g);
+  if (existing) {
+    const entry = {
+      type: "fix-gap",
+      op: "remove",
+      i: existing.i,
+      barHint: _barOfQuarter(f.qOn[existing.i]),
+      gap: { ...existing },
+      gapAnchors: _corrections.anchors
+        .filter((a) => (a.i === existing.i || a.i === existing.i + 1) && a.kind === "gap")
+        .map((a) => ({ ...a })),
+      replaced: [],
+      tails: [],
+      window: null,
+    };
+    try {
+      removeGap(_corrections, existing.i, ctx);
+    } catch (err) {
+      _announce(`Cannot remove the gap: ${err.message}`);
+      return;
+    }
+    f.lastGap = { op: "remove", i: existing.i, tEnd: existing.tEnd, tResume: existing.tResume };
+    _pushCommitEntry(entry);
+    _syncCorrectionsHeader();
+    _announce(`Gap removed after bar ${entry.barHint ?? "?"}: both onsets are plain again.`);
+    _scheduleRedraw();
+    return;
+  }
+
+  const next = f.groups[ix + 1];
+  const iA = g.eventIxs[g.eventIxs.length - 1];
+  const iB = iA + 1;
+  if (!next || next.eventIxs[0] !== iB) {
+    _announce("No onset follows this one — a gap needs an onset on each side.");
+    return;
+  }
+  const tEnd = refOn[iA];
+  const tResume = refOn[iB];
+  if (!(Number.isFinite(tEnd) && Number.isFinite(tResume) && tEnd < tResume)) {
+    _announce("These two onsets share a time — drag one apart before laying a gap.");
+    return;
+  }
+  const entry = {
+    type: "fix-gap",
+    op: "lay",
+    i: iA,
+    q: f.qOn[iA],
+    barHint: _barOfQuarter(f.qOn[iA]),
+    gap: null,
+    gapAnchors: [],
+    replaced: _corrections.anchors.filter((a) => a.i === iA || a.i === iB).map((a) => ({ ...a })),
+    tails: [],
+    window: null,
+  };
+  try {
+    setGap(_corrections, { i: iA, tEnd, tResume, ts: Date.now() }, ctx);
+  } catch (err) {
+    _announce(`Cannot lay a gap here: ${err.message}`);
+    return;
+  }
+  entry.gap = { ..._corrections.gaps.find((gp) => gp.i === iA) };
+  entry.gapAnchors = _corrections.anchors
+    .filter((a) => (a.i === iA || a.i === iB) && a.kind === "gap")
+    .map((a) => ({ ...a }));
+  // The tail clamp, for every member of the last group (a chord's voices too).
+  const spq = _localSecondsPerQuarter(iA, iA);
+  let tailMax = -Infinity;
+  for (const e of g.eventIxs) {
+    const before = refOff[e];
+    if (!Number.isFinite(before)) continue;
+    const notated = Math.max((f.qOff[e] - f.qOn[e]) * spq, MIN_SOUND_SEC);
+    const after = Math.min(before, refOn[e] + notated, tResume - ANCHOR_EPS_SEC);
+    if (after < before) {
+      entry.tails.push({ i: e, before, after });
+      refOff[e] = after;
+      tailMax = Math.max(tailMax, before);
+    }
+  }
+  if (entry.tails.length) entry.window = { t0: tEnd, t1: tailMax };
+  f.lastGap = { op: "lay", i: iA, tEnd, tResume, tails: entry.tails.length };
+  _pushCommitEntry(entry);
+  _syncCorrectionsHeader();
+  if (entry.window) _auditionRerender(entry.window.t0, entry.window.t1);
+  _announce(
+    `Gap laid after bar ${entry.barHint ?? "?"}: ${(tResume - tEnd).toFixed(1)} s of ` +
+      "unscored audio. Drag either endpoint to place its boundary.",
+  );
+  _scheduleRedraw();
+}
+
+/** Insert (or replace) an anchor record, keeping the list sorted by event. */
+function _insertAnchorRecord(a) {
+  const at = _corrections.anchors.findIndex((x) => x.i === a.i);
+  if (at !== -1) _corrections.anchors.splice(at, 1);
+  const ins = _corrections.anchors.findIndex((x) => x.i > a.i);
+  if (ins === -1) _corrections.anchors.push(a);
+  else _corrections.anchors.splice(ins, 0, a);
+}
+
+/** Undo a fix-gap entry by direct state edits (snapshot semantics, no worker). */
+function _undoGapEntry(entry) {
+  const refOff = scoreAlignment?.ref_offset;
+  const gi = entry.gap.i;
+  if (entry.op === "lay") {
+    _corrections.gaps = _corrections.gaps.filter((gp) => gp.i !== gi);
+    _corrections.anchors = _corrections.anchors.filter(
+      (a) => !((a.i === gi || a.i === gi + 1) && a.kind === "gap"),
+    );
+    for (const a of entry.replaced) _insertAnchorRecord({ ...a });
+    if (Array.isArray(refOff)) for (const t of entry.tails) refOff[t.i] = t.before;
+  } else {
+    for (const a of entry.gapAnchors) _insertAnchorRecord({ ...a });
+    _corrections.gaps.push({ ...entry.gap });
+    _corrections.gaps.sort((a, b) => a.i - b.i);
+  }
+  syncGapTimes(_corrections);
+  _syncCorrectionsHeader();
+}
+
+/** Redo a fix-gap entry: the mirror of _undoGapEntry. */
+function _redoGapEntry(entry) {
+  const refOff = scoreAlignment?.ref_offset;
+  const gi = entry.gap.i;
+  if (entry.op === "lay") {
+    _corrections.anchors = _corrections.anchors.filter((a) => !(a.i === gi || a.i === gi + 1));
+    for (const a of entry.gapAnchors) _insertAnchorRecord({ ...a });
+    _corrections.gaps.push({ ...entry.gap });
+    _corrections.gaps.sort((a, b) => a.i - b.i);
+    if (Array.isArray(refOff)) for (const t of entry.tails) refOff[t.i] = t.after;
+  } else {
+    _corrections.gaps = _corrections.gaps.filter((gp) => gp.i !== gi);
+    _corrections.anchors = _corrections.anchors.filter(
+      (a) => !((a.i === gi || a.i === gi + 1) && a.kind === "gap"),
+    );
+  }
+  syncGapTimes(_corrections);
+  _syncCorrectionsHeader();
+}
+
+/**
+ * The zero-interior fill for a segment that IS a gap span (its left boundary
+ * a gap's left endpoint): the linear fill would stretch the last note's
+ * offset across the unscored audio at the span's absurd seconds-per-quarter.
+ * The note keeps the length it had instead, ending before the resume.
+ */
+function _gapSpanFill(seg, entry) {
+  const refOn = scoreAlignment.ref_onset;
+  const refOff = scoreAlignment.ref_offset;
+  const iA = seg.iA;
+  const onNow = refOn[iA];
+  const dur =
+    iA === entry.i ? entry.selfBefore.off - entry.selfBefore.on : refOff[iA] - onNow;
+  const off = Math.min(onNow + Math.max(dur, MIN_SOUND_SEC), seg.tB - ANCHOR_EPS_SEC);
+  return {
+    ref_onset: [],
+    ref_offset: [],
+    anchor_a_offset: Math.max(off, onNow + MIN_SOUND_SEC),
+    hop: 0,
+  };
+}
+
+/** The gap band's diagonal hatch as a canvas pattern (cached per colour). */
+function _hatchPattern(ctx, color) {
+  if (_hatch && _hatch.color === color) return _hatch.pattern;
+  const c = document.createElement("canvas");
+  c.width = 8;
+  c.height = 8;
+  const g = c.getContext("2d");
+  g.strokeStyle = color;
+  g.lineWidth = 1.5;
+  g.beginPath();
+  g.moveTo(-1, 9);
+  g.lineTo(9, -1);
+  g.moveTo(-1, 1);
+  g.lineTo(1, -1);
+  g.moveTo(7, 9);
+  g.lineTo(9, 7);
+  g.stroke();
+  _hatch = { color, pattern: ctx.createPattern(c, "repeat") };
+  return _hatch.pattern;
+}
+
+/**
+ * The main view recomputes via the corrected-tables path (plan §14 cluster
+ * C): ONCE at exit when anything changed, and after a history hop or Revert
+ * that lands while no session is open.
+ */
+function _refreshMainView() {
+  try {
+    if (refreshSynthAlignmentGrid()) {
+      console.log("fix mode: main view's synth grid recomputed from the corrected tables");
+    }
+    // Recordings whose grids an audio-to-audio session (or a history hop)
+    // changed: their grid overlay, tempo curve, and marker positions follow.
+    for (const file of _dirtyGridFiles) {
+      if (refreshRecordingGrid(file)) {
+        console.log(`fix mode: main view's grid for ${file} redrawn from the corrected values`);
+      }
+    }
+    _dirtyGridFiles.clear();
+  } catch (err) {
+    console.error("fix mode: main-view recompute failed:", err);
+  }
+}
+
+/**
+ * "Move to nearest onset" (S, and the nav button): the multi-selection — or,
+ * with none, the selected onset — each to its nearest active snap target
+ * within SNAP_CMD_RADIUS_SEC, as drag anchors committed in order (each realign
+ * narrows the next one's bounds, so bounds are re-read per commit). Several
+ * anchors make ONE history entry and one replay; the outcome is announced.
+ */
+async function _snapSelectionToOnsets() {
+  const f = _fix;
+  if (!f) return;
+  if (!f.engineReady || f.realignBusy || _batch) {
+    _announce(_notEditableWhy());
+    return;
+  }
+  const targets = _snapTargetList();
+  if (!targets) {
+    _announce("No detected onsets yet — the lanes are still computing.");
+    return;
+  }
+  f.lastBatch = null; // describes the last COMPLETED run only
+  const ixs = f.multiSel.size ? [...f.multiSel].sort((a, b) => a - b) : [f.selGroupIx];
+  const batch = {
+    requested: ixs.length,
+    moved: 0,
+    noTarget: 0,
+    shared: 0,
+    blocked: 0,
+    already: 0,
+  };
+  // One peak, one mark: targets already claimed by anchors OUTSIDE the
+  // selection are off the table; within it, the assignment below decides.
+  const occupied = _occupiedTimes(new Set(ixs));
+  const marks = [];
+  for (const ix of ixs) {
+    const g = f.groups[ix];
+    if (!g) continue;
+    const t = _groupStripTime(g);
+    if (!Number.isFinite(t)) continue;
+    marks.push({ ix, t, q: f.qOn[g.eventIxs[0]], i: g.eventIxs[0] });
+  }
+  marks.sort((a, b) => a.t - b.t);
+  const cands = marks.map((m) =>
+    _targetsWithin(targets, m.t, SNAP_CMD_RADIUS_SEC, occupied).map((t) => ({
+      t,
+      cost: Math.abs(t - m.t) / SNAP_CMD_RADIUS_SEC,
+    })),
+  );
+  const spq = marks.length
+    ? _localSecondsPerQuarter(marks[0].i, marks[marks.length - 1].i)
+    : 0.5;
+  batch.spq = spq; // the local tempo the dispersal measured against (diagnostics)
+  const chosen = _assignSnapTargets(marks, cands, spq);
+  const plan = [];
+  marks.forEach((m, k) => {
+    const target = chosen[k];
+    if (target === null) {
+      if (cands[k].length) batch.shared++;
+      else batch.noTarget++;
+      return;
+    }
+    if (Math.abs(target - m.t) < ANCHOR_EPS_SEC) {
+      batch.already++;
+      return;
+    }
+    plan.push({ ix: m.ix, t: target });
+  });
+  _batch = { entries: [], first: null, last: null, done: 0, total: plan.length };
+  try {
+    for (const p of plan) {
+      const b = _dragBounds(p.ix);
+      if (p.t <= b.lo || p.t >= b.hi) {
+        batch.blocked++;
+        _batch.done++;
+        continue;
+      }
+      const before = _batch.entries.length;
+      await _commitAnchor(p.ix, p.t, "drag");
+      if (_fix !== f) return;
+      _batch.done++;
+      if (_batch.entries.length > before) batch.moved++;
+    }
+  } finally {
+    const b = _batch;
+    _batch = null;
+    if (b) {
+      if (b.entries.length === 1) {
+        pushFixUndoEntry(b.entries[0]);
+      } else if (b.entries.length > 1) {
+        pushFixUndoEntry({
+          type: "fix-anchor-batch",
+          entries: b.entries,
+          count: b.entries.length,
+          i: b.entries[0].i,
+          barHint: b.entries[0].barHint,
+        });
+      }
+      if (b.first) {
+        _lastReplay = { t0: b.first.t0, fixedT: b.first.fixedT, passUntilT: b.last.passUntilT };
+        if (!_replaySuppressed) _replayFix(_lastReplay);
+      }
+    }
+  }
+  f.lastBatch = batch;
+  const label = _snapTarget === "perceived" ? "perceived attack" : "detected onset";
+  const parts = [];
+  if (batch.noTarget) {
+    parts.push(`${batch.noTarget} had no ${label} within ${Math.round(SNAP_CMD_RADIUS_SEC * 1000)} ms`);
+  }
+  if (batch.shared) {
+    parts.push(
+      `${batch.shared} shared a ${label} with a neighbour and ${batch.shared === 1 ? "was" : "were"} left to the realign`,
+    );
+  }
+  if (batch.blocked) parts.push(`${batch.blocked} blocked by a neighbour`);
+  if (batch.already) parts.push(`${batch.already} already there`);
+  _announce(
+    `Moved ${batch.moved} of ${batch.requested} onset${batch.requested === 1 ? "" : "s"} ` +
+      `to the nearest ${label}${parts.length ? ` (${parts.join(", ")})` : ""}.`,
+  );
+  _scheduleRedraw();
+}
+
+/**
+ * Where a fix's replay opens: half a second before the previous anchor, but
+ * never more than MAX_RUNUP_SEC before the fix itself. `window.t0` is the
+ * previous anchor's time — or 0 when there is none — so without the ceiling a
+ * fix into virgin territory replays from the top of the recording.
+ */
+function _replayStartT(t0, fixedT) {
+  return Math.max(0, Math.max(t0 - REPLAY_PREROLL_SEC, fixedT - MAX_RUNUP_SEC));
+}
+
+/** Replay the span a commit invalidated. Shared by the auto-replay and R. */
+function _replayFix(r) {
+  const f = _fix;
+  if (!f || !r || !f.aud?.ready) return false;
+  f.followFloor = null;
+  // A replay may start on an earlier page; in page-only mode this pass lets
+  // it cross back into the fixed span before the clamp re-arms.
+  f.pageOnlyPassUntilT = r.passUntilT;
+  _audSeek(_replayStartT(r.t0, r.fixedT));
+  _audPlay();
+  return true;
+}
+
+/**
+ * Interior refill by proportion of score quarters — the honest answer for a
+ * span too small for DTW (interior events sit within a breath of both
+ * anchors, so the tempo curve between them is as good as linear). Same
+ * clip-into-span discipline as the worker's refill, including the left
+ * anchor's own offset remap (a stale offset can land before its onset).
+ */
+function _linearFill(seg) {
+  const f = _fix;
+  const refOn = scoreAlignment.ref_onset;
+  const qA = seg.iA >= 0 ? f.qOn[seg.iA] : 0;
+  const qB = seg.iB < f.nEvents ? f.qOn[seg.iB] : f.qOff[f.nEvents - 1];
+  const scale = (seg.tB - seg.tA) / Math.max(qB - qA, 1e-9);
+  const lin = (q) => seg.tA + (q - qA) * scale;
+  const clip = (v) => Math.min(Math.max(v, seg.tA), seg.tB);
+  // Onsets belong to this segment and clip into it. An OFFSET past qB —
+  // a tie, a sustained note under a moving line; 8.3% of the Fledermaus HQ
+  // corpus's onset groups at the adjacent-anchor spacing this path serves —
+  // belongs to the music after the next anchor
+  // and continues at the same rate (the worker's _map_off rule). Clipping it
+  // to tB truncated the note, and for the dragged event's own offset it could
+  // collapse the note onto its onset: the synth's 20 ms floor, heard as a
+  // dropped note.
+  const dur = _refDuration();
+  const mapOff = (q) => (q <= qB ? clip(lin(q)) : Math.min(lin(q), dur));
+  const on = [];
+  const off = [];
+  // keepOnsets: the span BEHIND a fix, where nothing moves but the offsets.
+  for (let e = seg.iA + 1; e < seg.iB; e++) {
+    on.push(seg.keepOnsets ? refOn[e] : clip(lin(f.qOn[e])));
+    off.push(mapOff(f.qOff[e]));
+  }
+  return {
+    ref_onset: on,
+    ref_offset: off,
+    anchor_a_offset: seg.iA >= 0 ? mapOff(f.qOff[seg.iA]) : null,
+    hop: 0,
+  };
+}
+
+/** Reverse a partially applied commit (worker error, exit mid-flight). */
+function _rollbackCommit(entry) {
+  const refOn = scoreAlignment?.ref_onset;
+  const refOff = scoreAlignment?.ref_offset;
+  if (!refOn || !refOff) return;
+  for (const s of entry.segments) {
+    for (let k = 0; k < s.interiorCount; k++) {
+      refOn[s.iA + 1 + k] = s.beforeOn[k];
+      refOff[s.iA + 1 + k] = s.beforeOff[k];
+    }
+  }
+  for (const ao of entry.anchorOffsets) refOff[ao.i] = ao.before;
+  refOn[entry.i] = entry.selfBefore.on;
+  refOff[entry.i] = entry.selfBefore.off;
+  _restoreAnchorState(entry);
+}
+
+/** Put the model back to its pre-entry state (shared by rollback and undo). */
+function _restoreAnchorState(entry) {
+  const at = _corrections.anchors.findIndex((a) => a.i === entry.i);
+  if (at !== -1) _corrections.anchors.splice(at, 1);
+  if (entry.prevAnchor) {
+    const a = { ...entry.prevAnchor };
+    const ins = _corrections.anchors.findIndex((x) => x.i > a.i);
+    if (ins === -1) _corrections.anchors.push(a);
+    else _corrections.anchors.splice(ins, 0, a);
+  }
+  for (const gp of entry.dissolvedGaps || []) {
+    if (!_corrections.gaps.some((x) => x.i === gp.i)) {
+      _corrections.gaps.push({ ...gp });
+      _corrections.gaps.sort((a, b) => a.i - b.i);
+    }
+  }
+  syncGapTimes(_corrections);
+  _syncCorrectionsHeader();
+}
+
+/** Keep header.corrections — the durable hand-correction record — in step. */
+function _syncCorrectionsHeader() {
+  _correctionsEpoch++;
+  const header = loadedAlignmentJSON?.header;
+  if (!header) return;
+  if (
+    !_corrections.anchors.length &&
+    !_corrections.gaps.length &&
+    !hasTargetAnchors(_corrections)
+  ) {
+    delete header.corrections;
+    return;
+  }
+  if (!_correctionsBase) {
+    _correctionsBase = {
+      verovioVersion: header.verovioVersion ?? null,
+      verovioOptions: header.verovioOptions ?? null,
+      alignmentParams: header.alignmentParams ?? null,
+    };
+  }
+  header.corrections = serializeCorrections(_corrections, _correctionsBase);
+}
+
+/** Rough bar number for a quarter position (announcement copy only). */
+function _barOfQuarter(q) {
+  let bar = 0;
+  for (const e of timemap) {
+    if (!("measureOn" in e)) continue;
+    if (e.qstamp > q + 1e-6) break;
+    bar++;
+  }
+  return bar || null;
+}
+
+// ---------------------------------------------------------------------------
+// Global undo integration (listen.js's unified stack calls these)
+// ---------------------------------------------------------------------------
+
+/**
+ * Apply the UNDO of a fix-anchor entry: restore the before-values (snapshot
+ * semantics — never the worker) and the model's previous anchor state. With
+ * fix mode open the affected onset is selected so the change is visible; with
+ * it closed the hop announces itself instead of changing data silently
+ * off-screen (the cluster-B nicety).
+ */
+export function applyFixCorrectionUndo(entry) {
+  if (entry.type === "fix-gap") {
+    _undoGapEntry(entry);
+    _afterHistoryHop(entry, "Undid");
+    return;
+  }
+  if (entry.type === "fix-realign") {
+    _undoRealignData(entry);
+    _afterHistoryHop(entry, "Undid", entry.spans.length);
+    _syncRealignUi();
+    return;
+  }
+  if (entry.type === "fix-anchor-batch") {
+    // A "move to nearest onset" batch: its anchors come off in reverse, then
+    // one hop covering the whole span.
+    for (let k = entry.entries.length - 1; k >= 0; k--) _undoEntryData(entry.entries[k]);
+    _afterHistoryHop(entry.entries[0], "Undid", entry.entries.length, _batchWindow(entry));
+    _syncRealignUi();
+    return;
+  }
+  _undoEntryData(entry);
+  _afterHistoryHop(entry, "Undid");
+  _syncRealignUi();
+}
+
+function _undoEntryData(entry) {
+  _pendingOnHop(entry, false);
+  if (entry.type === "fix-grid-anchor") {
+    _undoGridEntryData(entry);
+    return;
+  }
+  const refOn = scoreAlignment?.ref_onset;
+  const refOff = scoreAlignment?.ref_offset;
+  if (!refOn) return;
+  if (entry.kind !== "approve" && Array.isArray(refOff)) {
+    for (const s of entry.segments) {
+      for (let k = 0; k < s.interiorCount; k++) {
+        refOn[s.iA + 1 + k] = s.beforeOn[k];
+        refOff[s.iA + 1 + k] = s.beforeOff[k];
+      }
+    }
+    for (const ao of entry.anchorOffsets) refOff[ao.i] = ao.before;
+    refOn[entry.i] = entry.selfBefore.on;
+    refOff[entry.i] = entry.selfBefore.off;
+  }
+  _restoreAnchorState(entry);
+}
+
+/** Apply the REDO of a fix-anchor entry: the after-values and the anchor. */
+export function applyFixCorrectionRedo(entry) {
+  if (entry.type === "fix-gap") {
+    _redoGapEntry(entry);
+    _afterHistoryHop(entry, "Redid");
+    return;
+  }
+  if (entry.type === "fix-realign") {
+    _redoRealignData(entry);
+    _afterHistoryHop(entry, "Redid", entry.spans.length);
+    _syncRealignUi();
+    return;
+  }
+  if (entry.type === "fix-anchor-batch") {
+    for (const e of entry.entries) _redoEntryData(e);
+    _afterHistoryHop(entry.entries[0], "Redid", entry.entries.length, _batchWindow(entry));
+    _syncRealignUi();
+    return;
+  }
+  _redoEntryData(entry);
+  _afterHistoryHop(entry, "Redid");
+  _syncRealignUi();
+}
+
+function _redoEntryData(entry) {
+  _pendingOnHop(entry, true);
+  if (entry.type === "fix-grid-anchor") {
+    _redoGridEntryData(entry);
+    return;
+  }
+  const refOn = scoreAlignment?.ref_onset;
+  const refOff = scoreAlignment?.ref_offset;
+  if (!refOn) return;
+  if (entry.kind !== "approve" && Array.isArray(refOff)) {
+    for (const s of entry.segments) {
+      for (let k = 0; k < s.interiorCount; k++) {
+        refOn[s.iA + 1 + k] = s.afterOn[k];
+        refOff[s.iA + 1 + k] = s.afterOff[k];
+      }
+    }
+    for (const ao of entry.anchorOffsets) refOff[ao.i] = ao.after;
+    refOn[entry.i] = entry.selfAfter.on;
+    refOff[entry.i] = entry.selfAfter.off;
+  }
+  // Re-lay the anchor (and re-dissolve any gap it had replaced).
+  const at = _corrections.anchors.findIndex((a) => a.i === entry.i);
+  if (at !== -1) _corrections.anchors.splice(at, 1);
+  for (const gp of entry.dissolvedGaps || []) {
+    _corrections.gaps = _corrections.gaps.filter((x) => x.i !== gp.i);
+  }
+  const a = { i: entry.i, q: entry.q, t: entry.t, kind: entry.kind, ts: null };
+  const ins = _corrections.anchors.findIndex((x) => x.i > a.i);
+  if (ins === -1) _corrections.anchors.push(a);
+  else _corrections.anchors.splice(ins, 0, a);
+  syncGapTimes(_corrections);
+  _syncCorrectionsHeader();
+}
+
+/** The audition span a batch entry touched, from its first fix to its last. */
+function _batchWindow(batch) {
+  let t0 = Infinity;
+  let t1 = -Infinity;
+  for (const e of batch.entries) {
+    if (!e.window) continue;
+    t0 = Math.min(t0, e.window.t0);
+    t1 = Math.max(t1, e.renderT1 ?? e.window.t1);
+  }
+  return Number.isFinite(t0) ? { t0, t1 } : null;
+}
+
+function _afterHistoryHop(entry, verb, count = 1, win = null) {
+  const f = _fix;
+  const gridEntry =
+    entry.type === "fix-grid-anchor" || (entry.type === "fix-realign" && entry.mode === "audio");
+  // A grid hop is visible only to a session on THAT recording; any other open
+  // session neither shows nor plays it, so it is announced like an off-screen
+  // hop and the main view catches up at exit.
+  const visible = f && (!gridEntry || (f.mode === "audio" && f.targetFile === entry.file));
+  if (visible) {
+    if (gridEntry) _recomputeProjection(f);
+    const ix = f.groups.findIndex((g) => g.eventIxs.includes(entry.i));
+    if (ix !== -1) _select(ix, { seek: false });
+    const w =
+      win || (entry.window ? { t0: entry.window.t0, t1: entry.renderT1 ?? entry.window.t1 } : null);
+    if (w) _auditionRerender(w.t0, w.t1);
+    _scheduleRedraw();
+  } else {
+    const where = entry.barHint ? `near bar ${entry.barHint}` : `at event ${entry.i}`;
+    const what =
+      entry.type === "fix-gap"
+        ? "unscored-audio gap"
+        : entry.type === "fix-realign"
+          ? `re-alignment of ${count} span${count === 1 ? "" : "s"}` +
+            (gridEntry ? ` of ${entry.file}` : "")
+          : gridEntry
+          ? `${count > 1 ? `${count} ` : ""}alignment correction${count > 1 ? "s" : ""} of ${entry.file}`
+          : count > 1
+            ? `${count} alignment corrections`
+            : "alignment correction";
+    _announce(`${verb} ${what} ${where}.`);
+    // The hop changed data no open session shows: the main view catches up
+    // now if none is open, or at exit (the dirty set) if another one is.
+    if (!f) _refreshMainView();
+  }
+}
+
+/** Transient toast for changes the user cannot currently see. */
+function _announce(text) {
+  _lastAnnounce = text;
+  let el = document.getElementById("fix-toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "fix-toast";
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.classList.add("fix-toast-show");
+  clearTimeout(_announceTimer);
+  _announceTimer = setTimeout(() => el.classList.remove("fix-toast-show"), 4000);
+}
+
+// ---------------------------------------------------------------------------
+// Revert integration (listen.js's "Revert all" includes fix corrections)
+// ---------------------------------------------------------------------------
+
+/** Whether fix-mode corrections have changed anything since the piece loaded. */
+export function fixCorrectionsDirty() {
+  if (_pristine) {
+    const on = scoreAlignment?.ref_onset || [];
+    const off = scoreAlignment?.ref_offset || [];
+    for (let k = 0; k < _pristine.on.length; k++) {
+      if (on[k] !== _pristine.on[k] || off[k] !== _pristine.off[k]) return true;
+    }
+  }
+  // The grids themselves are listen.js's to compare (its as-loaded copies
+  // cover every recording); the record is this module's.
+  return (
+    JSON.stringify({ a: _corrections.anchors, g: _corrections.gaps, u: _corrections.audio }) !==
+    _loadedCorrectionsJson
+  );
+}
+
+/** Restore the as-loaded ref tables and correction record ("Revert all"). */
+export function fixRevertCorrections() {
+  if (_fix?.realignBusy) {
+    _announce("A realign is still running — try Revert again in a moment.");
+    return;
+  }
+  if (_pristine) {
+    const on = scoreAlignment?.ref_onset;
+    const off = scoreAlignment?.ref_offset;
+    if (on) {
+      for (let k = 0; k < _pristine.on.length; k++) {
+        on[k] = _pristine.on[k];
+        if (Array.isArray(off)) off[k] = _pristine.off[k];
+      }
+    }
+    _pristine = null;
+  }
+  const loaded = _loadedCorrectionsJson
+    ? JSON.parse(_loadedCorrectionsJson)
+    : { a: [], g: [], u: {} };
+  _corrections = { anchors: loaded.a, gaps: loaded.g, audio: loaded.u || {} };
+  _syncCorrectionsHeader();
+  // The grids: listen.js's "Revert all" has already put every recording's
+  // as-loaded grid back (it owns those copies), so this module only has to
+  // stop remembering them as dirty and re-project what a session shows.
+  _dirtyGridFiles.clear();
+  const f = _fix;
+  if (f) {
+    _recomputeProjection(f);
+    if (f.aud?.ready) _auditionRerender(0, f.aud.duration);
+    _scheduleRedraw();
+  } else {
+    _refreshMainView();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The fix-mode keyboard
+// ---------------------------------------------------------------------------
+
+/**
+ * Fix mode's keyboard (listen.js's global handler stands down while a fix
+ * session is open — see enterFixMode). Ctrl/Cmd combinations pass through:
+ * undo and redo stay global on listen.js's stack by ruling, and Ctrl+Arrow
+ * is macOS Mission Control's anyway (the page never sees it). Bare Alt+Arrow
+ * is deliberately left to the browser too (history navigation on
+ * Windows/Linux) — the nudge modifiers are Shift and Shift+Alt, the app's
+ * existing marker-nudge convention.
+ */
+function _onFixKeydown(e) {
+  const f = _fix;
+  if (!f) return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (
+    e.target.closest?.(
+      ".gm-modal, #settings-drawer, .lh-v6-drawer, .lh-v6-confirm-overlay",
+    )
+  ) {
+    return;
+  }
+  if (e.ctrlKey || e.metaKey) return;
+  const hadPendingNudge = !!f.drag?.keyboard;
+  let handled = true;
+  switch (e.code) {
+    case "Space":
+      if (e.altKey) {
+        handled = false;
+        break;
+      }
+      _commitPendingNudge();
+      _audToggle();
+      break;
+    case "ArrowLeft":
+    case "ArrowRight": {
+      _heldArrows.add(e.code);
+      const dir = e.code === "ArrowLeft" ? -1 : 1;
+      if (e.shiftKey) _nudge(dir, e.altKey);
+      else if (e.altKey) handled = false;
+      else _skipOnset(dir);
+      break;
+    }
+    case "ArrowUp":
+    case "ArrowDown":
+      if (e.shiftKey || e.altKey) {
+        handled = false;
+        break;
+      }
+      _turnPage(e.code === "ArrowUp" ? -1 : 1);
+      break;
+    case "Enter": {
+      if (e.altKey) {
+        handled = false;
+        break;
+      }
+      if (hadPendingNudge) {
+        // Enter on a floating nudge means "commit it now", not "approve".
+        _commitPendingNudge();
+        break;
+      }
+      const g = f.groups[f.selGroupIx];
+      if (g) {
+        _commitAnchor(f.selGroupIx, _groupStripTime(g), "approve").catch((err) =>
+          console.error("fix mode: approve failed:", err),
+        );
+      }
+      break;
+    }
+    case "KeyR":
+      if (e.altKey) {
+        handled = false;
+        break;
+      }
+      if (e.shiftKey) {
+        // Shift+R: Re-align the spans ahead of the pinned fixes (a floating
+        // nudge commits first — it is a fix like the others).
+        _commitPendingNudge();
+        if (!f.pending.length) _announce("Nothing waits for Re-align.");
+        else {
+          _realignPending().catch((err) => console.error("fix mode: re-align failed:", err));
+        }
+        break;
+      }
+      // Deliberately does NOT commit a floating nudge: R means "let me hear
+      // the last fix again", which is the whole point of suppressing the
+      // automatic one, and a pending nudge is still being thought about.
+      if (!_lastReplay) _announce("No fix to replay yet.");
+      else if (!_replayFix(_lastReplay)) {
+        _announce("The audition is still preparing.");
+      }
+      break;
+    case "KeyA":
+      if (e.altKey || e.shiftKey) {
+        handled = false;
+        break;
+      }
+      _commitPendingNudge();
+      _toggleSelectAllOnPage();
+      break;
+    case "Equal":
+    case "NumpadAdd":
+      if (e.altKey) {
+        handled = false;
+        break;
+      }
+      _stepZoom(SCORE_ZOOM_STEP);
+      break;
+    case "Minus":
+    case "NumpadSubtract":
+      if (e.altKey) {
+        handled = false;
+        break;
+      }
+      _stepZoom(-SCORE_ZOOM_STEP);
+      break;
+    case "KeyS":
+      if (e.altKey || e.shiftKey) {
+        handled = false;
+        break;
+      }
+      _commitPendingNudge();
+      _snapSelectionToOnsets().catch((err) =>
+        console.error("fix mode: move to onset failed:", err),
+      );
+      break;
+    case "KeyG":
+      if (e.altKey || e.shiftKey) {
+        handled = false;
+        break;
+      }
+      _commitPendingNudge();
+      _toggleGap();
+      break;
+    case "Escape":
+      if (hadPendingNudge) _cancelPendingNudge();
+      else if (f.multiSel.size) {
+        f.multiSel.clear(); // first Escape drops the multi-selection…
+        _scheduleRedraw();
+      } else exitFixMode(); // …a bare one exits
+      break;
+    default:
+      handled = false;
+  }
+  if (handled) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Correction-engine bootstrap (decode ref audio + the worker's fix_begin)
+// ---------------------------------------------------------------------------
+
+/** One line: where the arming seconds went. */
+function _logArmingTrail(f) {
+  const T = f.timing;
+  if (!T?.readyMs) return;
+  const s = (ms) => (ms == null ? "?" : `${(ms / 1000).toFixed(1)} s`);
+  const w = T.worker || {};
+  const b = w.boot;
+  const runtime =
+    w.bootMs == null
+      ? "runtime ?"
+      : w.bootMs < 50
+        ? "runtime resident"
+        : `runtime ${s(w.bootMs)}` +
+          (b ? ` (pyodide ${s(b.pyodideMs)} + packages ${s(b.packagesMs)} + init ${s(b.initMs)})` : "");
+  console.log(
+    `fix mode: engine armed in ${s(T.readyMs)} — decode ${s(T.decodeMs)}, ` +
+      `${runtime}, score synth ${s(w.beginMs)}; lanes +${s(T.lanesMs)}`,
+  );
+}
+
+/** Decode the reference recording to mono Float32 at the aligner's rate —
+ *  the same construction as align.js's decodeAudio. */
+async function _decodeRefAudio(refFile) {
+  const blob = fileBlobs.get(refFile);
+  let arrayBuf;
+  if (blob) {
+    arrayBuf = await blob.arrayBuffer();
+  } else {
+    const url = resolveAudioUrl(refFile);
+    if (!url) throw new Error("no audio source for the reference recording");
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`could not fetch reference audio (HTTP ${resp.status})`);
+    arrayBuf = await resp.arrayBuffer();
+  }
+  const audioCtx = new AudioContext();
+  const decoded = await audioCtx.decodeAudioData(arrayBuf);
+  await audioCtx.close();
+  const offlineCtx = new OfflineAudioContext(
+    1,
+    Math.ceil(decoded.duration * FIX_SR),
+    FIX_SR,
+  );
+  const source = offlineCtx.createBufferSource();
+  source.buffer = decoded;
+  source.connect(offlineCtx.destination);
+  source.start(0);
+  const resampled = await offlineCtx.startRendering();
+  return resampled.getChannelData(0);
+}
+
+/** Max-abs peaks from decoded samples, for a strip sharper than stored peaks. */
+function _peaksFromSamples(samples, count = STRIP_PEAK_COUNT) {
+  const peaks = new Array(count);
+  const per = samples.length / count;
+  for (let i = 0; i < count; i++) {
+    const lo = Math.floor(i * per);
+    const hi = Math.min(samples.length, Math.ceil((i + 1) * per));
+    let m = 0;
+    for (let j = lo; j < hi; j++) {
+      const v = Math.abs(samples[j]);
+      if (v > m) m = v;
+    }
+    peaks[i] = m;
+  }
+  return peaks;
+}
+
+function _ensureWorker() {
+  if (_worker) return _worker;
+  const factory =
+    window._listenTest?.fixWorkerFactory || ((url) => new Worker(url));
+  _worker = factory(window.root + "js/align-worker.js");
+  return _worker;
+}
+
+async function _bootstrap() {
+  const f = _fix;
+  // The arming trail: where the seconds go, one console line once the lanes
+  // land (and fixTestState().timing). The user's "loading times are fairly
+  // high" (2026-09-02) is only answerable against these numbers.
+  const T0 = performance.now();
+  f.timing = { decodeMs: null, readyMs: null, worker: null, lanesMs: null };
+  _warmRuntime(); // the runtime boots in the worker while the decode runs here
+  _setChip(
+    "decoding",
+    "Step 1/4: reference audio…",
+    "Preparing correction engine: decoding reference audio…",
+  );
+  _syncReadyAffordance();
+  const refSamples = await _decodeRefAudio(f.refFile);
+  if (!_fix || _fix !== f) return; // exited while decoding
+  // Audio mode: the TARGET recording decodes too — it is the strip, the
+  // audition's left ear, and the worker's second resident PCM. Sequential,
+  // not parallel: two whole-recording decodes in flight double the peak.
+  let targetSamples = null;
+  if (f.mode === "audio") {
+    _setChip(
+      "decoding",
+      "Step 1/4: target audio…",
+      `Preparing correction engine: decoding ${f.targetFile}…`,
+    );
+    targetSamples = await _decodeRefAudio(f.targetFile);
+    if (!_fix || _fix !== f) return;
+  }
+  f.timing.decodeMs = Math.round(performance.now() - T0);
+  const samples = targetSamples || refSamples; // the STRIP recording's PCM
+
+  // A decode also upgrades (or provides) the strip: peaks derived from the
+  // full-rate samples beat the stored ~4k-point envelope at page zoom.
+  const duration = samples.length / FIX_SR;
+  _buildStrip({ peaks: _peaksFromSamples(samples), duration });
+  _scheduleRedraw();
+
+  // The audition copies the samples into its stereo buffer's left ear NOW —
+  // the transfer below detaches them. Its synth render then chunks along in
+  // the background; the play button arms when both ears are in.
+  const auditionDone = _buildAudition(f, samples);
+  auditionDone.catch((e) => {
+    console.error("fix-mode audition build failed:", e);
+  });
+
+  _setChip(
+    "loading",
+    "Step 2/4: align runtime…",
+    "Preparing correction engine: loading alignment runtime…",
+  );
+  const worker = _ensureWorker();
+  worker.onmessage = (e) => {
+    const d = e.data;
+    // A pending realign owns the next fix_segment / fix_target_segment (or
+    // error) regardless of which session is showing — the resolver's caller
+    // re-checks the session.
+    if (
+      _pendingRealign &&
+      (d.type === "fix_segment" || d.type === "fix_target_segment" || d.type === "error")
+    ) {
+      const p = _pendingRealign;
+      _pendingRealign = null;
+      if (d.type === "error") p.reject(new Error(d.message));
+      else p.resolve(d);
+      return;
+    }
+    if (!_fix || _fix !== f) return;
+    if (d.type === "fix_lanes") {
+      _installLanes(f, d);
+      // The arming trail closes on the FIRST, full reply; a spectrogram
+      // re-request (what: "mel") is not part of arming.
+      if (d.what !== "mel" && f.timing.readyAt && f.timing.lanesMs == null) {
+        f.timing.lanesMs = Math.round(performance.now() - f.timing.readyAt);
+        _logArmingTrail(f);
+      }
+    } else if (d.type === "fix_lanes_error") {
+      // The lanes are a comfort, not the engine: the session stays live.
+      console.warn("fix mode: lanes unavailable:", d.message);
+      f.lanesError = d.message;
+      f.lanesPending = false;
+      _scheduleRedraw();
+    } else if (d.type === "progress" && !f.engineReady) {
+      // fix_begin's one progress message is the score synth. Shortened to
+      // fit the chip's 28ch; the full text stays in the tooltip.
+      const short = /synthesis/i.test(d.message) ? "score synth…" : "working…";
+      _setChip(
+        "loading",
+        `Step 3/4: ${short}`,
+        `Preparing correction engine: ${d.message}`,
+      );
+    } else if (d.type === "fix_ready") {
+      _workerHasSession = true;
+      if (d.events?.n_events !== f.nEvents) {
+        _setChip(
+          "error",
+          `Correction engine disagrees on the event count ` +
+            `(${d.events?.n_events} vs ${f.nEvents}) — corrections disabled`,
+        );
+        return;
+      }
+      f.workerEvents = d.events;
+      f.fixReady = true;
+      f.timing.worker = d.timing || null;
+      _maybeArm(f, T0);
+    } else if (d.type === "fix_target_ready") {
+      // Audio mode: the target recording is resident beside the reference.
+      f.targetInfo = { name: d.name, duration: d.duration };
+      f.targetReady = true;
+      _maybeArm(f, T0);
+    } else if (d.type === "fix_target_error") {
+      _setChip("error", `Correction engine failed on ${f.targetFile}: ${d.message}`);
+    } else if (d.type === "error") {
+      _setChip("error", `Correction engine failed: ${d.message}`);
+    }
+  };
+  worker.onerror = (e) => {
+    if (!_fix || _fix !== f) return;
+    _setChip("error", `Correction engine failed: ${e.message || "worker error"}`);
+  };
+  worker.postMessage(
+    {
+      type: "fix_begin",
+      refSamples,
+      meiMidi: f.midiBytes,
+      options: loadedAlignmentJSON?.header?.alignmentParams || {},
+    },
+    [refSamples.buffer],
+  );
+  if (targetSamples) {
+    worker.postMessage(
+      { type: "fix_target_begin", name: f.targetFile, samples: targetSamples },
+      [targetSamples.buffer],
+    );
+  }
+}
+
+/**
+ * The engine is armed when every resident recording the session needs has
+ * arrived: the reference (fix_ready, with the event count agreeing) and, in
+ * audio mode, the target (fix_target_ready). Then the lanes are requested from
+ * the audio on the strip — a few seconds of numpy the session never waits for.
+ */
+function _maybeArm(f, T0) {
+  if (f.engineReady || !f.fixReady || !f.targetReady) return;
+  f.engineReady = true;
+  f.timing.readyMs = Math.round(performance.now() - T0);
+  f.timing.readyAt = performance.now();
+  _setChip("ready", "Ready to correct");
+  _syncReadyAffordance();
+  _requestLanes(f, "all");
+}
+
+// ---------------------------------------------------------------------------
+// Test surface (read by listen.js's window._listenTest)
+// ---------------------------------------------------------------------------
+
+export function fixTestState() {
+  const corrections = {
+    anchors: _corrections.anchors.map((a) => ({ ...a })),
+    gaps: _corrections.gaps.map((g) => ({ ...g })),
+    gapCount: _corrections.gaps.length,
+    audio: JSON.parse(JSON.stringify(_corrections.audio || {})),
+    headerPresent: !!loadedAlignmentJSON?.header?.corrections,
+  };
+  const chooser = { open: !!_chooserEl, reviewed: _scoreRefReviewed };
+  if (!_fix) {
+    return {
+      active: false,
+      lastRefusal: _lastRefusal,
+      prewarmReady: !!(_derived && _derived.pageCount),
+      lastEntry: { ..._lastEntry },
+      corrections,
+      chooser,
+      lastAnnounce: _lastAnnounce,
+    };
+  }
+  const f = _fix;
+  const sel = f.groups[f.selGroupIx] || null;
+  const selT = sel ? _groupStripTime(sel) : null;
+  return {
+    active: true,
+    replaySuppressed: _replaySuppressed,
+    lastReplay: _lastReplay
+      ? { ..._lastReplay, startT: _replayStartT(_lastReplay.t0, _lastReplay.fixedT) }
+      : null,
+    lastRefusal: _lastRefusal,
+    prewarmReady: !!(_derived && _derived.pageCount),
+    lastEntry: { ..._lastEntry },
+    chooser,
+    mode: f.mode,
+    entryFile: f.entryFile,
+    refFile: f.refFile,
+    targetFile: f.targetFile,
+    stripFile: f.stripFile,
+    targetReady: f.targetReady,
+    targetInfo: f.targetInfo ? { ...f.targetInfo } : null,
+    freeAnchorsDrawn: f.freeAnchorsDrawn ?? 0,
+    gridAnchors: f.targetFile
+      ? targetAnchors(_corrections, f.targetFile).map((a) => ({ ...a }))
+      : [],
+    selRefT: sel ? scoreAlignment.ref_onset[sel.eventIxs[0]] : null,
+    nEvents: f.nEvents,
+    groupCount: f.groups.length,
+    page: f.page,
+    pageCount: f.pageCount,
+    pageGroupCount: _groupsOnPage(f.page).length,
+    selGroup: f.selGroupIx,
+    selQ: sel?.q ?? null,
+    selPage: sel?.page ?? null,
+    selEventIx: sel?.eventIxs[0] ?? null,
+    selT,
+    selTickX: Number.isFinite(selT) ? _timeToStripX(selT) : null,
+    ticksOnPage: f.ticksOnPage ?? 0,
+    connectorCount: f.els.conn?.childElementCount ?? 0,
+    stripWindow: f.stripWindow || null,
+    stripHasWave: !!f.stripWS,
+    stripPps: f.stripPps || 0,
+    // The RENDERER's own geometry: scrollWidth is duration × pps once the zoom
+    // has actually landed, and equals clientWidth while it has not — the one
+    // observable that separates "the waveform shows this page" from "the
+    // waveform shows the whole piece with this page's ticks over it".
+    stripScroll: (() => {
+      const el = f.stripWS?.getWrapper?.()?.parentElement;
+      return el
+        ? { left: el.scrollLeft, width: el.scrollWidth, client: el.clientWidth }
+        : null;
+    })(),
+    chipState: f.chipState,
+    chipText: f.els.chip?.title || f.els.chip?.textContent || null,
+    groupStats: _lastGroupStats ? { ..._lastGroupStats } : null,
+    corrections,
+    lastAnnounce: _lastAnnounce,
+    engineReady: f.engineReady,
+    realignBusy: f.realignBusy,
+    stripBusy: !!f.els.strip?.classList.contains("fix-realigning"),
+    lanesPending: !!f.lanesPending,
+    pendingNudge: f.drag?.keyboard
+      ? { startT: f.drag.startT, curT: f.drag.curT }
+      : null,
+    lastCommit: f.lastCommit ? { ...f.lastCommit } : null,
+    autoRealign: _autoRealign,
+    horizonSec: _horizonSec,
+    pending: f.pending.map((p) => ({ ...p })),
+    pendingSpans: (f.pendingSpans || []).map((s) => ({ ...s })),
+    lastRealign: f.lastRealign ? { ...f.lastRealign } : null,
+    lastGap: f.lastGap ? { ...f.lastGap } : null,
+    gapBands: f.gapBands ?? 0,
+    relayouts: f.relayouts ?? 0,
+    refits: f.refits ?? 0,
+    lastLoading: f.lastLoading ? { ...f.lastLoading } : null,
+    soundingGroup: f.soundingGroupIx,
+    pageOnly: _pageOnly,
+    laneSpec: _laneSpec,
+    laneOnset: _laneOnset,
+    snapOnsets: _snapOnsets,
+    lanes: f.lanes
+      ? {
+          hop: f.lanes.onsetHop,
+          sr: f.lanes.sr,
+          nMels: f.lanes.nMels,
+          nFft: f.lanes.nFft,
+          window: f.lanes.window,
+          melHop: f.lanes.melHop,
+          melFrames: f.lanes.melFrames,
+          nFrames: f.lanes.melFrames,
+          onsetFrames: f.lanes.onsetFrames,
+          peakCount: f.lanes.peaks?.length ?? 0,
+          patCount: f.lanes.pat?.length ?? 0,
+          peaks: Array.from((f.lanes.peaks || new Float64Array(0)).subarray(0, 64)),
+          scale: f.lanes.scale,
+          bandHz: f.lanes.bandHz ? Array.from(f.lanes.bandHz) : null,
+          labelsDrawn: f.lanes.labelsDrawn ?? 0,
+        }
+      : null,
+    scoreZoom: { ..._scoreZoom },
+    selXScore: sel ? sel.xScore : null,
+    scoreContent: (() => {
+      const box = _scoreContentBox();
+      return box ? { w: box.vbWidth * box.scale, h: box.vbHeight * box.scale } : null;
+    })(),
+    scoreScroll: f.els.scoreScroll
+      ? {
+          left: f.els.scoreScroll.scrollLeft,
+          top: f.els.scoreScroll.scrollTop,
+          width: f.els.scoreScroll.scrollWidth,
+          height: f.els.scoreScroll.scrollHeight,
+          clientW: f.els.scoreScroll.clientWidth,
+          clientH: f.els.scoreScroll.clientHeight,
+        }
+      : null,
+    lanesError: f.lanesError,
+    multiSel: [...f.multiSel].sort((a, b) => a - b),
+    pageTicks: _groupsOnPage(f.page).map((g) => {
+      const t = _groupStripTime(g);
+      return {
+        ix: f.groups.indexOf(g),
+        eventIx: g.eventIxs[0],
+        q: g.q,
+        t,
+        x: Number.isFinite(t) ? _timeToStripX(t) : null,
+      };
+    }),
+    specCfg: { ..._specCfg },
+    snapTarget: _snapTarget,
+    stripHeightPx: _stripHeightPx,
+    laneWeights: _laneWeights ? { ..._laneWeights } : null,
+    lastBatch: f.lastBatch ? { ...f.lastBatch } : null,
+    timing: f.timing ? { ...f.timing } : null,
+    lastDrag: f.lastDrag ? { ...f.lastDrag } : null,
+    laneHeights: {
+      strip: f.els.strip?.clientHeight ?? 0,
+      lanes: f.els.lanes?.clientHeight ?? 0,
+      wave: f.els.stripWs?.clientHeight ?? 0,
+      spec: f.els.laneSpec?.hidden ? 0 : (f.els.laneSpec?.clientHeight ?? 0),
+      onset: f.els.laneOnset?.hidden ? 0 : (f.els.laneOnset?.clientHeight ?? 0),
+    },
+    pageWindow: (() => {
+      const w = _pageTimeSlice();
+      return w
+        ? { startT: w.startT, endT: Number.isFinite(w.endT) ? w.endT : null }
+        : null;
+    })(),
+    aud: f.aud
+      ? {
+          ready: f.aud.ready,
+          rendering: f.aud.rendering,
+          playing: f.aud.playing,
+          time: _audPos(),
+          duration: f.aud.duration,
+          balance: _audBalance,
+          rate: f.aud.rate,
+          stretch: !!f.aud.stretch,
+          workletPos: f.aud.workletPos,
+          gainL: f.aud.gainL.gain.value,
+          gainR: f.aud.gainR.gain.value,
+          levels: f.aud.levels ? { ...f.aud.levels } : null,
+          renderWindow: f.aud.lastRenderWindow ? { ...f.aud.lastRenderWindow } : null,
+        }
+      : null,
+  };
+}
+
+/**
+ * Test-only controls (attached as _listenTest.fixCtl by listen.js): drive the
+ * audition deterministically and probe the stereo buffer's actual content.
+ */
+export const fixTestControl = {
+  seek(t) {
+    if (_fix) _fix.followFloor = null;
+    _audSeek(t);
+  },
+  play: () => _audPlay(),
+  pause: () => _audPause(),
+  pos: () => _audPos(),
+  /** Peak/RMS of the STRETCH WORKLET's own copy over [t0, t1) — what playback
+   *  reads, which channelRms (the AudioBuffer) cannot see. */
+  workletProbe: (t0, t1) => _workletProbe(t0, t1),
+  /** RMS of one channel over [t0, t1] — proves an ear holds real signal. */
+  channelRms(ch, t0, t1) {
+    const a = _fix?.aud;
+    if (!a) return null;
+    const data = a.buffer.getChannelData(ch);
+    const lo = Math.max(0, Math.floor(t0 * FIX_SR));
+    const hi = Math.min(data.length, Math.ceil(t1 * FIX_SR));
+    if (hi <= lo) return 0;
+    let s = 0;
+    for (let i = lo; i < hi; i++) s += data[i] * data[i];
+    return Math.sqrt(s / (hi - lo));
+  },
+};

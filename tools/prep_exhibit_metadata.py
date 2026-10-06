@@ -85,8 +85,10 @@ MB_MIN_INTERVAL = 1.1  # seconds between requests — MusicBrainz allows ~1/s
 # `%` written as `_-` (so `_-20` is a space, `_-2C` a comma, `_-28` a paren).
 CURATED_SLUGS = {
     "VPO-2010.wav": "2010",
+    "VPO-1951-1954.wav": "1951-1954",
     "VPO-1987.wav": "1987",
     "VPO-1989.wav": "1989",
+    "VPO-2002.wav": "2002",
     "VPO-2022.wav": "2022",
     "Philharmonia Orchestra London, Georg Randolph Warren (1982).wav":
         "Philharmonia_-20Orchestra_-20London_-2C_-20Georg_-20Randolph_-20Warren_-20_-281982_-29",
@@ -364,7 +366,7 @@ def derive(dump, warnings):
             "releaseLabel": str(label_name).strip('"') if label_name else None,
             "musicbrainz": str(mbid) if mbid else None,
             "releaseYear": int(str(issued)) if issued and str(issued).isdigit() else None,
-            "portrait": None,      # Gen-AI, generated separately; not derivable here
+            "portrait": None,      # filled by attach_portraits(), keyed on the conductor
             "slug": slug,
             "provenance": prov,
         }
@@ -382,6 +384,39 @@ def derive(dump, warnings):
                                  "detail": f"the graph yields no {field} for slug {deslug(slug)!r}"})
         out[wav] = entry
     return out
+
+
+def attach_portraits(recordings, portrait_dir, warnings):
+    """Give every recording its conductor's portrait, from portraits/credits.json.
+
+    DERIVED, not authored — which is new. The Gen-AI portraits were commissioned
+    per RECORDING so each could show the sitter at the age they were that year,
+    so which face belonged to which recording was a human decision and lived in
+    metadata-overrides.json. Freely-licensed photographs are per CONDUCTOR (there
+    is one usable picture of a person on Commons, taken whenever it was taken), so
+    the join is now just their name and the override entries are gone.
+
+    Runs BEFORE apply_overrides, so an authored `portrait` still wins — that is
+    the escape hatch if one recording ever wants its own face again.
+    """
+    path = os.path.join(portrait_dir, "credits.json")
+    if not os.path.exists(path):
+        warnings.append({"kind": "no-portrait-credits", "recording": None,
+                         "detail": f"{path} missing — run tools/fetch_conductor_portraits.py build"})
+        return
+    with open(path, encoding="utf-8") as fh:
+        credits = json.load(fh).get("conductors", {})
+    hit = 0
+    for wav, entry in recordings.items():
+        c = credits.get(entry.get("conductor") or "")
+        if c:
+            entry["portrait"] = c["path"]
+            hit += 1
+        elif entry.get("conductor"):
+            warnings.append({"kind": "no-portrait", "recording": wav,
+                             "detail": f"no portrait for conductor {entry['conductor']!r} — "
+                                       f"add them to portraits/sources.json"})
+    log(f"  portraits attached: {hit} of {len(recordings)} recording(s)")
 
 
 def apply_overrides(recordings, overrides, warnings):
@@ -495,6 +530,9 @@ def main():
         mb_enrich(recordings, args.refresh_mb, warnings)
         cached = len([f for f in os.listdir(MB_CACHE)]) if os.path.isdir(MB_CACHE) else 0
         log(f"  {cached} document(s) in {MB_CACHE}")
+
+    log("attaching conductor portraits:")
+    attach_portraits(recordings, os.path.join(os.path.dirname(args.data_dir), "portraits"), warnings)
 
     os.makedirs(args.data_dir, exist_ok=True)
     ov_path = os.path.join(args.data_dir, OVERRIDES_FILE)

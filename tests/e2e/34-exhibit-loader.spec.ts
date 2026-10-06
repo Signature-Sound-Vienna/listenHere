@@ -66,7 +66,7 @@ test.describe('34. The exhibit loader', () => {
   // Air measured 1024×1366 CSS, plan §4.0a) and its CSS deliberately has NO
   // scroll container anywhere (overscroll-behavior: none; nothing overflows) —
   // that is the kiosk feel, not an oversight. Left at Playwright's 1280×720
-  // desktop default, most of a stacked-eight-strip viewport renders below the
+  // desktop default, most of a stacked-strip viewport renders below the
   // fold with nothing to scroll it into view, and every click on it times out
   // "element is outside of the viewport". Match the geometry the page assumes.
   test.use({ viewport: { width: 1024, height: 1366 } });
@@ -79,7 +79,10 @@ test.describe('34. The exhibit loader', () => {
     page,
   }) => {
     const { order } = await boot(page);
-    expect(order).toHaveLength(8);
+    // The ONE place the curated-set size is pinned. Eight until 2026-09-01, when
+    // the author raised the cap to ten (Q1); every other count below derives from
+    // `order`, so a future change to the set costs this line alone.
+    expect(order).toHaveLength(10);
 
     const shape = await page.evaluate(() => {
       const T = (window as any)._exhibitTest;
@@ -94,7 +97,7 @@ test.describe('34. The exhibit loader', () => {
       }));
     });
     for (const vp of shape) {
-      expect(vp.stripCount).toBe(8);
+      expect(vp.stripCount).toBe(order.length);
       // TWO per strip (one waveform canvas under `.canvases`, one under
       // `.progress`) — not Spike C's measured "4 canvases / renderer" (plan
       // §4.0a), which was at a real zoom over a 582 s recording wide enough to
@@ -103,7 +106,7 @@ test.describe('34. The exhibit loader', () => {
       // waveform is one chunk. A jump to 4 here would mean either the zoom
       // default regressed away from fit-to-width, or a chunk-splitting
       // recording made it into the curated set at a size that no longer fits.
-      expect(vp.canvasesPerStrip).toEqual(new Array(8).fill(2));
+      expect(vp.canvasesPerStrip).toEqual(new Array(order.length).fill(2));
     }
   });
 
@@ -426,7 +429,7 @@ test.describe('34. The exhibit loader', () => {
   }) => {
     const { order } = await boot(page, 'preload=on&debug=1');
     const warm = await page.evaluate(() => (window as any)._exhibitTest.preloaded);
-    expect(warm).toEqual({ warmed: 8, skipped: 0, failed: 0 });
+    expect(warm).toEqual({ warmed: order.length, skipped: 0, failed: 0 });
 
     await page.route('**/static/exhibit/audio/**', (route) => route.abort());
     const after = await page.evaluate(async (order) => {
@@ -598,7 +601,7 @@ test.describe('34. The exhibit loader', () => {
     const [fileA, fileB] = order;
     expect(await page.locator('.vp-strap-band').count(), 'one leather band per viewport').toBe(2);
     const buttons = page.locator('.vp[data-viewport="0"] .vp-strap .strap-btn');
-    await expect(buttons).toHaveCount(8);
+    await expect(buttons).toHaveCount(order.length);
 
     const probe = await page.evaluate(
       async ({ fileA, fileB }) => {
@@ -658,5 +661,85 @@ test.describe('34. The exhibit loader', () => {
     await expect.poll(active).toBe(order[0]);
     await up.click(); // off the top end: wraps to the bottom strip
     await expect.poll(active).toBe(order[order.length - 1]);
+  });
+});
+
+test.describe('34. The conductor portraits', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 34.20 Since 0.68.0 the portraits are freely-licensed photographs keyed to the
+  // CONDUCTOR, not Gen-AI images commissioned per recording, so EVERY recording
+  // whose conductor is known now has one — including the three whose conductor
+  // has no free photograph, who get a placeholder medallion rather than nothing.
+  // Two things are worth pinning:
+  //
+  //  * the URL is resolved against the EXHIBIT ROOT, not against whatever
+  //    document is showing the band. The sidecar stores "portraits/x.webp", and
+  //    a bare relative URL only works because the page happens to live in that
+  //    directory — the very coincidence app/routes.py redirects /exhibit to
+  //    preserve. Asserting the resolved href is what stops that regressing.
+  //  * the initials FALLBACK still works. It used to be exercised by recordings
+  //    awaiting a portrait; none are left, so what exercises it now is the Warren
+  //    recording — a decided-unknown identity, an invention of the budget trade
+  //    with no sitter to photograph. A face appearing there would be a bug, which
+  //    makes this the stronger version of the old assertion rather than a weaker
+  //    one: it is a claim about WHO MAY have a face, not about who has one yet.
+  test('34.20 every known conductor has a portrait under the exhibit root; an unknown identity keeps its ?', async ({
+    page,
+  }) => {
+    await boot(page);
+
+    const shot = (file: string) =>
+      page.evaluate(async (f) => {
+        const T = (window as any)._exhibitTest;
+        await T.transport.select(f, 5, false);
+        await new Promise((r) => setTimeout(r, 60));
+        const el = document.querySelector('.mb-portrait') as HTMLElement;
+        return {
+          background: getComputedStyle(el).backgroundImage,
+          text: el.textContent,
+          meta: T.exhibit.metadata.recordings[f] ?? {},
+        };
+      }, file);
+
+    const withPortrait: string[] = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const recs = T.exhibit.metadata?.recordings ?? {};
+      return T.exhibit.order.filter((f: string) => recs[f]?.portrait);
+    });
+    expect(withPortrait.length, 'no portraits wired up yet').toBeGreaterThan(0);
+
+    for (const file of withPortrait) {
+      const s = await shot(file);
+      // Absolute, under the exhibit root, and exactly the sidecar's own path —
+      // no second interpretation of it anywhere.
+      const expected = new URL(
+        s.meta.portrait as string,
+        new URL('/static/exhibit/', page.url()).href,
+      ).href;
+      expect(s.background, `portrait not rendered for ${file}`).toContain(expected);
+      expect(s.text, 'a portrait replaces the initials placeholder').toBe('');
+    }
+
+    // Every recording whose conductor is known now has one — the portrait follows
+    // the person, so there is nothing left waiting for a batch.
+    const missing: string[] = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const recs = T.exhibit.metadata?.recordings ?? {};
+      return T.exhibit.order.filter((f: string) => recs[f]?.conductor && !recs[f]?.portrait);
+    });
+    expect(missing, 'a named conductor with no portrait').toEqual([]);
+
+    // A decided-unknown identity keeps its "?" rather than gaining a face — and
+    // this is what still exercises the initials fallback.
+    const unknown: string | undefined = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const recs = T.exhibit.metadata?.recordings ?? {};
+      return T.exhibit.order.find((f: string) => recs[f]?.displayNote && !recs[f]?.conductor);
+    });
+    expect(unknown, 'fixture needs a decided-unknown identity').toBeTruthy();
+    const q = await shot(unknown!);
+    expect(q.background).toBe('none');
+    expect(q.text).toBe('?');
   });
 });

@@ -1,4 +1,5 @@
 import { test, expect } from '../support/fixtures';
+import { env } from '../support/env';
 
 // ---------------------------------------------------------------------------
 // Section 19 — Theming
@@ -68,7 +69,7 @@ test.describe('19. Theming', () => {
     expect(storedTheme).toBe('solarized');
 
     // Navigate to the listen page and confirm data-theme is restored before paint
-    await page.goto('/?align=http://localhost:5001/static/test/alignment.json&useLocal=http://localhost:5001/static/test');
+    await page.goto(`/?align=${env.baseUrl}/static/test/alignment.json&useLocal=${env.baseUrl}/static/test`);
     await page.waitForLoadState('networkidle');
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'solarized');
 

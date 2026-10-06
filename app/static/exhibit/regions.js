@@ -79,7 +79,7 @@ export function syncRegions(strips, annotations, { minRegionPx = 0, activeIds = 
  * One region spec per (recording × annotation × region), keyed by recording.
  *
  * The payload's shape does the filtering work that Listen Here's version had to do
- * against live state: `targets` was already cut to the curated eight at prep time,
+ * against live state: `targets` was already cut to the curated set at prep time,
  * and `regionTimes` was already re-derived through the canonical index pairs, so a
  * target that is not in this exhibit simply is not here to skip.
  */

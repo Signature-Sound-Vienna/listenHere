@@ -120,12 +120,29 @@ def solid_popup_callback():
 # Test fixtures (development only — serves tests/fixtures/ as /static/test/)
 # ---------------------------------------------------------------------------
 
+# The origin the JSON fixtures are written against (alignment.json's meiUri).
+# The harness reads its base URL from APP_BASE_URL, so a tree under test on
+# another port would otherwise fetch the MEI from whatever server holds :5001
+# — a server running OTHER code. Rewritten at serve time to this request's
+# own origin; a fixture served from the default port is byte-identical.
+FIXTURE_ORIGIN = "http://localhost:5001"
+
 @app.route("/static/test/<path:filename>")
 def test_fixtures(filename):
     if not app.debug:
         from flask import abort
         abort(404)
     fixtures_dir = os.path.join(os.path.dirname(app.root_path), 'tests', 'fixtures')
+    if filename.endswith('.json'):
+        from flask import Response
+        from werkzeug.utils import safe_join
+        path = safe_join(fixtures_dir, filename)
+        origin = request.host_url.rstrip('/')
+        if path and os.path.isfile(path) and origin != FIXTURE_ORIGIN:
+            with open(path, encoding='utf-8') as fh:
+                text = fh.read()
+            return Response(text.replace(FIXTURE_ORIGIN, origin),
+                            mimetype='application/json')
     return send_from_directory(fixtures_dir, filename)
 
 

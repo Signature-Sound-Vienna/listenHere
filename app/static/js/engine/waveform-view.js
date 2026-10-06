@@ -34,6 +34,7 @@
 
 import {
   alignmentGrids,
+  alignedSpans,
   wavesurfers,
   parseCssColor,
   wfBgCache,
@@ -249,6 +250,72 @@ export function updatePositionIndicator(filename) {
   });
 }
 
+/** Shorter than this (seconds) and a head or tail is rounding, not a gap. */
+const NO_COUNTERPART_MIN_SEC = 0.05;
+
+/** The no-counterpart band's diagonal hatch, cached per colour. */
+let _ncHatch = null;
+
+function _noCounterpartPattern(ctx, color) {
+  if (_ncHatch && _ncHatch.color === color) return _ncHatch.pattern;
+  const c = document.createElement("canvas");
+  c.width = 8;
+  c.height = 8;
+  const g = c.getContext("2d");
+  g.strokeStyle = color;
+  g.lineWidth = 1.5;
+  g.beginPath();
+  g.moveTo(-1, 9);
+  g.lineTo(9, -1);
+  g.moveTo(-1, 1);
+  g.lineTo(1, -1);
+  g.moveTo(7, 9);
+  g.lineTo(9, 7);
+  g.stroke();
+  _ncHatch = { color, pattern: ctx.createPattern(c, "repeat") };
+  return _ncHatch.pattern;
+}
+
+/**
+ * Hatch the head and tail this recording has no counterpart for.
+ *
+ * A trimmed head is otherwise indistinguishable from a mis-alignment: the
+ * waveform simply starts before the shared timeline does. Returns the number
+ * of bands painted (0, 1, or 2) — also the test surface.
+ */
+function drawNoCounterpartBands(ctx, filename, dur, fullW, scrollLeft, viewW, h) {
+  const span = alignedSpans[filename];
+  if (!span || !(dur > 0)) return 0;
+  const ranges = [];
+  if (span.from > NO_COUNTERPART_MIN_SEC) {
+    ranges.push([0, Math.min(span.from, dur)]);
+  }
+  if (dur - span.to > NO_COUNTERPART_MIN_SEC) {
+    ranges.push([Math.max(0, span.to), dur]);
+  }
+  if (!ranges.length) return 0;
+  const muted =
+    getComputedStyle(document.documentElement)
+      .getPropertyValue("--color-text-muted")
+      .trim() || "#94a3b8";
+  let painted = 0;
+  ctx.save();
+  for (const [t0, t1] of ranges) {
+    const x0 = Math.max(0, (t0 / dur) * fullW - scrollLeft);
+    const x1 = Math.min(viewW, (t1 / dur) * fullW - scrollLeft);
+    if (x1 <= x0) continue;
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = muted;
+    ctx.fillRect(x0, 0, x1 - x0, h);
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = _noCounterpartPattern(ctx, muted);
+    ctx.fillRect(x0, 0, x1 - x0, h);
+    painted++;
+  }
+  ctx.restore();
+  return painted;
+}
+
 /**
  * Draw (or redraw) one waveform's alignment grid, time ticks, and tempo curve.
  * At zoom, draws only the visible viewport portion, offset by scroll.
@@ -278,6 +345,13 @@ export function drawAlignmentGrid(filename) {
   ctx.clearRect(0, 0, viewW, h);
   const dur = wavesurfers[filename].getDuration();
   const scrollLeft = wavesurfers[filename].getScroll();
+
+  // Audio with no counterpart in the reference — the head and tail the
+  // wizard's open-ended alignment left out (applause, announcements, tuning).
+  // Painted first so the grid lines and time ticks still read on top.
+  view.noCounterpartBands = drawNoCounterpartBands(
+    ctx, filename, dur, fullW, scrollLeft, viewW, h,
+  );
 
   // Draw alignment grid lines first (so time ticks render on top)
   const visalignEl = document.getElementById("visalign");
@@ -417,27 +491,37 @@ function _drawTempoCurve(view) {
 
   if (startIdx >= endIdx) return;
 
-  // Draw shaded area under curve
+  // Draw the shaded area and the curve line per RUN: a point whose breakAfter
+  // is set ends one (an unscored-audio gap follows it), and nothing is drawn
+  // across the break — neither fill nor stroke.
   const zeroY = mode === "relative" ? valToY(0) : yBot;
-  ctx.beginPath();
-  ctx.moveTo(pts[startIdx].x, zeroY);
-  for (let i = startIdx; i <= endIdx; i++) ctx.lineTo(pts[i].x, pts[i].y);
-  ctx.lineTo(pts[endIdx].x, zeroY);
-  ctx.closePath();
-  ctx.fillStyle =
-    mode === "relative"
-      ? `rgba(${_tcRgb},0.22)`
-      : `rgba(${_tcRgb},0.25)`;
-  ctx.fill();
-
-  // Draw the curve line
-  ctx.beginPath();
-  ctx.moveTo(pts[startIdx].x, pts[startIdx].y);
-  for (let i = startIdx + 1; i <= endIdx; i++)
-    ctx.lineTo(pts[i].x, pts[i].y);
-  ctx.strokeStyle = `rgba(${_tcRgb},0.9)`;
-  ctx.lineWidth = 1.75;
-  ctx.stroke();
+  const runs = [];
+  for (let i = startIdx, r0 = startIdx; i <= endIdx; i++) {
+    if (smoothed[i].breakAfter || i === endIdx) {
+      runs.push([r0, i]);
+      r0 = i + 1;
+    }
+  }
+  for (const [a, b] of runs) {
+    if (b < a) continue;
+    ctx.beginPath();
+    ctx.moveTo(pts[a].x, zeroY);
+    for (let i = a; i <= b; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.lineTo(pts[b].x, zeroY);
+    ctx.closePath();
+    ctx.fillStyle =
+      mode === "relative"
+        ? `rgba(${_tcRgb},0.22)`
+        : `rgba(${_tcRgb},0.25)`;
+    ctx.fill();
+    if (b === a) continue;
+    ctx.beginPath();
+    ctx.moveTo(pts[a].x, pts[a].y);
+    for (let i = a + 1; i <= b; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.strokeStyle = `rgba(${_tcRgb},0.9)`;
+    ctx.lineWidth = 1.75;
+    ctx.stroke();
+  }
 
   // In relative mode, draw zero line
   if (mode === "relative") {

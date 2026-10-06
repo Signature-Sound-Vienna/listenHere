@@ -498,8 +498,8 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     await expect(page.locator('.study-panel')).toBeHidden();
     await cog.click();
     await expect(page.locator('.study-panel')).toBeVisible();
-    // 5 tabs since week 3 added Turns (spec 36's subject) to the panel.
-    await expect(page.locator('.study-tab')).toHaveCount(5);
+    // 7 tabs: week 3 added Turns (spec 36's subject); 0.54.0 Views (35.29); 0.56.0 Attract (spec 47).
+    await expect(page.locator('.study-tab')).toHaveCount(7);
 
     // Change the band orientation from the Band tab: the page reloads with the
     // parameter in the URL — and the panel REOPENS ITSELF ON THE SAME TAB,
@@ -534,9 +534,13 @@ test.describe('35. Week 2 — the study panel and themes', () => {
   });
 
   // 35.11 ?theme= applies a token set and hands the strips their wave colours.
-  // The default stays byte-identical because the dark theme overrides nothing —
-  // the CSS token defaults ARE the shipped palette.
-  test('35.11 themes are opt-in token sets; the default overrides nothing', async ({ page }) => {
+  //
+  // THE SHIPPED PALETTE IS PARCHMENT since 2026-09-19 (user), but DARK is still
+  // the CSS baseline — the token defaults in exhibit.css are its values, and
+  // every palette including the default is applied as inline overrides. So the
+  // two facts this pins have come apart: the default now writes tokens, and the
+  // one palette that writes none is `?theme=dark`.
+  test('35.11 themes are opt-in token sets; dark is the baseline that overrides nothing', async ({ page }) => {
     // The INACTIVE wave colour, so read a strip that is not the preselected
     // reference — the ref boots with the active palette applied.
     const inactiveWave = () =>
@@ -546,14 +550,26 @@ test.describe('35. Week 2 — the study panel and themes', () => {
         return T.viewports[0].strips.get(other).ws.options.waveColor;
       });
 
+    // The DEFAULT boot: parchment, applied as a token set like any other.
     await boot(page);
+    const shipped = await page.evaluate(() => ({
+      inlineTokens: document.documentElement.style.length,
+      bg: getComputedStyle(document.body).backgroundColor,
+    }));
+    expect(shipped.inlineTokens, 'the shipped palette is applied, not assumed').toBeGreaterThan(0);
+    expect(shipped.bg).toBe('rgb(234, 223, 198)'); // parchment #eadfc6
+
+    // …and DARK, which is the baseline the CSS already carries, so asking for it
+    // writes nothing at all. This is the property that makes the token defaults
+    // meaningful rather than dead values.
+    await boot(page, 'debug=1&theme=dark');
     const dark = await page.evaluate(() => ({
       inlineTokens: document.documentElement.style.length,
       bg: getComputedStyle(document.body).backgroundColor,
     }));
     const darkWave = await inactiveWave();
     expect(dark.inlineTokens).toBe(0); // dark = no overrides at all
-    expect(dark.bg).toBe('rgb(11, 11, 12)'); // #0b0b0c, the shipped background
+    expect(dark.bg).toBe('rgb(11, 11, 12)'); // #0b0b0c
     expect(darkWave).toBe('#5c5c68');
 
     await boot(page, 'debug=1&theme=light');
@@ -746,13 +762,17 @@ test.describe('35. Week 2 — the study panel and themes', () => {
   });
 
   // 35.17 The band's shared play/pause: one large button in the middle of the
-  // band starts and stops the transport, and the current time renders TWICE
-  // below it — the far copy rotated 180° so each visitor reads one the right
-  // way up (numerals only; the no-labels rule holds).
+  // band starts and stops the transport, and — ON A MIRRORED BAND — the current
+  // time renders TWICE beside it, the far copy rotated 180° so each visitor
+  // reads one the right way up (numerals only; the no-labels rule holds).
+  //
+  // The SECOND readout is mirrored's alone (user, 2026-09-18): only there does
+  // the far reader have a right-way-up copy of the band for an upright clock to
+  // belong to. Every other orientation shows one, which 35.17b pins.
   test('35.17 the band play button toggles the transport and mirrors the time to both readers', async ({
     page,
   }) => {
-    await boot(page);
+    await boot(page, 'debug=1&bandOrientation=mirrored');
     const resting = await page.evaluate(() => {
       const times = [...document.querySelectorAll('.mb-time')];
       return {
@@ -775,18 +795,60 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       })
       .toBe(true);
     await expect(page.locator('.mb-play')).toHaveText('❚❚');
-    // Both readouts advance together off the shared clock.
+    // Both readouts advance together off the shared clock. Polled as a
+    // PROPERTY — advanced off 0:00, and equal to each other — rather than for
+    // the exact second: under a loaded machine (a full two-browser run beside
+    // another tree's suite, 2026-09-02) the clock had reached 0:05 before the
+    // first sample, so an `['0:01', '0:01']` expectation could never come
+    // true and the poll timed out with the readouts perfectly in step.
     await expect
-      .poll(() =>
-        page.evaluate(() => [...document.querySelectorAll('.mb-time')].map((t: any) => t.textContent)),
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const texts = [...document.querySelectorAll('.mb-time')].map((t: any) => t.textContent);
+            return { texts, advanced: texts[0] !== '0:00', inStep: texts[0] === texts[1] };
+          }),
+        { message: 'the two time readouts did not advance together off the shared clock' },
       )
-      .toEqual(['0:01', '0:01']);
+      .toMatchObject({ advanced: true, inStep: true });
 
     await page.click('.mb-play');
     await expect
       .poll(() => page.evaluate(() => (window as any)._exhibitTest.transport.playing))
       .toBe(false);
     await expect(page.locator('.mb-play')).toHaveText('▶');
+  });
+
+  // 35.17b The turned readout is MIRRORED'S ALONE (user, 2026-09-18). Upright,
+  // flip, and rotated all show the far reader the near reader's band however it
+  // is turned; a single right-way-up numeral in an otherwise inverted row reads
+  // as a rendering fault, not as a courtesy. Asserted as the ELEMENT's absence
+  // rather than a style, because a `display: none` that a later rule undoes
+  // would still pass a computed-style check.
+  test('35.17b only a mirrored band carries the far reader\'s second, turned time readout', async ({
+    page,
+  }) => {
+    for (const [qs, expected] of [
+      ['debug=1', 1],
+      ['debug=1&viewports=1', 1],
+      ['debug=1&bandOrientation=flip', 1],
+      ['debug=1&bandOrientation=rotated', 1],
+      ['debug=1&bandOrientation=mirrored', 2],
+    ] as const) {
+      await boot(page, qs);
+      const seen = await page.evaluate(() => ({
+        orientation: (document.querySelector('.middle-band') as HTMLElement).dataset.orientation,
+        times: document.querySelectorAll('.mb-time').length,
+        flipped: document.querySelectorAll('.mb-time-flipped').length,
+        play: document.querySelectorAll('.mb-play').length,
+      }));
+      expect(seen, `?${qs}`).toMatchObject({
+        times: expected,
+        flipped: expected - 1,
+        // The one control both visitors own is in every orientation regardless.
+        play: 1,
+      });
+    }
   });
 
   // 35.14 Clicking a PRESET clears every per-category pin back to "follow" —
@@ -817,7 +879,7 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     await boot(page, 'studyPanel=true&stripHeight=60');
     await page.click('.study-cog');
     await page.click('.study-defaults');
-    await page.waitForURL(/turnPolicy=attribution/);
+    await page.waitForURL(/turnPolicy=request/);
     const search = await page.evaluate(() => location.search);
     for (const pair of [
       'focus=playhead',
@@ -828,15 +890,76 @@ test.describe('35. Week 2 — the study panel and themes', () => {
       'zoomControls=false',
       'bandOrientation=mirrored',
       'annotationColors=theme',
-      'turnPolicy=attribution',
+      // The three that alpha testing settled on (user, 2026-09-01): the preset
+      // is no longer "convenient to debug with", it is the configuration that
+      // keeps winning. `request` also changes what the turn state MEANS —
+      // entitlement rather than attribution.
+      'turnPolicy=request',
+      'tapMode=direct',
+      'marker=glass',
       'audienceAll=true',
       'pinExpiry=auto',
+      // The band as the interface (user, 2026-09-03): the staff reach the
+      // explorers, and the disclosure sentence at their foot, through the
+      // tappable facts wearing the shimmer cue (plan §10 note of that date).
+      'bandTap=shimmer',
+      'theme=parchment', // the staff ground (user, 2026-09-03)
+      'attractAfterIdleMs=180000', // the attract loop: a screen untouched for 3 min (user, 2026-09-07; one timer since 2026-09-16)
+      'arbiter=broadcast', // two screens, one set of speakers: the loop's mirror and hand-off need it (2026-09-10)
+      'room=shared', // the room machine: every window of the PC mirrors the audible one (2026-09-11)
+      'switchCue=arrow', // switches a side did not make are shown (alpha-tester feedback, 2026-09-10)
     ]) {
       expect(search).toContain(pair);
     }
+    expect(await page.evaluate(() => (window as any)._exhibitTest.config.bandTap)).toBe('shimmer');
     expect(search).not.toContain('stripHeight'); // a reset, not a merge
     const ok = await page.evaluate(() => (window as any)._exhibitTest.ready);
     expect(ok, 'the exhibit boots under the preset').toBe(true);
+  });
+
+  // 35.29 The Views tab (user, 2026-09-03): each half's starting view is a
+  // row of its own, writing one slot of the per-viewport `views` parameter;
+  // the toolbar switch lives here too, moved from Layout. Choosing an explorer
+  // for the far half boots that half in it with the switch forced on (config.js);
+  // choosing Listen again removes the parameter, since it is the default.
+  test('35.29 the Views tab starts one half in an explorer, and back', async ({ page }) => {
+    await boot(page, 'debug=1&studyPanel=true');
+    await page.click('.study-cog');
+    await page.click('.study-tab[data-tab="views"]');
+    const rows = page.locator('.study-row');
+    // The explorers' own knobs arrive on this tab as they are built, so the
+    // COUNT is a moving number and the three positions that matter are pinned by
+    // name instead. What must hold is that the two half-selectors come first and
+    // the story's knobs after them — a reader reaching for "which view does this
+    // half start in" should not have to read past four ways to draw a notepad.
+    await expect(rows).toHaveCount(8);
+    await expect(rows.nth(0).locator('.study-label')).toHaveText(/Near half/);
+    await expect(rows.nth(1).locator('.study-label')).toHaveText(/Far half/);
+    await expect(rows.nth(2).locator('.study-label')).toHaveText(/View switch/);
+    const labels = await rows.locator('.study-label').allTextContents();
+    for (const want of ['Did-you-know images', 'Did-you-know skin', 'Did-you-know width', 'Did-you-know tilt', 'Did-you-know face']) {
+      expect(labels.some((l) => l.includes(want)), `the Views tab lost "${want}"`).toBe(true);
+    }
+    // Listen is the default in both halves, and marked as such.
+    await expect(rows.nth(1).locator('.study-option.is-on')).toHaveText(/Listen •/);
+
+    await rows.nth(1).locator('.study-option', { hasText: 'Conductors' }).click();
+    await page.waitForURL(/views=listen(%2C|,)conductors/);
+    expect(await page.evaluate(() => (window as any)._exhibitTest.ready)).toBe(true);
+    expect(await page.evaluate(() => (window as any)._exhibitTest.view(1))).toBe('conductors');
+    expect(await page.evaluate(() => (window as any)._exhibitTest.view(0))).toBe('listen');
+    // Forced on so the half can come back — resolved, not written to the URL.
+    expect(await page.evaluate(() => (window as any)._exhibitTest.config.viewSwitch)).toBe(true);
+    expect(page.url()).not.toContain('viewSwitch');
+    // The panel reopened itself on the same tab, with the choice marked.
+    await expect(page.locator('.study-tab[data-tab="views"]')).toHaveClass(/is-on/);
+    await expect(page.locator('.study-row').nth(1).locator('.study-option.is-on')).toHaveText('Conductors');
+
+    // Back to Listen: the default, so the parameter goes away.
+    await page.locator('.study-row').nth(1).locator('.study-option', { hasText: 'Listen' }).click();
+    await page.waitForURL((u) => !u.toString().includes('views='));
+    expect(await page.evaluate(() => (window as any)._exhibitTest.view(1))).toBe('listen');
+    expect(page.url()).toContain('studyPanel=true');
   });
 
   // 35.26 The parchment preset (user, 2026-08-25): an aged-paper canvas via
@@ -1396,5 +1519,209 @@ test.describe('35. Regions vs an unsettled boot layout', () => {
         },
       )
       .toBeLessThan(0.05);
+  });
+});
+
+test.describe('35. Demo feedback — the band at a single viewport', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 35.27 The band was built PER GAP, so `?viewports=1` — no gap — mounted no
+  // band at all (Chanda, demo feedback 2026-09-01). That was never a decision:
+  // the band carries the discographic identity AND the exhibit's only
+  // play/pause and time readout, so a single-viewport screen silently lost the
+  // transport with the metadata. The band object was even constructed and
+  // ticked every frame; nothing ever put it in the document.
+  //
+  // Pinned here: it mounts, it mounts ABOVE the strips (the "now playing"
+  // position for one reader, which needs the plain column direction the
+  // two-sided layout reverses), it brings the transport with it, and a
+  // two-sided orientation degrades instead of rendering one reader the same
+  // facts twice. The last clause re-pins the TWO-viewport geometry, because
+  // the whole risk of this change is disturbing the shipped table layout.
+  test('35.27 one viewport still gets the band, above the strips, with the transport', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&viewports=1');
+
+    const single = await page.evaluate(() => {
+      const screen = document.getElementById('screen')!;
+      const band = document.querySelector('.middle-band') as HTMLElement | null;
+      const vp = document.querySelector('.vp') as HTMLElement;
+      // Null-SAFE throughout: an unmounted band is the regression this test
+      // exists for, and it should be reported by the `mounted` assertion below
+      // rather than as a getBoundingClientRect throw with no message.
+      const b = band?.getBoundingClientRect();
+      return {
+        mounted: !!band?.isConnected,
+        bands: document.querySelectorAll('.middle-band').length,
+        slotsLeft: document.querySelectorAll('.middle-band-slot').length,
+        orientation: band?.dataset.orientation ?? null,
+        clusters: band?.querySelectorAll('.mb-cluster').length ?? 0,
+        flexDirection: getComputedStyle(screen).flexDirection,
+        bandBottom: b ? Math.round(b.bottom) : null,
+        vpTop: Math.round(vp.getBoundingClientRect().top),
+        height: b ? Math.round(b.height) : null,
+        play: !!band?.querySelector('.mb-play'),
+        times: band?.querySelectorAll('.mb-time').length ?? 0,
+        conductor: !!band?.querySelector('.mb-conductor'),
+      };
+    });
+    expect(single.mounted, 'the band must be in the document at one viewport').toBe(true);
+    expect(single.bands).toBe(1);
+    // The placeholder is REPLACED, not left behind holding reserved height.
+    expect(single.slotsLeft).toBe(0);
+    expect(single.height).toBe(96);
+    expect(single.clusters).toBe(1);
+    // Above the strips, and by the layout rather than by a margin.
+    expect(single.flexDirection).toBe('column');
+    expect(single.bandBottom!).toBeLessThanOrEqual(single.vpTop);
+    // The transport came with it — the reason this is a bug and not a cosmetic gap.
+    expect(single.play, 'the only play/pause in the exhibit lives in the band').toBe(true);
+    // ONE readout: there is no second reader at one viewport, and since
+    // 2026-09-18 the turned copy is the mirrored band's alone (35.17b).
+    expect(single.times).toBe(1);
+    expect(single.conductor).toBe(true);
+
+    // …and it actually drives the clock from there.
+    await page.click('.mb-play');
+    await expect(page.locator('.mb-play')).toHaveText('❚❚');
+    await page.click('.mb-play');
+    await expect(page.locator('.mb-play')).toHaveText('▶');
+
+    // A two-sided orientation has no second side to serve: one cluster, upright.
+    await boot(page, 'debug=1&viewports=1&bandOrientation=mirrored');
+    const degraded = await page.evaluate(() => {
+      const band = document.querySelector('.middle-band') as HTMLElement;
+      return {
+        orientation: band.dataset.orientation,
+        clusters: band.querySelectorAll('.mb-cluster').length,
+        height: Math.round(band.getBoundingClientRect().height),
+      };
+    });
+    expect(degraded.orientation).toBe('upright');
+    expect(degraded.clusters).toBe(1);
+    expect(degraded.height).toBe(96);
+
+    // THE REGRESSION GUARD: two viewports keep the shipped table geometry —
+    // one band, BETWEEN the halves, with the reversal that puts viewport 0 at
+    // the near edge still in force.
+    await boot(page, 'debug=1');
+    const table = await page.evaluate(() => {
+      const screen = document.getElementById('screen')!;
+      const band = document.querySelector('.middle-band') as HTMLElement;
+      const vps = [...document.querySelectorAll('.vp')] as HTMLElement[];
+      const b = band.getBoundingClientRect();
+      return {
+        bands: document.querySelectorAll('.middle-band').length,
+        single: screen.dataset.singleViewport ?? null,
+        flexDirection: getComputedStyle(screen).flexDirection,
+        above: vps.filter((v) => v.getBoundingClientRect().bottom <= b.top + 1).length,
+        below: vps.filter((v) => v.getBoundingClientRect().top >= b.bottom - 1).length,
+      };
+    });
+    expect(table.bands).toBe(1);
+    expect(table.single).toBeNull();
+    expect(table.flexDirection).toBe('column-reverse');
+    expect(table.above, 'one half above the band').toBe(1);
+    expect(table.below, 'one half below the band').toBe(1);
+  });
+});
+
+test.describe('35. Demo feedback — how loudly the grouping speaks', () => {
+  test.use({ viewport: { width: 1024, height: 1366 } });
+
+  // 35.28 ?groupIndicator raises the grouping edge's salience (Chanda, demo
+  // feedback 2026-09-01: it can get overlooked). What it must NOT do is change
+  // when a grouping paints at all — that stays `hasGroupStory`, reaffirmed the
+  // same day, and 35.15 pins it. So this asserts the loudness and re-asserts
+  // the gate underneath it.
+  test('35.28 the grouping indicator gets louder without painting where it did not', async ({
+    page,
+  }) => {
+    // The annotation with an authored group story, from the payload.
+    const withStory = async () =>
+      page.evaluate(() => {
+        const T = (window as any)._exhibitTest;
+        const hasText = (v: any) =>
+          typeof v === 'string'
+            ? v.trim() !== ''
+            : !!v && Object.values(v).some((s: any) => typeof s === 'string' && s.trim() !== '');
+        const ann = T.exhibit.annotations.find(
+          (a: any) =>
+            a.grouping?.groups?.length &&
+            (Object.values(a.groupNotes || {}).some(hasText) ||
+              (a.comparisons || []).some((c: any) => hasText(c.text))),
+        );
+        return { id: ann.id as string, audience: ann.audience as string };
+      });
+
+    const paint = (annId: string) =>
+      page.evaluate((id) => {
+        const vp = document.querySelector('.vp[data-viewport="0"]') as HTMLElement;
+        (vp.querySelector(`.ann-chip[data-ann="${id}"]`) as HTMLElement).click();
+        const strip = vp.querySelector('.strip[data-group]') as HTMLElement;
+        return {
+          attr: vp.dataset.groupIndicator ?? null,
+          grouped: vp.querySelectorAll('.strip[data-group]').length,
+          border: strip ? getComputedStyle(strip).borderLeftWidth : null,
+          washColor: strip ? getComputedStyle(strip, '::before').backgroundColor : null,
+          washOpacity: strip ? getComputedStyle(strip, '::before').opacity : null,
+          edgeColor: strip ? getComputedStyle(strip).getPropertyValue('--group-color').trim() : null,
+        };
+      }, annId);
+
+    await boot(page, 'debug=1');
+    const story = await withStory();
+    await boot(page, `debug=1&audiences=${story.audience},${story.audience}`);
+    const shipped = await paint(story.id);
+    expect(shipped.attr, 'the default writes no attribute at all').toBeNull();
+    expect(shipped.border).toBe('4px');
+    expect(shipped.grouped).toBeGreaterThan(0);
+
+    await boot(page, `debug=1&audiences=${story.audience},${story.audience}&groupIndicator=wide`);
+    const wide = await paint(story.id);
+    expect(wide.border).toBe('12px');
+    // Wide is only a wider rule — no wash.
+    expect(wide.washColor).toBe('rgba(0, 0, 0, 0)');
+
+    await boot(page, `debug=1&audiences=${story.audience},${story.audience}&groupIndicator=tint`);
+    const tint = await paint(story.id);
+    expect(tint.border).toBe('12px');
+    expect(Number(tint.washOpacity)).toBeGreaterThan(0);
+    // ONE interpretation of the authored colour: the wash and the edge are the
+    // same value, so the strip cannot say two different things about its group.
+    const asRgb = await page.evaluate((hex) => {
+      const d = document.createElement('div');
+      d.style.color = hex;
+      document.body.appendChild(d);
+      const v = getComputedStyle(d).color;
+      d.remove();
+      return v;
+    }, tint.edgeColor!);
+    expect(tint.washColor).toBe(asRgb);
+
+    // THE GATE IS UNTOUCHED: an annotation with no group story paints no
+    // grouping, however loud the setting.
+    const noStory = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const hasText = (v: any) =>
+        typeof v === 'string'
+          ? v.trim() !== ''
+          : !!v && Object.values(v).some((s: any) => typeof s === 'string' && s.trim() !== '');
+      const ann = T.exhibit.annotations.find(
+        (a: any) =>
+          a.grouping?.groups?.length &&
+          !Object.values(a.groupNotes || {}).some(hasText) &&
+          !(a.comparisons || []).some((c: any) => hasText(c.text)),
+      );
+      return ann ? { id: ann.id as string, audience: ann.audience as string } : null;
+    });
+    expect(noStory, 'fixture needs a grouped annotation without a story').not.toBeNull();
+    await boot(
+      page,
+      `debug=1&audiences=${noStory!.audience},${noStory!.audience}&groupIndicator=tint`,
+    );
+    const silent = await paint(noStory!.id);
+    expect(silent.grouped, 'a bare legend stays noise, however loud the option').toBe(0);
   });
 });

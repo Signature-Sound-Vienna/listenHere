@@ -6,6 +6,11 @@
 // load.  Audio File objects stay in memory — no reload after alignment.
 // ---------------------------------------------------------------------------
 
+import {
+  alignmentFileName,
+  meiTitle,
+} from "./engine/session-recovery.js";
+
 const TARGET_SR = 22050;
 
 let selectedFiles = []; // Array of File objects
@@ -22,23 +27,17 @@ const PRESETS = {
     coarse: 4,
     slack: 80,
     featureRate: 10,
-    scoreDownsample: 2,
-    onsetWeight: 2.0,
-  },
+    scoreDownsample: 2,  },
   balanced: {
     coarse: 2,
     slack: 120,
     featureRate: 10,
-    scoreDownsample: 1,
-    onsetWeight: 2.0,
-  },
+    scoreDownsample: 1,  },
   hq: {
     coarse: 2,
     slack: 160,
     featureRate: 20,
-    scoreDownsample: 1,
-    onsetWeight: 2.0,
-  },
+    scoreDownsample: 1,  },
 };
 
 const STORAGE_KEY = "listenHere_alignQuality";
@@ -74,9 +73,6 @@ function readAdvancedParams() {
     scoreDownsample: parseInt(
       document.getElementById("align-param-score-ds").value,
     ),
-    onsetWeight: parseFloat(
-      document.getElementById("align-param-onset-weight").value,
-    ),
   };
 }
 
@@ -86,7 +82,6 @@ function writeAdvancedParams(p) {
   document.getElementById("align-param-slack").value = p.slack;
   document.getElementById("align-param-feature-rate").value = p.featureRate;
   document.getElementById("align-param-score-ds").value = p.scoreDownsample;
-  document.getElementById("align-param-onset-weight").value = p.onsetWeight;
 }
 
 /** Check if current advanced params match any preset. */
@@ -96,8 +91,7 @@ function detectPreset(params) {
       p.coarse === params.coarse &&
       p.slack === params.slack &&
       p.featureRate === params.featureRate &&
-      p.scoreDownsample === params.scoreDownsample &&
-      p.onsetWeight === params.onsetWeight
+      p.scoreDownsample === params.scoreDownsample
     )
       return name;
   }
@@ -165,6 +159,28 @@ let _meiMidiVerovioVersion = null;
 /** Expansion-related Verovio options live at that render (null when all default). */
 let _meiMidiVerovioOptions = null;
 
+/** This run's score title (MEI titleStmt), the session label's default. */
+let _meiTitleText = "";
+
+/** The file name this run's result was saved under, or null if it was not. */
+let _savedAs = null;
+
+/** Set once Listen! hands the result to the listen view, whose guard takes over. */
+let _handedOff = false;
+
+/** A run between Start and its result or failure. (alignmentRunning is not
+ *  this: it stays set after a run, to keep the wizard's tabs locked.) */
+let _runInProgress = false;
+
+// A run in progress, or a result neither saved nor handed over, is work a
+// closed tab would lose: ask first. (Browsers show their own wording.)
+window.addEventListener("beforeunload", (e) => {
+  const unsavedResult = !!alignmentResult && !_savedAs && !_handedOff;
+  if (!_runInProgress && !unsavedResult) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+
 /**
  * Called by listen.js once DOMContentLoaded fires, passing a Promise that
  * resolves to the shared verovio toolkit.
@@ -179,6 +195,7 @@ async function fetchMeiMidi(meiUri) {
   const resp = await fetch(meiUri);
   if (!resp.ok) throw new Error(`Could not fetch MEI (HTTP ${resp.status})`);
   const meiText = await resp.text();
+  _meiTitleText = meiTitle(meiText);
   const loaded = tk.loadData(meiText);
   if (!loaded) throw new Error("Verovio could not parse the MEI data");
   const midiBase64 = tk.renderToMIDI();
@@ -316,12 +333,59 @@ function renderFileTable() {
     radio.value = f.name;
     if (i === longestIdx) radio.checked = true;
     tdRef.appendChild(radio);
+    const tdTrim = document.createElement("td");
+    tdTrim.style.textAlign = "center";
+    const trim = document.createElement("input");
+    trim.type = "checkbox";
+    trim.className = "align-trim-checkbox";
+    trim.dataset.file = f.name;
+    trim.checked = f._openEnds == null ? globalOpenEnds() : f._openEnds;
+    trim.title = TRIM_INHERITED_TITLE;
+    if (f._openEnds != null) {
+      trim.classList.add("align-trim-explicit");
+      trim.title = TRIM_EXPLICIT_TITLE;
+    }
+    // Clicking a row detaches it from the global setting for good.
+    trim.addEventListener("change", () => {
+      f._openEnds = trim.checked;
+      trim.classList.add("align-trim-explicit");
+      trim.title = TRIM_EXPLICIT_TITLE;
+    });
+    tdTrim.appendChild(trim);
     tr.appendChild(tdName);
     tr.appendChild(tdDur);
     tr.appendChild(tdRef);
+    tr.appendChild(tdTrim);
     tbody.appendChild(tr);
   });
   updatePeakSizeEstimate();
+}
+
+const TRIM_INHERITED_TITLE = "Following the setting below the table";
+const TRIM_EXPLICIT_TITLE = "Set for this recording";
+
+/** The wizard's global "ignore audio with no counterpart" setting. */
+function globalOpenEnds() {
+  const cb = document.getElementById("align-open-ends-checkbox");
+  return cb ? cb.checked : false;
+}
+
+/** Re-sync the per-row boxes that are still following the global setting. */
+function syncTrimCheckboxes() {
+  const on = globalOpenEnds();
+  document.querySelectorAll(".align-trim-checkbox").forEach((cb) => {
+    const f = selectedFiles.find((s) => s.name === cb.dataset.file);
+    if (f && f._openEnds == null) cb.checked = on;
+  });
+}
+
+/** Per-file overrides only — files still following the global are omitted. */
+function openEndsOverrides() {
+  const out = {};
+  for (const f of selectedFiles) {
+    if (f._openEnds != null) out[f.name] = !!f._openEnds;
+  }
+  return out;
 }
 
 function updatePeakSizeEstimate() {
@@ -362,6 +426,8 @@ async function startAlignment() {
     return;
   }
   const refName = document.querySelector('input[name="ref"]:checked').value;
+  const openEnds = globalOpenEnds();
+  const openEndsByFile = openEndsOverrides();
   const peaksChecked = document.getElementById("align-peaks-checkbox").checked;
   const peakCount = peaksChecked
     ? Math.max(
@@ -371,9 +437,13 @@ async function startAlignment() {
     : 0;
 
   sessionStorage.removeItem("alignSavedBeforeListen");
+  _meiTitleText = "";
+  _savedAs = null;
+  _handedOff = false;
 
   // Show progress, hide controls
   alignmentRunning = true;
+  _runInProgress = true;
   document.getElementById("align-steps").classList.add("disabled");
   document.getElementById("align-start-btn").style.display = "none";
   document.getElementById("align-summary").style.display = "none";
@@ -525,9 +595,26 @@ async function startAlignment() {
       if (includeParams && includeParams.checked && alignmentResult.header) {
         alignmentResult.header.alignmentParams = { ...currentOptions };
       }
+      // The session label, editable in the results panel: the score's title,
+      // else the score file's name, else none.
+      if (alignmentResult.header) {
+        const meiUriUsed = alignmentResult.header.meiUri || "";
+        const fallback = meiUriUsed
+          ? decodeURIComponent(meiUriUsed.split(/[\\/]/).pop()).replace(/\.mei$/i, "")
+          : "";
+        const label = _meiTitleText || fallback;
+        if (label) alignmentResult.header.label = label;
+      }
+      const labelInput = document.getElementById("align-label-input");
+      if (labelInput) labelInput.value = alignmentResult.header?.label || "";
+      renderOpenEndsReport(alignmentResult);
       progressBar.style.width = "100%";
       progressText.textContent = "";
-      document.getElementById("align-results").style.display = "";
+      const resultsEl = document.getElementById("align-results");
+      resultsEl.style.display = "";
+      // The step list above fills the panel: bring the name field and the
+      // Save data / Listen! buttons into view.
+      resultsEl.scrollIntoView({ block: "end" });
       worker.terminate();
       const w = pendingWaiters.get("result");
       if (w) {
@@ -576,6 +663,8 @@ async function startAlignment() {
       scoreMode,
       featureTotal: selectedFiles.length,
       options: currentOptions,
+      openEnds,
+      openEndsByFile,
     });
     await batchReady;
 
@@ -652,12 +741,105 @@ async function startAlignment() {
   } catch (err) {
     // Worker/feature errors surface here via rejectAllWaiters; UI was updated
     // by the message handler already. Nothing else to do.
+  } finally {
+    _runInProgress = false;
   }
 }
 
 // ---------------------------------------------------------------------------
 // Results
 // ---------------------------------------------------------------------------
+
+/** "12 s", "1 min 7 s" — a duration a reader can check against a waveform. */
+function formatTrim(secs) {
+  const s = Math.round(secs);
+  if (s < 90) return `${s} s`;
+  return `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+
+/**
+ * Say what the open-ended alignment actually did, per recording.
+ *
+ * Asking the user to predict applause before a run is asking them to do the
+ * detector's job; reporting afterwards is what they can act on. Silence here
+ * would leave a trimmed head looking like a mis-alignment.
+ */
+export function renderOpenEndsReport(result) {
+  const el = document.getElementById("align-open-ends-report");
+  if (!el) return;
+  el.innerHTML = "";
+  const info = result && result.header && result.header.openEnds;
+  if (!info) return;
+  const audio = (result.body && result.body.audio) || {};
+  const refName = result.header.ref;
+  const lines = [];
+
+  for (const name of info.trimmed || []) {
+    const entry = audio[name];
+    if (!entry || entry.alignedFrom == null) continue;
+    const head = entry.alignedFrom;
+    const tail = (entry.duration || 0) - entry.alignedTo;
+    const parts = [];
+    if (head > 0.25) parts.push(`${formatTrim(head)} at the start`);
+    if (tail > 0.25) parts.push(`${formatTrim(tail)} at the end`);
+    if (!parts.length) continue;
+    const what = parts.join(" and ");
+    lines.push(
+      name === refName
+        ? `${name} (reference): ${what} was left out of the alignment.`
+        : `${name}: ${what} had no counterpart in the reference.`,
+    );
+  }
+
+  for (const name of info.guardFailed || []) {
+    lines.push(
+      `${name}: trimming looked wrong here — it would have discarded too ` +
+        `much of the recording — so the whole recording was aligned instead.`,
+    );
+  }
+
+  if (!lines.length) {
+    if (!info.enabled) return;
+    // Nothing to fold away — one reassuring line, always visible.
+    const p = document.createElement("p");
+    p.id = "align-open-ends-none";
+    p.textContent =
+      "No recording had audio without a counterpart in the reference.";
+    el.appendChild(p);
+    return;
+  }
+
+  // Folded shut: with twenty recordings this list used to push the Save and
+  // Listen buttons off the bottom of the panel.
+  const details = document.createElement("details");
+  details.id = "align-open-ends-details";
+  const summary = document.createElement("summary");
+  const n = lines.length;
+  summary.textContent =
+    n === 1
+      ? "1 recording had audio with no counterpart"
+      : `${n} recordings had audio with no counterpart`;
+  details.appendChild(summary);
+
+  const ul = document.createElement("ul");
+  ul.id = "align-open-ends-list";
+  for (const line of lines) {
+    const li = document.createElement("li");
+    // "name: what happened" — the name carries the weight, so set it apart.
+    const split = line.indexOf(": ");
+    if (split > 0) {
+      const strong = document.createElement("strong");
+      strong.textContent = line.slice(0, split + 1); // keep the colon with the name
+      li.appendChild(strong);
+      li.appendChild(document.createTextNode(line.slice(split + 1)));
+    } else {
+      li.textContent = line;
+    }
+    ul.appendChild(li);
+  }
+  details.appendChild(ul);
+  el.appendChild(details);
+}
 
 function downloadJSON() {
   if (!alignmentResult) return;
@@ -667,15 +849,17 @@ function downloadJSON() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "alignment.json";
+  a.download = alignmentFileName(alignmentResult.header?.label);
   a.click();
   URL.revokeObjectURL(url);
+  _savedAs = a.download;
   sessionStorage.setItem("alignSavedBeforeListen", "true");
 }
 
 function listenToAlignment() {
   if (!alignmentResult || !_onComplete) return;
-  _onComplete(alignmentResult, selectedFiles);
+  _handedOff = true;
+  _onComplete(alignmentResult, selectedFiles, _savedAs);
 }
 
 // ---------------------------------------------------------------------------
@@ -836,6 +1020,13 @@ export function initAlignPanel() {
     .getElementById("align-start-btn")
     .addEventListener("click", startAlignment);
 
+  // Global "ignore audio with no counterpart" toggle. Rows that have never
+  // been clicked follow it; rows that have been clicked keep their own value.
+  const openEndsCheckbox = document.getElementById("align-open-ends-checkbox");
+  if (openEndsCheckbox) {
+    openEndsCheckbox.addEventListener("change", syncTrimCheckboxes);
+  }
+
   // Peaks checkbox + count input
   const peaksCheckbox = document.getElementById("align-peaks-checkbox");
   const peaksCountWrap = document.getElementById("align-peaks-count-wrap");
@@ -879,7 +1070,6 @@ export function initAlignPanel() {
     "align-param-slack",
     "align-param-feature-rate",
     "align-param-score-ds",
-    "align-param-onset-weight",
   ];
   advancedInputs.forEach((id) => {
     const el = document.getElementById(id);
@@ -906,6 +1096,15 @@ export function initAlignPanel() {
     meiInput.addEventListener("input", updateScoreParamState);
     updateScoreParamState(); // initial state
   }
+
+  // The session label: written straight into the result's header, so Save
+  // data names the file after it and the listen view inherits it.
+  document.getElementById("align-label-input")?.addEventListener("input", (e) => {
+    if (!alignmentResult?.header) return;
+    const v = e.target.value.trim();
+    if (v) alignmentResult.header.label = v;
+    else delete alignmentResult.header.label;
+  });
 
   // Results buttons
   document

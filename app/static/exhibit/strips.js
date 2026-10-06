@@ -165,6 +165,17 @@ export function createStrip(parent, opts) {
     }, 5000);
   });
 
+  // "Now playing" bars (?activeStrip=bars; alpha-tester feedback 2026-09-10): a
+  // three-bar equaliser glyph after the caption, shown on the active strip only
+  // and animated only while the clock runs (exhibit.css keys it off #screen
+  // [data-playing]). In the caption so it follows the text, pointer-events none
+  // like the caption's.
+  const live = document.createElement("span");
+  live.className = "strip-live";
+  live.setAttribute("aria-hidden", "true");
+  for (let i = 0; i < 3; i++) live.appendChild(document.createElement("i"));
+  caption.appendChild(live);
+
   const strip = {
     file: opts.file,
     el,

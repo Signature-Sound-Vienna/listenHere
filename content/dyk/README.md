@@ -1,8 +1,9 @@
 # "Did you know?" — the museum text
 
-Chanda's authored content for the two explorers: six New Year's Concerts and six
+Chanda's authored content for the two explorers: six New Year's Concerts and twenty
 conductors, each written three times over for the exhibit's three audiences.
-Supplied 2026-09-18 as two Google Docs markdown exports.
+Supplied 2026-09-18 as two Google Docs markdown exports; a new conductors export on
+2026-10-20 added fourteen conductors (the first six unchanged but for one apostrophe).
 
 **This folder is the source of truth.** `tools/prep_exhibit_dyk.py` parses it into
 `app/static/exhibit/data/dyk.json`, which the exhibit reads and which — unlike
@@ -13,9 +14,10 @@ ruling is that her text is rendered **verbatim**.
 | file | what |
 |---|---|
 | `concert-years.md` | 1939–2026 as `# YYYY` headings; six carry content. A content year's heading carries the hook as a parenthetical subtitle. |
-| `conductors.md` | six conductors as `# Name (years)` headings. |
+| `conductors.md` | twenty conductors as `# Name (years)` headings: the export with its two base64 image definitions pointed at `images/`. Nézet-Séguin (2026) and Sokhiev (2027) have no concert in the concerts sidecar yet, so the explorer does not show them; the tool names them. |
+| `image-style-prompt.md` | the Nano Banana style fragment for AI illustrations, and the obligations that come with them. |
 | `images/` | the two photographs, **gitignored** — see below. |
-| `original-export/` | Chanda's two files exactly as they arrived, base64 and all; **gitignored**, kept so the stripped copies can be checked against the originals. |
+| `original-export/` | Chanda's two files exactly as they arrived, base64 and all; **gitignored**, kept so the stripped copies can be checked against the originals. The superseded conductors export carries its date, `(2026-09-18)`. |
 
 ## The registers
 
@@ -53,6 +55,24 @@ Two things to settle before either becomes a real figure:
 2. **The captions are ours, not hers.** She supplied none, and the note above is an
    instruction rather than a caption. They are authored in the tool's `IMAGES`
    table, where they can be changed without touching her markdown.
+
+## The illustrations ARE shipped
+
+Pictures we make with AI, as opposed to the two in her export. Their sources sit
+in `assets/dyk-images/` (committed); `tools/prep_exhibit_dyk.py` attaches each to
+its conductor through its `ILLUSTRATIONS` table and renders it into
+`app/static/exhibit/dyk-images/` as 960 px WebP with the spark burned into the
+lower-right corner and IPTC `trainedAlgorithmicMedia` in the XMP. The caption is
+ours, and the view adds "A picture made with AI." under it. An illustration can be
+limited to some registers.
+
+| conductor | file | registers | made |
+|---|---|---|---|
+| Mariss Jansons | `Jansons-Vergnuegungszug.jpg` | all | 2026-10-20, Nano Banana; prompt lost. `image-style-prompt.md` was derived from this picture. |
+| Herbert von Karajan | `Karajan-Battle.jpg` | all | 2026-10-20, Nano Banana, `image-style-prompt.md` as the whole prompt, less the sound-effect text and musical notes. Replaces the placeholder for her `image2`. |
+
+To add one: put the source in `assets/dyk-images/`, add its row to `ILLUSTRATIONS`
+and to this table, and re-run the tool.
 
 ## Editorial slips, for Chanda — listed, not fixed
 

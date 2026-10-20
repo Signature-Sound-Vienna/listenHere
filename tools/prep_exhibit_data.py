@@ -235,6 +235,71 @@ PIECES = {
         "opus": "op. 437",
         "alignment_is_hq": False,
     },
+    # Pizzicato-Polka (2026-10-20) is PROVISIONAL too, for a different reason:
+    #   * Chanda's three sets share ONE audio-to-audio body (no score; balanced
+    #     preset) whose reference, the Volksoper "New Year's Concerto" recording
+    #     (291 s), plays the piece TWICE. The others track it 1:1 for its first
+    #     ~96 s, then advance only 4–10 s of their own audio over 106–132 s of
+    #     it, so cursors there crawl or leap. Seven of the nine regions lie in
+    #     the 1:1 stretch; "Blimm bloom blimm" and "The Coda Over Time" do not.
+    #   * every region was placed by projection through that grid (one index
+    #     pair, all targets agree), so the pairs below are exact. They are NOT
+    #     portable to a re-alignment with another reference: an audio-to-audio
+    #     grid is as long as its reference.
+    #   * the ten are a PROPOSAL (2026-10-20): the Volksoper stays because it is
+    #     the reference; VPO-1974 (DVD2) and Falk (1988) are left out because
+    #     their alignments are broken (guardFailed); every question annotation
+    #     keeps the recording that answers it (Järvi for "Extra notes", VPO-2005
+    #     for "An extra pick-up" — user, 2026-10-20), and every recording a
+    #     shown text points to is shown too (VPO-1987, Karajan's VPO recording,
+    #     from Twinkle's answer; VPO-1941 and 1951-1954, Krauss a decade apart,
+    #     in the Coda). The author decides.
+    #   * no opus: the Cranz edition prints "Op. 257", unverified against the
+    #     catalogue, and the wall shows what it is given.
+    "pizzicato": {
+        "src_dir": os.path.join(REPO, "ExhibitAnnots/Pizzicato"),
+        # One shared body, so the HQ source is simply one of the three sets.
+        "sources": {
+            "hq": "PizzicatoPolka_Adults.json",
+            "kids": "PizzicatoPolka_Kids.json",
+            "adults": "PizzicatoPolka_Adults.json",
+            "expert": "PizzicatoPolka_Experts.json",
+        },
+        "audiences": ["kids", "adults", "expert"],
+        "curated": [
+            "Orchester der Wiener Volksoper (Strauss. New Year´s Concerto).wav",  # the reference
+            "VPO-1941 (& unbekannt).wav",
+            "VPO-1951-1954.wav",
+            "VPO-1987.wav",  # Karajan with the VPO: Twinkle's answer (1971) points to it
+            "VPO-1989.wav",
+            "VPO-2005.wav",  # the "yes" of "An extra pick-up"
+            "VPO-2012.wav",
+            "Berliner Philharmoniker, Herbert von Karajan (1971).wav",
+            "Estonian National Symphony Orchestra, Neeme Järvi (2017).wav",  # the "yes" of "Extra notes"
+            "Das Grosse Neujahrskonzert, mixed.wav",  # the sung version
+        ],
+        "pairs": {
+            "rgn_mv6e4h6f_2": (1738, 1979),    # Adults, Extra notes
+            "rgn_mv6eui2q_7": (14, 308),       # Adults, Plucked throughout?
+            "rgn_mv6f30wj_9": (4764, 6341),    # Adults, Blimm bloom blimm — runs into the stall
+            "rgn_mv6fv18j_11": (1052, 1443),   # Expert, An extra pick-up (VPO-1974 dissents at 0–0)
+            "rgn_mv6g84m9_13": (0, 0),         # Expert, The poco rit. (a) — DEGENERATE, dropped
+            "rgn_mv6g8s8m_14": (321, 772),     # Expert, The poco rit. (b)
+            "rgn_mv6gvab3_16": (8648, 14357),  # Expert, The Coda Over Time — inside the stall
+            "rgn_mv6n3dvj_18": (2582, 3663),   # Kids, Twinkle Twinkle Little Glockenspiel
+            "rgn_mv6nh4m7_20": (3695, 4784),   # Kids, The jingling tambourine
+            "rgn_mv6no4fq_22": (334, 1895),    # Kids, The singing version!
+        },
+        # 0.0–0.0 on all seven targets: authored so, for the author to delete or redraw.
+        "degenerate": {"rgn_mv6g84m9_13"},
+        "needs_hand_placement": set(),
+        "wav_dir": "app/static/wav/Pizzicato",
+        "audio_subdir": "pizzicato",
+        "title": {"en": "Pizzicato-Polka", "de": "Pizzicato-Polka"},
+        "composer": "Johann Strauss II and Josef Strauss",
+        "opus": None,
+        "alignment_is_hq": False,
+    },
 }
 
 
@@ -242,16 +307,20 @@ def apply_piece(name):
     """Rebind the module's piece constants to PIECES[name]; the default stays put."""
     global PIECE, SOURCES, AUDIENCES, CURATED, CANONICAL_PAIRS, NEEDS_HAND_PLACEMENT
     global WAV_DIR, AUDIO_SUBDIR, PIECE_TITLE, PIECE_COMPOSER, PIECE_OPUS
-    global DEFAULT_SRC_DIR, ALIGNMENT_IS_HQ
+    global DEFAULT_SRC_DIR, ALIGNMENT_IS_HQ, DEGENERATE_REGIONS, OVERRIDES_FILE
     spec = PIECES[name]
     PIECE = name
     if spec is None:
         return
+    # Per piece: the default file is Die Fledermaus's, and region ids never repeat
+    # across pieces, so sharing it would only produce "unknown annotation" noise.
+    OVERRIDES_FILE = f"{name}-overrides.json"
     SOURCES = dict(spec["sources"])
     AUDIENCES = list(spec["audiences"])
     CURATED = list(spec["curated"])
     CANONICAL_PAIRS = dict(spec["pairs"])
     NEEDS_HAND_PLACEMENT = set(spec["needs_hand_placement"])
+    DEGENERATE_REGIONS = set(spec.get("degenerate", ()))
     WAV_DIR = spec["wav_dir"]
     AUDIO_SUBDIR = spec["audio_subdir"]
     PIECE_TITLE = spec["title"]
@@ -745,7 +814,10 @@ def step_payload(args, sets, warnings):
     corrections = summarise_corrections(hq_header.get("corrections"))
     if AUDIENCES:
         overrides_path = os.path.join(args.data_dir, OVERRIDES_FILE)
-        seed_overrides(overrides_path)
+        if NEEDS_HAND_PLACEMENT:
+            # The seed documents the D-or-E slot; another piece gets no template
+            # until it has a region that needs one.
+            seed_overrides(overrides_path)
         overrides = load_overrides(overrides_path, warnings)
         apply_overrides(annotations, overrides, warnings, corrections)
         pending_hand_placement(annotations, warnings)

@@ -209,6 +209,18 @@ const CATALOGUE = {
   // Inside the placeholder frame that stands in for a picture the exhibit may
   // not yet show (licence unresolved — content/dyk/README.md).
   "dyk.imagePending": { en: "Picture to come" },
+  // The plan's §5.5 disclosure for the illustrations we made with AI: the spark
+  // burned into each picture, said in words ONCE, with the spark itself drawn in
+  // the sentence at {sigil} (dyk.js aiDisclosure). On the explorer's foot while
+  // such a picture is shown, and in its lightbox (user, 2026-10-20 — it replaced
+  // a "made with AI" line under every caption).
+  "dyk.aiImages": {
+    en: "Images showing {sigil} were generated using AI (Google Gemini).",
+    de: "Bilder mit {sigil} wurden mit KI erzeugt (Google Gemini).",
+  },
+  // A real picture in the story opens big on a tap (dyk.js openLightbox).
+  "dyk.enlarge": { de: "Bild vergrößern", en: "Show the picture bigger" },
+  "dyk.closeImage": { de: "Bild schließen", en: "Close the picture" },
   // THE PORTRAIT CREDIT (0.68.0). The Gen-AI portraits are gone — image models
   // will no longer render living public figures — and freely-licensed photographs
   // replaced them. That swapped one obligation for another: the AI batch had to be

@@ -404,6 +404,22 @@ const TABS = [
     label: "Misc",
     hint: "Focus and reading behaviour, tap semantics, the marker, and kiosk readiness.",
     params: [
+      // The tour (roadmap 27; museum feedback 2026-09-22: the interface is
+      // still confusing for anyone who has not lived in it).
+      {
+        key: "tour",
+        label: "Tour",
+        options: ["off", "arrival", "buttons", "both"],
+        hint:
+          "A live walkthrough over the real interface, per half. arrival: the touch that lowers the attract band starts it on that half; buttons: a “?” per area (toolbar, annotation panel, explorer) runs its own part; both: the staff setting. Steps complete on the visitor's own action; nothing is blocked.",
+      },
+      {
+        key: "tourStyle",
+        label: "Tour attention",
+        options: ["mask", "loop"],
+        hint:
+          "How a step points at its target, an A/B: mask dims everything but the target; loop is a hand-drawn loop round it in the switch cue's line — it draws itself once and a sixth round, stays a few seconds, redraws, and undraws before the next one draws.",
+      },
       // Chanda's demo feedback (2026-09-01): the per-recording notes were
       // authored, shipped in the payload, and rendered nowhere.
       {
@@ -609,6 +625,10 @@ const STUDY_PRESET = {
   // The faces whatever the tap mode (alpha testing, user, 2026-09-22).
   strap: "on",
   marker: "glass",
+  // The tour (roadmap 27, 2026-09-23): the arrival walkthrough AND the "?"
+  // buttons, so the staff table shows both entries; the attention style stays
+  // the default until the A/B says otherwise.
+  tour: "both",
   audienceAll: true,
   pinExpiry: "auto",
   // The warm-kiosk experience asked for on the iPad (2026-08-26): everything

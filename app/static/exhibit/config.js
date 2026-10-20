@@ -533,6 +533,32 @@ const DEFAULTS = {
   // reader who chose the jump needs no telling. "off" | "arrow".
   switchCue: "off",
 
+  // --- the tour (roadmap 27; tour-steps.js + ../js/tour/tour.js; user rulings
+  // 2026-09-22/23) ---
+  // A live, INTERACTIVE walkthrough drawn over the real interface, per
+  // viewport, in that reader's language and register. Steps complete on the
+  // visitor's own action (a switch, an audience change, a chip tap), with Next
+  // as the escape and Skip always there; the layer never swallows a tap.
+  //   "off"      — the shipped kiosk: nothing mounted, nothing fetched.
+  //   "arrival"  — the touch that lowers the attract band starts the arrival
+  //                walkthrough on the half that was touched.
+  //   "buttons"  — "?" buttons per area (toolbar, annotation panel, explorer),
+  //                each running only its own fragment.
+  //   "both"     — the staff preset.
+  tour: "off",
+  // How a step draws attention to its target, an A/B: "mask" dims everything
+  // but the target; "loop" is a hand-drawn loop round it in the switch cue's
+  // line — drawing itself once and a sixth round, staying, redrawing, and
+  // undrawing before the next step's loop draws (user, 2026-09-23).
+  tourStyle: "mask",
+  // A step with no progress for this long folds the tour away quietly. 0 =
+  // never; the attract loop's own idle timer is separate and untouched.
+  tourIdleMs: 45000,
+  // The loop's stay once drawn: after this it undraws and draws itself again
+  // while the step is still up, so a visitor who looked away sees it drawn
+  // afresh (user, 2026-09-23: six seconds). 0 = drawn once, stays.
+  tourLoopHoldMs: 6000,
+
   // --- the attract loop (attract.js; plan §4.4, design ruled 2026-09-07, the
   // idle model replaced 2026-09-16) ---
   // A SCREEN untouched for this long — touches only; music playing or stopping

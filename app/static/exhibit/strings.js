@@ -228,6 +228,54 @@ const CATALOGUE = {
     en: "Photo: {artist} ({licence}).",
     de: "Foto: {artist} ({licence}).",
   },
+  // THE TOUR (roadmap 27; tour-steps.js, ../js/tour/tour.js). English only for
+  // now, like every other new string: German is Chanda's. A `.kids` twin is
+  // picked automatically where the reader's audience is "kids" (main.js's
+  // resolver, via hasString) — kid-hood is declared once, at the audience
+  // switch, and taken over everywhere (user, 2026-09-23). WORDING RULE (user):
+  // never imply that the annotated passages are worth more than the rest —
+  // our visitors are Strauss enthusiasts; say straight what a thing is.
+  // The intro's wording is a first draft, NOT final (user, 2026-09-23).
+  "tour.intro.title": { en: "Same procedure every year?" },
+  "tour.intro": {
+    en: "At this station you travel through the history of the New Year's Concert by its recordings. Listen, switch between performances while the music plays, and compare them note for note: how the Philharmonic's playing has changed across the years and under different conductors, and how other orchestras play the same music.",
+  },
+  "tour.intro.kids": {
+    en: "Here you can hear the same piece played by different orchestras and conductors, jump between them while the music plays, and listen for what changes.",
+  },
+  // {name} in the two "stripes" texts is one of the four phrases below, filled
+  // from the recording's metadata (main.js recordingLabel).
+  "tour.who": { en: "{conductor}, {year}, with the {ensemble}" },
+  "tour.who.noEnsemble": { en: "{conductor}, {year}" },
+  "tour.who.noConductor": { en: "the {ensemble}, {year}" },
+  "tour.who.unidentified": { en: "an unidentified orchestra, {year}" },
+  "tour.stripes": { en: "You are hearing {name}. Each stripe is one recording of the same piece, lined up note for note with the others." },
+  "tour.stripes.kids": { en: "You are hearing {name}. Every stripe is one recording of the same piece, and they all line up note for note." },
+  "tour.switch": { en: "Tap another stripe to switch to that recording. The music carries on from the same place in the piece." },
+  "tour.switch.kids": { en: "Tap a different stripe and the music jumps to that recording, right where it is now." },
+  "tour.switch.requested": { en: "You have asked the other listener for the turn. It comes to you in a moment, unless they decline." },
+  "tour.switch.denied": { en: "The other listener kept the turn for now. Try again in a moment." },
+  "tour.marker": {
+    en: "The glass is your own marker. Drag it from its hook onto a stripe to mark that moment in every recording; your switches then land there. Pull it off the stripes to put it away.",
+  },
+  "tour.marker.kids": {
+    en: "The magnifying glass is your bookmark. Drag it onto a stripe to mark a moment, and the music starts from your mark whenever you switch. Drag it back off to put it away.",
+  },
+  "tour.strap": { en: "The medallions switch recordings too, keeping your place in the music." },
+  "tour.zoom": { en: "Zoom in to see the waveforms in detail, and out again." },
+  "tour.audience": { en: "Choose how much to read: written for children, for everyone, or for experts." },
+  "tour.audience.kids": { en: "Choose who the notes are written for: children, everyone, or experts." },
+  "tour.chips": { en: "These chips mark passages that an expert musicologist has annotated. Tap one and the music goes there." },
+  "tour.chips.kids": { en: "These chips are notes from a music expert about moments in the piece. Tap one to jump there." },
+  "tour.explore": { en: "The band names who is conducting and when. Tap the name or the year to explore every New Year's Concert since 1939." },
+  "tour.done": { en: "Tap ? at any time to see these hints again." },
+  "tour.done.kids": { en: "Tap ? whenever you want to see these hints again." },
+  "tour.explorer": { en: "Every New Year's Concert since 1939: tap a year for its programme and conductor, or a conductor for their years." },
+  "tour.back": { en: "Back returns you to the recordings." },
+  "tour.next": { en: "Next" },
+  "tour.close": { en: "Close" },
+  "tour.skip": { en: "Skip tour" },
+  "tour.help": { en: "Show me how this works" },
 };
 
 let _debug = false;
@@ -261,6 +309,11 @@ export function t(key, lang = FALLBACK_LANGUAGE) {
   if (entry[lang] != null) return entry[lang];
   _warnOnce(`key "${key}" has no "${lang}" translation`);
   return entry[FALLBACK_LANGUAGE] ?? key;
+}
+
+/** Whether the catalogue has `key` at all — for optional variants (the tour's `.kids` twins). */
+export function hasString(key) {
+  return Object.prototype.hasOwnProperty.call(CATALOGUE, key);
 }
 
 /**

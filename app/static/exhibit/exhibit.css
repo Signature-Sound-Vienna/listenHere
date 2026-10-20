@@ -1881,6 +1881,9 @@ html, body {
  * changing register is a thing to do INSIDE an explorer rather than a reason to
  * leave it (45.2 and 46.3 pin both halves of this). */
 .vp[data-view]:not([data-view="listen"]) .zoom-ctl { visibility: hidden; }
+/* The listening tour's "?" stands down behind an explorer exactly as the zoom
+ * does — the explorer carries its own "?" beside Back (roadmap 27). */
+.vp[data-view]:not([data-view="listen"]) .vp-help { visibility: hidden; }
 /* THE TOOLBAR IS RAISED OVER THE OVERLAY, which now fills the half underneath it
  * (user, 2026-09-18). Its controls keep their places rather than being
  * re-parented into the explorer: nothing should JUMP as a reader crosses the
@@ -3657,6 +3660,58 @@ button.cv-year.is-acknowledged::before { border-radius: 9px; }
 .switch-cue .cue-dot { fill: var(--cue-halo); stroke: var(--cue); stroke-width: 2; }
 @media (prefers-reduced-motion: reduce) {
   .strip-live i { animation: none !important; height: 7px; }
+}
+
+/* ===========================================================================
+ * THE TOUR (roadmap 27). ../js/tour/tour.js draws the layer, the hole, the
+ * ring, and the card from ITS OWN tokens (so the listen interface can host the
+ * same file); these lines map them onto the exhibit's palette, per half, and
+ * dress the three "?" buttons — 44 px chips like everything else on the table.
+ * =========================================================================== */
+.vp {
+  --tour-bg: var(--ex-panel);
+  --tour-text: var(--ex-text);
+  --tour-soft: var(--ex-text-soft);
+  --tour-border: var(--ex-border-strong);
+  --tour-accent: var(--ex-accent);
+  --tour-on-accent: var(--ex-on-accent);
+  --tour-font: var(--ex-font);
+  /* The loop is the switch cue's line (.switch-cue): the same orange, the same halo. */
+  --tour-cue: #f07f1a;
+  --tour-cue-halo: rgba(255, 252, 245, 0.9);
+}
+/* DE-EMPHASISED (user, 2026-09-23): findable when looked for, quieter than
+ * everything else on the table — no filled face, a hairline in the plain
+ * border, soft ink, a lighter glyph, and a little transparency that lifts on
+ * touch. The 44 px target stays. */
+.vp-help, .ann-help, .view-help {
+  box-sizing: border-box;
+  min-width: 44px;
+  height: 44px;
+  padding: 0 14px;
+  border-radius: 22px;
+  border: 1px solid var(--ex-border);
+  background: transparent;
+  color: var(--ex-text-soft);
+  font: 500 17px/1 var(--ex-font);
+  opacity: 0.72;
+  cursor: pointer;
+  transition: opacity 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.vp-help:hover, .ann-help:hover, .view-help:hover,
+.vp-help:active, .ann-help:active, .view-help:active {
+  opacity: 1;
+  color: var(--ex-text);
+  border-color: var(--ex-border-strong);
+}
+.vp-help { margin-left: auto; }                      /* the toolbar's far end */
+.ann-panel:has(.ann-help) { position: relative; }
+.ann-help { position: absolute; top: 0; right: 12px; z-index: 2; }
+.view-help { position: absolute; top: 8px; right: var(--vp-view-help-right, 72px); z-index: 1; }
+.vp-help:focus-visible, .ann-help:focus-visible, .view-help:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--ex-accent-border);
+  outline-offset: 2px;
 }
 
 /* ===========================================================================

@@ -21,7 +21,7 @@
 import {
   readConfig, rotationFor, bandOrientationFor, bandTapFor, viewsEnabled, DEFAULTS,
 } from "./config.js";
-import { resolveText, setDebug, t } from "./strings.js";
+import { hasString, resolveText, setDebug, t } from "./strings.js";
 import {
   getClosestAlignmentIx,
   getCorrespondingTime,
@@ -40,6 +40,11 @@ import { createViewportZoom } from "./zoom.js";
 import { applyTheme, annotationSeries, recolorAnnotations } from "./themes.js";
 import { createMiddleBand } from "./middle-band.js";
 import { createAnnotationList, groupForFileIn, hasGroupStory } from "./annotation-list.js";
+// The tour (roadmap 27): the drawing is SHARED with the listen interface — a
+// zero-import module outside the exhibit, which the boundary test allows — and
+// the exhibit's steps are data of its own.
+import { createTour } from "../js/tour/tour.js";
+import { buildTourSteps } from "./tour-steps.js";
 import { loadConcerts, loadDyk } from "./concerts.js";
 import { createAttractLoop } from "./attract.js";
 import { createRoom, ghostAngleFor, roomViewportId } from "./room.js";
@@ -446,7 +451,11 @@ function positionView(vp) {
 function reserveBack(vp, bar) {
   const back = vp.el.querySelector(".vp-view .view-back");
   if (!back) return;
-  vp.el.style.setProperty("--vp-view-back", `${Math.ceil(back.offsetWidth) + 24}px`);
+  const help = vp.el.querySelector(".vp-view .view-help");
+  const helpWidth = help ? help.offsetWidth + 8 : 0;
+  vp.el.style.setProperty("--vp-view-back", `${Math.ceil(back.offsetWidth + helpWidth) + 24}px`);
+  // The "?" sits LEFT of Back, which keeps its own place (spec 46 measures it).
+  vp.el.style.setProperty("--vp-view-help-right", `${Math.ceil(back.offsetWidth) + 12 + 8}px`);
 }
 
 /**
@@ -489,6 +498,88 @@ function fitViewStrip(vp) {
   // 24 px of air between the title and the first control, so the two read as
   // two things rather than one crowded line.
   if (padding + text + 24 <= guard) view.dataset.stripHeading = "1";
+}
+
+// ---------------------------------------------------------------------------
+// THE TOUR (roadmap 27; museum feedback 2026-09-22). ../js/tour/tour.js draws
+// it, tour-steps.js says what it points at, and this is the exhibit's hosting:
+// one tour per half, mounted INSIDE the half so the far reader's 180° carries
+// it; text in that reader's language, with the kids twin where their audience
+// is kids (declared once, at the audience switch); the "?" buttons per area;
+// and the signals the steps complete on, raised from the paths the visitor's
+// action already travels (the turn machine, the audience store, setView, the
+// chip tap). Everything is behind ?tour, off by default (the A/B rule).
+// ---------------------------------------------------------------------------
+const TOUR_MODES = ["arrival", "buttons", "both"];
+let _warnedTour = false;
+function tourOn() {
+  if (!config.tour || config.tour === "off") return false;
+  if (!TOUR_MODES.includes(config.tour)) {
+    if (!_warnedTour) console.warn(`exhibit: unknown tour "${config.tour}" — using "off"`);
+    _warnedTour = true;
+    return false;
+  }
+  return true;
+}
+const tourButtons = () => tourOn() && config.tour !== "arrival";
+const tourArrival = () => tourOn() && config.tour !== "buttons";
+
+/**
+ * The audible recording as the tour names it — "Clemens Krauss, 1950, with the
+ * Wiener Philharmoniker" — from catalogue templates, so the phrase translates.
+ * A recording whose names are editorially blanked (the Scholz re-badge: its
+ * credited conductor and orchestra are inventions) is "an unidentified
+ * orchestra"; the file name is never shown (user, 2026-09-23).
+ */
+function recordingLabel(file, lang) {
+  const m = data.exhibit ? metadataFor(data.exhibit, file) : {};
+  const vars = { conductor: m.conductor || "", ensemble: m.ensemble || "", year: m.year ?? "" };
+  let key = "tour.who.unidentified";
+  if (vars.conductor && vars.ensemble) key = "tour.who";
+  else if (vars.conductor) key = "tour.who.noEnsemble";
+  else if (vars.ensemble) key = "tour.who.noConductor";
+  let s = t(key, lang);
+  for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, String(v));
+  return s;
+}
+
+function mountTour(vp, store, transport) {
+  if (!tourOn()) return;
+  const text = (key, vars) => {
+    const kids = store.get(vp.index) === "kids" && hasString(`${key}.kids`);
+    let s = t(kids ? `${key}.kids` : key, vp.language);
+    for (const [k, v] of Object.entries(vars || {})) s = s.replaceAll(`{${k}}`, String(v));
+    return s;
+  };
+  vp.tour = createTour({
+    root: vp.el,
+    // The loop paints in the screen, beside the halves and the band, so the
+    // band (a sibling above the half) cannot cover it and the strap keeps
+    // passing under the band as it should.
+    skyRoot: vp.el.parentElement,
+    loopHoldMs: Math.max(0, Number(config.tourLoopHoldMs) || 0),
+    steps: buildTourSteps({
+      vp,
+      config,
+      activeName: () => (transport.activeFile ? recordingLabel(transport.activeFile, vp.language) : ""),
+    }),
+    text,
+    style: config.tourStyle === "loop" ? "loop" : "mask",
+    reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+    idleMs: Math.max(0, Number(config.tourIdleMs) || 0),
+  });
+}
+
+/** A "?" that runs one fragment of this half's tour; 44 px like every other chip. */
+function helpButton(vp, fragment, className) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = className;
+  b.dataset.fragment = fragment;
+  b.textContent = "?";
+  b.setAttribute("aria-label", t("tour.help", vp.language));
+  b.addEventListener("click", () => vp.tour?.start(fragment));
+  return b;
 }
 
 function paintViewSwitch(vp) {
@@ -600,6 +691,9 @@ function buildView(name, m, vp, concerts, dyk, opening) {
   back.setAttribute("aria-label", t("view.close", vp.language));
   back.addEventListener("click", () => setView(vp, "listen"));
   handle.el.appendChild(back);
+  // The exploring "?" beside Back (roadmap 27); reserveBack keeps the toolbar's
+  // controls clear of both.
+  if (tourButtons()) handle.el.appendChild(helpButton(vp, "exploring", "view-help"));
   return handle;
 }
 
@@ -640,6 +734,7 @@ async function setView(vp, name, opening = {}) {
   const leaving = vp.view;
   vp.view = name;
   vp.el.dataset.view = name;
+  if (name !== "listen") vp.tour?.signal("view", name);
   paintViewSwitch(vp);
   // This reader's band copy stands its cue down on the fact that opened the
   // view (mirrored only; the band decides). Also pushed when the band is built.
@@ -721,6 +816,8 @@ window._exhibitTest = {
   setView: (i, name, opening) => setView(viewports[i], name, opening),
   yearsView: (i) => viewports[i]?.views.years?.state() ?? null,
   conductorsView: (i) => viewports[i]?.views.conductors?.state() ?? null,
+  // The tour (roadmap 27): the half's tour object, or null when ?tour is off.
+  tour: (i) => viewports[i]?.tour ?? null,
   ready: new Promise((resolve) => {
     _signalReady = resolve;
   }),
@@ -1060,6 +1157,8 @@ async function boot() {
     publishMarker(vp);
     syncGhosts();
     markerJump(vp, file, time);
+    // The tour's marker step completes on a placement of this reader's own.
+    vp.tour?.signal("marked");
   };
   const adoptMarker = (vp, source) => {
     const all = roomMarkers();
@@ -1081,6 +1180,7 @@ async function boot() {
     syncGhosts();
     const landing = getCorrespondingTime(exhibit.grids, vp.markerFile, vp.markerIx);
     if (Number.isFinite(landing)) markerJump(vp, vp.markerFile, landing);
+    vp.tour?.signal("marked"); // adopting another reader's moment places the glass too
   };
   const removeMarker = (vp) => {
     vp.markerIx = null;
@@ -1260,6 +1360,9 @@ async function boot() {
     // half shows, so it reads before the controls that belong to one view.
     if (config.viewSwitch) toolbar.prepend(buildViewSwitch(vp));
     vp.el.insertBefore(toolbar, vp.stripsEl);
+    // The tour (roadmap 27), and its listening "?" at the toolbar's far end.
+    mountTour(vp, store, transport);
+    if (tourButtons()) toolbar.append(helpButton(vp, "listening", "vp-help"));
     // The BARE recording switch, as one per-viewport function so a view built
     // outside this scope (the by-year explorer) makes exactly the switch a
     // strip tap or strap pick makes: a standing marker catches it
@@ -1319,6 +1422,11 @@ async function boot() {
         // A tap takes manual control of the text: whatever fade window was
         // running is over, one way or the other.
         cancelDetailFade(vp);
+        // The tour's chips step completes when this tap SHOWS an annotation
+        // (a toggle-off shows none) — read after the branches below have run.
+        queueMicrotask(() => {
+          if (vp.shownId === annId) vp.tour?.signal("shown", annId);
+        });
         // Under ?focus=playhead a tap also PINS: the visitor's choice outranks
         // the wash until the machine's unfocus (below: the toggle-off; side:
         // the ×) releases it. In manual mode the flag is set but never read.
@@ -1386,6 +1494,8 @@ async function boot() {
     // claims it, receives that tenant's panel content plus the × that closes
     // the panel and clears focus — the machine's one unfocus.
     vp.el.appendChild(vp.annList.el);
+    // The reading "?" (roadmap 27), at the panel's corner in either layout.
+    if (tourButtons()) vp.annList.el.appendChild(helpButton(vp, "reading", "ann-help"));
     if (vp.sideSlotEl) {
       const close = document.createElement("button");
       close.type = "button";
@@ -1457,6 +1567,21 @@ async function boot() {
       const chosen = state.selected[vp.roomId];
       for (const [file, strip] of vp.strips) strip.setSelected(file === chosen);
       paintTurn(vp, state, event, turns);
+      // The tour's switch step completes on THIS reader's switch. The fact is
+      // the state's `lastTake` — every take moves it, under every policy and
+      // whether it executed at once or on a grant — where the `taken` EVENT is
+      // attribution-only and names the side that LOST the clock. The words
+      // change while a request waits or after a refusal.
+      const take = state.lastTake;
+      const takeAt = take ? `${take.viewport}:${take.at}` : null;
+      if (takeAt !== vp.tourLastTake) {
+        vp.tourLastTake = takeAt;
+        if (take && take.viewport === vp.roomId) vp.tour?.signal("switched");
+      }
+      if (vp.tour && event) {
+        if (event.type === "requested" && event.from === vp.roomId) vp.tour.signal("requested");
+        else if ((event.type === "denied" || event.type === "cooldown") && event.to === vp.roomId) vp.tour.signal("denied");
+      }
     }
     // …and the shared band, which is the surface both sides read: it carries
     // the turn mark in every orientation, and under ?bandOrientation=flip it
@@ -1901,6 +2026,7 @@ async function boot() {
   store.subscribe((viewport) => {
     const vp = viewports[viewport];
     if (!vp) return;
+    vp.tour?.signal("audience");
     // Focus does not survive a mode change: the annotation being read belongs to
     // the audience that was on screen, and carrying its id across would leave a
     // highlighted chip that is no longer in the list. The side panel closes
@@ -1992,6 +2118,9 @@ async function boot() {
       sweep: sweepTable,
     });
     window._exhibitTest.attract = attractLoop;
+    // The arrival tour (roadmap 27): the touch that lowers the band starts the
+    // walkthrough on the half that was touched, and only there.
+    if (tourArrival()) attractLoop.onArrive((i) => viewports[i]?.tour?.start("arrival"));
   }
   return true;
 }

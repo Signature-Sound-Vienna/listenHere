@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.80.0 -- The tour: a live walkthrough over the real interface
+
+* `?tour=arrival|buttons|both` (alpha testing; off by default): an interactive tour per half, drawn over the live interface in the reader's language and register. `arrival` starts the walkthrough on the half whose touch lowers the attract band; `buttons` mounts a "?" per area (toolbar, annotation panel, explorer), each running its own fragment; the staff preset carries `both`. Steps complete on the visitor's own action (a switch, a placed marker, an audience change, a shown annotation, an opened explorer), Next is the escape, Skip ends it, and the layer never swallows a tap. Every fragment closes on "tap ? to see these hints again", pointing at its own "?"; a step whose target is not on the table is left out, so the dots count what is shown; the toolbar's "?" stands down behind an explorer like the zoom control.
+* `?tourStyle=mask|loop`: dim everything but the target, or a hand-drawn loop round it in the switch cue's line, drawing itself once and a sixth round (the overrun a little outside and turned a little), staying `?tourLoopHoldMs` (6 s) before it undraws and draws itself again, and undrawing before the next step's loop draws (positive dash offsets only). The loop paints top-most, in its own layer beside the halves, so the band cannot cover it. `?tourIdleMs` (45 s) folds a stalled tour away. Reduced motion drops the drawing in and out and the redraw cycle.
+* The drawing is `app/static/js/tour/tour.js`, a zero-import module the listen interface can host next; the exhibit's steps are data in `exhibit/tour-steps.js`. A step whose target is not on the table (no strap, no zoom buttons, no explorers) is skipped, not shown.
+* The room's touch names the half it landed on, and the attract loop exposes `onArrive` for the touch that lowers its band.
+* Testing: spec 49 (eight tests); 35.25 follows the preset.
+
 ### 0.78.0 -- The switch strap on its own switch
 
 * `?strap=auto|on|off` (alpha testing): the column of conductor medallions no longer comes only with direct waveform taps. `on` mounts it in either tap mode; a medallion always does the aligned carry-the-moment switch, and the waveform keeps whatever `tapMode` says. `auto` is the shipped coupling, `off` never mounts it. The staff preset carries `on`.

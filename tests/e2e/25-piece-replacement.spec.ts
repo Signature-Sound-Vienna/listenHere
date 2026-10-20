@@ -588,4 +588,44 @@ test.describe('25. Replacing the loaded piece (#32)', () => {
     expect(errors).toEqual([]);
   });
 
+  // 25.11–12: a name with an accent can arrive composed (NFC) or decomposed
+  // (NFD). Firefox on macOS reports picked names as NFD even when the disk and
+  // the alignment hold NFC, so the Pizzicato set's "Neeme Järvi" never matched.
+  const ACCENTED = 'audio-ä.mp3';
+  const asForm = (s: string, form: 'NFC' | 'NFD') => s.normalize(form);
+
+  /** The fixture with audio-a's key renamed to the accented name, in `form`. */
+  function makeAccentedAlignment(form: 'NFC' | 'NFD'): string {
+    const a = readFixtureJson('alignment.json');
+    const audio = a.body.audio;
+    audio[asForm(ACCENTED, form)] = audio['audio-a.mp3'];
+    delete audio['audio-a.mp3'];
+    const out = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lh-nfc-')), 'alignment-nfc.json');
+    fs.writeFileSync(out, JSON.stringify(a));
+    return out;
+  }
+
+  async function pickAccented(page: Page, keyForm: 'NFC' | 'NFD', fileForm: 'NFC' | 'NFD') {
+    await page.goto('/?useFiles');
+    const uploads = fixtureUploads([makeAccentedAlignment(keyForm), ...A_KEYS]);
+    uploads[1].name = asForm(ACCENTED, fileForm); // audio-a.mp3's bytes
+    const [chooser] = await Promise.all([
+      page.waitForEvent('filechooser'),
+      page.click('#file-picker-files-btn'),
+    ]);
+    await chooser.setFiles(uploads);
+    await expect(page.locator('#file-picker-list li')).toHaveCount(4);
+    // audio-short.mp3 was not picked; the other three, accented one included, match.
+    await expect(page.locator('#file-picker-progress')).toHaveText('3 of 4 files matched');
+    await expect(page.locator('#file-picker-list li.missing')).toHaveText(['audio-short.mp3']);
+  }
+
+  test('25.11 a decomposed (NFD) file name matches a composed (NFC) key', async ({ page }) => {
+    await pickAccented(page, 'NFC', 'NFD');
+  });
+
+  test('25.12 a composed (NFC) file name matches a decomposed (NFD) key', async ({ page }) => {
+    await pickAccented(page, 'NFD', 'NFC');
+  });
+
 });

@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.86.0 -- Accented file names match however the browser spells them
+
+* Picked recordings match the alignment's keys after Unicode normalisation (NFC) on both sides. Firefox on macOS reports a picked "Järvi" decomposed (NFD) while the disk and the key hold it composed, so the Pizzicato set's Neeme Järvi recording could not be loaded, even when picked on its own.
+* The alignment wizard stores every recording's name composed, so an alignment made in Firefox on a Mac keys its recordings the way other browsers and the exhibit's server copies spell them.
+* Testing: 17.22 the wizard stores NFC; 25.11–25.12 an NFD name matches an NFC key, and the reverse.
+
 ### 0.80.0 -- The tour: a live walkthrough over the real interface
 
 * `?tour=arrival|buttons|both` (alpha testing; off by default): an interactive tour per half, drawn over the live interface in the reader's language and register. `arrival` starts the walkthrough on the half whose touch lowers the attract band; `buttons` mounts a "?" per area (toolbar, annotation panel, explorer), each running its own fragment; the staff preset carries `both`. Steps complete on the visitor's own action (a switch, a placed marker, an audience change, a shown annotation, an opened explorer), Next is the escape, Skip ends it, and the layer never swallows a tap. Every fragment closes on "tap ? to see these hints again", pointing at its own "?"; a step whose target is not on the table is left out, so the dots count what is shown; the toolbar's "?" stands down behind an explorer like the zoom control.

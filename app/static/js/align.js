@@ -249,8 +249,16 @@ function probeDuration(file) {
 async function addFiles(files) {
   const audioExts = /\.(mp3|wav|ogg|flac|m4a|aac|wma|opus)$/i;
   const newFiles = [];
-  for (const f of files) {
+  for (let f of files) {
     if (audioExts.test(f.name) || f.type.startsWith("audio/")) {
+      // A file's name becomes its key in the alignment, so store it composed
+      // (NFC): Firefox on macOS reports picked names decomposed, and a
+      // decomposed key would not match the same recording picked elsewhere.
+      // Re-wrapping a File copies no bytes.
+      const nfc = f.name.normalize("NFC");
+      if (nfc !== f.name) {
+        f = new File([f], nfc, { type: f.type, lastModified: f.lastModified });
+      }
       if (!selectedFiles.some((s) => s.name === f.name)) {
         selectedFiles.push(f);
         newFiles.push(f);

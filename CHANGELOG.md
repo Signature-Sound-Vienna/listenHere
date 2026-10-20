@@ -1,5 +1,15 @@
 # Listen Here! CHANGELOG.md
 
+### 0.90.0 -- The Pizzicato-Polka on an HQ alignment, its annotations re-anchored
+* The Pizzicato-Polka's spine is an HQ audio-to-audio alignment on VPO-1989, without the Volksoper recording that played the piece twice. The other recordings no longer stall through about two minutes of it.
+* `tools/exhibit_annots_on_hq.py --piece pizzicato --reanchor` moves annotations onto a grid of another length: each region's index pair is voted from the authored per-recording seconds, and a recording whose old grid was flat at that point abstains. It reports every residual, and lists the text of targets dropped with a recording. Die Fledermaus's output is unchanged.
+* An endpoint the vote cannot settle can be placed by ear on one recording (`reanchor_fixed`), and every re-run keeps it.
+* The three Volksoper targets are dropped. Harnoncourt joins the ten. "The Coda Over Time" found no consensus, so its start is placed by ear, at 2:25.75 on VPO-1987.
+* The zero-length first region of "The poco rit. nobody plays" is deleted at source.
+* Harnoncourt's "Extra notes" starts one onset earlier, with a 70 ms lead-in so the attack is heard after a marker switch (0:39.30), hand-placed in `data/pizzicato-overrides.json`. The pair check ignores hand-placed times.
+* A marker placed with an annotation's Mark button lands on that annotation's own start on each recording it targets, hand-placed overrides included, when the reader switches recordings, as the jump button does. Elsewhere it follows the alignment as before.
+* Testing: 37.31 a Mark-placed marker lands on an injected override after a switch, follows the alignment on an untargeted recording, and stops following the override once the marker is placed by hand.
+
 ### 0.89.0 -- "Did you know?" shows its first pictures: Jansons in the train polka, Karajan with Kathleen Battle
 * Mariss Jansons's and Herbert von Karajan's stories show AI-generated illustrations, in every register. Karajan's replaces the placeholder for the press photograph.
 * The AI mark is burned small into the corner of each picture, and its XMP carries IPTC `trainedAlgorithmicMedia`. While one is shown, the explorer's foot and the lightbox say "Images showing [mark] were generated using AI (Google Gemini)." The sidecar records model, style prompt, and date.

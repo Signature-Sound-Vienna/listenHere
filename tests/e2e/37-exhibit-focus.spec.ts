@@ -1277,6 +1277,87 @@ test.describe('37. Playhead-driven focus', () => {
     await expect(page.locator('.vp[data-viewport="0"] .ann-mark')).toBeHidden();
   });
 
+  // 37.30 A MARKER THE MARK BUTTON PLACED FOLLOWS THE READING (user,
+  // 2026-09-21): showing another annotation moves it to that one's start. A
+  // marker placed BY HAND is a moment the reader chose, so a chip tap leaves
+  // it standing; and once the reader has moved it by hand, the following ends.
+  test('37.30 a mark-button marker follows chip taps to the next annotation start; a hand-placed one stays', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&marker=glass');
+    // Two adults annotations targeting the reference, with different starts.
+    const picks = await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const ref = T.transport.activeFile as string;
+      const earliest = (ann: any) => {
+        const tg = (ann.targets || []).find((t: any) => t.file === ref);
+        if (!tg) return null;
+        let s: number | null = null;
+        for (const r of ann.regions || []) {
+          const sp = tg.regionTimes?.[r.id];
+          if (sp && sp.end > sp.start && (s == null || sp.start < s)) s = sp.start;
+        }
+        return s;
+      };
+      const anns = (T.exhibit.byAudience['adults'] || [])
+        .map((a: any) => ({ id: a.id, start: earliest(a) }))
+        .filter((a: any) => a.start != null);
+      const first = anns[0];
+      const second = anns.find((a: any) => Math.abs(a.start - first.start) > 5);
+      return first && second ? { file: ref, first, second } : null;
+    });
+    expect(picks, 'two reference annotations with distinct starts').toBeTruthy();
+    await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const orig = T.transport.select.bind(T.transport);
+      T.transport.select = (file: string, time?: number) => orig(file, time, false);
+    });
+    const marker = () => page.evaluate(() => (window as any)._exhibitTest.marker(0));
+    const ixAt = (t: number) =>
+      page.evaluate(
+        ([f, t]) => {
+          const T = (window as any)._exhibitTest;
+          T.placeMarker(0, f, t);
+          return T.marker(0).ix;
+        },
+        [picks!.file, t] as [string, number],
+      );
+    const chip = (id: string) => `.vp[data-viewport="0"] .ann-chip[data-ann="${id}"]`;
+
+    // Ground truth for both starts, via the test hook (a HAND placement).
+    const ixFirst = await ixAt(picks!.first.start);
+    const ixSecond = await ixAt(picks!.second.start);
+    expect(ixFirst).not.toBe(ixSecond);
+
+    // Mark the first annotation; the marker stands at its start.
+    await page.click(chip(picks!.first.id));
+    await page.click('.vp[data-viewport="0"] .ann-mark');
+    expect((await marker()).ix).toBe(ixFirst);
+    // Show the second: the marker follows to ITS start.
+    await page.click(chip(picks!.second.id));
+    expect((await marker()).ix, 'the mark-button marker follows the chip tap').toBe(ixSecond);
+    // Back to the first: follows again.
+    await page.click(chip(picks!.first.id));
+    expect((await marker()).ix).toBe(ixFirst);
+
+    // Below the strips a second tap on the shown chip is an UNFOCUS: the
+    // marker does not move (there is nowhere to move it to).
+    await page.click(chip(picks!.first.id));
+    expect((await marker()).ix, 'an unfocus leaves the marker standing').toBe(ixFirst);
+
+    // A HAND placement ends the following: the marker stays where the hand
+    // put it when another chip is shown.
+    const handTime = (picks!.first.start + picks!.second.start) / 2;
+    await page.evaluate(
+      ([f, t]) => (window as any)._exhibitTest.placeMarker(0, f, t),
+      [picks!.file, handTime] as [string, number],
+    );
+    const byHand = (await marker()).ix;
+    expect(byHand).not.toBe(ixSecond);
+    await page.click(chip(picks!.second.id));
+    expect((await marker()).ix, 'a hand-placed marker stays put').toBe(byHand);
+  });
+
   // 37.8 The genuine path, once: real playback crossing a region start raises
   // the entry and the wash focuses it, driven by the real per-frame clock.
   test('37.8 real playback washes focus in as the clock crosses a region start', async ({

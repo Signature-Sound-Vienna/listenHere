@@ -21,7 +21,7 @@
 import {
   readConfig, rotationFor, bandOrientationFor, bandTapFor, viewsEnabled, DEFAULTS,
 } from "./config.js";
-import { resolveText, setDebug, t } from "./strings.js";
+import { hasString, resolveText, setDebug, t } from "./strings.js";
 import {
   getClosestAlignmentIx,
   getCorrespondingTime,
@@ -40,6 +40,11 @@ import { createViewportZoom } from "./zoom.js";
 import { applyTheme, annotationSeries, recolorAnnotations } from "./themes.js";
 import { createMiddleBand } from "./middle-band.js";
 import { createAnnotationList, groupForFileIn, hasGroupStory } from "./annotation-list.js";
+// The tour (roadmap 27): the drawing is SHARED with the listen interface — a
+// zero-import module outside the exhibit, which the boundary test allows — and
+// the exhibit's steps are data of its own.
+import { createTour } from "../js/tour/tour.js";
+import { buildTourSteps } from "./tour-steps.js";
 import { loadConcerts, loadDyk } from "./concerts.js";
 import { createAttractLoop } from "./attract.js";
 import { createRoom, ghostAngleFor, roomViewportId } from "./room.js";
@@ -218,14 +223,17 @@ function buildScreen(root) {
     // later (absolutely positioned, so it costs no re-measure); the leather
     // BAND — viewport-tall, sliding under the middle band — is pure paint
     // and mounts here.
-    if (config.tapMode === "direct") {
-      vp.dataset.tapMode = "direct";
+    if (config.tapMode === "direct") vp.dataset.tapMode = "direct";
+    // The strap has its own switch (config.strap, 2026-09-22): "auto" keeps
+    // it coupled to direct mode, "on" mounts it in either tap mode.
+    if (hasStrap(config)) {
+      vp.dataset.strap = "on";
       const strapBand = document.createElement("div");
       strapBand.className = "vp-strap-band";
       vp.appendChild(strapBand);
     }
     // The marker's hook rail lives in the same reserved column as the strap,
-    // and aligned mode has no strap — so the marker reserves the column
+    // and a configuration may have no strap — so the marker reserves the column
     // itself (the CSS unions the two selectors into one padding), and it must
     // do so HERE for the same canvas-sizing reason as the strap above.
     if (config.marker === "glass") vp.dataset.marker = "glass";
@@ -443,7 +451,11 @@ function positionView(vp) {
 function reserveBack(vp, bar) {
   const back = vp.el.querySelector(".vp-view .view-back");
   if (!back) return;
-  vp.el.style.setProperty("--vp-view-back", `${Math.ceil(back.offsetWidth) + 24}px`);
+  const help = vp.el.querySelector(".vp-view .view-help");
+  const helpWidth = help ? help.offsetWidth + 8 : 0;
+  vp.el.style.setProperty("--vp-view-back", `${Math.ceil(back.offsetWidth + helpWidth) + 24}px`);
+  // The "?" sits LEFT of Back, which keeps its own place (spec 46 measures it).
+  vp.el.style.setProperty("--vp-view-help-right", `${Math.ceil(back.offsetWidth) + 12 + 8}px`);
 }
 
 /**
@@ -486,6 +498,88 @@ function fitViewStrip(vp) {
   // 24 px of air between the title and the first control, so the two read as
   // two things rather than one crowded line.
   if (padding + text + 24 <= guard) view.dataset.stripHeading = "1";
+}
+
+// ---------------------------------------------------------------------------
+// THE TOUR (roadmap 27; museum feedback 2026-09-22). ../js/tour/tour.js draws
+// it, tour-steps.js says what it points at, and this is the exhibit's hosting:
+// one tour per half, mounted INSIDE the half so the far reader's 180° carries
+// it; text in that reader's language, with the kids twin where their audience
+// is kids (declared once, at the audience switch); the "?" buttons per area;
+// and the signals the steps complete on, raised from the paths the visitor's
+// action already travels (the turn machine, the audience store, setView, the
+// chip tap). Everything is behind ?tour, off by default (the A/B rule).
+// ---------------------------------------------------------------------------
+const TOUR_MODES = ["arrival", "buttons", "both"];
+let _warnedTour = false;
+function tourOn() {
+  if (!config.tour || config.tour === "off") return false;
+  if (!TOUR_MODES.includes(config.tour)) {
+    if (!_warnedTour) console.warn(`exhibit: unknown tour "${config.tour}" — using "off"`);
+    _warnedTour = true;
+    return false;
+  }
+  return true;
+}
+const tourButtons = () => tourOn() && config.tour !== "arrival";
+const tourArrival = () => tourOn() && config.tour !== "buttons";
+
+/**
+ * The audible recording as the tour names it — "Clemens Krauss, 1950, with the
+ * Wiener Philharmoniker" — from catalogue templates, so the phrase translates.
+ * A recording whose names are editorially blanked (the Scholz re-badge: its
+ * credited conductor and orchestra are inventions) is "an unidentified
+ * orchestra"; the file name is never shown (user, 2026-09-23).
+ */
+function recordingLabel(file, lang) {
+  const m = data.exhibit ? metadataFor(data.exhibit, file) : {};
+  const vars = { conductor: m.conductor || "", ensemble: m.ensemble || "", year: m.year ?? "" };
+  let key = "tour.who.unidentified";
+  if (vars.conductor && vars.ensemble) key = "tour.who";
+  else if (vars.conductor) key = "tour.who.noEnsemble";
+  else if (vars.ensemble) key = "tour.who.noConductor";
+  let s = t(key, lang);
+  for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, String(v));
+  return s;
+}
+
+function mountTour(vp, store, transport) {
+  if (!tourOn()) return;
+  const text = (key, vars) => {
+    const kids = store.get(vp.index) === "kids" && hasString(`${key}.kids`);
+    let s = t(kids ? `${key}.kids` : key, vp.language);
+    for (const [k, v] of Object.entries(vars || {})) s = s.replaceAll(`{${k}}`, String(v));
+    return s;
+  };
+  vp.tour = createTour({
+    root: vp.el,
+    // The loop paints in the screen, beside the halves and the band, so the
+    // band (a sibling above the half) cannot cover it and the strap keeps
+    // passing under the band as it should.
+    skyRoot: vp.el.parentElement,
+    loopHoldMs: Math.max(0, Number(config.tourLoopHoldMs) || 0),
+    steps: buildTourSteps({
+      vp,
+      config,
+      activeName: () => (transport.activeFile ? recordingLabel(transport.activeFile, vp.language) : ""),
+    }),
+    text,
+    style: config.tourStyle === "loop" ? "loop" : "mask",
+    reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
+    idleMs: Math.max(0, Number(config.tourIdleMs) || 0),
+  });
+}
+
+/** A "?" that runs one fragment of this half's tour; 44 px like every other chip. */
+function helpButton(vp, fragment, className) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = className;
+  b.dataset.fragment = fragment;
+  b.textContent = "?";
+  b.setAttribute("aria-label", t("tour.help", vp.language));
+  b.addEventListener("click", () => vp.tour?.start(fragment));
+  return b;
 }
 
 function paintViewSwitch(vp) {
@@ -597,6 +691,9 @@ function buildView(name, m, vp, concerts, dyk, opening) {
   back.setAttribute("aria-label", t("view.close", vp.language));
   back.addEventListener("click", () => setView(vp, "listen"));
   handle.el.appendChild(back);
+  // The exploring "?" beside Back (roadmap 27); reserveBack keeps the toolbar's
+  // controls clear of both.
+  if (tourButtons()) handle.el.appendChild(helpButton(vp, "exploring", "view-help"));
   return handle;
 }
 
@@ -637,6 +734,7 @@ async function setView(vp, name, opening = {}) {
   const leaving = vp.view;
   vp.view = name;
   vp.el.dataset.view = name;
+  if (name !== "listen") vp.tour?.signal("view", name);
   paintViewSwitch(vp);
   // This reader's band copy stands its cue down on the fact that opened the
   // view (mirrored only; the band decides). Also pushed when the band is built.
@@ -718,6 +816,8 @@ window._exhibitTest = {
   setView: (i, name, opening) => setView(viewports[i], name, opening),
   yearsView: (i) => viewports[i]?.views.years?.state() ?? null,
   conductorsView: (i) => viewports[i]?.views.conductors?.state() ?? null,
+  // The tour (roadmap 27): the half's tour object, or null when ?tour is off.
+  tour: (i) => viewports[i]?.tour ?? null,
   ready: new Promise((resolve) => {
     _signalReady = resolve;
   }),
@@ -1043,13 +1143,22 @@ async function boot() {
       vp.marker?.setGhosts(list);
     }
   };
-  const placeMarker = (vp, file, time) => {
+  // `fromAnnotation` records HOW the marker got here (user, 2026-09-21): a
+  // marker the Mark button put at an annotation's start follows the reader's
+  // chip taps to the next annotation's start (onChipTap below); a marker the
+  // reader placed by hand on the waveform is a moment they chose, and a chip
+  // tap leaves it standing. Any hand placement, adoption, or removal ends the
+  // following.
+  const placeMarker = (vp, file, time, { fromAnnotation = false } = {}) => {
     vp.markerIx = getClosestAlignmentIx(exhibit.grids, time, file);
     vp.markerFile = file;
+    vp.markerFromAnnotation = fromAnnotation;
     vp.marker.setMarker(vp.markerIx, file);
     publishMarker(vp);
     syncGhosts();
     markerJump(vp, file, time);
+    // The tour's marker step completes on a placement of this reader's own.
+    vp.tour?.signal("marked");
   };
   const adoptMarker = (vp, source) => {
     const all = roomMarkers();
@@ -1065,15 +1174,18 @@ async function boot() {
     if (!other) return vp.marker.setMarker(vp.markerIx, vp.markerFile);
     vp.markerIx = other.ix;
     vp.markerFile = other.file;
+    vp.markerFromAnnotation = false;
     vp.marker.setMarker(vp.markerIx, vp.markerFile);
     publishMarker(vp);
     syncGhosts();
     const landing = getCorrespondingTime(exhibit.grids, vp.markerFile, vp.markerIx);
     if (Number.isFinite(landing)) markerJump(vp, vp.markerFile, landing);
+    vp.tour?.signal("marked"); // adopting another reader's moment places the glass too
   };
   const removeMarker = (vp) => {
     vp.markerIx = null;
     vp.markerFile = null;
+    vp.markerFromAnnotation = false;
     vp.marker.setMarker(null, null);
     publishMarker(vp);
     syncGhosts();
@@ -1151,11 +1263,12 @@ async function boot() {
     vp.strips = mounted.strips;
     stripsReady.push(mounted.ready);
 
-    // The switch strap (?tapMode=direct — alpha-tester feedback, 2026-08-26):
-    // one button per recording, beside its strip, doing the aligned
-    // carry-the-moment switch that direct mode removed from the strips. A
-    // button tap is a request with no time — exactly what a strip tap was.
-    if (config.tapMode === "direct") {
+    // The switch strap (?tapMode=direct — alpha-tester feedback, 2026-08-26;
+    // its own ?strap switch, 2026-09-22): one button per recording, beside its
+    // strip, doing the aligned carry-the-moment switch — the one direct mode
+    // removed from the strips, and in aligned mode the same switch a strip tap
+    // makes, offered on the faces. A button tap is a request with no time.
+    if (hasStrap(config)) {
       // A strap pick or arrow step is exactly the BARE switch the marker
       // ruling names, so a standing marker catches both (markerSnapSwitch);
       // without one they stay the aligned carry they always were.
@@ -1247,6 +1360,9 @@ async function boot() {
     // half shows, so it reads before the controls that belong to one view.
     if (config.viewSwitch) toolbar.prepend(buildViewSwitch(vp));
     vp.el.insertBefore(toolbar, vp.stripsEl);
+    // The tour (roadmap 27), and its listening "?" at the toolbar's far end.
+    mountTour(vp, store, transport);
+    if (tourButtons()) toolbar.append(helpButton(vp, "listening", "vp-help"));
     // The BARE recording switch, as one per-viewport function so a view built
     // outside this scope (the by-year explorer) makes exactly the switch a
     // strip tap or strap pick makes: a standing marker catches it
@@ -1290,7 +1406,7 @@ async function boot() {
           vp.currentAnnotations?.find((a) => a.id === annId),
           vp,
         );
-        if (spot) placeMarker(vp, spot.file, spot.time);
+        if (spot) placeMarker(vp, spot.file, spot.time, { fromAnnotation: true });
       },
       // What a chip tap MEANS depends on the layout, so the machine lives
       // here, not in the component. Below the strips (default): a plain focus
@@ -1306,6 +1422,11 @@ async function boot() {
         // A tap takes manual control of the text: whatever fade window was
         // running is over, one way or the other.
         cancelDetailFade(vp);
+        // The tour's chips step completes when this tap SHOWS an annotation
+        // (a toggle-off shows none) — read after the branches below have run.
+        queueMicrotask(() => {
+          if (vp.shownId === annId) vp.tour?.signal("shown", annId);
+        });
         // Under ?focus=playhead a tap also PINS: the visitor's choice outranks
         // the wash until the machine's unfocus (below: the toggle-off; side:
         // the ×) releases it. In manual mode the flag is set but never read.
@@ -1329,6 +1450,23 @@ async function boot() {
           setPanelOpen(vp, !vp.panelOpen);
         }
         renderAnnotations(vp, store);
+        // A marker the Mark button placed follows the reading (user,
+        // 2026-09-21): showing another annotation moves it to that one's
+        // start, through the same landing and the same placement as the
+        // button, so the audio follows too. A hand-placed marker stays put,
+        // and an unfocus (below-strips toggle-off) moves nothing.
+        if (
+          vp.marker &&
+          vp.markerIx != null &&
+          vp.markerFromAnnotation &&
+          vp.shownId === annId
+        ) {
+          const spot = jumpTarget(
+            vp.currentAnnotations?.find((a) => a.id === annId),
+            vp,
+          );
+          if (spot) placeMarker(vp, spot.file, spot.time, { fromAnnotation: true });
+        }
         // Any tap is engagement: a pin (re-)arms its expiry clock, an
         // unfocus cancels it.
         armPinExpiry(vp);
@@ -1356,6 +1494,8 @@ async function boot() {
     // claims it, receives that tenant's panel content plus the × that closes
     // the panel and clears focus — the machine's one unfocus.
     vp.el.appendChild(vp.annList.el);
+    // The reading "?" (roadmap 27), at the panel's corner in either layout.
+    if (tourButtons()) vp.annList.el.appendChild(helpButton(vp, "reading", "ann-help"));
     if (vp.sideSlotEl) {
       const close = document.createElement("button");
       close.type = "button";
@@ -1427,6 +1567,21 @@ async function boot() {
       const chosen = state.selected[vp.roomId];
       for (const [file, strip] of vp.strips) strip.setSelected(file === chosen);
       paintTurn(vp, state, event, turns);
+      // The tour's switch step completes on THIS reader's switch. The fact is
+      // the state's `lastTake` — every take moves it, under every policy and
+      // whether it executed at once or on a grant — where the `taken` EVENT is
+      // attribution-only and names the side that LOST the clock. The words
+      // change while a request waits or after a refusal.
+      const take = state.lastTake;
+      const takeAt = take ? `${take.viewport}:${take.at}` : null;
+      if (takeAt !== vp.tourLastTake) {
+        vp.tourLastTake = takeAt;
+        if (take && take.viewport === vp.roomId) vp.tour?.signal("switched");
+      }
+      if (vp.tour && event) {
+        if (event.type === "requested" && event.from === vp.roomId) vp.tour.signal("requested");
+        else if ((event.type === "denied" || event.type === "cooldown") && event.to === vp.roomId) vp.tour.signal("denied");
+      }
     }
     // …and the shared band, which is the surface both sides read: it carries
     // the turn mark in every orientation, and under ?bandOrientation=flip it
@@ -1871,6 +2026,7 @@ async function boot() {
   store.subscribe((viewport) => {
     const vp = viewports[viewport];
     if (!vp) return;
+    vp.tour?.signal("audience");
     // Focus does not survive a mode change: the annotation being read belongs to
     // the audience that was on screen, and carrying its id across would leave a
     // highlighted chip that is no longer in the list. The side panel closes
@@ -1962,6 +2118,9 @@ async function boot() {
       sweep: sweepTable,
     });
     window._exhibitTest.attract = attractLoop;
+    // The arrival tour (roadmap 27): the touch that lowers the band starts the
+    // walkthrough on the half that was touched, and only there.
+    if (tourArrival()) attractLoop.onArrive((i) => viewports[i]?.tour?.start("arrival"));
   }
   return true;
 }
@@ -2006,6 +2165,13 @@ function stripLabel(exhibit, file, language) {
  * not the ensemble. The filename fallback keeps a missing sidecar visible, the
  * stripLabel precedent.
  */
+/** Whether this configuration mounts the switch strap (config.js: `strap`). */
+function hasStrap(config) {
+  if (config.strap === "on") return true;
+  if (config.strap === "off") return false;
+  return config.tapMode === "direct";
+}
+
 function strapLabel(exhibit, file) {
   const meta = metadataFor(exhibit, file);
   // A YEAR THAT IS NOT A PLAIN FOUR DIGITS gets no apostrophe-year: the medallion
@@ -2540,17 +2706,26 @@ function drawSwitchArrow(vp, fromStrip, fromTime, toStrip, toTime) {
   // The arrow leaves the way it came: the line retreats from A towards B (the
   // dash slides forward along the path), the dot going first and the head last
   // (user, 2026-09-10). Reduced motion fades it as one instead.
+  //
+  // THE OFFSETS STAY POSITIVE (iPad, 2026-09-21). The dash pattern is `len`
+  // on, `len` off, so sliding the offset from 2·len to len is the same motion
+  // as 0 to −len — but iOS WebKit paints a negative dash phase wrongly: the
+  // whole line vanished at once, redrew itself towards the head, and only then
+  // left. macOS Safari and Firefox rendered the negative form correctly, so a
+  // desktop check does not cover this; it was found on the device.
   const linger = reduced ? 1600 : 1100;
   const wipe = 240; // twice the speed it appeared at (user, 2026-09-10: 160 felt aggressive)
   const tail = 40; // the ghost lags this much: the fading edge
   setTimeout(() => {
     if (g.animate && !reduced) {
       for (const p of [under, path]) {
-        p.animate([{ strokeDashoffset: 0 }, { strokeDashoffset: -len }], { duration: wipe, easing: "ease-in", fill: "forwards" });
+        p.animate([{ strokeDashoffset: 2 * len }, { strokeDashoffset: len }], { duration: wipe, easing: "ease-in", fill: "forwards" });
       }
-      ghost.animate([{ strokeDashoffset: 0 }, { strokeDashoffset: -len }], { duration: wipe, delay: tail, easing: "ease-in", fill: "forwards" });
+      ghost.animate([{ strokeDashoffset: 2 * len }, { strokeDashoffset: len }], { duration: wipe, delay: tail, easing: "ease-in", fill: "forwards" });
       dot.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 60, fill: "forwards" });
-      head.animate([{ opacity: 1 }, { opacity: 1, offset: 0.75 }, { opacity: 0 }], { duration: wipe, fill: "forwards" });
+      // The head holds until the line has fully arrived at it, then fades over
+      // the ghost's lag — "last" means after the line, not during its final quarter.
+      head.animate([{ opacity: 1 }, { opacity: 1, offset: wipe / (wipe + tail) }, { opacity: 0 }], { duration: wipe + tail, fill: "forwards" });
     } else if (g.animate) {
       g.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 400, fill: "forwards" });
     }

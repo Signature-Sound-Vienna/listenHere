@@ -191,11 +191,27 @@ export function createAttractLoop({
   // study panel's, which is staff tooling) and tells the loop FIRST, then runs
   // the hand-off (R7) — a tap on a muted screen fades this copy in, and the
   // claim main.js makes on the audible edge has the other screen fade out.
-  const touched = () => {
+  // THE ARRIVAL (roadmap 27, the tour): a touch that finds the band UP is a
+  // visitor arriving at this screen, and the half it landed on is told — once
+  // per raise, since the band is down after it. The room's touch info names
+  // the half (a `.vp` or the band's copy for that reader); a touch with no
+  // half (the tests' room.touch()) counts as the near reader's.
+  const arriveSubs = new Set();
+  const touched = (info) => {
+    const wasUp = bandUp;
     lastLocal = now();
     presence.postActivity();
     if (phase !== "idle-wait") endLoop();
     lowerBand();
+    if (!wasUp) return;
+    const viewport = Number.isInteger(info?.viewport) ? info.viewport : 0;
+    for (const fn of arriveSubs) {
+      try {
+        fn(viewport);
+      } catch (err) {
+        console.warn("exhibit attract: arrive subscriber threw", err);
+      }
+    }
   };
   const unsubscribeTouch = room.onTouch(touched);
   // What the room needs to know about this screen: IDLE (band up) is when the
@@ -664,6 +680,11 @@ export function createAttractLoop({
     },
     /** Register an interaction without a pointer event (tests): the room's touch, hand-off included. */
     touch: room.touch,
+    /** A visitor's touch lowered this screen's band: `fn(viewportIndex)`; returns an unsubscribe. */
+    onArrive(fn) {
+      arriveSubs.add(fn);
+      return () => arriveSubs.delete(fn);
+    },
     /** True while a pass of the loop is what drives the transport: main.js claims the speakers as "loop". */
     drivesAudio() {
       return phase === "attract" && !room.mirroring;

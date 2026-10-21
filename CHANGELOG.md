@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.93.0 -- Fix mode: an onset's line in the score is clickable
+
+* A click on an onset's line in the score pane selects it and seeks to it, as a click on its tick in the strip does; the hit radius is the strip's (8 px). A note under the pointer still wins.
+* Shift+click, on a line or a note, adds the onset to the multi-selection or takes it out, as in the strip. A Shift+click on a note used to select it plainly.
+
 ### 0.91.0 -- Fix mode: tremolo strokes are no longer markers
 
 * Only written onsets get markers. The strokes of a measured tremolo, which the rendered MIDI writes out one by one, stay events of the alignment but have no marker of their own; they follow the refill between the written onsets around them.

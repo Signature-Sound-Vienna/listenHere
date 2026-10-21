@@ -3874,12 +3874,46 @@ function _onScoreClick(e) {
     if (el.id && f.pageIndex.has(el.id)) {
       const ix = f.groups.findIndex((g) => g.ids.includes(el.id));
       if (ix !== -1) {
-        _select(ix, { seek: true });
+        _clickGroup(ix, e.shiftKey);
         return;
       }
     }
     el = el.parentElement;
   }
+  // No note: an onset's in-score line, within the strip's tick hit radius.
+  const ix = _underlayHit(e.clientX, e.clientY);
+  if (ix !== -1) _clickGroup(ix, e.shiftKey);
+}
+
+/** A click on an onset from the score pane, as on its tick in the strip:
+ *  select and seek; with Shift, toggle it in the multi-selection. */
+function _clickGroup(ix, shift) {
+  const f = _fix;
+  if (shift) {
+    if (f.multiSel.has(ix)) f.multiSel.delete(ix);
+    else f.multiSel.add(ix);
+    _scheduleRedraw();
+    return;
+  }
+  _select(ix, { seek: true });
+}
+
+/** The onset group whose in-score line is nearest to a screen point, within
+ *  TICK_HIT_PX across and the line's own height; -1 for none. */
+function _underlayHit(clientX, clientY) {
+  const f = _fix;
+  let best = -1;
+  let bestDist = TICK_HIT_PX + 1;
+  for (const [g, line] of f.underlayByGroup || []) {
+    const r = line.getBoundingClientRect();
+    if (clientY < r.top - TICK_HIT_PX || clientY > r.bottom) continue;
+    const d = Math.abs(r.left + r.width / 2 - clientX);
+    if (d < bestDist) {
+      bestDist = d;
+      best = f.groups.indexOf(g);
+    }
+  }
+  return best;
 }
 
 /** The onset group whose tick is nearest to canvas-x, within the hit radius. */

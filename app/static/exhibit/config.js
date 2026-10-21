@@ -406,6 +406,15 @@ const DEFAULTS = {
   //               STRAP (strap.js): a per-recording button column left of the
   //               waveforms whose buttons do the aligned switch instead.
   tapMode: "aligned",
+  // THE SWITCH STRAP ON ITS OWN SWITCH (alpha testing, user, 2026-09-22): the
+  // medallion column with the conductors' faces is wanted whatever the
+  // waveform tap means. Its buttons ALWAYS do the aligned carry-the-moment
+  // switch; the waveform keeps whatever tapMode says.
+  //   "auto" — the shipped coupling: the strap comes with tapMode=direct only.
+  //   "on"   — the strap in either tap mode.
+  //   "off"  — never; in direct mode that leaves no aligned switch at all,
+  //            which is a staff experiment, not a visitor configuration.
+  strap: "auto",
 
   // --- the listening marker (week 4, ruled 2026-08-27; marker.js) ---
   // "glass" mounts one magnifying-glass marker per viewport, resting on a hook
@@ -523,6 +532,32 @@ const DEFAULTS = {
   // one at the moment of the switch, on every viewport but the taker's. A
   // reader who chose the jump needs no telling. "off" | "arrow".
   switchCue: "off",
+
+  // --- the tour (roadmap 27; tour-steps.js + ../js/tour/tour.js; user rulings
+  // 2026-09-22/23) ---
+  // A live, INTERACTIVE walkthrough drawn over the real interface, per
+  // viewport, in that reader's language and register. Steps complete on the
+  // visitor's own action (a switch, an audience change, a chip tap), with Next
+  // as the escape and Skip always there; the layer never swallows a tap.
+  //   "off"      — the shipped kiosk: nothing mounted, nothing fetched.
+  //   "arrival"  — the touch that lowers the attract band starts the arrival
+  //                walkthrough on the half that was touched.
+  //   "buttons"  — "?" buttons per area (toolbar, annotation panel, explorer),
+  //                each running only its own fragment.
+  //   "both"     — the staff preset.
+  tour: "off",
+  // How a step draws attention to its target, an A/B: "mask" dims everything
+  // but the target; "loop" is a hand-drawn loop round it in the switch cue's
+  // line — drawing itself once and a sixth round, staying, redrawing, and
+  // undrawing before the next step's loop draws (user, 2026-09-23).
+  tourStyle: "mask",
+  // A step with no progress for this long folds the tour away quietly. 0 =
+  // never; the attract loop's own idle timer is separate and untouched.
+  tourIdleMs: 45000,
+  // The loop's stay once drawn: after this it undraws and draws itself again
+  // while the step is still up, so a visitor who looked away sees it drawn
+  // afresh (user, 2026-09-23: six seconds). 0 = drawn once, stays.
+  tourLoopHoldMs: 6000,
 
   // --- the attract loop (attract.js; plan §4.4, design ruled 2026-09-07, the
   // idle model replaced 2026-09-16) ---

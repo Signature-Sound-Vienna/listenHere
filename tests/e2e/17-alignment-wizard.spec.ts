@@ -1,4 +1,5 @@
 import { test as base, expect } from '@playwright/test';
+import * as fs from 'fs';
 import * as path from 'path';
 
 const test = base;
@@ -212,6 +213,27 @@ test.describe('17. Alignment Wizard', () => {
 
     // Should still be on Step 1
     await expect(page.locator('.align-step[data-step="1"]')).toHaveClass(/active/);
+  });
+
+  // 17.22 A picked name becomes the recording's key in the alignment, so the
+  // wizard stores it composed (NFC): Firefox on macOS reports names decomposed.
+  test('17.22 a decomposed (NFD) file name is stored composed (NFC)', async ({ page }) => {
+    await page.goto('/?mode=align');
+    await page.waitForLoadState('networkidle');
+
+    const accented = 'audio-ä.mp3';
+    const read = (f: string) => fs.readFileSync(path.join(FIXTURES, f));
+    await page.locator('#align-file-input').setInputFiles([
+      { name: accented.normalize('NFD'), mimeType: 'audio/mpeg', buffer: read('audio-a.mp3') },
+      { name: 'audio-b.mp3', mimeType: 'audio/mpeg', buffer: read('audio-b.mp3') },
+    ]);
+    await filesListed(page);
+
+    const values = await page
+      .locator('#align-file-table input[name="ref"]')
+      .evaluateAll((els) => els.map((e) => (e as HTMLInputElement).value));
+    expect(values).toContain(accented.normalize('NFC'));
+    expect(values).not.toContain(accented.normalize('NFD'));
   });
 
 });

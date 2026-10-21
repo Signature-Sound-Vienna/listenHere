@@ -1,5 +1,24 @@
 # Listen Here! CHANGELOG.md
 
+### 0.93.0 -- Fix mode: an onset's line in the score is clickable
+
+* A click on an onset's line in the score pane selects it and seeks to it, as a click on its tick in the strip does; the hit radius is the strip's (8 px). A note under the pointer still wins.
+* Shift+click, on a line or a note, adds the onset to the multi-selection or takes it out, as in the strip. A Shift+click on a note used to select it plainly.
+
+### 0.91.0 -- Fix mode: tremolo strokes are no longer markers
+
+* Only written onsets get markers. The strokes of a measured tremolo, which the rendered MIDI writes out one by one, stay events of the alignment but have no marker of their own; they follow the refill between the written onsets around them.
+* A stroke belongs to the tremolo sounding at its position (`<bTrem>` / `<fTrem>` in the MEI), not to the last note written. A melody entering over a tremolo drew several markers per note (Blue Danube, m. 2: four per horn quaver).
+* Behind a fix, strokes follow the fix linearly, so a note dragged back past them cannot leave them sounding after it. The anchored onset's chord voices keep their times as before.
+* A stroke that already carries an anchor stays a marker. A gap cannot be laid while a tremolo runs on between the two onsets.
+* A moved onset's other alignment events at the same score position (notes that start together but end differently) now take its time. The realign ahead of a fix re-timed them from their old positions, so the marker moved but the synth still sounded that note late.
+
+### 0.86.0 -- Accented file names match however the browser spells them
+
+* Picked recordings match the alignment's keys after Unicode normalisation (NFC) on both sides. Firefox on macOS reports a picked "Järvi" decomposed (NFD) while the disk and the key hold it composed, so the Pizzicato set's Neeme Järvi recording could not be loaded, even when picked on its own.
+* The alignment wizard stores every recording's name composed, so an alignment made in Firefox on a Mac keys its recordings the way other browsers and the exhibit's server copies spell them.
+* Testing: 17.22 the wizard stores NFC; 25.11–25.12 an NFD name matches an NFC key, and the reverse.
+
 ### 0.85.0 -- Session recovery: unsaved work survives losing the tab
 * Closing, reloading, or navigating away from a tab with unsaved work now asks first. Browsers allow only their own wording there, so the app's own links that leave the page (the logo, the alignment-mode links) ask with the app's dialog instead: what is unsaved, the session's name, and how to get the work back.
 * The unsaved-changes tooltip on Save data and the controls toggle says what is unsaved and when a copy was last kept in this browser.
@@ -23,6 +42,29 @@
 * Remove fix-mode session mark functionality. Markers in listening mode and in the exhibit are unchanged.
 * The perceived-attack snap target is usually a little earlier than the detected onset, not later as the tooltip said (82 % of the Fledermaus corpus's onsets, median 24 ms). The worker's docstring now states the rule as implemented: half the linear rise from foot to crest.
 * Testing: 43.11 now pins the absence (keys inert, a click on the hidden button swallowed, markers placed again after exit); 43.23 dropped; 42.23 checks the button's hiding.
+
+### 0.80.0 -- The tour: a live walkthrough over the real interface
+
+* `?tour=arrival|buttons|both` (alpha testing; off by default): an interactive tour per half, drawn over the live interface in the reader's language and register. `arrival` starts the walkthrough on the half whose touch lowers the attract band; `buttons` mounts a "?" per area (toolbar, annotation panel, explorer), each running its own fragment; the staff preset carries `both`. Steps complete on the visitor's own action (a switch, a placed marker, an audience change, a shown annotation, an opened explorer), Next is the escape, Skip ends it, and the layer never swallows a tap. Every fragment closes on "tap ? to see these hints again", pointing at its own "?"; a step whose target is not on the table is left out, so the dots count what is shown; the toolbar's "?" stands down behind an explorer like the zoom control.
+* `?tourStyle=mask|loop`: dim everything but the target, or a hand-drawn loop round it in the switch cue's line, drawing itself once and a sixth round (the overrun a little outside and turned a little), staying `?tourLoopHoldMs` (6 s) before it undraws and draws itself again, and undrawing before the next step's loop draws (positive dash offsets only). The loop paints top-most, in its own layer beside the halves, so the band cannot cover it. `?tourIdleMs` (45 s) folds a stalled tour away. Reduced motion drops the drawing in and out and the redraw cycle.
+* The drawing is `app/static/js/tour/tour.js`, a zero-import module the listen interface can host next; the exhibit's steps are data in `exhibit/tour-steps.js`. A step whose target is not on the table (no strap, no zoom buttons, no explorers) is skipped, not shown.
+* The room's touch names the half it landed on, and the attract loop exposes `onArrive` for the touch that lowers its band.
+* Testing: spec 50 (eight tests); 35.25 follows the preset.
+
+### 0.78.0 -- The switch strap on its own switch
+
+* `?strap=auto|on|off` (alpha testing): the column of conductor medallions no longer comes only with direct waveform taps. `on` mounts it in either tap mode; a medallion always does the aligned carry-the-moment switch, and the waveform keeps whatever `tapMode` says. `auto` is the shipped coupling, `off` never mounts it. The staff preset carries `on`.
+* The marker's hook hangs below the strap's down arrow whenever there is a strap, not only under direct taps; under `strap=on` with aligned taps it sat on the arrow.
+* Testing: 34.21 the strap under aligned taps and its absence under `strap=off`; 35.25 follows the preset.
+
+### 0.76.0 -- The switch cue leaves cleanly on the iPad, and a marked annotation follows the reading
+
+* The switch cue's wipe animates its dash offset from twice the path length down to the length, never below zero: iOS WebKit paints a negative dash phase wrongly (the whole line vanished at once, redrew itself towards the head, then left), while macOS Safari and Firefox render it correctly. The arrowhead now holds until the line has fully arrived, then fades over the ghost's lag.
+* A marker the Mark button placed follows the reader's chip taps: showing another annotation moves it to that annotation's start, through the same landing and placement as the button, so the audio follows too. A hand-placed marker stays put, and a hand placement, adoption, or removal ends the following.
+* Data: in the adults' "Die Glocke" (the bell), the Wiener Volksopernorchester (Bauer-Theussl, 1985) moves from the Vienna Philharmonic group to Other Orchestras, where its behaviour puts it. Corrected in the Adults source set (`ExhibitAnnots/`, outside version control) and the payload rebuilt; the authoring copy still needs the same move.
+* The per-recording note sits directly under the annotation's text instead of at the foot of the column, where the "Keep reading…" pill covered it (kids' "Clapping Detective"). The description no longer grows to fill the column; a long one still shrinks and scrolls as before.
+* Testing: 37.30 the following marker and the hand-placed one that stays.
+
 
 ### 0.75.0 -- Merge: the exhibit meets open-ended alignment; the museum's grids come from the new HQ run
 * Third merge of `develop-exhibit` into `develop-alignment-correction`. From the exhibit: parchment, the "Did you know?" notepad, the conductor portraits, the linked explorers, and the room's per-screen idle loop (0.64.0-0.74.0). From alignment correction: audio-to-audio correction and its chooser, the legacy marker-drag mode's removal, and open-ended alignment (0.59.0-0.63.0).

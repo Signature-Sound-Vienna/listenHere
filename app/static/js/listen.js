@@ -276,6 +276,9 @@ function setMei(v) {
 export function getMeiXml() {
   return mei;
 }
+export function getMeiDOM() {
+  return meiDOM;
+}
 function setMeiDOM(v) {
   return (meiDOM = session.meiDOM = v);
 }
@@ -5399,15 +5402,17 @@ function initFilePicker() {
   }
 
   function matchFiles(files) {
-    // Build a map of lowercase filename -> File for quick lookup
+    // Build a map of normalised filename -> File for quick lookup. NFC on both
+    // sides: Firefox on macOS reports a picked "Järvi" decomposed (NFD) even
+    // when the disk and the alignment's key both hold it composed.
     const filesByName = new Map();
     for (const f of files) {
-      filesByName.set(f.name.toLowerCase(), f);
+      filesByName.set(f.name.normalize("NFC").toLowerCase(), f);
     }
     // Match against expected audio keys
     for (const key of expectedAudioKeys) {
       if (fileBlobUrls.has(key)) continue; // already matched
-      const expectedName = extractFilename(key).toLowerCase();
+      const expectedName = extractFilename(key).normalize("NFC").toLowerCase();
       if (filesByName.has(expectedName)) {
         const file = filesByName.get(expectedName);
         fileBlobUrls.set(key, URL.createObjectURL(file));

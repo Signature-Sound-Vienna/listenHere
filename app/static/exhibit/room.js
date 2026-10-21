@@ -301,11 +301,16 @@ export function createRoom({ config, transport, store, viewports, exhibit, now =
    * the loop has stood down, or a visitor's touch would claim as the loop and
    * lose to a visitor at the other table.
    */
-  function touch() {
+  /**
+   * @param {{ viewport: number|null }} [info]  which half the touch landed on
+   *   (a `.vp`, or the attract band's copy for that reader), when a pointer
+   *   event says; the tour starts on that half (attract.js onArrive).
+   */
+  function touch(info = { viewport: null }) {
     link?.send({ type: "activity" }); // the room's clock of touches (protocol 2)
     for (const fn of touchSubs) {
       try {
-        fn();
+        fn(info);
       } catch (err) {
         console.warn("exhibit room: touch subscriber threw", err);
       }
@@ -320,7 +325,15 @@ export function createRoom({ config, transport, store, viewports, exhibit, now =
     // must not fade it in a moment before the granted take executes elsewhere
     // (turns.js unmutes the executing window instead).
     if (e.target?.closest?.(".study-panel, .study-cog, .vp-turn")) return;
-    touch();
+    touch({ viewport: viewportOf(e.target) });
+  };
+  /** The half a pointer landed on: a viewport, or the attract band's copy turned to that reader. */
+  const viewportOf = (target) => {
+    const vp = target?.closest?.(".vp");
+    if (vp) return Number(vp.dataset.viewport);
+    const copy = target?.closest?.(".ab-copy");
+    if (copy) return Number(copy.dataset.copy);
+    return null;
   };
   if (active) {
     window.addEventListener("pointerdown", onInteract, true);

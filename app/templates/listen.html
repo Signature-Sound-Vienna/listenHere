@@ -413,9 +413,15 @@
                     <label for="normalize" title="Normalize audio levels (boosts quiet recordings)">Normalize audio</label>
                   </span>
                   <span>
-                    <input type="checkbox" id="visalign" title="Show alignment sync-lines (matched to reference)"/>
-                    <label for="visalign" title="Show alignment sync-lines (matched to reference)">Visualise alignments</label>
+                    <input type="checkbox" id="visalign" title="Show alignment sync-lines"/>
+                    <label for="visalign" title="Show alignment sync-lines">Visualise alignments</label>
                   </span>
+                  <div id="visalign-options" style="display:none">
+                    <input type="radio" name="visalign-mode" id="visalign-mode-next" value="next" checked/>
+                    <label for="visalign-mode-next" title="Each line runs on to the same alignment point in the waveform below">To next</label>
+                    <input type="radio" name="visalign-mode" id="visalign-mode-reference" value="reference"/>
+                    <label for="visalign-mode-reference" title="Each line slants to its position on the reference timeline">To reference</label>
+                  </div>
                   <span>
                     <input type="checkbox" id="visrelalign" title="Show corresponding playback positions"/>
                     <label for="visrelalign" title="Show corresponding playback positions">Show relative position</label>

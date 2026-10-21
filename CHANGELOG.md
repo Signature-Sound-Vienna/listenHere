@@ -1,5 +1,15 @@
 # Listen Here! CHANGELOG.md
 
+### 0.95.0 -- Visualise alignments: each line runs on to the waveform below
+
+* With Visualise alignments on, each alignment line is vertical through its waveform and slants, in the bottom sixth, to the same alignment point in the next visible waveform below — across group headings. The lowest visible waveform's lines are vertical throughout. The vertical part is drawn in one style, top included; only the slant stands out.
+* The gap between waveforms is halved (9.2 → 4.6 px).
+* Hiding, collapsing, regrouping, or reordering waveforms relinks the lines; a waveform's scroll or zoom redraws the one above it.
+* The previous drawing, slanting to the reference timeline, stays available: To next / To reference, under the checkbox.
+* Show relative position follows the same style, for every waveform including the playing one: To next, each indicator runs on to the next visible waveform's position; To reference, every indicator's tips mark the same reference position. Its tips used to sit at the playing file's clock time on each waveform's own axis, which no two waveforms of different length shared. The style choice now shows while either checkbox is on.
+* All visible waveforms thin their lines by one shared stride, so a line from above always meets a line below.
+* Testing: 4.9, 4.10.
+
 ### 0.93.0 -- Fix mode: an onset's line in the score is clickable
 
 * A click on an onset's line in the score pane selects it and seeks to it, as a click on its tick in the strip does; the hit radius is the strip's (8 px). A note under the pointer still wins.

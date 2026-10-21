@@ -4737,16 +4737,36 @@ document.addEventListener("DOMContentLoaded", () => {
     // Audio: adjust GainNode so quieter recordings play at equal volume
     applyNormGain(norm);
   });
-  // visualize alignment checkbox — redraw grids to show/hide alignment lines
-  document.getElementById("visalign").checked = false;
-  document.getElementById("visalign").addEventListener("click", () => {
-    Object.keys(waveformViews).forEach((fn) => drawAlignmentGrid(fn));
-  });
-  // show relative position checkbox — redraw immediately when toggled while paused
-  document.getElementById("visrelalign").addEventListener("click", () => {
+  // visualize alignment checkbox — redraw grids to show/hide alignment lines.
+  // Its style (to the next waveform, or to the reference) shapes the relative
+  // position indicator too, so the choice shows while either is on.
+  const visalignOptions = document.getElementById("visalign-options");
+  const visalignEl = document.getElementById("visalign");
+  const visrelalignEl = document.getElementById("visrelalign");
+  const _syncVisalignOptions = () => {
+    if (visalignOptions)
+      visalignOptions.style.display = visalignEl.checked || visrelalignEl.checked ? "" : "none";
+  };
+  const _redrawPositionIndicators = () => {
     if (currentAudioIx && isWaveformRendered(currentAudioIx)) {
       updatePositionIndicator(currentAudioIx);
     }
+  };
+  visalignEl.checked = false;
+  visalignEl.addEventListener("click", () => {
+    _syncVisalignOptions();
+    Object.keys(waveformViews).forEach((fn) => drawAlignmentGrid(fn));
+  });
+  document.querySelectorAll('input[name="visalign-mode"]').forEach((radio) => {
+    radio.addEventListener("change", () => {
+      Object.keys(waveformViews).forEach((fn) => drawAlignmentGrid(fn));
+      _redrawPositionIndicators();
+    });
+  });
+  // show relative position checkbox — redraw immediately when toggled while paused
+  visrelalignEl.addEventListener("click", () => {
+    _syncVisalignOptions();
+    _redrawPositionIndicators();
   });
   // Shared time axis checkbox
   document

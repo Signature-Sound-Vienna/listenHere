@@ -922,7 +922,7 @@ canvas {
 .file-group .group-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 3px;
 }
 
 /* Draggable handle on right edge of each waveform */
@@ -1187,6 +1187,8 @@ details {
 #waveforms .waveform {
   border-top: 1px solid var(--color-waveform-border, #cbd5e1);
   border-radius: 5px;
+  /* With the group list's 3 px gap: half the old spacing between rows. */
+  margin-bottom: .1em;
 }
 
 /* wave marker rules removed (WaveSurfer v4 only) */
@@ -1492,20 +1494,28 @@ label:has(> #show-tempo-curve:disabled) {
   gap: 0.25em;
 }
 
+#visalign-options {
+  margin-bottom: 0.3em;
+  font-size: var(--font-size-small);
+}
+
 #tempo-mode-controls,
-#tempo-scope-controls {
+#tempo-scope-controls,
+#visalign-options {
   display: flex;
   align-items: center;
   gap: 0;
 }
 
 #tempo-mode-controls label,
-#tempo-scope-controls label {
+#tempo-scope-controls label,
+#visalign-options label {
   margin-right: 0.5em;
 }
 
 #tempo-mode-controls input[type="radio"],
-#tempo-scope-controls input[type="radio"] {
+#tempo-scope-controls input[type="radio"],
+#visalign-options input[type="radio"] {
   margin: 0 0.05em 0 0;
 }
 

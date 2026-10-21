@@ -172,9 +172,15 @@ export function clearWaveformViews() {
 /**
  * Repaint every position-indicator canvas relative to `filename`'s playhead.
  *
- * The playing waveform gets a plain vertical line; every other loaded waveform
- * gets a slanted bracket at its own aligned position, so the slant tips line up
- * vertically across the stack and show each recording's temporal offset.
+ * Every waveform's indicator stands at its own aligned position for the
+ * playhead's grid index and takes the shape of an alignment line there, in
+ * the visualise-alignments style (2026-10-21): To reference — the top and
+ * bottom tips at that index's reference position (index × width), the same
+ * point in every waveform; To next — vertical, slanting in the bottom sixth to
+ * the next visible waveform's position for the index, the lowest vertical.
+ * (The tips used to sit at the playing file's CLOCK time on each waveform's
+ * own axis: no shared position at all once durations differ.) The playing
+ * waveform keeps the playhead colour; the others are tinted by their slant.
  */
 export function updatePositionIndicator(filename) {
   // Both of these can legitimately be absent: a waveform can be in the pane
@@ -200,53 +206,56 @@ export function updatePositionIndicator(filename) {
   // iterate through all positionIndicatorCanvases, drawing in current ix position
   const canvases = document.getElementsByClassName("position-indicator");
   const visrelalign = document.getElementById("visrelalign").checked;
+  const toNext = _visalignMode() === "next";
+  _lastIndicatorFile = filename;
+  if (visrelalign && toNext) _watchRowOrder();
+  const order = visrelalign && toNext ? _visibleRowOrder() : null;
+  const _piC = parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-alignment-playhead").trim()) || { r: 100, g: 100, b: 200 };
   Array.from(canvases).forEach((c) => {
     const file =
       c.closest(".wf-overlays")?.parentElement?.dataset["ix"] ||
       c.closest(".waveform")?.dataset["ix"];
     if (!file || !wavesurfers[file] || !alignmentGrids[file]) return;
     const ctx = c.getContext("2d");
+    const fileGrid = alignmentGrids[file];
     const duration = wavesurfers[file].getDuration();
     const fullW = getZoomedWidth(file);
     const scrollLeft = wavesurfers[file].getScroll();
     ctx.clearRect(0, 0, c.width, c.height);
-    if (!visrelalign) return;
+    if (!visrelalign || !c.width || !c.height) return;
 
-    if (file === filename) {
-      // Playing waveform: simple vertical line at current playback position
-      const x = (currentTime / duration) * fullW - scrollLeft;
-      const _piC = parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-alignment-playhead").trim()) || { r: 100, g: 100, b: 200 };
-      ctx.beginPath();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = `rgba(${_piC.r},${_piC.g},${_piC.b},0.7)`;
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, c.height);
-      ctx.stroke();
+    // This waveform's own position for the playhead's grid index (the playing
+    // waveform: the playhead itself), and where its tips go.
+    const ix = Math.min(currentGridIx, fileGrid.length - 1);
+    const alignedX =
+      ((file === filename ? currentTime : fileGrid[ix]) / duration) * fullW - scrollLeft;
+    let topX = alignedX;
+    let bottomX = alignedX;
+    if (!toNext) {
+      topX = bottomX = (ix / fileGrid.length) * fullW - scrollLeft;
     } else {
-      // Non-playing waveform: vertical section at the corresponding
-      // aligned position, with slanted top/bottom pointing toward
-      // the playing waveform's indicator position (so all slant tips
-      // form a continuous vertical line across stacked waveforms).
-      const correspondingSeconds = alignmentGrids[file][currentGridIx];
-      const alignedX =
-        (correspondingSeconds / duration) * fullW - scrollLeft;
-      // playingX: project the playing file's absolute time onto this
-      // file's time axis, so the slant shows the temporal offset
-      // between the playing file's clock time and the aligned position.
-      const playingX = (currentTime / duration) * fullW - scrollLeft;
-      const diffMapped = Math.floor((255 * (playingX - alignedX)) / 100);
-      ctx.beginPath();
-      ctx.lineWidth = 2;
-      ctx.moveTo(playingX, 0);
-      ctx.lineTo(alignedX, c.height / 6);
-      ctx.lineTo(alignedX, 5 * (c.height / 6));
-      ctx.lineTo(playingX, c.height);
+      const nb = _lowerNeighbour(file, order);
+      if (nb && ix < nb.grid.length) {
+        bottomX = (nb.grid[ix] / nb.dur) * nb.fullW - nb.scroll + nb.dx;
+      }
+    }
+    ctx.beginPath();
+    ctx.lineWidth = 2;
+    ctx.moveTo(topX, 0);
+    ctx.lineTo(alignedX, c.height / 6);
+    ctx.lineTo(alignedX, 5 * (c.height / 6));
+    ctx.lineTo(bottomX, c.height);
+    if (file === filename) {
+      ctx.strokeStyle = `rgba(${_piC.r},${_piC.g},${_piC.b},0.7)`;
+    } else {
+      // Tinted by the slant: red leaning left, blue leaning right.
+      const diffMapped = Math.floor((255 * (bottomX - alignedX)) / 100);
       ctx.strokeStyle =
         diffMapped < 0
           ? `rgb(${-1 * diffMapped} 100 100)`
           : `rgb(100 100 ${diffMapped})`;
-      ctx.stroke();
     }
+    ctx.stroke();
   });
 }
 
@@ -316,11 +325,154 @@ function drawNoCounterpartBands(ctx, filename, dur, fullW, scrollLeft, viewW, h)
   return painted;
 }
 
+// ---------------------------------------------------------------------------
+// "Visualise alignments", To next (2026-10-21; "To reference" is the older
+// drawing): each line is vertical through its waveform and slants, in the
+// bottom sixth, to the same grid index in the next VISIBLE waveform on screen,
+// across group headings; the lowest visible waveform's lines are vertical
+// throughout. A waveform's lines so depend on its lower neighbour's geometry:
+// a redraw of one schedules its upper neighbour's when what it slants to has
+// changed, and a change in which waveforms show, or their order, redraws all.
+// ---------------------------------------------------------------------------
+
+/** The visualise-alignments style: "next" or "reference". */
+function _visalignMode() {
+  return document.querySelector('input[name="visalign-mode"]:checked')?.value || "next";
+}
+
+/** Filenames of the waveform rows on screen, top to bottom — rows hidden
+ *  themselves or by a collapsed group are left out. */
+function _visibleRowOrder() {
+  const root = document.getElementById("waveforms");
+  if (!root) return [];
+  return [...root.querySelectorAll(".waveform[data-ix]")]
+    .filter((el) => el.getClientRects().length > 0)
+    .map((el) => el.dataset.ix);
+}
+
+/** What `filename`'s lines slant to: the next visible waveform's grid and
+ *  geometry, its x offset relative to this one's canvas (`dx`), and a
+ *  signature of it all; null when there is none, or it has no renderer yet
+ *  (its lines are then drawn vertical, and redrawn once it has one). */
+function _lowerNeighbour(filename, order = _visibleRowOrder()) {
+  const k = order.indexOf(filename);
+  const next = k >= 0 ? order[k + 1] : undefined;
+  const nv = next ? waveformViews[next] : null;
+  const ws = next ? wavesurfers[next] : null;
+  const grid = next ? alignmentGrids[next] : null;
+  if (!nv?.container || !ws || !grid?.length) return null;
+  const dur = ws.getDuration();
+  if (!(dur > 0)) return null;
+  const own = waveformViews[filename]?.container;
+  const dx = own
+    ? nv.container.getBoundingClientRect().left - own.getBoundingClientRect().left
+    : 0;
+  const fullW = getZoomedWidth(next);
+  const scroll = ws.getScroll();
+  return {
+    next,
+    grid,
+    dur,
+    fullW,
+    scroll,
+    dx,
+    sig: `${next}|${grid.length}|${dur}|${fullW}|${scroll}|${dx}`,
+  };
+}
+
+/** Upper neighbours waiting for a redraw, flushed once per frame. */
+const _neighbourQueue = new Set();
+let _neighbourRaf = 0;
+
+function _queueNeighbourRedraw(filename) {
+  _neighbourQueue.add(filename);
+  if (_neighbourRaf) return;
+  _neighbourRaf = requestAnimationFrame(() => {
+    _neighbourRaf = 0;
+    const order = _visibleRowOrder();
+    const due = [..._neighbourQueue];
+    _neighbourQueue.clear();
+    for (const fn of due) {
+      // Already drawn against the neighbour as it stands (a redraw-all in the
+      // same frame): nothing to do.
+      const nb = _lowerNeighbour(fn, order);
+      if ((nb?.sig ?? "") === (waveformViews[fn]?.visalignSig ?? "")) continue;
+      drawAlignmentGrid(fn, { fromNeighbour: true });
+    }
+  });
+}
+
+/** Watch the waveform list for a change in which rows show, or their order
+ *  (hiding, a collapsed group, regrouping), and redraw every grid then. */
+let _orderObserver = null;
+let _orderSig = "";
+/** The waveform the position indicators were last drawn relative to. */
+let _lastIndicatorFile = null;
+
+function _watchRowOrder() {
+  if (_orderObserver) return;
+  const root = document.getElementById("waveforms");
+  if (!root) return;
+  _orderSig = _visibleRowOrder().join("\n");
+  _orderObserver = new MutationObserver((mutations) => {
+    // Our own overlay resizing (every draw) is not a layout change.
+    if (mutations.every((m) => m.target.closest?.(".wf-overlays"))) return;
+    const sig = _visibleRowOrder().join("\n");
+    if (sig === _orderSig) return;
+    _orderSig = sig;
+    if (_visalignMode() !== "next") return;
+    if (document.getElementById("visalign")?.checked) {
+      for (const fn of Object.keys(waveformViews)) _queueNeighbourRedraw(fn);
+    }
+    if (document.getElementById("visrelalign")?.checked && _lastIndicatorFile) {
+      updatePositionIndicator(_lastIndicatorFile);
+    }
+  });
+  _orderObserver.observe(root, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["style", "class", "hidden"],
+  });
+}
+
+/** The grid stride shared by the visible waveforms: lines no closer than
+ *  4 px in the narrowest of them. */
+function _sharedStride(order) {
+  let stride = 1;
+  for (const fn of order) {
+    const n = alignmentGrids[fn]?.length;
+    const w = wavesurfers[fn] ? getZoomedWidth(fn) : 0;
+    if (n > 0 && w > 0) stride = Math.max(stride, Math.round(4 / (w / n)));
+  }
+  return stride;
+}
+
+/** The grid indices, in [lo, hi], whose time in `grid` maps into the visible
+ *  x range [x0, x1] at (dur, fullW, scroll). */
+function _gridIndexSpan(grid, dur, fullW, scroll, x0, x1) {
+  const tLo = ((scroll + x0) / fullW) * dur;
+  const tHi = ((scroll + x1) / fullW) * dur;
+  const lower = (t) => {
+    let lo = 0;
+    let hi = grid.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (grid[mid] < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  return [Math.max(0, lower(tLo) - 1), Math.min(grid.length - 1, lower(tHi))];
+}
+
 /**
  * Draw (or redraw) one waveform's alignment grid, time ticks, and tempo curve.
  * At zoom, draws only the visible viewport portion, offset by scroll.
+ * `fromNeighbour`: this redraw was queued by the waveform below, so it does
+ * not queue the one above in turn.
  */
-export function drawAlignmentGrid(filename) {
+export function drawAlignmentGrid(filename, { fromNeighbour = false } = {}) {
   const view = waveformViews[filename];
   // No canvases means the view exists but has not been rendered yet (its
   // waveform is deferred, or still between create and "ready"). Nothing to
@@ -355,7 +507,71 @@ export function drawAlignmentGrid(filename) {
 
   // Draw alignment grid lines first (so time ticks render on top)
   const visalignEl = document.getElementById("visalign");
-  if (visalignEl && visalignEl.checked) {
+  const visalignNext = !!visalignEl?.checked && _visalignMode() === "next";
+  view.visalignSig = "";
+  view.visalignNext = null; // test surface: the waveform the lines run on to
+  if (visalignNext) {
+    _watchRowOrder();
+    const order = _visibleRowOrder();
+    const nb = _lowerNeighbour(filename, order);
+    view.visalignSig = nb?.sig ?? "";
+    view.visalignNext = nb?.next ?? null;
+    const grid = alignmentGrids[filename] || [];
+    if (grid.length > 0 && dur > 0) {
+      const margin = 10;
+      // The indices whose line touches the view: its own x in range, or —
+      // slanting — its x in the waveform below.
+      let [lo, hi] = _gridIndexSpan(grid, dur, fullW, scrollLeft, -margin, viewW + margin);
+      if (nb) {
+        const [nlo, nhi] = _gridIndexSpan(
+          nb.grid, nb.dur, nb.fullW, nb.scroll, -margin - nb.dx, viewW + margin - nb.dx,
+        );
+        lo = Math.min(lo, nlo);
+        hi = Math.max(hi, Math.min(nhi, grid.length - 1));
+      }
+      // A deterministic stride (no flicker on scroll): selection by index,
+      // never by distance — and ONE stride for every visible waveform, the
+      // coarsest any of them needs, so each line runs on into a line drawn
+      // below rather than into a gap of the next waveform's own thinning.
+      const stride = _sharedStride(order);
+      lo -= lo % stride;
+      const _agC = parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-alignment").trim()) || { r: 140, g: 90, b: 90 };
+      const _agRgb = `${_agC.r},${_agC.g},${_agC.b}`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.setLineDash([]);
+      ctx.strokeStyle = `rgba(${_agRgb},0.55)`;
+      for (let gridIx = lo; gridIx <= hi; gridIx += stride) {
+        const x = (grid[gridIx] / dur) * fullW - scrollLeft;
+        const xNext =
+          nb && gridIx < nb.grid.length
+            ? (nb.grid[gridIx] / nb.dur) * nb.fullW - nb.scroll + nb.dx
+            : x;
+        ctx.moveTo(x, 5 * (h / 6));
+        ctx.lineTo(xNext, h);
+      }
+      ctx.stroke();
+      // The vertical part, top included, in one style: only the slant to the
+      // waveform below stands out.
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(${_agRgb},0.3)`;
+      ctx.setLineDash([2, 1]);
+      for (let gridIx = lo; gridIx <= hi; gridIx += stride) {
+        const x = (grid[gridIx] / dur) * fullW - scrollLeft;
+        if (x > viewW + margin || x < -margin) continue;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, 5 * (h / 6));
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (!fromNeighbour) {
+      const k = order.indexOf(filename);
+      if (k > 0) _queueNeighbourRedraw(order[k - 1]);
+    }
+  } else if (visalignEl && visalignEl.checked) {
+    // To reference: each line slants from its position on the reference
+    // timeline (grid index × width) to the recording's own, and back.
     const grid = alignmentGrids[filename] || [];
     const gridLen = grid.length;
     if (gridLen > 0) {

@@ -276,6 +276,9 @@ function setMei(v) {
 export function getMeiXml() {
   return mei;
 }
+export function getMeiDOM() {
+  return meiDOM;
+}
 function setMeiDOM(v) {
   return (meiDOM = session.meiDOM = v);
 }

@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.91.0 -- Fix mode: tremolo strokes are no longer markers
+
+* Only written onsets get markers. The strokes of a measured tremolo, which the rendered MIDI writes out one by one, stay events of the alignment but have no marker of their own; they follow the refill between the written onsets around them.
+* A stroke belongs to the tremolo sounding at its position (`<bTrem>` / `<fTrem>` in the MEI), not to the last note written. A melody entering over a tremolo drew several markers per note (Blue Danube, m. 2: four per horn quaver).
+* Behind a fix, strokes follow the fix linearly, so a note dragged back past them cannot leave them sounding after it. The anchored onset's chord voices keep their times as before.
+* A stroke that already carries an anchor stays a marker. A gap cannot be laid while a tremolo runs on between the two onsets.
+* A moved onset's other alignment events at the same score position (notes that start together but end differently) now take its time. The realign ahead of a fix re-timed them from their old positions, so the marker moved but the synth still sounded that note late.
+
 ### 0.86.0 -- Accented file names match however the browser spells them
 
 * Picked recordings match the alignment's keys after Unicode normalisation (NFC) on both sides. Firefox on macOS reports a picked "Järvi" decomposed (NFD) while the disk and the key hold it composed, so the Pizzicato set's Neeme Järvi recording could not be loaded, even when picked on its own.

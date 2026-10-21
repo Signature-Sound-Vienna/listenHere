@@ -45,6 +45,7 @@ import {
   SYNTH_MEI_KEY,
   getReferenceAudioIx,
   getMeiXml,
+  getMeiDOM,
   resolveAudioUrl,
   pushFixUndoEntry,
   refreshSynthAlignmentGrid,
@@ -1181,16 +1182,58 @@ function _measurePaneDims() {
  * model's unit in increment 3) and the xml:ids sounding at that quarter.
  * Pure derivation from the event quarters + the session timemap, so the
  * prewarm can build it outside any fix session.
+ *
+ * Only WRITTEN onsets are groups. A tremolo stroke (the MIDI writes a
+ * measured tremolo out stroke by stroke; the timemap carries only the written
+ * note) stays an event but is no group: no tick, no selection stop, no
+ * anchor. It is an interior event of whatever span the written onsets around
+ * it bound, and follows that span's refill. A stroke that already carries an
+ * anchor (laid before strokes stopped being ticks) stays a group, attached to
+ * its tremolo, so the anchor can still be seen and moved.
  */
 /** MIDI quarters that may differ between the rendered MIDI and the timemap
  *  for the SAME notated event: grace notes land a tick or two apart, so the
  *  match is nearest-within-tolerance, far below any real inter-onset gap. */
 const GROUP_MATCH_TOL_Q = 0.02;
-/** A sounding event with no notated entry of its own (a tremolo stroke: the
- *  MIDI expands measured tremolos, the timemap only carries the written
- *  note) inherits the ids of the preceding notated event, if it is close
- *  enough to plausibly be its generator. */
-const GROUP_INHERIT_MAX_Q = 4;
+/** A tremolo note's sounding span when the timemap has no `off` for it. */
+const TREMOLO_FALLBACK_SPAN_Q = 4;
+/** The namespace of the xml:id attribute. */
+const XML_NS = "http://www.w3.org/XML/1998/namespace";
+
+/**
+ * The [qA, qB) spans of the tremolo notes in the session MEI: notes inside a
+ * <bTrem> or <fTrem>, timed by the timemap. A stroke belongs to the tremolos
+ * sounding at its quarter — NOT to whichever note was written last, which
+ * hung each tremolo's strokes on a melody entering over it (Donau, m. 2: the
+ * solo horn's quavers drew four ticks each, 2026-10-21).
+ */
+function _tremoloSpans() {
+  const doc = getMeiDOM();
+  if (!doc) return [];
+  // By local name in any namespace, so a prefixed <mei:bTrem> counts too.
+  const ids = new Set();
+  for (const name of ["bTrem", "fTrem"]) {
+    for (const trem of doc.getElementsByTagNameNS("*", name)) {
+      for (const el of trem.getElementsByTagNameNS("*", "*")) {
+        const id = el.getAttributeNS(XML_NS, "id");
+        if (id) ids.add(id);
+      }
+    }
+  }
+  if (!ids.size) return [];
+  const on = new Map();
+  const off = new Map();
+  for (const e of timemap) {
+    if (!("qstamp" in e)) continue;
+    for (const id of e.on || []) if (ids.has(id)) on.set(id, e.qstamp);
+    for (const id of e.off || []) if (ids.has(id)) off.set(id, e.qstamp);
+  }
+  return [...on].map(([id, qA]) => ({
+    id,
+    qA,
+    qB: off.get(id) ?? qA + TREMOLO_FALLBACK_SPAN_Q,
+  }));
+}
 
 function _buildGroupsFrom(qOn) {
   // Do NOT filter out entries carrying measureOn (as the tempo derivation
@@ -1200,6 +1243,10 @@ function _buildGroupsFrom(qOn) {
     .filter((e) => "qstamp" in e && Array.isArray(e.on) && e.on.length)
     .map((e) => ({ q: e.qstamp, on: e.on }))
     .sort((a, b) => a.q - b.q);
+  const tremolos = _tremoloSpans();
+  const anchored = new Set(
+    (loadedAlignmentJSON?.header?.corrections?.anchors || []).map((a) => a.i),
+  );
   const nearestEntry = (q) => {
     let lo = 0;
     let hi = entries.length - 1;
@@ -1216,9 +1263,10 @@ function _buildGroupsFrom(qOn) {
     return Math.abs(best.q - q) <= GROUP_MATCH_TOL_Q ? best : null;
   };
   const groups = [];
-  let cur = null;
-  let lastNotated = null; // { q, ids } of the last directly matched group
-  let inherited = 0;
+  let cur = null; // the group (or hidden stroke) the current quarter opened
+  let matched = 0;
+  let strokes = 0; // hidden: events, not groups
+  let keptStrokes = 0; // anchored strokes, kept as groups
   let orphaned = 0;
   for (let i = 0; i < qOn.length; i++) {
     const k = qKey(qOn[i]);
@@ -1226,27 +1274,34 @@ function _buildGroupsFrom(qOn) {
       const q = qOn[i];
       const entry = nearestEntry(q);
       let ids;
+      let stroke = false;
       if (entry) {
         ids = entry.on;
-        lastNotated = { q, ids };
-      } else if (lastNotated && q - lastNotated.q <= GROUP_INHERIT_MAX_Q) {
-        ids = lastNotated.ids; // e.g. the 2nd/3rd strokes of a tremolo
-        inherited++;
+        matched++;
       } else {
-        ids = [];
-        orphaned++;
+        ids = tremolos.filter((t) => t.qA < q && q < t.qB).map((t) => t.id);
+        stroke = ids.length > 0;
+        if (stroke) strokes++;
+        else orphaned++;
       }
-      cur = { k, q, eventIxs: [], ids, page: 0, xScore: null };
-      groups.push(cur);
+      cur = { k, q, eventIxs: [], ids, page: 0, xScore: null, hidden: stroke };
+      if (!stroke) groups.push(cur);
     }
     cur.eventIxs.push(i);
+    if (cur.hidden && anchored.has(i)) {
+      cur.hidden = false;
+      groups.push(cur);
+      strokes--;
+      keptStrokes++;
+    }
   }
-  _lastGroupStats = { matched: groups.length - inherited - orphaned, inherited, orphaned };
-  if (inherited || orphaned) {
+  for (const g of groups) delete g.hidden;
+  _lastGroupStats = { matched, strokes, keptStrokes, orphaned };
+  if (strokes || keptStrokes || orphaned) {
     console.log(
-      `fix mode: of ${groups.length} onsets, ${inherited} have no own ` +
-        `timemap entry and attach to their generating note (tremolo ` +
-        `strokes), ${orphaned} found nothing to attach to`,
+      `fix mode: ${groups.length} onsets; ${strokes} tremolo strokes are ` +
+        `events without ticks, ${keptStrokes} kept as ticks for their anchors, ` +
+        `${orphaned} found nothing to attach to`,
     );
   }
   return groups;
@@ -4910,10 +4965,23 @@ function _setSounding(on) {
 // Anchor commits: model + worker realign + undo entry (the edit loop's core)
 // ---------------------------------------------------------------------------
 
-/** Ask the worker to refill one segment; single in-flight by construction. */
-function _realignSegmentViaWorker(segment, priorRef) {
+/**
+ * Ask the worker to refill one segment; single in-flight by construction.
+ *
+ * The left anchor's chord voices (events after iA at the same quarter: rows
+ * that differ only in their offset) are interior to the segment but belong to
+ * the anchor's tick, so they take its time. Left to the worker they were
+ * guided by their PRE-fix times, a stale knot at the segment's very start,
+ * and came back where the old alignment had them: the tick moved, the synth
+ * still sounded that note late (Donau m. 6, the horn under a coinciding
+ * tremolo stroke, 2026-10-21).
+ */
+async function _realignSegmentViaWorker(segment, priorRef) {
+  const voices = _anchorVoiceCount(segment);
+  const prior = priorRef.slice();
+  for (let k = 0; k < voices; k++) prior[k] = segment.tA;
   const worker = _ensureWorker();
-  return new Promise((resolve, reject) => {
+  const reply = await new Promise((resolve, reject) => {
     _pendingRealign = { resolve, reject };
     worker.postMessage({
       type: "fix_realign",
@@ -4921,9 +4989,21 @@ function _realignSegmentViaWorker(segment, priorRef) {
       tA: segment.tA,
       iB: segment.iB,
       tB: segment.tB,
-      priorRef,
+      priorRef: prior,
     });
   });
+  for (let k = 0; k < voices; k++) reply.result.ref_onset[k] = segment.tA;
+  return reply;
+}
+
+/** How many events directly after a segment's left anchor share its quarter. */
+function _anchorVoiceCount(segment) {
+  const qOn = _fix?.qOn;
+  if (!qOn || segment.iA < 0) return 0;
+  const k = qKey(qOn[segment.iA]);
+  let n = 0;
+  while (segment.iA + 1 + n < segment.iB && qKey(qOn[segment.iA + 1 + n]) === k) n++;
+  return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -6057,8 +6137,13 @@ function _toggleGap() {
   const next = f.groups[ix + 1];
   const iA = g.eventIxs[g.eventIxs.length - 1];
   const iB = iA + 1;
-  if (!next || next.eventIxs[0] !== iB) {
+  if (!next) {
     _announce("No onset follows this one — a gap needs an onset on each side.");
+    return;
+  }
+  if (next.eventIxs[0] !== iB) {
+    // Tremolo strokes (events without ticks) run on between the two onsets.
+    _announce("A tremolo runs on past this onset — a gap cannot be laid inside it.");
     return;
   }
   const tEnd = refOn[iA];
@@ -6402,9 +6487,14 @@ function _linearFill(seg) {
   const mapOff = (q) => (q <= qB ? clip(lin(q)) : Math.min(lin(q), dur));
   const on = [];
   const off = [];
-  // keepOnsets: the span BEHIND a fix, where nothing moves but the offsets.
+  // keepOnsets: the span BEHIND a fix, where no TICK moves but the offsets —
+  // the left anchor's chord voices. Tremolo strokes between the two ticks
+  // have none of their own; they follow linearly, or a fix dragged back past
+  // one would leave it sounding after the note it precedes.
+  const kA = qKey(qA);
   for (let e = seg.iA + 1; e < seg.iB; e++) {
-    on.push(seg.keepOnsets ? refOn[e] : clip(lin(f.qOn[e])));
+    const keep = seg.keepOnsets && qKey(f.qOn[e]) === kA;
+    on.push(keep ? refOn[e] : clip(lin(f.qOn[e])));
     off.push(mapOff(f.qOff[e]));
   }
   return {

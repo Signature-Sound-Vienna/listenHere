@@ -1,5 +1,9 @@
 # Listen Here! CHANGELOG.md
 
+### 0.90.1 -- The empty hook always puts the glass away
+* A tap on the empty hook removes the marker and rests the glass while the glass stands on a waveform, not only while it is in hand.
+* Testing: 38.22 a tap on the hook with the glass placed removes the marker.
+
 ### 0.90.0 -- The Pizzicato-Polka on an HQ alignment, its annotations re-anchored
 * The Pizzicato-Polka's spine is an HQ audio-to-audio alignment on VPO-1989, without the Volksoper recording that played the piece twice. The other recordings no longer stall through about two minutes of it.
 * `tools/exhibit_annots_on_hq.py --piece pizzicato --reanchor` moves annotations onto a grid of another length: each region's index pair is voted from the authored per-recording seconds, and a recording whose old grid was flat at that point abstains. It reports every residual, and lists the text of targets dropped with a recording. Die Fledermaus's output is unchanged.

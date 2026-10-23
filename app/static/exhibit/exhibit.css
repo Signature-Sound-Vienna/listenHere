@@ -544,13 +544,14 @@ html, body {
   opacity: 0.45;
 }
 .vp[data-strap="on"] .marker-hook { top: calc(100% + 54px); }
-/* While the glass is in hand the hook becomes the "put it away" target —
- * tapping it removes any marker and rests the glass. */
-.marker-layer.is-engaged .marker-hook {
+/* Whenever the hook is empty — glass in hand OR placed — it is the "put it
+ * away" target: tapping it removes any marker and rests the glass. It brightens
+ * only while the glass is in hand. */
+.marker-layer.is-hook-empty .marker-hook {
   pointer-events: auto;
   cursor: pointer;
-  opacity: 0.8;
 }
+.marker-layer.is-engaged .marker-hook { opacity: 0.8; }
 
 /* Sized by marker.js (inline width/height): the lens is a fraction of one
  * strip's height (LENS_SPAN), so the rendered scale follows --strip-height. */

@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.96.0 -- Alignments from the legacy CLI open, in fix mode too
+
+* Score tables written by the legacy SyncToolbox CLI (`align-to-score.py`: positions in seconds, onsets and offsets deduplicated separately) are converted on load to this app's table: one event per unique (start, end) tick pair of the rendered MIDI, in quarters. Fix mode refused them ("the freshly rendered score MIDI has 3926 events but the stored alignment has 2670").
+* A table counts as legacy only if its onsets do not match the rendered MIDI as quarters and do match its note starts as seconds (at least 98 % within 1 ms).
+* Reference times are taken from the legacy table where it has that score time, and interpolated otherwise (percussion, which the CLI drops).
+* The header records the conversion (`convertedFrom`: counts of legacy entries, events, and exact matches); saving writes the converted table.
+* Testing: 51.1–51.4.
+
 ### 0.95.0 -- Visualise alignments: each line runs on to the waveform below
 
 * With Visualise alignments on, each alignment line is vertical through its waveform and slants, in the bottom sixth, to the same alignment point in the next visible waveform below — across group headings. The lowest visible waveform's lines are vertical throughout. The vertical part is drawn in one style, top included; only the slant stands out.

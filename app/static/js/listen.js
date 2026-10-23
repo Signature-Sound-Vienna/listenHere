@@ -26,6 +26,7 @@ import {
   fmtSec,
   synthToWav,
 } from "./engine/mei-synth.js";
+import { convertLegacySecondsTable } from "./engine/legacy-alignment.js";
 import {
   waveformViews,
   isWaveformRendered,
@@ -2450,6 +2451,23 @@ async function _buildAndPrepareSynthWaveform(
   } catch (err) {
     console.error("MEI MIDI parse failed:", err);
     return;
+  }
+
+  // A score table from the legacy SyncToolbox CLI (seconds, onsets and
+  // offsets deduplicated apart) becomes this app's quarters table, in place:
+  // scoreData aliases scoreAlignment and loadedAlignmentJSON.body.score, so
+  // fix mode, the grid below, and a later save all see the converted table.
+  const legacy = convertLegacySecondsTable(scoreData, notes, tpq, tempoChanges);
+  if (legacy) {
+    delete scoreData.synth_onset;
+    delete scoreData.synth_offset;
+    Object.assign(scoreData, legacy.table);
+    if (loadedAlignmentJSON?.header)
+      loadedAlignmentJSON.header.convertedFrom = {
+        format: "legacy-seconds-table",
+        ...legacy.report,
+      };
+    console.info("converted a legacy seconds score table:", legacy.report);
   }
 
   // Compute alignment grid: map ref times → synth times.

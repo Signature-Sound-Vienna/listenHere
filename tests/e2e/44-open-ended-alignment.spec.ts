@@ -154,6 +154,18 @@ out['sliceGuard'] = sl['guard']
 out['sliceGridLen'] = len(sl['times'])
 out['fullGridLen'] = len(p['times'])
 
+# --- the fine path keeps its starting corner ---
+# Reference rows 0-2 all map to target frame 0 (the reference holds a chord the
+# target moves on from sooner). make_monotonic keeps only (2, 0) of that run.
+vert = np.array([[0, 1, 2, 3, 4, 5], [0, 0, 0, 1, 2, 3]])
+mv = monotonic_keep_start(vert)
+out['cornerDropped'] = [int(make_monotonic(vert)[0, 0]), int(make_monotonic(vert)[1, 0])]
+out['cornerKept'] = [int(mv[0, 0]), int(mv[1, 0])]
+out['cornerStrict'] = bool(np.all(np.diff(mv[0]) > 0))
+# A path opening sideways already starts on its row's last point: unchanged.
+side = np.array([[0, 0, 0, 1, 2], [0, 1, 2, 3, 4]])
+out['cornerSideUnchanged'] = monotonic_keep_start(side).tolist() == make_monotonic(side).tolist()
+
 print(json.dumps(out))
 `;
 
@@ -286,6 +298,16 @@ test.describe('44. open-ended alignment — the worker', () => {
     expect(o.sliceFrom).toBeCloseTo(8.0, 1);
     // The grid still spans the whole reference, not just its usable span.
     expect(o.sliceGridLen).toBe(o.fullGridLen);
+  });
+
+  test('44.23 the fine path keeps its starting corner, so no grid entry precedes alignedFrom', () => {
+    const o = worker();
+    // Without the corner the grid was extrapolated backwards past the span's
+    // start: 0.06-0.21 s on three Fledermaus recordings.
+    expect(o.cornerDropped).toEqual([2, 0]);
+    expect(o.cornerKept).toEqual([0, 0]);
+    expect(o.cornerStrict).toBe(true);
+    expect(o.cornerSideUnchanged).toBe(true);
   });
 });
 
@@ -489,5 +511,64 @@ test.describe('44. open-ended alignment — the listen view', () => {
         (window as any)._listenTest.noCounterpartBands('audio-1.mp3'),
       ),
     ).toBe(0);
+  });
+
+  // alignment-openends-ref.json: the REFERENCE audio-1 is trimmed to 0.5-4.5 s,
+  // so grid indices 5..45 are aligned and the rest are extrapolation. audio-2's
+  // span is 1.2-5.4 s; its grid starts at 0.675 s, so 0.3 s has no index at all.
+  test('44.20 the aligned index range is the reference span, and an untrimmed reference leaves the whole grid', async ({ page }) => {
+    await loadLocalAlignment(page, 'alignment-openends.json');
+    await waitForWaveformsReady(page);
+    expect(await page.evaluate(() => (window as any)._listenTest.alignedIxRange)).toBeNull();
+
+    await loadLocalAlignment(page, 'alignment-openends-ref.json');
+    await waitForWaveformsReady(page);
+    expect(await page.evaluate(() => (window as any)._listenTest.alignedIxRange)).toEqual([5, 45]);
+  });
+
+  test('44.21 a time in a trimmed head or tail parks the others at their span edge', async ({ page }) => {
+    await loadLocalAlignment(page, 'alignment-openends-ref.json');
+    await waitForWaveformsReady(page);
+    const ix = (t: number, f: string) =>
+      page.evaluate(([t, f]) => (window as any)._listenTest.closestAlignmentIx(t, f), [t, f] as const);
+    expect(await ix(0.2, 'audio-1.mp3')).toBe(5); // the reference's own trimmed head
+    expect(await ix(5.0, 'audio-1.mp3')).toBe(45); // ... and tail
+    expect(await ix(0.3, 'audio-2.mp3')).toBe(5); // before audio-2's grid starts
+    expect(await ix(5.44, 'audio-2.mp3')).toBe(45); // past its span, in the clamped run
+    expect(await ix(3.0, 'audio-1.mp3')).toBe(30); // inside the span: unchanged
+
+    // The jump itself: from the reference's applause to audio-2's span start.
+    await showWaveform(page, 'audio-1.mp3');
+    await showWaveform(page, 'audio-2.mp3');
+    await waitForWaveformsReady(page);
+    const landed = await page.evaluate(async () => {
+      const L = (window as any)._listenTest;
+      L.swapCurrentAudio('audio-1.mp3');
+      const ws = L.wavesurfers['audio-1.mp3'];
+      ws.seekTo(0.2 / ws.getDuration());
+      L.swapCurrentAudio('audio-2.mp3');
+      return L.wavesurfers['audio-2.mp3'].getCurrentTime();
+    });
+    expect(landed).toBeCloseTo(1.2, 2);
+  });
+
+  test('44.22 alignment lines are drawn only inside the aligned range, in both styles', async ({ page }) => {
+    await loadLocalAlignment(page, 'alignment-openends-ref.json');
+    await waitForWaveformsReady(page);
+    await showWaveform(page, 'audio-1.mp3');
+    await showWaveform(page, 'audio-2.mp3');
+    await waitForWaveformsReady(page);
+    const drawn = () =>
+      page.evaluate(() => (window as any)._listenTest.gridIxDrawn('audio-2.mp3'));
+
+    await page.locator('#visalign').check({ force: true });
+    await expect(page.locator('#visalign-mode-next')).toBeChecked();
+    await expect.poll(drawn, { timeout: 5_000 }).not.toBeNull();
+    const [lo, hi] = await drawn();
+    expect(lo).toBeGreaterThanOrEqual(5);
+    expect(hi).toBeLessThanOrEqual(45);
+
+    await page.locator('#visalign-mode-reference').check({ force: true });
+    await expect.poll(drawn, { timeout: 5_000 }).toEqual([5, 45]);
   });
 });

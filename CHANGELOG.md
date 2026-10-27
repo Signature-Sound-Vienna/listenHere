@@ -1,5 +1,14 @@
 # Listen Here! CHANGELOG.md
 
+### 0.96.1 -- Trimmed ends are outside the alignment
+
+* The grid indices outside the reference's aligned span (alignedFrom–alignedTo) count as unaligned for every recording: they were extrapolated from a single path step, mapping applause onto applause or onto a recording's last sample.
+* No alignment lines are drawn in a trimmed head or tail, in either style.
+* A jump, seek, or marker from a trimmed head or tail parks the other recordings at their aligned span's edge; so do the relative-position indicators.
+* Alignments whose reference was not trimmed are unaffected.
+* Alignment: the fine path keeps its starting corner when it opens with the reference advancing on the target's first frame. Its grid no longer starts before alignedFrom (up to 0.21 s on three Fledermaus recordings); the rest of the grid is unchanged. Takes effect on the next alignment run.
+* Testing: 44.20–44.23.
+
 ### 0.96.0 -- Alignments from the legacy CLI open, in fix mode too
 
 * Score tables written by the legacy SyncToolbox CLI (`align-to-score.py`: positions in seconds, onsets and offsets deduplicated separately) are converted on load to this app's table: one event per unique (start, end) tick pair of the rendered MIDI, in quarters. Fix mode refused them ("the freshly rendered score MIDI has 3926 events but the stored alignment has 2670").

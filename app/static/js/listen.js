@@ -119,6 +119,7 @@ import { updateAllRegionNavArrows } from "./engine/region-nav.js";
 import {
   getClosestAlignmentIx as _coreClosestAlignmentIx,
   getCorrespondingTime as _coreCorrespondingTime,
+  alignedIndexRange as _coreAlignedIndexRange,
 } from "./engine/align-core.js";
 import {
   redrawAllMarkers,
@@ -1802,7 +1803,25 @@ function getClosestAlignmentIx(
   time = wavesurfers[currentAudioIx].getCurrentTime(),
   audioIx = currentAudioIx,
 ) {
-  return _coreClosestAlignmentIx(alignmentGrids, time, audioIx);
+  // Clamped to the aligned range: a time in a trimmed head or tail parks the
+  // other recordings at their span's edge instead of jumping into theirs.
+  return _coreClosestAlignmentIx(alignmentGrids, time, audioIx, alignedIxRange());
+}
+
+let _alignedIxRangeMemo = null;
+/**
+ * The grid indices with a counterpart in every recording, [lo, hi], or null
+ * when the whole grid is aligned (see engine/align-core.js). Memoised on the
+ * reference grid and its span, which every load and re-alignment replaces.
+ */
+export function alignedIxRange() {
+  const g = alignmentGrids[referenceAudioIx];
+  const span = alignedSpans[referenceAudioIx];
+  const m = _alignedIxRangeMemo;
+  if (m && m.g === g && m.from === span?.from && m.to === span?.to) return m.range;
+  const range = _coreAlignedIndexRange(alignmentGrids, alignedSpans, referenceAudioIx);
+  _alignedIxRangeMemo = { g, from: span?.from, to: span?.to, range };
+  return range;
 }
 
 export function getCorrespondingTime(audioIx, alignmentIx) {
@@ -5818,6 +5837,12 @@ window._listenTest = {
   noCounterpartBands(filename) {
     return waveformViews[filename]?.noCounterpartBands ?? 0;
   },
+  /** [lo, hi] grid indices with a counterpart everywhere; null = the whole grid. */
+  get alignedIxRange() { return alignedIxRange(); },
+  /** Grid index for a time on a recording, as a jump computes it. */
+  closestAlignmentIx(time, filename) { return getClosestAlignmentIx(time, filename); },
+  /** [lo, hi] grid indices the last alignment-line redraw drew; null = none. */
+  gridIxDrawn(filename) { return waveformViews[filename]?.gridIxDrawn ?? null; },
   /** Whether the loaded piece is big enough to defer off-screen waveforms. */
   get lazyWaveformsActive() { return _lazyWaveforms; },
   /** Deferred waveforms queued or mid-build; 0 means the build queue has settled. */

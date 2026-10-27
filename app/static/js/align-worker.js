@@ -589,6 +589,24 @@ def make_monotonic(wp):
     return wp[:, keep]
 
 
+def monotonic_keep_start(wp):
+    """make_monotonic, keeping the path's starting corner.
+
+    make_monotonic keeps the LAST point of each target column, so a path
+    opening with a vertical run (the reference advancing while the target
+    holds its first frame) loses its first point. The grid between the
+    reference span's start and the first kept point was then extrapolated
+    backwards, past the aligned span's start: up to 0.21 s (32 entries) on the
+    Fledermaus corpus. Putting the corner back keeps the reference rows
+    strictly increasing and maps that run to the span's first frame. The end
+    corner needs no help: it is the last point of its row and its column.
+    """
+    m = make_monotonic(wp)
+    if m[0, 0] > wp[0, 0]:
+        m = np.concatenate([wp[:, :1], m], axis=1)
+    return m
+
+
 def chroma_peakiness(chroma):
     """Per-frame max/mean over the 12 pitch classes.
 
@@ -791,8 +809,7 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration,
     del wp_c, fj_centre, fi_pts, fj_pts
 
     # ── Level 2: guided band streaming DTW ───────────────────────────────
-    wp = _guided_band_dtw(ref_chroma, other_slice, j_lo, j_hi)
-    wp = make_monotonic(wp)
+    wp = monotonic_keep_start(_guided_band_dtw(ref_chroma, other_slice, j_lo, j_hi))
     del other_slice
 
     # ── Convert frame indices → times → transfer annotation grid ─────────
@@ -801,8 +818,8 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration,
 
     ref_grid   = np.arange(0, ref_duration, ANNOTATION_STEP)
     transferred = interp_linear_extrap(ref_times, other_times, ref_grid)
-    # Outside the warping path the grid is extrapolated, and make_monotonic
-    # can drop a leading vertical run, which used to push the first entries
+    # Outside the warping path the grid is extrapolated, and before the corner
+    # was restored a dropped leading vertical run pushed the first entries
     # below zero (four files in the Fledermaus corpus, -0.04 to -0.55 s). A
     # playhead cannot sit before the file starts or after it ends.
     np.clip(transferred, 0.0, other_duration, out=transferred)

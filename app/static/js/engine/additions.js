@@ -72,16 +72,22 @@ export function peakCountOf(json) {
   return 0;
 }
 
+/** A file name as compared for "already aligned": no folder, NFC, any case. */
+export function fileBaseName(key) {
+  return String(key).split("/").pop().normalize("NFC").toLowerCase();
+}
+
 /**
  * Why a picked file cannot be added, or "" if it can. Names are compared
- * composed (NFC), as the wizard stores them.
+ * without their folder (keys may carry one, "Kaiserwalzer/VPO-1991.wav"),
+ * composed (NFC), and in any case.
  */
 export function addRefusal(name, json, synthKey) {
   const nfc = String(name).normalize("NFC");
   if (nfc === synthKey) return "reserved name";
-  const taken = Object.keys(json?.body?.audio || {}).some(
-    (k) => k.normalize("NFC") === nfc,
-  );
+  const base = fileBaseName(nfc);
+  if (json?.header?.ref && fileBaseName(json.header.ref) === base) return "the reference recording";
+  const taken = Object.keys(json?.body?.audio || {}).some((k) => fileBaseName(k) === base);
   return taken ? "already in this alignment" : "";
 }
 

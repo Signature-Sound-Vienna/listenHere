@@ -190,6 +190,27 @@ test.describe('52. add recordings — the record', () => {
     expect(r.paramsForUnknownOld).toBeNull();
     expect(r.defaults.known).toBe(false);
   });
+
+  test('52.11 a recording already aligned is refused under a folder, another case, or as the reference', async ({ page }) => {
+    await page.goto('/');
+    const r = await page.evaluate(async () => {
+      const m = await import('/static/js/engine/additions.js');
+      const json = { header: { ref: 'Kaiserwalzer/VPO-1991.wav' },
+        body: { audio: { 'Kaiserwalzer/VPO-1991.wav': [0], 'Kaiserwalzer/VPO-1996.wav': [0] } } };
+      return {
+        folder: m.addRefusal('VPO-1996.wav', json, 'score'),
+        caseDiff: m.addRefusal('vpo-1996.WAV', json, 'score'),
+        ref: m.addRefusal('VPO-1991.wav', json, 'score'),
+        fresh: m.addRefusal('VPO-2001.wav', json, 'score'),
+      };
+    });
+    expect(r).toEqual({
+      folder: 'already in this alignment',
+      caseDiff: 'already in this alignment',
+      ref: 'the reference recording',
+      fresh: '',
+    });
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -248,10 +269,13 @@ test.describe('52. add recordings — the listen view', () => {
     await expect(page.locator('#add-rec-ref')).toHaveText(REF);
     // The original run's settings are the default (the fixture's are HQ).
     await expect(page.locator('input[name="add-rec-quality"][value="hq"]')).toBeChecked();
-    // The reference is never offered for adding; a name already aligned is refused.
+    // The reference and a name already aligned are both listed, refused.
     await pickToAdd(page, [NEW, REF, 'audio-c.mp3']);
-    await expect(page.locator('#add-rec-tbody tr')).toHaveCount(2);
-    await expect(page.locator('#add-rec-tbody tr.add-rec-refused')).toContainText('audio-c.mp3');
+    await expect(page.locator('#add-rec-tbody tr')).toHaveCount(3);
+    const refused = page.locator('#add-rec-tbody tr.add-rec-refused');
+    await expect(refused).toHaveCount(2);
+    await expect(refused.filter({ hasText: REF })).toContainText('the reference recording');
+    await expect(refused.filter({ hasText: 'audio-c.mp3' })).toContainText('already in this alignment');
     await expect(page.locator('#add-rec-start')).toHaveText('Align and Add');
     await alignAndAdd(page);
 
@@ -278,9 +302,9 @@ test.describe('52. add recordings — the listen view', () => {
     );
     await expect(page.locator(`[id="checkbox-${NEW}"]`)).toBeChecked();
     expect(await page.evaluate(() => (window as any)._listenTest.hasUnsavedWork)).toBe(true);
-    // Save data writes it.
-    await page.click('#file-picker-continue');
-    const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#download-json-btn')]);
+    // Save data, offered right in the tab after the addition, writes it.
+    await expect(page.locator('#add-rec-save')).toBeVisible();
+    const [dl] = await Promise.all([page.waitForEvent('download'), page.click('#add-rec-save')]);
     const saved = JSON.parse(fs.readFileSync(await dl.path(), 'utf8'));
     expect(Object.keys(saved.body.audio)).toContain(NEW);
     expect(saved.header.additions[0].recordings).toEqual([NEW]);
@@ -293,6 +317,20 @@ test.describe('52. add recordings — the listen view', () => {
     await openAddTab(page);
     await pickToAdd(page, [NEW]);
     await page.click('#add-rec-params summary');
+    await expect(page.locator('#add-rec-save')).toBeHidden();
+    // The original's settings are known: the note says so, nothing to restore.
+    const note = page.locator('#add-rec-params-note');
+    const restore = page.locator('#add-rec-params-restore');
+    await expect(note).toContainText('made with');
+    await expect(restore).toBeHidden();
+    // Changed: the restore button takes the note's place, and puts them back.
+    await page.check('input[name="add-rec-quality"][value="fast"]');
+    await expect(restore).toBeVisible();
+    await expect(note).toBeHidden();
+    await restore.click();
+    await expect(page.locator('input[name="add-rec-quality"][value="hq"]')).toBeChecked();
+    await expect(restore).toBeHidden();
+    await expect(note).toContainText('made with');
     await page.check('input[name="add-rec-quality"][value="fast"]');
     await page.locator('#add-rec-tbody .add-rec-trim').check();
     await alignAndAdd(page);
@@ -300,6 +338,23 @@ test.describe('52. add recordings — the listen view', () => {
     expect(json.header.alignmentParams).toEqual(fixture.header.alignmentParams);
     expect(json.header.additions[0].alignmentParams).toMatchObject({ coarse: 4, slack: 80, featureRate: 10 });
     expect(json.header.additions[0].openEnds.byFile).toEqual({ [NEW]: true });
+    // Locked to the settings just used, across closing and reopening the tab;
+    // a refused pick keeps them locked, a new recording to align frees them.
+    const fast = page.locator('input[name="add-rec-quality"][value="fast"]');
+    await expect(fast).toBeDisabled();
+    await expect(fast).toBeChecked();
+    await expect(note).toContainText('just added');
+    await expect(restore).toBeHidden();
+    await page.click('#file-picker-continue');
+    await openAddTab(page);
+    await expect(fast).toBeDisabled();
+    await expect(fast).toBeChecked();
+    await pickToAdd(page, [NEW]);
+    await expect(page.locator('#add-rec-tbody tr.add-rec-refused')).toContainText('already in this alignment');
+    await expect(fast).toBeDisabled();
+    await pickToAdd(page, ['audio-2.mp3']);
+    await expect(fast).toBeEnabled();
+    await expect(page.locator('#add-rec-slack')).toBeEnabled();
   });
 
   test('52.8 in local-files mode without the reference, it is asked for, then used', async ({ page }) => {

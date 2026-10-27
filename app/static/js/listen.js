@@ -4123,6 +4123,7 @@ document.addEventListener("DOMContentLoaded", () => {
       isFixModeActive() ? "Leave fix mode before adding recordings." : "",
     onAdded: _insertAddedRecordings,
     createdBy: () => "Listen Here! v" + (window.versionString || "?"),
+    save: () => document.getElementById("download-json-btn")?.click(),
   });
 
   // Download JSON button

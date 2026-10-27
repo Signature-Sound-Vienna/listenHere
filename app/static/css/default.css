@@ -2931,6 +2931,22 @@ nav input[type="checkbox"]:focus-visible {
   line-height: 1.45;
 }
 
+#add-rec-params-restore {
+  margin: 0.5em 0 0.2em;
+  padding: 0.3em 0.8em;
+  border: 1px solid var(--color-link, #2563eb);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-link, #2563eb);
+  font-size: 1em;
+  cursor: pointer;
+}
+
+#add-rec-params-restore[hidden],
+#add-rec-save-row[hidden] {
+  display: none;
+}
+
 #add-rec-presets,
 #add-rec-param-fields {
   display: flex;
@@ -2945,16 +2961,27 @@ nav input[type="checkbox"]:focus-visible {
   gap: 0.4em;
 }
 
+/* Locked after an addition, until more files are chosen. */
+#add-rec-params label:has(:disabled) {
+  opacity: 0.55;
+}
+
 #add-rec-slack {
   width: 5em;
 }
 
-#add-rec-run-row {
+#add-rec-run-row,
+#add-rec-save-row {
   display: flex;
   justify-content: center;
 }
 
-#add-rec-start {
+#add-rec-save-row {
+  margin-top: 0.8em;
+}
+
+#add-rec-start,
+#add-rec-save {
   padding: 0.6em 1.6em;
   border: none;
   border-radius: 8px;
@@ -2964,7 +2991,8 @@ nav input[type="checkbox"]:focus-visible {
   cursor: pointer;
 }
 
-#add-rec-start:hover:not(:disabled) {
+#add-rec-start:hover:not(:disabled),
+#add-rec-save:hover {
   background: var(--color-link-hover, #1e40af);
 }
 

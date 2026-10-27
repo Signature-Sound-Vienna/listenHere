@@ -14,6 +14,7 @@ import {
   applyAddition,
   defaultAddParams,
   defaultOpenEnds,
+  fileBaseName,
   peakCountOf,
   refSpanOf,
 } from "./engine/additions.js";
@@ -28,13 +29,13 @@ let _picked = [];
 let _pickedRef = null;
 /** The setting beyond the form's three (scoreDownsample), carried through. */
 let _paramBase = {};
+/** The original run's settings when the file records them, else null. */
+let _originalParams = null;
+/** The alignment whose last addition locked the settings, until new picks. */
+let _lockedFor = null;
 let _running = false;
 
 const $ = (id) => document.getElementById(id);
-
-function _baseName(key) {
-  return String(key).split("/").pop().normalize("NFC").toLowerCase();
-}
 
 /** A File under its composed (NFC) name, as the wizard stores names. */
 function _nfcFile(f) {
@@ -57,6 +58,7 @@ function _nfcFile(f) {
  * @param {Function} deps.onAdded      ({names, files, refFile}) after the
  *                                     alignment JSON has been extended
  * @param {Function} deps.createdBy    () => "Listen Here! v…"
+ * @param {Function} deps.save         () => saves the alignment, as Save data
  */
 export function initAddRecordings(deps) {
   _deps = deps;
@@ -79,7 +81,9 @@ export function initAddRecordings(deps) {
   for (const id of ["add-rec-coarse", "add-rec-slack", "add-rec-feature-rate"]) {
     $(id)?.addEventListener("change", _syncPresetRadio);
   }
+  $("add-rec-params-restore")?.addEventListener("click", () => _writeParams(_originalParams));
   $("add-rec-start")?.addEventListener("click", _run);
+  $("add-rec-save")?.addEventListener("click", () => _deps.save());
 }
 
 /** Is the Add Recordings tab the one showing? (The card's drop target asks.) */
@@ -104,16 +108,19 @@ export function refreshAddRecordings() {
   }
   if (_running) return;
   $("add-rec-ref").textContent = json.header.ref;
-  const { params, known } = defaultAddParams(json.header, PRESETS.balanced);
-  // Only what a run reads: an older file's inert keys (onsetWeight, gone
-  // since 0.59.0) must not be recorded as settings the addition used.
-  _paramBase = { scoreDownsample: params.scoreDownsample ?? PRESETS.balanced.scoreDownsample };
-  _writeParams(params);
-  $("add-rec-params-note").textContent = known
-    ? "These are the settings this alignment was made with. Change them only if you mean to align the new recordings differently; the file records which settings each recording was aligned with."
-    : "This alignment doesn’t record the settings it was made with, so these are the Balanced defaults. The file will record them for the recordings you add, and keep the original settings marked as unknown.";
-  // Settings that differ from the original's are worth seeing before a run.
-  $("add-rec-params").open = !known;
+  // Locked settings belong to this alignment's last addition: they stay as
+  // they were used. Another alignment loaded since unlocks them.
+  if (_lockedFor !== json) {
+    _lockedFor = null;
+    const { params, known } = defaultAddParams(json.header, PRESETS.balanced);
+    // Only what a run reads: an older file's inert keys (onsetWeight, gone
+    // since 0.59.0) must not be recorded as settings the addition used.
+    _paramBase = { scoreDownsample: params.scoreDownsample ?? PRESETS.balanced.scoreDownsample };
+    _originalParams = known ? params : null;
+    _writeParams(params);
+    // Settings that differ from the original's are worth seeing before a run.
+    $("add-rec-params").open = !known;
+  }
   // Picked files may have become refusable since (a save, another addition).
   for (const p of _picked) p.refusal = addRefusal(p.file.name, json, _deps.synthKey);
   _render();
@@ -123,26 +130,33 @@ export function refreshAddRecordings() {
 export function addPickedFiles(files) {
   const json = _deps?.getAlignment();
   if (!json || _running) return;
-  const refBase = _baseName(json.header.ref);
+  const refBase = fileBaseName(json.header.ref);
   const openDefault = defaultOpenEnds(json.header);
+  let addable = false;
   for (let f of files) {
     if (!(AUDIO_EXTS.test(f.name) || f.type?.startsWith("audio/"))) continue;
     f = _nfcFile(f);
-    if (_baseName(f.name) === refBase) {
-      // The reference is never added; it is only picked when the session
-      // has no audio for it.
-      if (_deps.refSource() === "pick") _pickedRef = f;
+    // The reference is never added; it is only picked when the session has
+    // no audio for it. Otherwise it is listed as refused, so the pick shows.
+    if (fileBaseName(f.name) === refBase && _deps.refSource() === "pick") {
+      _pickedRef = f;
       continue;
     }
     if (_picked.some((p) => p.file.name === f.name)) continue;
-    _picked.push({
-      file: f,
-      openEnds: openDefault,
-      refusal: addRefusal(f.name, json, _deps.synthKey),
-    });
+    const refusal = addRefusal(f.name, json, _deps.synthKey);
+    if (!refusal) addable = true;
+    _picked.push({ file: f, openEnds: openDefault, refusal });
   }
-  $("add-rec-result").textContent = "";
+  // New recordings to align free the settings the last addition locked.
+  if (addable) _lockedFor = null;
+  _showResult("");
   _render();
+}
+
+/** The result line, with Save data offered beside a successful addition. */
+function _showResult(text) {
+  $("add-rec-result").textContent = text;
+  $("add-rec-save-row").hidden = !text;
 }
 
 function _readParams() {
@@ -178,12 +192,34 @@ function _syncPresetRadio() {
   document.querySelectorAll('input[name="add-rec-quality"]').forEach((r) => {
     r.checked = !!match && r.value === match[0];
   });
+  _syncSettingsNote(p);
+}
+
+/**
+ * The note under Alignment settings, or the restore button in its place:
+ * the original's settings unchanged get the note, changed ones the button.
+ * After an addition the form is locked to the settings it used.
+ */
+function _syncSettingsNote(p = _readParams()) {
+  const locked = !!_lockedFor;
+  const changed =
+    !!_originalParams && !PARAM_KEYS.every((k) => _originalParams[k] === p[k]);
+  const note = $("add-rec-params-note");
+  note.textContent = locked
+    ? "The recordings just added were aligned with these settings. Choose more audio files to align them with different ones."
+    : !_originalParams
+      ? "This alignment doesn’t record the settings it was made with, so these are the Balanced defaults. The file will record them for the recordings you add, and keep the original settings marked as unknown."
+      : "These are the settings this alignment was made with. Change them only if you mean to align the new recordings differently; the file records which settings each recording was aligned with.";
+  note.hidden = !locked && changed;
+  $("add-rec-params-restore").hidden = locked || !changed;
+  for (const c of $("add-rec-params").querySelectorAll("input, select")) c.disabled = locked;
 }
 
 function _render() {
   const json = _deps?.getAlignment();
   const tbody = $("add-rec-tbody");
   if (!tbody || !json) return;
+  _syncSettingsNote();
   const needRef = _deps.refSource() === "pick";
   $("add-rec-ref-needed").hidden = !needRef || !!_pickedRef;
   $("add-rec-ref-needed-name").textContent = json.header.ref;
@@ -243,7 +279,7 @@ async function _run() {
   if (_running || !json || !todo.length) return;
   _running = true;
   _render();
-  $("add-rec-result").textContent = "";
+  _showResult("");
   $("add-rec-progress-bar").style.background = "";
   const refName = json.header.ref;
   const params = _readParams();
@@ -310,9 +346,11 @@ async function _run() {
     _picked = _picked.filter((p) => p.refusal);
     _deps.onAdded({ names: record.recordings, files, refFile: _pickedRef });
     _pickedRef = null;
+    _lockedFor = json;
+    _syncSettingsNote();
     _progress("", 100);
     $("add-rec-progress").hidden = true;
-    $("add-rec-result").textContent = _summary(record);
+    _showResult(_summary(record));
   } catch (err) {
     _progress("Error: " + (failed || err).message, 100);
     $("add-rec-progress-bar").style.background = "var(--color-danger, #dc2626)";

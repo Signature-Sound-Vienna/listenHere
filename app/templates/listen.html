@@ -369,6 +369,7 @@
           <details id="add-rec-params">
             <summary>Alignment settings</summary>
             <p id="add-rec-params-note"></p>
+            <button type="button" id="add-rec-params-restore" hidden>Restore original alignment settings</button>
             <div id="add-rec-presets">
               <label><input type="radio" name="add-rec-quality" value="fast" /> Fast</label>
               <label><input type="radio" name="add-rec-quality" value="balanced" /> Balanced</label>
@@ -397,6 +398,9 @@
             <p id="add-rec-progress-text"></p>
           </div>
           <p id="add-rec-result" role="status"></p>
+          <div id="add-rec-save-row" hidden>
+            <button type="button" id="add-rec-save">Save data</button>
+          </div>
         </div>
 
         <button type="button" id="file-picker-continue" style="display:none;">Continue</button>

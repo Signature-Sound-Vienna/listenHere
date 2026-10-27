@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.97.1 -- Add Recordings: restore the original settings; save from the tab
+
+* When the original run's settings are known and have been changed, a "Restore original alignment settings" button takes the place of the note about them and puts them back.
+* After an addition, a Save data button sits beside the result. The usual Save data button still works.
+* After an addition, the settings are locked to the ones it used until more audio files are chosen to align.
+* A file already in the alignment is refused under any folder or case (keys such as "Kaiserwalzer/VPO-1991.wav"), and a picked reference is listed as refused instead of disappearing.
+* Testing: 52.6, 52.7, 52.11.
+
 ### 0.97.0 -- Add recordings to a loaded alignment
 
 * Manage recordings has an Add Recordings tab: picked or dropped audio files are aligned to the alignment's reference and join the session without a reload. Nothing already aligned changes; the score alignment is untouched.

@@ -1,5 +1,18 @@
 # Listen Here! CHANGELOG.md
 
+### 0.97.0 -- Add recordings to a loaded alignment
+
+* Manage recordings has an Add Recordings tab: picked or dropped audio files are aligned to the alignment's reference and join the session without a reload. Nothing already aligned changes; the score alignment is untouched.
+* The settings default to the original run's (`header.alignmentParams`), else Balanced with a note that the originals are unknown; they can be changed per addition. Trim ends defaults to the original run's switch, per file.
+* The reference's usable span is reused from the file (`alignedFrom`/`alignedTo`), not re-detected, so the new pairs are aligned over the same span as the old ones.
+* `header.alignmentParams` is never rewritten. Each addition appends a record to `header.additions`: time, version, recordings, settings, and per-file open ends with what was trimmed.
+* Without the reference's audio in a local-files session, the tab asks for it. Refused while fix mode is open.
+* Session recovery offers a session whose only work was an addition, and on restore names the added recordings it could not bring back (the snapshot holds no grids).
+* The wizard always writes its settings (the "Include alignment settings in output" opt-out is gone), and records each recording's resolved Trim ends in `header.openEnds.byFile`.
+* Manage recordings works for an alignment loaded from a URL: its tabs switch, and Close, Escape, or the backdrop close it. Nothing closed it before.
+* Switching grouping tabs keeps the sidebar's ticks and loading states.
+* Testing: 52.1–52.10.
+
 ### 0.96.1 -- Trimmed ends are outside the alignment
 
 * The grid indices outside the reference's aligned span (alignedFrom–alignedTo) count as unaligned for every recording: they were extrapolated from a single path step, mapping applause onto applause or onto a recording's last sample.

@@ -45,6 +45,7 @@ import { createWaveformRow } from "./engine/waveform-layout.js";
 import { openGroupModal } from "./engine/group-modal.js";
 import {
   ensureWaveformGroupContainers,
+  refreshFileLayout,
   renderGroupingTabPills,
   renderSidebarFileList,
   updateGroupCounts,
@@ -146,6 +147,13 @@ import {
   alignmentFileName,
   IN_BROWSER_SOURCE,
 } from "./engine/session-recovery.js";
+import { lostAdditions } from "./engine/additions.js";
+import {
+  addPickedFiles,
+  addTabActive,
+  initAddRecordings,
+  refreshAddRecordings,
+} from "./add-recordings.js";
 // Preserve the public API: annotation/waveform-interactions.js reaches the
 // per-waveform renderer registry through listen.js rather than importing the
 // engine module directly, as it did for the overlay wrappers before increment
@@ -581,6 +589,9 @@ export function getAudioLinkedDataUri(filename) {
 const fileBlobUrls = session.fileBlobUrls;
 export const fileBlobs = session.fileBlobs; // alignment audio keys -> File/Blob objects
 let useFilesMode = false;
+/** Recordings added from this device (Add Recordings) whose file is their
+ *  only source, whatever mode the alignment was loaded in. */
+const _locallyAddedKeys = new Set();
 let _fromAlignmentHandoff = false;
 
 // Synthesised MEI waveform: key used in wavesurfers / alignmentGrids for the synth track
@@ -681,8 +692,13 @@ export function resolveAudioUrl(filename) {
     const _u = _synthBlobUrls.get(filename);
     return _u === "__pending__" ? null : _u;
   }
-  // If ?useFiles is active and we have a blob URL for this file, use it
-  if (useFilesMode && fileBlobUrls.has(filename)) {
+  // If ?useFiles is active and we have a blob URL for this file, use it. A
+  // recording added from this device to an alignment loaded from a URL has no
+  // URL of its own: its file is the only source.
+  if (
+    (useFilesMode || _locallyAddedKeys.has(filename)) &&
+    fileBlobUrls.has(filename)
+  ) {
     return fileBlobUrls.get(filename);
   }
   // If ?useLocal is present, override with local base URL
@@ -2735,6 +2751,7 @@ function resetSession(keepAudioKeys = []) {
   clearMap(_tempoRawCache);
   _tempoYRange = null;
   clearMap(_alignOriginalGrids);
+  _locallyAddedKeys.clear();
   _undoStack.length = 0;
   _redoStack.length = 0;
   _changeCounter = 0;
@@ -3027,6 +3044,9 @@ async function _restoreSnapshot(id) {
   const store = _recoveryStorage();
   const snap = store && readSnapshot(store, id);
   if (!snap || !loadedAlignmentJSON) return;
+  // Recordings added in that session but never saved: their grids were not
+  // in the snapshot (it holds no body), so they cannot come back.
+  const lost = lostAdditions(snap.header, _recordingKeys(loadedAlignmentJSON));
   const merged = {
     ...loadedAlignmentJSON,
     header: restoredHeader(loadedAlignmentJSON.header, snap.header),
@@ -3035,7 +3055,35 @@ async function _restoreSnapshot(id) {
   _pendingRestore = snap;
   await setGrids(merged);
   // Declined (setGrids asked about unsaved edits and was told no).
-  if (_pendingRestore === snap) _pendingRestore = null;
+  if (_pendingRestore === snap) {
+    _pendingRestore = null;
+    return;
+  }
+  if (lost.length) _showLostAdditionsNotice(lost);
+}
+
+/** Say which recordings a restore could not bring back, and why. */
+function _showLostAdditionsNotice(lost) {
+  document.getElementById("recovery-lost-additions")?.remove();
+  const notice = el("div", { id: "recovery-lost-additions", class: "recovery-ui", role: "alert" }, [
+    el("p", {
+      class: "recovery-title",
+      text:
+        (lost.length === 1 ? "One recording was" : lost.length + " recordings were") +
+        " added in that session and never saved, so " +
+        (lost.length === 1 ? "it was" : "they were") +
+        " not restored. Add " + (lost.length === 1 ? "it" : "them") +
+        " again from Manage recordings:",
+    }),
+    el("ul", { class: "recovery-list" }, lost.map((n) => el("li", { text: n }))),
+    el("button", {
+      type: "button",
+      class: "recovery-later",
+      text: "OK",
+      onclick: () => notice.remove(),
+    }),
+  ]);
+  document.body.appendChild(notice);
 }
 
 /** The file picker's note on unsaved work, naming the files it needs. */
@@ -3701,14 +3749,13 @@ async function setGrids(grids) {
   const _manageBtn = document.getElementById("manage-files-btn");
   if (_manageBtn && !_manageBtn._wired) {
     _manageBtn._wired = true;
-    _manageBtn.addEventListener("click", () => {
-      document.getElementById("file-picker-overlay").style.display = "flex";
-      populateLdUriSection();
-    });
+    _manageBtn.addEventListener("click", _openManageRecordings);
   }
 
   // If ?useFiles mode is active, show file picker overlay
   showFilePickerIfNeeded();
+  // The Add Recordings tab follows the loaded alignment.
+  refreshAddRecordings();
 
   // Kick off async MEI-to-audio synthesis for the score waveform entry.
   //
@@ -3817,10 +3864,7 @@ function onAlignmentComplete(alignmentResult, files, savedAs = null) {
   const manageBtn = document.getElementById("manage-files-btn");
   if (manageBtn && !manageBtn._wired) {
     manageBtn._wired = true;
-    manageBtn.addEventListener("click", () => {
-      document.getElementById("file-picker-overlay").style.display = "flex";
-      populateLdUriSection();
-    });
+    manageBtn.addEventListener("click", _openManageRecordings);
   }
 
   // Load alignment data → build waveforms
@@ -4053,6 +4097,34 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // Manage recordings → Add Recordings (0.97.0)
+  initAddRecordings({
+    workerUrl: root + "js/align-worker.js",
+    synthKey: SYNTH_MEI_KEY,
+    getAlignment: () => loadedAlignmentJSON,
+    // In local-files mode the reference has no URL to fall back on: if its
+    // file was not matched, the user picks it alongside the new recordings.
+    refSource: () => {
+      const ref = loadedAlignmentJSON?.header?.ref;
+      if (fileBlobs.has(ref)) return "session";
+      return useFilesMode ? "pick" : "fetch";
+    },
+    refBlob: async () => {
+      const ref = loadedAlignmentJSON.header.ref;
+      const blob = fileBlobs.get(ref);
+      if (blob) return blob;
+      const url = resolveAudioUrl(ref);
+      if (!url) throw new Error("no audio source for the reference recording");
+      const resp = await fetch(url, xhrOptionsForUrl(url));
+      if (!resp.ok) throw new Error(`could not fetch the reference (HTTP ${resp.status})`);
+      return resp.blob();
+    },
+    busyReason: () =>
+      isFixModeActive() ? "Leave fix mode before adding recordings." : "",
+    onAdded: _insertAddedRecordings,
+    createdBy: () => "Listen Here! v" + (window.versionString || "?"),
+  });
+
   // Download JSON button
   const dlBtn = document.getElementById("download-json-btn");
   if (dlBtn) {
@@ -4086,6 +4158,13 @@ document.addEventListener("DOMContentLoaded", () => {
       // The session's work now has a file, under this name: what the
       // recovery notes should tell the user to load.
       if (_recovery) _recovery.source = a.download;
+      // ...and that file holds any recordings added since the load, so a
+      // later snapshot must match it, not the file the session began with.
+      if (_recovery) {
+        const recs = _recordingKeys(loadedAlignmentJSON);
+        _recovery.fingerprint = pieceFingerprint(loadedAlignmentJSON.header?.meiUri, recs);
+        _recovery.recordings = recs.length;
+      }
       _alignmentNeverSaved = false;
       _savedAtCounter = _changeCounter;
       updateDirtyState();
@@ -5293,20 +5372,8 @@ function initFilePicker() {
     _scheduleRecoveryWrite();
   });
 
-  // --- Tab switching ---
-  document.querySelectorAll("#fp-tabs .fp-tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      document
-        .querySelectorAll("#fp-tabs .fp-tab")
-        .forEach((t) => t.classList.remove("active"));
-      document
-        .querySelectorAll(".fp-tab-pane")
-        .forEach((p) => p.classList.remove("active"));
-      tab.classList.add("active");
-      const pane = document.getElementById(tab.dataset.tab);
-      if (pane) pane.classList.add("active");
-    });
-  });
+  // Tabs, closing, and the Add Recordings drop target.
+  _wirePickerChrome();
 
   // Show directory picker button on browsers that support it (Chromium)
   if (typeof window.showDirectoryPicker === "function") {
@@ -5521,44 +5588,146 @@ function initFilePicker() {
   dropZone.addEventListener("drop", (e) => {
     e.preventDefault();
     dropZone.classList.remove("drag-over");
+    if (addTabActive()) return; // the Add Recordings tab takes its own drops
     if (e.dataTransfer.files.length) {
       handleFiles(Array.from(e.dataTransfer.files));
     }
   });
 
-  // Continue button — persist LD config and close. The V6 publish bar
-  // re-reads its enable conditions on each render, so we don't need to
-  // imperatively refresh it after LD URI edits.
-  function closeOverlay() {
-    if (populateLdUriSection._persist) populateLdUriSection._persist();
-    overlay.style.display = "none";
-    // If alignment was loaded from a local JSON file, apply it now
-    if (window._pendingLocalAlignment) {
-      const data = window._pendingLocalAlignment;
-      window._pendingLocalAlignment = null;
-      setGrids(data);
-    }
-  }
-
-  continueBtn.addEventListener("click", closeOverlay);
-
-  // Close on backdrop click (clicking the overlay outside the card)
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) closeOverlay();
-  });
-
-  // Close on Escape key
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && overlay.style.display !== "none") {
-      closeOverlay();
-    }
-  });
-
+  // An addition extends expectedAudioKeys; the list must show it on reopening.
+  initFilePicker._renderFileList = renderFileList;
   renderFileList();
   if (_fromAlignmentHandoff) {
     _fromAlignmentHandoff = false;
   } else {
     overlay.style.display = "flex";
+  }
+}
+
+/**
+ * Close Manage recordings: persist the LD config, and apply an alignment
+ * picked from a local file. The V6 publish bar re-reads its enable conditions
+ * on each render, so LD URI edits need no imperative refresh.
+ */
+function _closeManageRecordings() {
+  if (populateLdUriSection._persist) populateLdUriSection._persist();
+  document.getElementById("file-picker-overlay").style.display = "none";
+  if (window._pendingLocalAlignment) {
+    const data = window._pendingLocalAlignment;
+    window._pendingLocalAlignment = null;
+    setGrids(data);
+  }
+}
+
+/**
+ * The dialog's own wiring — tabs, the ways out, the Add Recordings drop
+ * target — for every way it opens. It used to live in initFilePicker, which
+ * only local-files mode runs, so for an alignment loaded from a URL the tabs
+ * did not switch and nothing closed the dialog.
+ */
+function _wirePickerChrome() {
+  if (_wirePickerChrome._done) return;
+  _wirePickerChrome._done = true;
+  const overlay = document.getElementById("file-picker-overlay");
+  const card = document.getElementById("file-picker-card");
+  document.querySelectorAll("#fp-tabs .fp-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      document
+        .querySelectorAll("#fp-tabs .fp-tab")
+        .forEach((t) => t.classList.remove("active"));
+      document
+        .querySelectorAll(".fp-tab-pane")
+        .forEach((p) => p.classList.remove("active"));
+      tab.classList.add("active");
+      const pane = document.getElementById(tab.dataset.tab);
+      if (pane) pane.classList.add("active");
+    });
+  });
+  document
+    .getElementById("file-picker-continue")
+    .addEventListener("click", _closeManageRecordings);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) _closeManageRecordings();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && overlay.style.display !== "none") {
+      _closeManageRecordings();
+    }
+  });
+  card.addEventListener("dragover", (e) => {
+    if (addTabActive()) e.preventDefault();
+  });
+  card.addEventListener("drop", (e) => {
+    if (!addTabActive()) return;
+    e.preventDefault();
+    card.classList.remove("drag-over");
+    if (e.dataTransfer.files.length) addPickedFiles(Array.from(e.dataTransfer.files));
+  });
+}
+
+/** Open Manage recordings over a loaded alignment. */
+function _openManageRecordings() {
+  _wirePickerChrome();
+  document.getElementById("file-picker-overlay").style.display = "flex";
+  populateLdUriSection();
+  _renderPickerRecoveryNotice();
+  initFilePicker._renderFileList?.();
+  refreshAddRecordings();
+  // Without the file picker (an alignment loaded from a URL) Continue is never
+  // shown by matching, and it is the visible way out.
+  if (!showFilePickerIfNeeded._initialized) {
+    const btn = document.getElementById("file-picker-continue");
+    btn.style.display = "";
+    btn.textContent = "Close";
+  }
+}
+
+/**
+ * Recordings the Add Recordings tab has aligned and written into the loaded
+ * alignment JSON: bring them into the running session without a reload, which
+ * would cost the playback position, the loaded waveforms, and the session.
+ */
+function _insertAddedRecordings({ names, files, refFile }) {
+  for (const f of files) {
+    fileBlobUrls.set(f.name, URL.createObjectURL(f));
+    fileBlobs.set(f.name, f);
+    _locallyAddedKeys.add(f.name);
+  }
+  // The reference, picked only because this session held no audio for it.
+  const ref = loadedAlignmentJSON?.header?.ref;
+  if (refFile && ref && !fileBlobs.has(ref)) {
+    fileBlobUrls.set(ref, URL.createObjectURL(refFile));
+    fileBlobs.set(ref, refFile);
+    _locallyAddedKeys.add(ref);
+  }
+  for (const key of names) {
+    const val = loadedAlignmentJSON.body.audio[key];
+    // The same unpacking setGrids does, for these entries only.
+    if (val && !Array.isArray(val) && Array.isArray(val.times)) {
+      waveformPeaks[key] = { peaks: val.peaks, duration: val.duration };
+      if (Number.isFinite(val.alignedFrom) && Number.isFinite(val.alignedTo)) {
+        alignedSpans[key] = { from: val.alignedFrom, to: val.alignedTo };
+      }
+      alignmentGrids[key] = val.times;
+    } else {
+      alignmentGrids[key] = val;
+    }
+    _alignOriginalGrids[key] = alignmentGrids[key].slice();
+    session.gridFingerprints[key] = gridFingerprint(alignmentGrids[key]);
+  }
+  if (expectedAudioKeys.length) expectedAudioKeys.push(...names);
+  refreshFileLayout(
+    Object.keys(alignmentGrids).filter((n) => n !== SYNTH_MEI_KEY).sort(),
+  );
+  populateLdUriSection();
+  initFilePicker._renderFileList?.();
+  // An addition is unsaved work until the alignment is saved.
+  bumpChangeCounter();
+  updateDirtyState();
+  _scheduleRecoveryWrite();
+  for (const key of names) {
+    const cb = document.getElementById("checkbox-" + key);
+    if (cb && !cb.checked) cb.click();
   }
 }
 
@@ -5741,11 +5910,7 @@ function showFilePickerIfNeeded() {
     const manageBtn = document.getElementById("manage-files-btn");
     if (manageBtn && !manageBtn._wired) {
       manageBtn._wired = true;
-      manageBtn.addEventListener("click", () => {
-        document.getElementById("file-picker-overlay").style.display = "flex";
-        populateLdUriSection();
-        _renderPickerRecoveryNotice();
-      });
+      manageBtn.addEventListener("click", _openManageRecordings);
     }
     // Show download button (useful once alignment is loaded from file)
     const dlBtn = document.getElementById("download-json-btn");
@@ -5812,6 +5977,10 @@ window._listenTest = {
   get session() { return session; },
   /** header.ref of the loaded alignment — cheap identity check for tests. */
   get alignmentHeaderRef() { return loadedAlignmentJSON?.header?.ref ?? null; },
+  /** The loaded alignment JSON itself, as Save data would write it. */
+  get alignmentJSON() { return loadedAlignmentJSON; },
+  /** Has the session work a reload would lose? */
+  get hasUnsavedWork() { return _hasUnsavedWork(); },
   /** What the file picker currently expects; must track the loaded piece. */
   get expectedAudioKeys() { return [...expectedAudioKeys]; },
   /** The saved grouping tabs, post-migration and post-overlap-repair (item U). */

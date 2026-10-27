@@ -22,7 +22,7 @@ let alignmentRunning = false; // true while worker is active
 // Alignment quality presets and parameter defaults
 // ---------------------------------------------------------------------------
 
-const PRESETS = {
+export const PRESETS = {
   fast: {
     coarse: 4,
     slack: 80,
@@ -232,7 +232,7 @@ async function fetchMeiMidi(meiUri) {
 // Audio decoding (mono @ 22050 Hz for chroma features)
 // ---------------------------------------------------------------------------
 
-async function decodeAudio(file) {
+export async function decodeAudio(file) {
   const arrayBuf = await file.arrayBuffer();
   const audioCtx = new AudioContext();
   const decoded = await audioCtx.decodeAudioData(arrayBuf);
@@ -598,9 +598,9 @@ async function startAlignment() {
       if (alignmentResult.header && _meiMidiVerovioOptions) {
         alignmentResult.header.verovioOptions = _meiMidiVerovioOptions;
       }
-      // Inject alignment parameters if checkbox is checked
-      const includeParams = document.getElementById("align-include-params");
-      if (includeParams && includeParams.checked && alignmentResult.header) {
+      // The run's parameters, always: a recording added later is aligned
+      // with them by default, and fix mode re-aligns with them.
+      if (alignmentResult.header) {
         alignmentResult.header.alignmentParams = { ...currentOptions };
       }
       // The session label, editable in the results panel: the score's title,

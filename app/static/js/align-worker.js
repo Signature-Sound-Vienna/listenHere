@@ -920,6 +920,108 @@ def extract_feature(name, audio, is_ref):
     return elapsed
 
 
+def _align_to_ref(name, ref_slice, ref_f0, ref_frames_total, ref_duration,
+                  pair_count, total_pairs):
+    """Align one recording to the reference's usable span.
+
+    Returns (times, aligned, held): the transferred grid, the (from, to) span
+    the recording was aligned over or None, and False only when an open-ended
+    pair's span guard failed and it fell back to a pinned one.
+    """
+    reportStep("align", "start", name, pair_count, total_pairs, None)
+    reportProgress(
+        f"Aligning: {name} ({pair_count}/{total_pairs})",
+        int(30 + 65 * pair_count / total_pairs)
+    )
+    t0 = _time.time()
+    open_ends = _open_ends_for(name)
+    # What the DTW is ALLOWED to skip in this recording. Without this
+    # bound a free end trims a clean recording too (see _dtw_f32).
+    target_span = (
+        detect_music_span(_chromas[name]) if open_ends else None
+    )
+    pair = align_pair(
+        ref_slice, _chromas[name],
+        ref_duration, _durations[name],
+        open_ends=open_ends,
+        ref_frame0=ref_f0,
+        ref_frames_total=ref_frames_total,
+        target_span=target_span,
+    )
+    # Only an open-ended pair whose guard held makes a claim about
+    # where the counterpart begins and ends; a pinned pair covers the
+    # whole file by construction, and a guard failure fell back to one.
+    aligned = (pair["from"], pair["to"]) if open_ends and pair["guard"] else None
+    elapsed = _time.time() - t0
+    reportStep("align", "done", name, pair_count, total_pairs, elapsed)
+    return pair["times"], aligned, not (open_ends and not pair["guard"])
+
+
+def _audio_entry(name, times, aligned):
+    """One body.audio entry: a bare grid, or an object when it carries more."""
+    if not _peaks_data and aligned is None:
+        return times
+    entry = {"times": times, "duration": round(_durations[name], 6)}
+    if _peaks_data:
+        entry["peaks"] = _peaks_data[name]
+    if aligned is not None:
+        entry["alignedFrom"] = round(max(0.0, aligned[0]), 6)
+        entry["alignedTo"]   = round(min(_durations[name], aligned[1]), 6)
+    return entry
+
+
+def _is_trimmed(name, entry):
+    """Is there really material with no counterpart? A span covering the
+    whole file is not worth reporting."""
+    return (entry["alignedFrom"] > SPAN_REPORT_EPS
+            or (_durations[name] - entry["alignedTo"]) > SPAN_REPORT_EPS)
+
+
+def align_added_from_features(ref_span):
+    """Align recordings added to an existing alignment, reference unchanged.
+
+    Every recording in an alignment is aligned to the reference alone, so an
+    addition is just more pairs: the other grids, the score alignment and
+    anything anchored to reference time stand as they are. ref_span is the
+    reference's usable span as the original run decided it, (from, to) in
+    seconds, or None for the whole file; it is pinned, not re-detected, so
+    the new pairs share the span the old ones were aligned over.
+
+    Returns {"audio": {name: entry}, "trimmed": [...], "guardFailed": [...]}
+    for the added recordings only.
+    """
+    import gc
+    ref_name = _batch_ref_name
+    if ref_name not in _chromas:
+        raise RuntimeError(f"Reference '{ref_name}' missing from extracted features")
+    ref_duration = _durations[ref_name]
+    ref_full = _chromas[ref_name]
+    ref_frames_total = ref_full.shape[1]
+    ref_scale = ref_duration / max(ref_frames_total - 1, 1)
+    ref_f0, ref_f1 = 0, ref_frames_total - 1
+    if ref_span is not None:
+        ref_f0 = max(0, min(ref_f1, int(round(float(ref_span[0]) / ref_scale))))
+        ref_f1 = max(ref_f0, min(ref_f1, int(round(float(ref_span[1]) / ref_scale))))
+    ref_slice = ref_full[:, ref_f0:ref_f1 + 1]
+
+    added = [n for n in _chromas.keys() if n != ref_name]
+    audio, trimmed, guard_failed = {}, [], []
+    for i, name in enumerate(added, start=1):
+        times, aligned, held = _align_to_ref(
+            name, ref_slice, ref_f0, ref_frames_total, ref_duration,
+            i, len(added),
+        )
+        if not held:
+            guard_failed.append(name)
+        audio[name] = _audio_entry(name, times, aligned)
+        if aligned is not None and _is_trimmed(name, audio[name]):
+            trimmed.append(name)
+        del _chromas[name]
+        gc.collect()
+    reportProgress("Done!", 100)
+    return {"audio": audio, "trimmed": trimmed, "guardFailed": guard_failed}
+
+
 def align_all_from_features():
     """Build the alignment JSON from accumulated features.
 
@@ -965,52 +1067,15 @@ def align_all_from_features():
                 aligned = (ref_span_from, ref_span_to)
         else:
             pair_count += 1
-            reportStep("align", "start", name, pair_count, total_pairs, None)
-            reportProgress(
-                f"Aligning: {name} ({pair_count}/{total_pairs})",
-                int(30 + 65 * pair_count / total_pairs)
+            times, aligned, held = _align_to_ref(
+                name, ref_slice, ref_f0, ref_frames_total, ref_duration,
+                pair_count, total_pairs,
             )
-            t0 = _time.time()
-            open_ends = _open_ends_for(name)
-            # What the DTW is ALLOWED to skip in this recording. Without this
-            # bound a free end trims a clean recording too (see _dtw_f32).
-            target_span = (
-                detect_music_span(_chromas[name]) if open_ends else None
-            )
-            pair = align_pair(
-                ref_slice, _chromas[name],
-                ref_duration, _durations[name],
-                open_ends=open_ends,
-                ref_frame0=ref_f0,
-                ref_frames_total=ref_frames_total,
-                target_span=target_span,
-            )
-            times = pair["times"]
-            # Only an open-ended pair whose guard held makes a claim about
-            # where the counterpart begins and ends; a pinned pair covers the
-            # whole file by construction, and a guard failure fell back to one.
-            if open_ends and pair["guard"]:
-                aligned = (pair["from"], pair["to"])
-            if open_ends and not pair["guard"]:
+            if not held:
                 guard_failed.append(name)
-            elapsed = _time.time() - t0
-            reportStep("align", "done", name, pair_count, total_pairs, elapsed)
-        if _peaks_data or aligned is not None:
-            entry = {"times": times, "duration": round(_durations[name], 6)}
-            if _peaks_data:
-                entry["peaks"] = _peaks_data[name]
-            result[name] = entry
-        else:
-            result[name] = times
-        if aligned is not None:
-            a_from = round(max(0.0, aligned[0]), 6)
-            a_to   = round(min(_durations[name], aligned[1]), 6)
-            result[name]["alignedFrom"] = a_from
-            result[name]["alignedTo"]   = a_to
-            # "Trimmed" means there is really material with no counterpart —
-            # a span covering the whole file is not worth reporting.
-            if a_from > SPAN_REPORT_EPS or (_durations[name] - a_to) > SPAN_REPORT_EPS:
-                trimmed_files.append(name)
+        result[name] = _audio_entry(name, times, aligned)
+        if aligned is not None and _is_trimmed(name, result[name]):
+            trimmed_files.append(name)
         # Free the non-ref chroma as soon as it's been consumed.
         if name != ref_name:
             del _chromas[name]
@@ -1021,6 +1086,10 @@ def align_all_from_features():
     if _batch_open_ends or _batch_open_by_file:
         header["openEnds"] = {
             "enabled": bool(_batch_open_ends),
+            # What each recording actually ran with, the per-file overrides
+            # resolved: without it a later reader has to infer the setting
+            # from alignedFrom/To and guardFailed.
+            "byFile": {name: _open_ends_for(name) for name in filenames},
             "trimmed": trimmed_files,
             "guardFailed": guard_failed,
         }
@@ -1910,6 +1979,26 @@ json.dumps(result)
         type: "result",
         alignment: JSON.parse(resultJson),
       });
+      return;
+    }
+
+    if (e.data.type === "align_added") {
+      // Recordings added to a loaded alignment: the batch holds the
+      // reference and the new files only; no score, which is aligned to the
+      // reference and so is unchanged.
+      const pyodide = await pyodideReady;
+      pyodide.globals.set(
+        "_ref_span_json",
+        JSON.stringify(e.data.refSpan || null),
+      );
+      const resultJson = await pyodide.runPythonAsync(`
+import json
+_rs = json.loads(str(_ref_span_json))
+_added = align_added_from_features(tuple(_rs) if _rs else None)
+clear_batch_state()
+json.dumps(_added)
+`);
+      self.postMessage({ type: "added", result: JSON.parse(resultJson) });
       return;
     }
 

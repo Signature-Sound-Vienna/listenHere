@@ -1,5 +1,16 @@
 # Listen Here! CHANGELOG.md
 
+### 0.99.0 -- Fix mode: a tick dragged back bends the ticks behind it, and pushes them along
+
+* A tick dragged back toward the start is no longer stopped by the tick behind it.
+* Bend (beside Reach; off, 0.2, 0.6, 1.8, or 5 s, default 0.6 s, sticky): the ticks behind bend back with the dragged one, each by a share of its move that falls off smoothly (a one-sided Gaussian of that width) and reaches zero at the previous anchor or four widths back. Nothing further back moves.
+* A tick that comes within 30 ms of the one ahead of it is pushed along at 30 ms, and so on back, one tick at a time, so ticks never change order. Ticks already closer than 30 ms keep their own gap. With Bend off, only this push applies.
+* An anchored tick never moves: the drag stops where the ticks between would sit at their buffers against it.
+* Events between moved ticks (tremolo strokes, chord voices) follow them linearly. Nothing behind a fix is re-aligned, and Reach still governs only the re-alignment ahead. Forward drags move nothing behind.
+* While dragging, the moved ticks already show where they will land.
+* Audio-to-audio correction bends and pushes the projected ticks the same way, on the target recording's grid.
+* Testing: 43.44 is now the forward case; 43.49–43.51 cover the push with Bend off; 43.52 the bend's fall-off, preview, and undo; 43.53 a long drag that would flip ticks; 43.54 the bend reaching zero at an anchor and Bend's stickiness; 43.55 audio to audio.
+
 ### 0.97.1 -- Add Recordings: restore the original settings; save from the tab
 
 * When the original run's settings are known and have been changed, a "Restore original alignment settings" button takes the place of the note about them and puts them back.

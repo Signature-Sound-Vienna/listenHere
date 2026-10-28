@@ -7389,8 +7389,9 @@ body.fix-mode-open #region-waveforms {
   flex: 1 1 0;
   min-width: 0;
 }
-/* The re-alignment reach: a label and its select sharing one row. */
-.fix-horizon-row select {
+/* The re-alignment reach and the bend: a label and its select sharing one row. */
+.fix-horizon-row select,
+.fix-bend-row select {
   flex: 1 1 auto;
   min-width: 0;
 }

@@ -290,10 +290,13 @@ let _scoreZoom = { mode: "fit", pct: 100 };
 let _snapTarget = "flux";
 /**
  * Re-alignment after a fix (Werner Goebl's feedback, 2026-09-29). NOTHING
- * BEHIND A FIX MOVES: a fix never refills the span before it — only the
- * previous notes' offsets follow, linearly — and a tick cannot be dragged
- * before the previous one. The refill runs AHEAD, to the next anchor or the
- * HORIZON, whichever comes first; the note at the horizon keeps its current
+ * BEHIND A FIX IS RE-ALIGNED: a fix never refills the span before it. Forward,
+ * the onsets behind it keep their values and only the previous notes' offsets
+ * follow, linearly — except the ticks a BACKWARD drag bends back with it
+ * (Bend, a one-sided Gaussian) or pushes along when it comes within
+ * PUSH_BUFFER_SEC of them (the user's rulings, 2026-10-21 and 2026-10-27;
+ * never an anchored tick). The refill runs AHEAD, to the next anchor or the HORIZON
+ * (Reach), whichever comes first; the note at the horizon keeps its current
  * time as the refill's corner (unsaved). Measured on the HQ corpus before the
  * rule: an unbounded refill ran to the piece end at a ~96 ms hop and moved
  * ~99 % of all later events. Both settings sticky, like the ones above.
@@ -303,6 +306,12 @@ let _horizonSec = 30;
 /** The horizon select's choices, seconds of the strip's audio (∞ = up to the
  *  next anchor or the end of the aligned music, the pre-2026-09-29 reach). */
 const HORIZON_CHOICES = [10, 30, 60, 120, Infinity];
+/** The Bend's width σ, seconds of the strip's audio (0 = off: only the ticks
+ *  a backward drag would collide with are pushed). Sticky. */
+let _bendSec = 0.6;
+/** Its choices: off, then the legacy marker drag's Narrow / Medium / Wide
+ *  (10 / 30 / 90 grid steps of 20 ms), and a wide one. */
+const BEND_CHOICES = [0, 0.2, 0.6, 1.8, 5];
 /** A user-resized strip (px) and lane weights; null = the CSS defaults. Both
  *  sticky, and both part of what the prewarm probe must reproduce. */
 let _stripHeightPx = null;
@@ -1951,7 +1960,26 @@ function _buildDom(contentEl, waveformsEl) {
   horizonLabel.textContent = "Reach";
   horizonLabel.title = horizonSel.title;
   horizonRow.append(horizonLabel, horizonSel);
-  fsEdits.body.append(undoRow, gapRow, autoRow, realignRow, horizonRow);
+  const bendSel = mkSelect(
+    "fix-bend",
+    "How far back a tick dragged back bends the ticks behind it: a smooth fall-off " +
+      "of this width, reaching zero at the previous anchor. Off: only the ticks it " +
+      "would collide with are pushed along",
+    BEND_CHOICES.map((s) => [String(s), s > 0 ? `${s} s` : "off"]),
+    _bendSec,
+    (v) => {
+      _bendSec = Number(v);
+      _scheduleRedraw();
+    },
+  );
+  const bendRow = document.createElement("div");
+  bendRow.className = "fix-nav-row fix-bend-row";
+  const bendLabel = document.createElement("label");
+  bendLabel.htmlFor = "fix-bend";
+  bendLabel.textContent = "Bend";
+  bendLabel.title = bendSel.title;
+  bendRow.append(bendLabel, bendSel);
+  fsEdits.body.append(undoRow, gapRow, autoRow, realignRow, horizonRow, bendRow);
   navBody.append(title, chip, fsScore.fs, fsPlayback.fs, fsSnap.fs, fsLanes.fs, fsEdits.fs);
   _borrowNavActions({ "undo-btn": undoRow, "redo-btn": undoRow }, fsEdits.body);
 
@@ -3645,11 +3673,19 @@ function _redrawOverlays() {
     }
   }
   f.pendingSpans = pendingSpans;
+  // A backward drag's live preview: the ticks it pushes already sit where the
+  // release will put them (_pushPlan).
+  const dr = dragGroup ? f.drag : null;
+  const pushed = new Map();
+  if (dr && dr.curT < dr.startT) {
+    for (const m of _pushPlan(dr.groupIx, dr.curT).moves) pushed.set(f.groups[m.ix], m.to);
+  }
+  f.dragPushed = dr ? [...pushed.values()] : null; // test surface
   ctx.globalAlpha = 1;
 
   for (const g of pageGroups) {
     const dragging = g === dragGroup;
-    const t = dragging ? f.drag.curT : _groupStripTime(g);
+    const t = dragging ? f.drag.curT : pushed.get(g) ?? _groupStripTime(g);
     if (!Number.isFinite(t)) continue;
     const x = _timeToStripX(t);
     if (x === null) continue;
@@ -3943,14 +3979,15 @@ function _tickHit(x) {
  * The dragged tick's allowed time range: strictly between the neighbouring
  * anchors (open interval, ANCHOR_EPS inside), non-strictly within the piece
  * corners — the same bounds correction-model's validateAnchorTime enforces,
- * applied as a clamp so the gesture can never build an invalid anchor. And,
- * since nothing behind a fix moves, never before the PREVIOUS TICK; with auto
- * re-align off, never past the NEXT one either (the span ahead only follows
- * at Re-align, so a crossed tick would sit out of order until then).
+ * applied as a clamp so the gesture can never build an invalid anchor.
+ * Backward, the ticks behind are pushed along (_pushPlan), so the bound is
+ * where they would all sit at their buffers against the nearest anchored one
+ * (_pushFloor). With auto re-align off, never past the NEXT tick (the span
+ * ahead only follows at Re-align, so a crossed tick would sit out of order
+ * until then).
  */
 function _dragBounds(groupIx) {
   const f = _fix;
-  const hasPrev = groupIx > 0;
   const hasNext = groupIx + 1 < f.groups.length;
   if (f.mode === "audio") {
     // Neighbouring TARGET anchors (strict by reference time, so the group's
@@ -3959,9 +3996,8 @@ function _dragBounds(groupIx) {
     const refT = scoreAlignment.ref_onset[f.groups[groupIx].eventIxs[0]];
     const { prev, next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
     const tg = _targetGrid();
-    let lo = prev ? prev.t : tg[0];
+    let lo = Math.max(prev ? prev.t : tg[0], _pushFloor(groupIx, tg[0]));
     let hi = next ? next.t : tg[tg.length - 1];
-    if (hasPrev) lo = Math.max(lo, _leftGridSpan(groupIx, refT, null).tFloor);
     if (!_autoRealign && hasNext) hi = Math.min(hi, _nextLocalGridSpan(groupIx, refT, null).tCeil);
     lo += ANCHOR_EPS_SEC;
     hi -= ANCHOR_EPS_SEC;
@@ -3974,9 +4010,8 @@ function _dragBounds(groupIx) {
   // The corners stay ANCHOR_EPS inside [0, duration] too: an anchor at
   // exactly 0 or exactly the duration makes its corner segment a zero-width
   // span, which the worker rejects as reversed.
-  let lo = prev && prev !== own ? prev.t : 0;
+  let lo = Math.max(prev && prev !== own ? prev.t : 0, _pushFloor(groupIx, 0));
   let hi = next && next !== own ? next.t : dur;
-  if (hasPrev) lo = Math.max(lo, _groupStripTime(f.groups[groupIx - 1]));
   if (!_autoRealign && hasNext) hi = Math.min(hi, _groupStripTime(f.groups[groupIx + 1]));
   lo += ANCHOR_EPS_SEC;
   hi -= ANCHOR_EPS_SEC;
@@ -5080,6 +5115,228 @@ function _leftSpan(groupIx, i, t) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Backward drags push (the user's ruling, 2026-10-21): automatic re-alignment
+// stays future-only, but a tick may be dragged into the past. The ticks
+// behind it stay put until the dragged one comes within PUSH_BUFFER_SEC of
+// its neighbour; that neighbour is then pushed along, keeping the buffer, and
+// so on back, one tick at a time. An anchored tick is never pushed: the drag
+// stops short of the buffers it would need. Two ticks already closer than the
+// buffer keep their own gap, so a touched tick never jumps.
+//
+// With Bend on (the user's ruling, 2026-10-27, after a discussion with Werner
+// Goebl), the ticks behind also BEND back with it: each moves by the drag's
+// displacement times a one-sided Gaussian of its distance behind the dragged
+// tick, of width σ = Bend, scaled to reach exactly zero at the previous anchor
+// (or 4σ back, or the wall, or the start, whichever is nearest), so nothing
+// beyond moves. The legacy marker drag's warp (removed 0.61.0) was symmetric
+// and never reached zero. A bend alone reverses neighbours once the drag
+// exceeds ~1.65σ (the Gaussian's steepest slope is 1/(σ√e)), so two clamping
+// passes follow it, each keeping the push's buffer: time stays monotonic.
+// ---------------------------------------------------------------------------
+
+/** The gap a backward drag keeps before it pushes the tick behind along. */
+const PUSH_BUFFER_SEC = 0.03;
+/** How far back the Bend reaches, in widths: g(4σ) ≈ 3·10⁻⁴, and the
+ *  rescaling makes it exactly zero there. */
+const BEND_REACH_SIGMAS = 4;
+
+/** Whether a group carries an anchor (in audio mode: a target anchor on its
+ *  reference onset). */
+function _groupAnchored(g) {
+  const f = _fix;
+  if (f.mode === "audio") {
+    return !!findTargetAnchor(_corrections, f.targetFile, scoreAlignment.ref_onset[g.eventIxs[0]]);
+  }
+  return g.eventIxs.some((e) => findAnchor(_corrections, e));
+}
+
+/** Audio mode: a target anchor behind refT that sits on no tick still bounds
+ *  the push (its strip time), else -Infinity. */
+function _pushWall(refT) {
+  const f = _fix;
+  if (f.mode !== "audio") return -Infinity;
+  const { prev } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
+  return prev ? prev.t : -Infinity;
+}
+
+/**
+ * The Bend's targets for a backward drag of group gix from t0 to t: a map
+ * group index → bent time for every unanchored tick between the bend's floor
+ * and the drag (empty with Bend off), already clamped from the floor forward
+ * so no bent tick comes closer to the one behind it than the buffer (or than
+ * their own gap, if already closer). The floor is the nearest of the previous
+ * anchored tick, the wall, the start, and BEND_REACH_SIGMAS·σ back.
+ */
+function _bendTargets(gix, t0, t, wall) {
+  const f = _fix;
+  const bent = new Map();
+  const sigma = _bendSec;
+  if (!(sigma > 0) || !(t < t0)) return bent;
+  const start = f.mode === "audio" ? _targetGrid()[0] : 0;
+  let floor = Math.max(t0 - BEND_REACH_SIGMAS * sigma, wall, start);
+  // The region: ticks strictly after the floor, back to the first anchored one.
+  let k = gix - 1;
+  for (; k >= 0; k--) {
+    const old = _groupStripTime(f.groups[k]);
+    if (!(old > floor)) break;
+    if (_groupAnchored(f.groups[k])) {
+      floor = old;
+      break;
+    }
+  }
+  const g = (d) => Math.exp(-(d * d) / (2 * sigma * sigma));
+  const gF = g(t0 - floor);
+  const dt = t - t0;
+  // From the floor forward: the bend, then the lower clamp against the tick
+  // or wall behind, keeping the buffer; the start bounds without one, as in
+  // _pushFloor.
+  const tk = k >= 0 ? _groupStripTime(f.groups[k]) : -Infinity;
+  let prev = Math.max(tk, wall, start);
+  let prevOld = prev;
+  let prevGap = prev === tk || prev === wall;
+  for (let j = k + 1; j < gix; j++) {
+    const old = _groupStripTime(f.groups[j]);
+    const w = Math.max(0, (g(t0 - old) - gF) / (1 - gF));
+    const lo = prev + (prevGap ? Math.min(PUSH_BUFFER_SEC, Math.max(0, old - prevOld)) : 0);
+    const to = Math.min(old, Math.max(old + dt * w, lo));
+    bent.set(j, to);
+    prev = to;
+    prevOld = old;
+    prevGap = true;
+  }
+  return bent;
+}
+
+/**
+ * Which ticks a backward drag of group gix to strip time t moves, and where:
+ * `moves` nearest first, each {ix, from, to} (a bent tick is listed even where
+ * it barely moves, so the push map's knots hold it); `stopIx` the first group
+ * left in place (-1: none), and `stopT` its time (or the wall / floor). The
+ * upper clamp runs from the drag back: a tick is pushed when it comes within
+ * the buffer of the one ahead of it, bent or not.
+ */
+function _pushPlan(gix, t) {
+  const f = _fix;
+  const wall = _pushWall(scoreAlignment.ref_onset[f.groups[gix].eventIxs[0]]);
+  const t0 = _groupStripTime(f.groups[gix]);
+  const bent = _bendTargets(gix, t0, t, wall);
+  const moves = [];
+  let next = t;
+  let nextOld = t0;
+  let j = gix - 1;
+  for (; j >= 0; j--) {
+    const old = _groupStripTime(f.groups[j]);
+    if (!(old > wall)) break;
+    const limit = next - Math.min(PUSH_BUFFER_SEC, Math.max(0, nextOld - old));
+    const isBent = bent.has(j);
+    if ((!isBent && old <= limit) || _groupAnchored(f.groups[j])) break;
+    const to = Math.min(isBent ? bent.get(j) : old, limit);
+    moves.push({ ix: j, from: old, to });
+    next = to;
+    nextOld = old;
+  }
+  const stopT = j >= 0 ? Math.max(_groupStripTime(f.groups[j]), wall) : wall;
+  return { moves, stopIx: j, stopT };
+}
+
+/**
+ * The lowest strip time group gix may be dragged to: every tick behind it
+ * pushed to its buffer against the next, up against the nearest anchored one
+ * (or an audio-mode wall), else against `floor` (the file's start).
+ */
+function _pushFloor(gix, floor) {
+  const f = _fix;
+  const wall = _pushWall(scoreAlignment.ref_onset[f.groups[gix].eventIxs[0]]);
+  let acc = 0;
+  let nextOld = _groupStripTime(f.groups[gix]);
+  for (let j = gix - 1; j >= 0; j--) {
+    const old = _groupStripTime(f.groups[j]);
+    if (!(old > wall)) return wall + acc + Math.min(PUSH_BUFFER_SEC, Math.max(0, nextOld - wall));
+    acc += Math.min(PUSH_BUFFER_SEC, Math.max(0, nextOld - old));
+    if (_groupAnchored(f.groups[j])) return old + acc;
+    nextOld = old;
+  }
+  return Math.max(floor, wall) + acc;
+}
+
+/**
+ * The piecewise-linear map a push applies to times between the first tick
+ * left in place and the fix: through every pushed tick's (from, to) and the
+ * fix's (t0, t). Below the first knot it is the identity when a tick stayed
+ * in place, else a shift; past t0 it shifts with the fix (an offset sounding
+ * across the fix).
+ */
+function _pushMap(knots, t0, t) {
+  return (v) => {
+    if (v >= t0) return v + (t - t0);
+    if (v <= knots[0].from) return v + (knots[0].to - knots[0].from);
+    for (let k = 1; k < knots.length; k++) {
+      const a = knots[k - 1];
+      const b = knots[k];
+      if (v <= b.from) {
+        const span = b.from - a.from;
+        return span > 0 ? a.to + ((v - a.from) * (b.to - a.to)) / span : b.to;
+      }
+    }
+    return v + (t - t0);
+  };
+}
+
+/** The knots of a push, ascending: the tick left in place (identity), the
+ *  pushed ticks, and the fix. */
+function _pushKnots(plan, t0, t, leftT) {
+  const knots = [];
+  if (Number.isFinite(leftT)) knots.push({ from: leftT, to: leftT });
+  for (let k = plan.moves.length - 1; k >= 0; k--) {
+    knots.push({ from: plan.moves[k].from, to: plan.moves[k].to });
+  }
+  knots.push({ from: t0, to: t });
+  return knots;
+}
+
+/**
+ * Score↔ref: the span a backward fix of event i (group gix) changes when it
+ * pushes ticks: from the first tick left in place (its first event, so its
+ * chord voices map onto themselves) to i. Every event between follows the
+ * push map — a pushed tick's voices land on it, the events between ticks
+ * (tremolo strokes) follow linearly between their neighbours.
+ */
+function _pushSpan(gix, i, t0, t, plan) {
+  const f = _fix;
+  const stop = plan.stopIx >= 0 ? f.groups[plan.stopIx] : null;
+  const iA = stop ? stop.eventIxs[0] : -1;
+  const knots = _pushKnots(plan, t0, t, stop ? plan.stopT : NaN);
+  return {
+    iA,
+    tA: stop ? plan.stopT : knots[0].to,
+    iB: i,
+    tB: t,
+    interiorCount: i - iA - 1,
+    local: true,
+    push: { knots, t0 },
+  };
+}
+
+/** The push map applied to a push span's interior onsets and offsets. */
+function _pushFill(seg) {
+  const refOn = scoreAlignment.ref_onset;
+  const refOff = scoreAlignment.ref_offset;
+  const map = _pushMap(seg.push.knots, seg.push.t0, seg.tB);
+  const on = [];
+  const off = [];
+  for (let e = seg.iA + 1; e < seg.iB; e++) {
+    on.push(map(refOn[e]));
+    off.push(map(refOff[e]));
+  }
+  return {
+    ref_onset: on,
+    ref_offset: off,
+    anchor_a_offset: seg.iA >= 0 ? map(refOff[seg.iA]) : null,
+    hop: 0,
+  };
+}
+
 /** Score↔ref: the refill ahead of event i at time t — to the next anchor or
  *  the first onset group at or past the horizon, whichever comes first (that
  *  group's current time is the corner), else to where the music ends. */
@@ -5145,6 +5402,42 @@ function _leftGridSpan(groupIx, refT, t) {
     interiorCount: Math.max(0, kHi - kLo + 1),
     local: true,
     tFloor,
+  };
+}
+
+/**
+ * Audio mode: the raster a backward fix that pushes ticks changes, the twin
+ * of _pushSpan. Every sample after the first tick left in place (or the wall,
+ * or the grid's frozen first sample), up to the fix, follows the push map —
+ * except the first sample past it, KEPT when it lies before the pushed ticks,
+ * so the projection of the tick left in place (an anchor, perhaps) cannot
+ * move.
+ */
+function _pushGridSpan(refT, t0, t, plan) {
+  const f = _fix;
+  const refGrid = alignmentGrids[f.refFile];
+  const grid = _targetGrid();
+  const kHi = rasterBefore(refGrid, refT);
+  const L = Number.isFinite(plan.stopT) ? Math.max(plan.stopT, grid[0]) : grid[0];
+  let kLo = kHi + 1;
+  while (kLo > 0 && grid[kLo - 1] > L) kLo--;
+  let left = L;
+  const earliest = plan.moves[plan.moves.length - 1].to;
+  if (kLo <= kHi && grid[kLo] < earliest) {
+    left = grid[kLo];
+    kLo++;
+  }
+  return {
+    refA: kLo > 0 ? refGrid[kLo - 1] : refGrid[0],
+    tA: left,
+    refB: refT,
+    tB: t,
+    kLo,
+    kHi,
+    interiorCount: Math.max(0, kHi - kLo + 1),
+    local: true,
+    push: { knots: _pushKnots(plan, t0, t, left), t0 },
+    tFloor: left,
   };
 }
 
@@ -5284,10 +5577,14 @@ async function _commitAnchor(groupIx, t, kind) {
     anchorOffsets: [],
     window: null,
   };
-  // Nothing behind a fix moves: the drag bounds keep a tick after the
-  // previous one, and a commit that gets here anyway is refused before the
-  // model changes.
-  const left = _leftSpan(groupIx, i, t);
+  // Behind a fix nothing is re-aligned. Every onset behind it keeps its value,
+  // except the ticks a BACKWARD fix pushes along (the drag bounds keep it
+  // short of any anchor). A commit that gets here out of bounds anyway is
+  // refused before the model changes.
+  const plan = !approve && t < refOn[i] ? _pushPlan(groupIx, t) : null;
+  const left = plan?.moves.length
+    ? _pushSpan(groupIx, i, refOn[i], t, plan)
+    : _leftSpan(groupIx, i, t);
   if (!approve && left && !(left.tA < t)) {
     _announce("Cannot anchor here: not before the previous onset.");
     return;
@@ -5335,10 +5632,13 @@ async function _commitAnchor(groupIx, t, kind) {
         // note as a 20 ms blip (the first-note stutter). A GAP span keeps
         // the note's length instead of stretching it across the applause.
         // A LOCAL span (behind the fix, or its own group with auto re-align
-        // off) never goes to the worker: it follows linearly.
-        if (seg.iA < 0) continue;
-        res =
-          seg.interiorCount <= 0 && findGap(_corrections, seg.iA)
+        // off) never goes to the worker: it follows linearly, or — behind a
+        // backward fix that pushes ticks — by the push map, which may reach
+        // back to the first onset.
+        if (seg.iA < 0 && !seg.push) continue;
+        res = seg.push
+          ? _pushFill(seg)
+          : seg.interiorCount <= 0 && findGap(_corrections, seg.iA)
             ? _gapSpanFill(seg, entry)
             : _linearFill(seg);
         if (seg.local) localFilled++;
@@ -5604,8 +5904,14 @@ async function _commitGridAnchor(groupIx, t, kind) {
     window: null, // the target-time span the commit changed
     renderT1: null,
   };
-  // Nothing behind a fix moves (see _dragBounds and _leftGridSpan).
-  const left = _leftGridSpan(groupIx, refT, t);
+  // Behind a fix nothing is re-aligned: the raster follows linearly from the
+  // previous tick (_leftGridSpan), unless a backward fix pushes ticks along
+  // (_pushGridSpan). See _dragBounds.
+  const tNow = _refToTarget(refT);
+  const plan = !approve && t < tNow ? _pushPlan(groupIx, t) : null;
+  const left = plan?.moves.length
+    ? _pushGridSpan(refT, tNow, t, plan)
+    : _leftGridSpan(groupIx, refT, t);
   if (!approve && !(left.tFloor < t)) {
     _announce("Cannot anchor here: not before the previous onset.");
     return;
@@ -5653,7 +5959,10 @@ async function _commitGridAnchor(groupIx, t, kind) {
       const rasterRef = refGrid.slice(seg.kLo, seg.kHi + 1);
       const priorT = grid.slice(seg.kLo, seg.kHi + 1);
       let times;
-      if (seg.local) {
+      if (seg.push) {
+        times = priorT.map(_pushMap(seg.push.knots, seg.push.t0, seg.tB));
+        localFilled++;
+      } else if (seg.local) {
         times = _linearGridFill(seg, rasterRef);
         localFilled++;
       } else {
@@ -7321,8 +7630,10 @@ export function fixTestState() {
     lastCommit: f.lastCommit ? { ...f.lastCommit } : null,
     autoRealign: _autoRealign,
     horizonSec: _horizonSec,
+    bendSec: _bendSec,
     pending: f.pending.map((p) => ({ ...p })),
     pendingSpans: (f.pendingSpans || []).map((s) => ({ ...s })),
+    dragPushed: f.dragPushed ? f.dragPushed.slice() : null,
     lastRealign: f.lastRealign ? { ...f.lastRealign } : null,
     lastGap: f.lastGap ? { ...f.lastGap } : null,
     gapBands: f.gapBands ?? 0,

@@ -141,6 +141,9 @@
   /* alignment max-displacement   */
   --color-alignment-anchor: #4e1ca8;
   /* anchored ticks in fix mode   */
+  --color-alignment-selected: #ffa500;
+  /* the active tick in fix mode: the score's selected-note orange
+     (.fix-note-sel), fixed across themes like it; drawn cased */
   --color-alignment-playhead: #6464c8;
   /* position indicator line      */
   --color-score-band: #4682e6;

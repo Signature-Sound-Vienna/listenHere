@@ -861,6 +861,21 @@ test.describe('46. The by-conductor explorer — "did you know?"', () => {
   test('46.13 conductors with a story show it under their facts; one with a picture gets a placeholder frame and caption', async ({
     page,
   }) => {
+    // Since 2026-10-20 every conductor on the roster has a story, so the
+    // no-story case needs one withheld: the last picture-less story whose
+    // conductor the roster has.
+    await page.route('**/exhibit/data/dyk.json', async (route) => {
+      const json = await (await route.fetch()).json();
+      const sidecar = await (
+        await page.request.get(new URL('concerts.json', route.request().url()).href)
+      ).json();
+      const roster = new Set(sidecar.concerts.map((c: any) => c.conductor).filter(Boolean));
+      const withheld = Object.keys(json.conductors)
+        .filter((n) => roster.has(n) && !json.conductors[n].image)
+        .pop();
+      if (withheld) delete json.conductors[withheld];
+      await route.fulfill({ json });
+    });
     await boot(page, 'debug=1&views=conductors,listen');
     const ov = await overlay(page, 0, 'conductors');
     const content = await page.evaluate(() => {
@@ -875,11 +890,16 @@ test.describe('46. The by-conductor explorer — "did you know?"', () => {
     expect(content!.withImage.length).toBeGreaterThan(0);
     expect(content!.without.length).toBeGreaterThan(0);
 
-    // Exactly the conductors who have one, and no others.
+    // Exactly the conductors who have one, and no others. A story may name a
+    // conductor the roster does not have yet (Sokhiev, 2027): it is not shown,
+    // and tools/prep_exhibit_dyk.py warns about it.
+    const roster = await ov.locator('.cv-entry').evaluateAll((els) =>
+      els.map((e) => (e as HTMLElement).dataset.conductor),
+    );
     const marked = await ov.locator('.cv-entry[data-dyk="1"]').evaluateAll((els) =>
       els.map((e) => (e as HTMLElement).dataset.conductor).sort(),
     );
-    expect(marked).toEqual([...content!.all].sort());
+    expect(marked).toEqual(content!.all.filter((n) => roster.includes(n)).sort());
 
     const story = ov.locator('.cv-detail .dyk');
 
@@ -985,6 +1005,56 @@ test.describe('46. The by-conductor explorer — "did you know?"', () => {
     const row = page.locator('.study-row').filter({ has: page.locator('.study-label', { hasText: 'Did-you-know images' }) });
     await expect(row).toHaveCount(1);
     await expect(row.locator('.study-option.is-on')).toHaveText('off');
+  });
+
+  // 46.16 An illustration we made with AI (Jansons's and Karajan's, 2026-10-20)
+  // is a real picture, in every register unless limited, and says in words what
+  // its burned-in spark says (plan §5.5).
+  test('46.16 an AI illustration shows as a picture in every register, with the disclosure on the foot and in the lightbox', async ({
+    page,
+  }) => {
+    await boot(page, 'debug=1&views=conductors,listen&audiences=kids,adults');
+    const ov = await overlay(page, 0, 'conductors');
+    const subject = await page.evaluate(() => {
+      const d = (window as any)._exhibitTest.dyk;
+      for (const [name, e] of d.conductors) if (e.image?.status === 'generated' && !e.image.audiences) return { name };
+      return null;
+    });
+    expect(subject, 'no AI illustration for every register').not.toBeNull();
+    await ov.locator(`.cv-entry[data-conductor="${subject!.name}"]`).click();
+    const story = ov.locator('.cv-detail .dyk');
+    await expect(story).toHaveAttribute('data-audience', 'kids');
+    const fig = story.locator('.dyk-figure');
+    await expect(fig).toHaveAttribute('data-status', 'generated');
+    await expect(fig.locator('.dyk-pending')).toHaveCount(0);
+    // Loaded, not merely present: the src resolves against the exhibit root.
+    await expect
+      .poll(() => fig.locator('img').evaluate((i) => (i as HTMLImageElement).naturalWidth))
+      .toBeGreaterThan(0);
+    // The disclosure is ONE sentence on the foot, with the sigil drawn into it,
+    // not a line under the caption (user, 2026-10-20).
+    const disclosure = 'Images showing were generated using AI (Google Gemini).';
+    await expect(fig.locator('figcaption .dyk-ai-note')).toHaveCount(0);
+    await expect(ov.locator('.cv-about .dyk-ai-note')).toHaveText(disclosure);
+    await expect(ov.locator('.cv-about .dyk-ai-note svg.dyk-ai-sigil')).toHaveCount(1);
+
+    // A tap shows it big over the reader's own half, disclosure and all; a tap
+    // anywhere on it closes it.
+    await fig.click();
+    const lb = page.locator('.vp[data-viewport="0"] .vp-view .dyk-lightbox');
+    await expect(lb).toBeVisible();
+    await expect(lb.locator('.dyk-ai-note')).toHaveText(disclosure);
+    const big = await lb.locator('img').evaluate((i) => i.getBoundingClientRect().width);
+    const small = await fig.locator('img').evaluate((i) => i.getBoundingClientRect().width);
+    expect(big).toBeGreaterThan(2 * small);
+    await lb.click();
+    await expect(lb).toHaveCount(0);
+
+    // The adults' register shows it too.
+    await page.click('.vp[data-viewport="0"] .audience-switch .audience-btn[data-audience="adults"]');
+    await expect(story).toHaveAttribute('data-audience', 'adults');
+    await expect(story.locator('.dyk-text')).not.toBeEmpty();
+    await expect(story.locator('.dyk-figure')).toHaveAttribute('data-status', 'generated');
   });
 });
 

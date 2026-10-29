@@ -41,7 +41,7 @@
 
 import { portraitAbout, resolveText, t } from "./strings.js";
 import { acknowledgeThen, initials } from "./middle-band.js";
-import { createDyk, pulseStoryHint } from "./dyk.js";
+import { aiDisclosure, createDyk, pulseStoryHint } from "./dyk.js";
 
 /**
  * @param {object} opts
@@ -111,6 +111,7 @@ export function createConductorsView({
   const unsubscribe = audienceStore?.subscribe((i) => {
     if (i !== viewport) return;
     story.refresh();
+    paintAbout();
     // …and say what the switch was FOR, whether or not this card has a story to
     // re-tell in the new register (dyk.js pulseStoryHint says why).
     pulseStoryHint(el);
@@ -131,9 +132,17 @@ export function createConductorsView({
       language, pieceId: piece?.id, pieceTitle, portraitUrl, onListen, onExplore,
       story: story.el,
     });
-    // The credit follows the face: the card shows THIS conductor's portrait large,
-    // so the foot names its photographer (strings.js, portraitAbout).
-    about.textContent = portraitAbout(language, c.portraitCredit || null);
+    paintAbout();
+  }
+
+  // The credit follows the face: the card shows THIS conductor's portrait large,
+  // so the foot names its photographer (strings.js, portraitAbout). And while the
+  // story shows an AI illustration, the foot says what its spark means — after
+  // every register switch too, since an illustration may be for some only.
+  function paintAbout() {
+    const c = selected && concerts.byConductor.get(selected);
+    about.textContent = portraitAbout(language, c?.portraitCredit || null);
+    if (story.showsAiImage()) about.append(" ", aiDisclosure(language));
   }
   roster.onPick(select);
 

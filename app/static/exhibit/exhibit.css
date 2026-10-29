@@ -544,13 +544,14 @@ html, body {
   opacity: 0.45;
 }
 .vp[data-strap="on"] .marker-hook { top: calc(100% + 54px); }
-/* While the glass is in hand the hook becomes the "put it away" target —
- * tapping it removes any marker and rests the glass. */
-.marker-layer.is-engaged .marker-hook {
+/* Whenever the hook is empty — glass in hand OR placed — it is the "put it
+ * away" target: tapping it removes any marker and rests the glass. It brightens
+ * only while the glass is in hand. */
+.marker-layer.is-hook-empty .marker-hook {
   pointer-events: auto;
   cursor: pointer;
-  opacity: 0.8;
 }
+.marker-layer.is-engaged .marker-hook { opacity: 0.8; }
 
 /* Sized by marker.js (inline width/height): the lens is a fraction of one
  * strip's height (LENS_SPAN), so the rendered scale follows --strip-height. */
@@ -2530,13 +2531,85 @@ html, body {
   justify-content: center;
   overflow: hidden;
 }
-.dyk-figure[data-status="licensed"] .dyk-frame { border-style: solid; }
+.dyk-figure:is([data-status="licensed"], [data-status="generated"]) .dyk-frame { border-style: solid; }
 .dyk-frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .dyk-pending {
   font-size: 0.68rem;
   text-align: center;
   color: var(--ex-text-dim);
 }
+/* The AI disclosure's sigil stands in the line like a glyph (dyk.js aiDisclosure). */
+.dyk-ai-sigil {
+  display: inline-block;
+  width: 1.15em;
+  height: 1.15em;
+  vertical-align: -0.22em;
+}
+/* A REAL PICTURE GROWS WITH ITS PAD (user, 2026-10-20: 150 px was teensy with
+ * a whole viewport to spare). Half the pad, up to 380 px; the placeholder's
+ * own rule stays the floor, so a narrow pad still keeps its text column. */
+.dyk-figure[role="button"] {
+  width: clamp(min(150px, 42%), 48%, 380px);
+  cursor: zoom-in;
+}
+/* ...and when the whole story fits with it full width, it goes above the text
+ * (dyk.js markScroll decides): a lone viewport's pad is narrow but tall. */
+.dyk-figure[role="button"][data-fit="full"] {
+  float: none;
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto 10px;
+}
+.dyk-figure[role="button"]:focus-visible { outline: 2px solid var(--ex-accent, currentColor); outline-offset: 3px; }
+
+/* THE LIGHTBOX: the picture as big as the reader's half allows, over that half
+ * only (dyk.js openLightbox). A dark scrim whatever the theme — a picture is
+ * read against black, and the caption sets its own light ink for it. */
+.dyk-lightbox {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 56px 24px 24px;
+  background: rgba(12, 10, 8, 0.86);
+  cursor: zoom-out;
+  animation: dyk-lightbox-in 160ms ease-out;
+}
+.dyk-lightbox img {
+  max-width: 100%;
+  max-height: calc(100% - 64px);
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+.dyk-lightbox figcaption {
+  max-width: 40em;
+  text-align: center;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  color: #f2e8d5;
+}
+.dyk-lightbox .dyk-ai-note { display: block; margin-top: 4px; color: #d9c9a8; font-size: 0.85rem; }
+.dyk-lightbox-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid rgba(242, 232, 213, 0.5);
+  background: rgba(0, 0, 0, 0.35);
+  color: #f2e8d5;
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+}
+@keyframes dyk-lightbox-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .dyk-lightbox { animation: none; } }
 .dyk-figure figcaption {
   font-size: 0.68rem;
   line-height: 1.3;

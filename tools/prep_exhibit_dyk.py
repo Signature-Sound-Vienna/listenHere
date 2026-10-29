@@ -57,6 +57,11 @@ none; her only image note was an instruction to insert a picture, not a caption.
 When a licensed or properly-labelled image exists, the entry gains `src` and
 `status: "licensed"` and the same figure shows it.
 
+ILLUSTRATIONS are the exception: pictures we made with AI (2026-10-20, Jansons
+first), keyed by conductor and optionally limited to some registers. They ship as
+`status: "generated"` with a `src`, and the tool renders their assets with the AI
+mark burned in — see ILLUSTRATIONS below.
+
 ## Committed, unlike concerts.json
 
 `concerts.json` is gitignored because it is a scrape of two archives that can be
@@ -77,6 +82,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -117,6 +123,70 @@ IMAGES = {
         "caption": {LANG: "Herbert von Karajan with the soprano Kathleen Battle, 1 January 1987"},
     },
 }
+
+# Illustrations WE made, as opposed to the pictures in her export. Keyed by the
+# conductor, because her markdown has no reference for them and adding one would
+# edit her source. `audiences` limits the figure to those registers (absent: all).
+# Each is AI-generated, so each carries the plan's §5.5 obligations: the spark
+# burned in (render_illustration), the IPTC source type in the XMP, a disclosure
+# while the picture is shown (dyk.js aiDisclosure), and its provenance in the sidecar.
+ILLUSTRATIONS = {
+    "Mariss Jansons": {
+        "id": "jansons-vergnuegungszug",
+        "source": "assets/dyk-images/Jansons-Vergnuegungszug.jpg",
+        "caption": {LANG: "Mariss Jansons honks the horn in the train polka, 2016"},
+        "provenance": {
+            "model": "Nano Banana (Google Gemini image model)",
+            "style": "content/dyk/image-style-prompt.md",
+            # The prompt is lost; the style fragment was derived FROM this picture,
+            # by asking Gemini to describe it (user, 2026-10-20).
+            "prompt": None,
+            "date": "2026-10-20",
+        },
+    },
+    # Replaces the placeholder for her image2, the press photograph of the same scene.
+    "Herbert von Karajan": {
+        "id": "karajan-battle",
+        "source": "assets/dyk-images/Karajan-Battle.jpg",
+        "caption": {LANG: "Herbert von Karajan conducts as Kathleen Battle sings Voices of Spring, 1987"},
+        "provenance": {
+            "model": "Nano Banana (Google Gemini image model)",
+            "style": "content/dyk/image-style-prompt.md",
+            # No scene text of its own (user, 2026-10-20): the style fragment was
+            # the whole prompt, less its sound-effect lettering and drifting notes.
+            "prompt": "the style fragment, without the sound-effect text and musical notes",
+            "date": "2026-10-20",
+        },
+    },
+}
+ILLUSTRATION_DIR = os.path.join(REPO, "app", "static", "exhibit", "dyk-images")
+ILLUSTRATION_WIDTH = 960  # 2x the widest the card could draw it
+
+# The AI mark, after the portraits' (tools/split_portraits.py, THE AI MARK): a gold
+# bubble with the four-point spark knocked out of it dark, so it carries its own
+# contrast on any part of the picture. Here it sits in the lower-right corner, in
+# fractions of the output WIDTH.
+MARK_R = 0.016         # bubble radius (halved 2026-10-20: it drew the eye, worst in the lightbox)
+MARK_INSET = 0.036     # bubble centre from the right and bottom edges (the same 0.02 gap to them)
+MARK_SPARK = 0.62      # spark radius, as a fraction of the bubble's
+MARK_GOLD = (212, 178, 94)
+MARK_KEYLINE = (108, 82, 30)
+MARK_SPARK_INK = (38, 30, 14)
+XMP = (
+    '<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>'
+    '<x:xmpmeta xmlns:x="adobe:ns:meta/">'
+    '<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">'
+    '<rdf:Description rdf:about=""'
+    ' xmlns:Iptc4xmpExt="http://iptc.org/std/Iptc4xmpExt/2008-02-29/"'
+    ' xmlns:dc="http://purl.org/dc/elements/1.1/">'
+    "<Iptc4xmpExt:DigitalSourceType>"
+    "http://cv.iptc.org/newscodes/digitalsourcetype/trainedAlgorithmicMedia"
+    "</Iptc4xmpExt:DigitalSourceType>"
+    "<dc:description><rdf:Alt><rdf:li xml:lang=\"x-default\">"
+    "{description}"
+    "</rdf:li></rdf:Alt></dc:description>"
+    "</rdf:Description></rdf:RDF></x:xmpmeta><?xpacket end=\"w\"?>"
+)
 
 # --- the shapes the two exports use -----------------------------------------
 HEADING = re.compile(r"^#\s*(.*)$")
@@ -274,6 +344,73 @@ def parse_entries(path: str, kind: str, warnings: list):
     return entries
 
 
+def _spark(cx, cy, r):
+    """A four-point star: the widely-read shorthand for 'generated'."""
+    pts = []
+    for k in range(8):
+        ang = -math.pi / 2 + k * math.pi / 4
+        rad = r if k % 2 == 0 else r * 0.34
+        pts.append((cx + rad * math.cos(ang), cy + rad * math.sin(ang)))
+    return pts
+
+
+def render_illustration(name: str, spec: dict, write: bool):
+    """The sidecar's image entry for one illustration; with `write`, the asset too.
+
+    The asset is the source scaled to ILLUSTRATION_WIDTH with the AI mark burned
+    in, as WebP with the IPTC source type in its XMP. The mark is drawn at four
+    times its size and reduced, because the spark's points are diagonal edges.
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        sys.exit("Pillow is needed for the illustrations (it is in .venv/)")
+    with Image.open(os.path.join(REPO, spec["source"])) as src:
+        w = ILLUSTRATION_WIDTH
+        h = round(src.height * w / src.width)
+        img = src.convert("RGB").resize((w, h), Image.LANCZOS) if write else None
+    rel = f"dyk-images/{spec['id']}.webp"
+    if write:
+        S = 4
+        r, inset = MARK_R * w * S, MARK_INSET * w * S
+        layer = Image.new("RGBA", (w * S, h * S), (0, 0, 0, 0))
+        dr = ImageDraw.Draw(layer)
+        mx, my = w * S - inset, h * S - inset
+        dr.ellipse([mx - r, my - r, mx + r, my + r], fill=MARK_GOLD + (255,),
+                   outline=MARK_KEYLINE + (255,), width=max(1, round(r * 0.13)))
+        dr.polygon(_spark(mx, my, r * MARK_SPARK), fill=MARK_SPARK_INK + (255,))
+        img = Image.alpha_composite(img.convert("RGBA"), layer.resize((w, h), Image.LANCZOS))
+        os.makedirs(ILLUSTRATION_DIR, exist_ok=True)
+        path = os.path.join(ILLUSTRATION_DIR, f"{spec['id']}.webp")
+        desc = (f"AI-generated illustration of {name} for the Listen Here! exhibit; "
+                "a caricature, not a photograph.")
+        img.convert("RGB").save(path, "WEBP", quality=86, method=6,
+                                xmp=XMP.format(description=desc).encode())
+        log(f"wrote {os.path.relpath(path, REPO)} ({w}x{h}, {os.path.getsize(path) // 1024} kB)")
+    entry = {
+        "id": spec["id"],
+        "aspect": [w, h],
+        "caption": spec["caption"],
+        "status": "generated",
+        "src": rel,
+        "provenance": spec["provenance"],
+    }
+    if spec.get("audiences"):
+        entry["audiences"] = spec["audiences"]
+    return entry
+
+
+def add_illustrations(conductors: dict, warnings: list, write: bool):
+    """Attach ILLUSTRATIONS to their conductors; ours replaces a placeholder."""
+    for name, spec in ILLUSTRATIONS.items():
+        if name not in conductors:
+            warnings.append(f"illustration {spec['id']}: no story for {name}")
+            continue
+        if conductors[name]["image"]:
+            warnings.append(f"illustration {spec['id']} replaces {name}'s {conductors[name]['image']['id']}")
+        conductors[name]["image"] = render_illustration(name, spec, write)
+
+
 def sha256(path: str) -> str:
     with open(path, "rb") as fh:
         return hashlib.sha256(fh.read()).hexdigest()
@@ -337,6 +474,29 @@ def self_test() -> int:
     return 1 if bad else 0
 
 
+def check_roster(conductors: dict, data_dir: str):
+    """Name the stories the conductors explorer cannot show: its roster is the
+    concerts sidecar's, so a conductor with no concert there has no card.
+
+    Logged only, never written to dyk.json: the sidecar is gitignored, so a
+    warning that depends on it would change the committed file per machine.
+    """
+    path = os.path.join(data_dir, "concerts.json")
+    if not os.path.exists(path):
+        log(f"\n(no {os.path.relpath(path, REPO)}: the roster check is skipped)")
+        return
+    with open(path, encoding="utf-8") as fh:
+        concerts = json.load(fh).get("concerts") or []
+    if isinstance(concerts, dict):
+        concerts = list(concerts.values())
+    roster = {c.get("conductor") for c in concerts if c.get("conductor")}
+    missing = [name for name in conductors if name not in roster]
+    for name in missing:
+        log(f"  not shown: {name} conducts no concert in the concerts sidecar")
+    if not missing:
+        log("\nroster: every conductor story has a card")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--source-dir", default=SOURCE_DIR, help="where the markdown lives")
@@ -357,7 +517,9 @@ def main():
     warnings = []
     years = parse_entries(years_path, "years", warnings)
     conductors = parse_entries(conductors_path, "conductors", warnings)
+    add_illustrations(conductors, warnings, write=not args.report)
     report(years, conductors, warnings)
+    check_roster(conductors, args.data_dir)
 
     if args.report:
         log("\n--report: nothing written")

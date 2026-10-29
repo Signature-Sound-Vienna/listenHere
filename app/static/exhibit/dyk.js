@@ -47,6 +47,10 @@
 
 import { resolveText, t } from "./strings.js";
 
+// Sidecar paths resolve against this directory, not the document (payload.js
+// portraitUrl says why).
+const EXHIBIT_BASE = new URL("./", import.meta.url);
+
 /** The audience whose text a card shows, given the store's current value. */
 export function dykAudience(audience) {
   // "all" unions annotation LISTS; a story has no union — the three registers
@@ -147,9 +151,53 @@ export function createDyk({
   el.append(heading, eyebrow, body);
 
   let entry = null;
+  let lightbox = null;
+
+  function closeLightbox() {
+    lightbox?.remove();
+    lightbox = null;
+  }
+
+  /**
+   * The picture big, over the reader's OWN half: appended to the explorer's
+   * `.vp-view` rather than the body, so the far half's lightbox is turned with
+   * its half, and outside the pad, so it is not tilted with the story. A tap
+   * anywhere closes it, as does a new subject or register.
+   */
+  function openLightbox(fig, img) {
+    closeLightbox();
+    const host = fig.closest(".vp-view") || fig.closest(".vp") || document.body;
+    const box = document.createElement("div");
+    box.className = "dyk-lightbox";
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+    const pic = document.createElement("img");
+    pic.alt = "";
+    pic.src = fig.querySelector("img").src;
+    const cap = fig.querySelector("figcaption").cloneNode(true);
+    // The lightbox covers the explorer's foot, and the disclosure with it.
+    if (img.status === "generated") cap.appendChild(aiDisclosure(language));
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "dyk-lightbox-close";
+    close.setAttribute("aria-label", t("dyk.closeImage", language));
+    close.textContent = "×";
+    box.append(pic, cap, close);
+    box.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      closeLightbox();
+    });
+    box.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") closeLightbox();
+    });
+    host.appendChild(box);
+    lightbox = box;
+    close.focus({ preventScroll: true });
+  }
 
   /** Rebuild for the current entry and audience. */
   function render() {
+    closeLightbox();
     const sub = entry?.subtitle ? resolveText(entry.subtitle, { language }) : "";
     eyebrow.textContent = sub;
     eyebrow.hidden = !sub;
@@ -163,7 +211,8 @@ export function createDyk({
     // derives a fact from it (the portraits README's rule 3).
     body.querySelector(".dyk-figure")?.remove();
     const img = entry?.image;
-    if (img && images) {
+    // An illustration may be for some registers only (none is, as of 2026-10-20).
+    if (img && images && (!img.audiences || img.audiences.includes(aid))) {
       const fig = document.createElement("figure");
       fig.className = "dyk-figure";
       fig.dataset.status = img.status || "placeholder";
@@ -171,11 +220,14 @@ export function createDyk({
       frame.className = "dyk-frame";
       const [w, h] = img.aspect || [4, 3];
       frame.style.aspectRatio = `${w} / ${h}`;
-      if (img.status === "licensed" && img.src) {
+      if ((img.status === "licensed" || img.status === "generated") && img.src) {
         const el2 = document.createElement("img");
         el2.alt = "";
         el2.decoding = "async";
-        el2.src = img.src;
+        // The scroll fade is measured at render; measure again once the picture
+        // is in, or a flag set mid-load outlives the overflow it reported.
+        el2.addEventListener("load", markScroll, { once: true });
+        el2.src = new URL(img.src, EXHIBIT_BASE).href;
         frame.appendChild(el2);
       } else {
         const note = document.createElement("span");
@@ -185,7 +237,23 @@ export function createDyk({
       }
       const cap = document.createElement("figcaption");
       cap.textContent = resolveText(img.caption, { language });
+      // No disclosure under the caption: the sentence explaining the spark sits
+      // once on the explorer's foot (aiDisclosure), not under every picture.
       fig.append(frame, cap);
+      // A real picture opens big on a tap (user, 2026-10-20); a placeholder has
+      // nothing to enlarge.
+      if (frame.querySelector("img")) {
+        fig.tabIndex = 0;
+        fig.setAttribute("role", "button");
+        fig.setAttribute("aria-label", t("dyk.enlarge", language));
+        fig.addEventListener("click", () => openLightbox(fig, img));
+        fig.addEventListener("keydown", (ev) => {
+          if (ev.key === "Enter" || ev.key === " ") {
+            ev.preventDefault();
+            openLightbox(fig, img);
+          }
+        });
+      }
       // BEFORE the text, not after it (user, 2026-09-19: the picture sits top
       // right and the words run round it). A float is placed at the line it
       // appears on, so a figure appended after the paragraph would drop below
@@ -207,6 +275,16 @@ export function createDyk({
    */
   function markScroll() {
     const apply = () => {
+      // A REAL PICTURE TAKES THE ROOM THERE IS (user, 2026-10-20). Full width
+      // above the text when the whole story still fits that way — a lone
+      // viewport has hundreds of pixels to spare below the pad's text — and
+      // floated beside it, at its CSS width, when it would push the text into
+      // a scroll. Decided here because this is where the box is measured.
+      const fig = body.querySelector('.dyk-figure[role="button"]');
+      if (fig) {
+        fig.dataset.fit = "full";
+        if (body.scrollHeight > body.clientHeight + 1) fig.dataset.fit = "float";
+      }
       // Measured on the scrolling box, flagged on the SECTION — the fade is
       // drawn over the box's foot, and a `::after` inside it would scroll away
       // with the text it is meant to be covering.
@@ -239,7 +317,53 @@ export function createDyk({
     /** Re-measure the fade once the card is laid out (the views' refit). */
     remeasure: markScroll,
     hasEntry: () => Boolean(entry),
+    /** Whether an AI illustration is on show, so the foot owes its disclosure. */
+    showsAiImage: () => !el.hidden && Boolean(body.querySelector('.dyk-figure[data-status="generated"]')),
   };
+}
+
+/* ---------------------------------------------------------------------------
+ * THE AI DISCLOSURE (plan §5.5; user, 2026-10-20).
+ *
+ * One sentence with the spark drawn INTO it, so a visitor matches the mark in
+ * the corner of the picture to the words without being told to look for it.
+ * The sigil is the one tools/prep_exhibit_dyk.py burns in (MARK_*): a gold
+ * bubble with the four-point spark knocked out dark.
+ * ------------------------------------------------------------------------- */
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function aiSigil() {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "-1 -1 2 2");
+  svg.setAttribute("class", "dyk-ai-sigil");
+  svg.setAttribute("aria-hidden", "true");
+  const disc = document.createElementNS(SVG_NS, "circle");
+  disc.setAttribute("r", "0.93");
+  disc.setAttribute("fill", "rgb(212 178 94)");
+  disc.setAttribute("stroke", "rgb(108 82 30)");
+  disc.setAttribute("stroke-width", "0.13");
+  // The tool's _spark: eight points from the top, alternating full and 0.34.
+  const pts = [];
+  for (let k = 0; k < 8; k++) {
+    const ang = -Math.PI / 2 + (k * Math.PI) / 4;
+    const rad = (k % 2 === 0 ? 1 : 0.34) * 0.62;
+    pts.push(`${(rad * Math.cos(ang)).toFixed(3)},${(rad * Math.sin(ang)).toFixed(3)}`);
+  }
+  const spark = document.createElementNS(SVG_NS, "polygon");
+  spark.setAttribute("points", pts.join(" "));
+  spark.setAttribute("fill", "rgb(38 30 14)");
+  svg.append(disc, spark);
+  return svg;
+}
+
+/** The disclosure sentence as an element, the sigil standing at `{sigil}`. */
+export function aiDisclosure(language) {
+  const span = document.createElement("span");
+  span.className = "dyk-ai-note";
+  const [before, after = ""] = t("dyk.aiImages", language).split("{sigil}");
+  span.append(before, aiSigil(), after);
+  return span;
 }
 
 /* ---------------------------------------------------------------------------

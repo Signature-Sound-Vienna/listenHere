@@ -95,6 +95,35 @@
 * A stroke that already carries an anchor stays a marker. A gap cannot be laid while a tremolo runs on between the two onsets.
 * A moved onset's other alignment events at the same score position (notes that start together but end differently) now take its time. The realign ahead of a fix re-timed them from their old positions, so the marker moved but the synth still sounded that note late.
 
+### 0.90.1 -- The empty hook always puts the glass away
+* A tap on the empty hook removes the marker and rests the glass while the glass stands on a waveform, not only while it is in hand.
+* Testing: 38.22 a tap on the hook with the glass placed removes the marker.
+
+### 0.90.0 -- The Pizzicato-Polka on an HQ alignment, its annotations re-anchored
+* The Pizzicato-Polka's spine is an HQ audio-to-audio alignment on VPO-1989, without the Volksoper recording that played the piece twice. The other recordings no longer stall through about two minutes of it.
+* `tools/exhibit_annots_on_hq.py --piece pizzicato --reanchor` moves annotations onto a grid of another length: each region's index pair is voted from the authored per-recording seconds, and a recording whose old grid was flat at that point abstains. It reports every residual, and lists the text of targets dropped with a recording. Die Fledermaus's output is unchanged.
+* An endpoint the vote cannot settle can be placed by ear on one recording (`reanchor_fixed`), and every re-run keeps it.
+* The three Volksoper targets are dropped. Harnoncourt joins the ten. "The Coda Over Time" found no consensus, so its start is placed by ear, at 2:25.75 on VPO-1987.
+* The zero-length first region of "The poco rit. nobody plays" is deleted at source.
+* Harnoncourt's "Extra notes" starts one onset earlier, with a 70 ms lead-in so the attack is heard after a marker switch (0:39.30), hand-placed in `data/pizzicato-overrides.json`. The pair check ignores hand-placed times.
+* A marker placed with an annotation's Mark button lands on that annotation's own start on each recording it targets, hand-placed overrides included, when the reader switches recordings, as the jump button does. Elsewhere it follows the alignment as before.
+* Testing: 37.31 a Mark-placed marker lands on an injected override after a switch, follows the alignment on an untargeted recording, and stops following the override once the marker is placed by hand.
+
+### 0.89.0 -- "Did you know?" shows its first pictures: Jansons in the train polka, Karajan with Kathleen Battle
+* Mariss Jansons's and Herbert von Karajan's stories show AI-generated illustrations, in every register. Karajan's replaces the placeholder for the press photograph.
+* The AI mark is burned small into the corner of each picture, and its XMP carries IPTC `trainedAlgorithmicMedia`. While one is shown, the explorer's foot and the lightbox say "Images showing [mark] were generated using AI (Google Gemini)." The sidecar records model, style prompt, and date.
+* `tools/prep_exhibit_dyk.py` builds such illustrations from `assets/dyk-images/` (its `ILLUSTRATIONS` table: conductor, optional registers, caption, provenance) into `app/static/exhibit/dyk-images/` as 960 px WebP. The Nano Banana style fragment is in `content/dyk/image-style-prompt.md`.
+* A real picture grows with the room it has: full width above the text when the whole story still fits, otherwise beside it at up to half the pad. A tap shows it big over the reader's own half, the right way up for the far reader; a tap closes it.
+* The "more below" fade is measured again once a picture has loaded.
+* Testing: 46.16 an illustration shows in every register, loads, carries the disclosure on the foot and in the lightbox, and opens and closes big.
+
+### 0.88.0 -- The Pizzicato-Polka in the exhibit, provisionally; "Did you know?" for twenty conductors
+* `tools/prep_exhibit_data.py --piece pizzicato` builds the Pizzicato-Polka from Chanda's three annotation sets, which share one audio-to-audio alignment; the exhibit opens it with `?piece=pizzicato`. Provisional: the alignment's reference plays the piece twice, so the other recordings crawl through about two minutes of it, and the ten recordings are a proposal.
+* Zero-length regions and the hand-placement overrides file are per piece (`<piece>-overrides.json`; Die Fledermaus keeps `overrides.json`). Die Fledermaus's payload builds unchanged.
+* "Did you know?" tells twenty conductors, up from six, from Chanda's new export. Nézet-Séguin (2026) and Sokhiev (2027) are not shown yet: the concerts sidecar has no conductor after 2023. `tools/prep_exhibit_dyk.py` names such stories.
+* Testing: 46.13 compares the roster's marks with the stories whose conductor is on the roster.
+
+
 ### 0.86.0 -- Accented file names match however the browser spells them
 
 * Picked recordings match the alignment's keys after Unicode normalisation (NFC) on both sides. Firefox on macOS reports a picked "Järvi" decomposed (NFD) while the disk and the key hold it composed, so the Pizzicato set's Neeme Järvi recording could not be loaded, even when picked on its own.

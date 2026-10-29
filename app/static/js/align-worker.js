@@ -713,9 +713,10 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration,
       over that slice. The fine pass is NOT itself open-ended: it seeds only
       its origin cell and only when the band's first row starts at column 0
       (see _guided_band_dtw), so an open coarse band would leave every
-      accumulated cost at inf and backtrack a silent diagonal. Slicing keeps
-      j_lo[0] == 0 by construction and leaves that verified code alone.
-      Endpoint precision is therefore one coarse frame (0.1 s at hq).
+      accumulated cost at inf and backtrack a silent diagonal. Slicing alone
+      does NOT keep j_lo[0] == 0 (a row-0 horizontal run moves it), so the
+      band is forced to start there below. Endpoint precision is therefore
+      one coarse frame (0.1 s at hq).
 
     ref_chroma may be a SLICE of the reference (its usable span). ref_frame0
       is that slice's offset and ref_frames_total the full reference frame
@@ -805,6 +806,23 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration,
     for fi in range(1, N):
         if j_lo[fi] < j_lo[fi - 1]: j_lo[fi] = j_lo[fi - 1]
         if j_hi[fi] < j_hi[fi - 1]: j_hi[fi] = j_hi[fi - 1]
+
+    # CONNECTIVITY, the two ways this band used to sever the fine DP. Either
+    # leaves every cost after the break at inf, and the backtrack walks a
+    # straight diagonal while the span guard reports success: measured
+    # 2026-10-28 on 5.9 % of Radetzky and 6.7 % of Donau pairs, 0.7 % and
+    # 0.3 % after this fix (working-docs tools/reference-choice-2026-10-28).
+    # (a) The origin: _guided_band_dtw seeds (0, 0) only when j_lo[0] == 0.
+    #     Slicing does not guarantee it: a coarse path that runs along its
+    #     first row (target material before the reference starts, which the
+    #     music span let through) gives np.interp duplicated row-0 points, and
+    #     fj_centre[0] lands at the run's END.
+    # (b) A jump wider than the band (a long passage the reference lacks)
+    #     leaves adjacent rows disjoint. Bridging the floor to the previous
+    #     ceiling + 1 keeps every row reachable, as _fix_guided_warp does.
+    #     The min of two non-decreasing sequences, so j_lo stays monotonic.
+    j_lo[0] = 0
+    j_lo[1:] = np.minimum(j_lo[1:], j_hi[:-1] + 1)
 
     del wp_c, fj_centre, fi_pts, fj_pts
 

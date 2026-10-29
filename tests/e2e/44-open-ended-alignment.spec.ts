@@ -166,6 +166,32 @@ out['cornerStrict'] = bool(np.all(np.diff(mv[0]) > 0))
 side = np.array([[0, 0, 0, 1, 2], [0, 1, 2, 3, 4]])
 out['cornerSideUnchanged'] = monotonic_keep_start(side).tolist() == make_monotonic(side).tolist()
 
+# --- the fine band stays connected ---
+# Either break left every later cost at inf and the fine path a straight
+# diagonal, so each case changes tempo after it: a slope-1 diagonal is wrong.
+at = lambda res, sec: res['times'][int(round(sec / ANNOTATION_STEP))]
+dur = lambda ch: (ch.shape[1] - 1) / FEATURE_RATE
+r40 = tonal(400, 11)
+# (b) A 30 s passage the reference lacks, at reference 20 s, the rest 1.5x
+# slower; pinned. Reference 30 s -> 20 + 30 + 15 = 65 s.
+slow = r40[:, np.round(np.linspace(200, 399, 300)).astype(int)]
+ins = np.concatenate([r40[:, :200], tonal(300, 99), slow], axis=1)
+b = align_pair(r40, ins, dur(r40), dur(ins))
+out['insertAt10'] = round(at(b, 10), 2)
+out['insertAt30'] = round(at(b, 30), 2)
+# (a) The target holds the reference's opening chord for 10 s, then plays it
+# 1.25x slower; open ends. The coarse path runs along its first row, which
+# moved the band's first row off column 0. Reference 5 s -> 10 + 6.25 s,
+# 30 s -> 10 + 37.5 s.
+slower = r40[:, np.round(np.linspace(0, 399, 500)).astype(int)]
+held = np.concatenate([np.repeat(r40[:, :1], 100, axis=1), slower], axis=1)
+a = align_pair(r40, held, dur(r40), dur(held),
+               open_ends=True, target_span=detect_music_span(held))
+out['heldAt5'] = round(at(a, 5), 2)
+out['heldAt30'] = round(at(a, 30), 2)
+out['heldFrom'] = round(a['from'], 2)
+out['heldGuard'] = a['guard']
+
 print(json.dumps(out))
 `;
 
@@ -308,6 +334,23 @@ test.describe('44. open-ended alignment — the worker', () => {
     expect(o.cornerKept).toEqual([0, 0]);
     expect(o.cornerStrict).toBe(true);
     expect(o.cornerSideUnchanged).toBe(true);
+  });
+
+  test('44.24 a passage the reference lacks no longer severs the fine band', () => {
+    const o = worker();
+    // Severed, the fine path ran a slope-1 diagonal after the passage: 70 s.
+    expect(o.insertAt10).toBeCloseTo(10, 0);
+    expect(Math.abs(o.insertAt30 - 65)).toBeLessThan(0.5);
+  });
+
+  test('44.25 a coarse path along its first row no longer leaves the fine origin unseeded', () => {
+    const o = worker();
+    // Unseeded, every cost was inf: 24.6 s, 50.0 s, and from 18.4 s, with the
+    // span guard still reporting success (found on Donau, VPO-2010 <- 2001).
+    expect(o.heldGuard).toBe(true);
+    expect(Math.abs(o.heldAt5 - 16.25)).toBeLessThan(0.5);
+    expect(Math.abs(o.heldAt30 - 47.5)).toBeLessThan(0.5);
+    expect(o.heldFrom).toBeCloseTo(10, 0);
   });
 });
 

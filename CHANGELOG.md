@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.99.1 -- Alignment: the fine pass no longer collapses into a straight line
+
+* The fine pass of an audio-to-audio pair could lose its path and come out as a straight line while the span guard reported success: after a passage the reference lacks, and where an open start ran along the reference's first frame. Measured on 5.9 % of Radetzky and 6.7 % of Donau pairs, now 0.7 % and 0.3 %. Saved alignments change only when re-aligned.
+* Testing: 44.24, 44.25.
+
 ### 0.99.0 -- Fix mode: a tick dragged back bends the ticks behind it, and pushes them along
 
 * A tick dragged back toward the start is no longer stopped by the tick behind it.

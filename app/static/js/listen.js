@@ -2166,7 +2166,6 @@ async function prepareWaveform(filename, playPosition = 0, isPlaying = false) {
   // if not yet created, do so (guard against the async gap below re-entering):
   if (!(filename in wavesurfers) && !_preparing.has(filename)) {
     const waveform = createWaveformRow(filename);
-    // Fix-mode entry affordance (?fixMode only; the module decides which rows).
 
     // Row done. Whether its renderer gets built now or when the user scrolls to
     // it is the lazy-creation decision (roadmap item L).
@@ -3817,9 +3816,10 @@ async function setGrids(grids) {
   // once its session (and any offer of earlier work) exists.
   _startRecoverySession(grids);
   _loadGeneration++;
-  // Fix-mode prewarm (?fixMode only; no-op otherwise): invalidates the old
-  // piece's derived caches and, at load-idle, does the Verovio layout work so
-  // entering the correction screen is instant.
+  // Fix mode's per-load reset: invalidates the old piece's derived caches,
+  // resumes a saved correction record, and shows the entry; under ?fixMode it
+  // also does the Verovio layout work at load-idle (otherwise when the chooser
+  // opens) so entering the correction screen is instant.
   fixModePrewarm();
   // Now that the pane is populated and its spinner retired, report any group
   // overlap the load had to repair. Deliberately not awaited: the load IS

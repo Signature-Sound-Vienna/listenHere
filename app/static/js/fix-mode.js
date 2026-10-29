@@ -9,8 +9,9 @@
 // draws as a faint tick with a connector from its score position; ◀/▶ skip the
 // selection between onsets, and a score note-click selects its onset.
 //
-// Opt-in via the ?fixMode query parameter while experimental: without it, no
-// entry affordance exists and the app is byte-identical (the A/B policy).
+// Standard since 0.103.0: the entry shows for any alignment with a score. The
+// prewarm (the fix layout and the engine's runtime) runs when the chooser
+// opens; ?fixMode opts in to running it at load idle instead.
 //
 // Increment 2 built the SCREEN — inspection, selection, paging, and the
 // correction-engine bootstrap (ref-audio decode + the worker's fix_begin).
@@ -377,7 +378,6 @@ let _chooserEl = null;
  *  renders the score pane in both modes, so a score is required. */
 function _entryUsable() {
   return (
-    _fixModeParamPresent() &&
     !!scoreAlignment?.score_onset?.length &&
     !!scoreAlignment?.ref_onset?.length &&
     Array.isArray(alignmentGrids?.[getReferenceAudioIx()])
@@ -387,7 +387,7 @@ function _entryUsable() {
 /**
  * Show or hide the nav's "Correct alignment…" button for the loaded piece.
  * Called at the end of every completed load (fixModePrewarm). The button is
- * hidden in the template, so without ?fixMode nothing appears (the A/B rule).
+ * hidden in the template until a load shows it is usable.
  */
 export function installFixEntry() {
   const btn = document.getElementById("fix-chooser-open");
@@ -407,6 +407,13 @@ function _targetCandidates() {
 
 function _openChooser() {
   if (_fix || _chooserEl || !_entryUsable()) return;
+  // The prewarm starts here unless ?fixMode ran it at load: the seconds spent
+  // reading the chooser hide its layout and the engine's boot, and a visitor
+  // who never opens it pays nothing (the user's ruling, 2026-10-29).
+  if (!_derived) {
+    clearTimeout(_prewarmTimer);
+    _schedulePrewarm(0, 20);
+  }
   const overlay = document.createElement("div");
   overlay.className = "fix-chooser-overlay";
   overlay.addEventListener("click", (e) => {
@@ -969,7 +976,8 @@ function _teardownFixDom(f) {
  * layout stays RESIDENT between sessions (every remaining toolkit consumer —
  * renderToMIDI, timemap, getTimesForElement — is layout-independent), which
  * is what makes exit and re-entry cost milliseconds instead of a full
- * relayout each way. Without ?fixMode this module never touches the toolkit.
+ * relayout each way. Until the chooser opens (or ?fixMode prewarms at load),
+ * this module never touches the toolkit.
  */
 export function exitFixMode({ discardPending = false } = {}) {
   if (!_fix) return;
@@ -1067,11 +1075,9 @@ export function fixModePrewarm() {
     _pendingRealign.reject(new Error("piece replaced"));
     _pendingRealign = null;
   }
-  if (!_fixModeParamPresent()) return;
   // A previously saved correction record resumes: its anchors join the live
   // model so this session's edits EXTEND the durable record instead of
-  // clobbering it on the next save. (Without ?fixMode the record just rides
-  // through loadedAlignmentJSON untouched.)
+  // clobbering it on the next save.
   const record = loadedAlignmentJSON?.header?.corrections;
   if (record) {
     try {
@@ -1099,7 +1105,7 @@ export function fixModePrewarm() {
   }
   installFixEntry();
   clearTimeout(_prewarmTimer);
-  _schedulePrewarm(2000, 20);
+  if (_fixModeParamPresent()) _schedulePrewarm(2000, 20);
 }
 
 /**
@@ -3673,6 +3679,12 @@ function _redrawOverlays() {
   // spectrogram ramp, the three dichromacies included (violet on the light
   // themes, cyan on Dark and Nord).
   const anchorColor = style.getPropertyValue("--color-alignment-anchor").trim() || "#4e1ca8";
+  // The ACTIVE tick (selected, or being dragged) wears the score's selection
+  // orange, so one colour marks the selection in both panes (the user's
+  // request, 2026-10-29). Orange alone vanishes over the spectrogram's warm
+  // ramp, so it is drawn CASED — a dark outline under the orange core, the
+  // map-design device for a line that must read on any ground.
+  const selColor = style.getPropertyValue("--color-alignment-selected").trim() || "#ffa500";
 
   // Connectors rebuilt wholesale — a page has at most a few hundred onsets.
   const conn = f.els.conn;
@@ -3804,11 +3816,21 @@ function _redrawOverlays() {
         : findAnchor(_corrections, _anchorEventOf(g));
     // Tick: the vertical line on the strip — the loop's drag handle.
     if (x >= -1 && x <= w + 1) {
+      const active = selected || dragging;
       const col = anchor ? anchorColor : tickColor;
+      if (active) {
+        ctx.beginPath();
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = "#000";
+        ctx.globalAlpha = 0.7;
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, wb);
+        ctx.stroke();
+      }
       ctx.beginPath();
-      ctx.lineWidth = selected || anchor || multi || dragging ? 2 : 1;
-      ctx.strokeStyle = col;
-      ctx.globalAlpha = selected || dragging || multi ? 0.95 : anchor ? 0.8 : 0.35;
+      ctx.lineWidth = active ? 2.5 : anchor || multi ? 2 : 1;
+      ctx.strokeStyle = active ? selColor : col;
+      ctx.globalAlpha = active || multi ? 0.95 : anchor ? 0.8 : 0.35;
       ctx.moveTo(x, 0);
       ctx.lineTo(x, wb);
       ctx.stroke();
@@ -3817,7 +3839,7 @@ function _redrawOverlays() {
         // belongs to the playhead alone, and the two sat at the same height
         // in the same few pixels.
         ctx.globalAlpha = 0.95;
-        ctx.fillStyle = col;
+        ctx.fillStyle = selColor;
         ctx.fillRect(x - 5, 0, 10, 3);
       } else if (multi) {
         // The multi-selection's members wear the cap in outline.
@@ -7853,6 +7875,7 @@ export function fixTestState() {
     selEventIx: sel?.eventIxs[0] ?? null,
     selT,
     selTickX: Number.isFinite(selT) ? _timeToStripX(selT) : null,
+    lanesBottomY: f.els?.strip ? _lanesBottomY() : null,
     ticksOnPage: f.ticksOnPage ?? 0,
     connectorCount: f.els.conn?.childElementCount ?? 0,
     stripWindow: f.stripWindow || null,

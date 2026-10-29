@@ -2986,14 +2986,34 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
   });
 
   /** The RGBA the tick canvas holds at the selected tick, mid-height. */
-  const selTickPixel = async (page: Page) =>
-    page.evaluate(() => {
+  // The selected tick's pixel on its line (`at: 'line'`, a third of the way
+  // down) or at the centre of its base square (`at: 'glyph'`, where an anchor
+  // shows): the line wears the selection orange whatever the anchor state, so
+  // the anchor is read from the square.
+  const selTickPixel = async (page: Page, at: 'line' | 'glyph' = 'glyph') =>
+    page.evaluate(async (where) => {
+      // The ticks repaint on the next frame after a selection or an anchor.
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       const f = (window as any)._listenTest.fix;
       const c = document.querySelector('.fix-ticks') as HTMLCanvasElement;
       const x = Math.round(f.selTickX);
-      const d = c.getContext('2d')!.getImageData(x, Math.round(c.height / 3), 1, 1).data;
-      return [d[0], d[1], d[2], d[3]];
-    });
+      const ctx = c.getContext('2d')!;
+      if (where === 'glyph') {
+        // The square's left edge, 4–5 px left of the line: an approve anchor's
+        // square is open, so its centre shows the line, and the casing (2.5 px
+        // out from a fractional x) never reaches pixel x − 4. Nothing else is
+        // drawn there.
+        const d = ctx.getImageData(x - 5, Math.round(f.lanesBottomY - 5.5), 2, 1).data;
+        const best = d[7] > d[3] ? 1 : 0;
+        return [d[best * 4], d[best * 4 + 1], d[best * 4 + 2], d[best * 4 + 3]];
+      }
+      // The line's core is 2.5 px inside a dark casing at a fractional x: the
+      // reddest pixel within ±2 px is the core's.
+      const d = ctx.getImageData(x - 2, Math.round(c.height / 3), 5, 1).data;
+      let best = 0;
+      for (let k = 1; k < 5; k++) if (d[k * 4] > d[best * 4]) best = k;
+      return [d[best * 4], d[best * 4 + 1], d[best * 4 + 2], d[best * 4 + 3]];
+    }, at);
 
   test('43.56 Enter anchors the selected tick and Enter again unanchors it; Backspace and Delete unanchor too; the times stay, each is one undo step, and a gap endpoint is left to G', async ({
     page,
@@ -3005,14 +3025,18 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await page.click('#fix-replay-off');
     for (let k = 0; k < 3; k++) await page.click('.fix-onset-next');
     const sum0 = await refChecksum(page);
-    const brown = await selTickPixel(page);
-    expect(brown[0], 'an unanchored tick is drawn brown').toBeGreaterThan(brown[2]);
+    const line = await selTickPixel(page, 'line');
+    expect(line[0], 'the selected tick wears the selection orange').toBeGreaterThan(200);
+    expect(line[1]).toBeGreaterThan(120);
+    expect(line[2]).toBeLessThan(80);
+    const bare = await selTickPixel(page);
+    expect(bare[3], 'an unanchored tick has no square').toBeLessThan(40);
 
     await page.keyboard.press('Enter');
     let st = await fixState(page);
     expect(st.corrections.anchors).toHaveLength(1);
     const violet = await selTickPixel(page);
-    expect(violet[2], 'an anchored tick is drawn violet').toBeGreaterThan(violet[0]);
+    expect(violet[2], "an anchored tick's square is violet").toBeGreaterThan(violet[0]);
 
     await page.keyboard.press('Enter');
     st = await fixState(page);

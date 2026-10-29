@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.103.0 -- Fix mode is standard; the active tick stands out
+
+* "Correct alignment…" shows for every alignment with a score, without `?fixMode`. A saved correction record is resumed on every load.
+* The fix layout and the correction engine now warm up when the chooser opens. `?fixMode` still warms them at load, as before.
+* The selected or dragged tick is drawn in the score's selection orange inside a dark outline, so it reads over the spectrogram and on dark themes. An anchored tick keeps its coloured square.
+* Testing: 42.1 rewritten (the entry without `?fixMode`), 42.17 enters in one task for the cold path, 43.56 reads the anchor from its square, 4.9 toggles its row by a DOM click.
+
 ### 0.101.0 -- Fix mode: anchors are easier to see and remove; pages overlap
 
 * Anchored ticks are drawn in their own colour per theme (violet on light themes, cyan or lavender on dark ones), apart from free ticks and the tick being dragged. Chosen for distance from everything else on the strip under the three dichromacies (Machado, Oliveira & Fernandes 2009), at WCAG 2.1 SC 1.4.11's 3:1 or better.

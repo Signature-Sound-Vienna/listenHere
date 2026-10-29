@@ -217,17 +217,21 @@ const fixState = (page: Page) =>
   page.evaluate(() => (window as any)._listenTest.fix);
 
 test.describe('42: alignment-correction fix mode (increment 2)', () => {
-  test('42.1 without ?fixMode no entry affordance exists anywhere', async ({
+  test('42.1 without ?fixMode the entry still shows, nothing is prewarmed at load, and opening the chooser starts the prewarm', async ({
     page,
   }) => {
     await gotoFixMode(page, undefined, { fixMode: false });
-    // The score row arrives asynchronously; wait for it so the absence of an
-    // entry is meaningful rather than merely early.
     await page.waitForSelector(`.waveform[data-ix="${SYNTH_ROW}"]`);
     await page.waitForSelector(`.waveform[data-ix="${REF_ROW}"]`);
-    await expect(page.locator('#fix-chooser-open')).toBeHidden();
+    await expect(page.locator('#fix-chooser-open')).toBeVisible();
     expect(await page.locator('.wf-fix-btn').count()).toBe(0); // the per-row buttons are gone for good
     expect(await page.locator('.fix-chooser').count()).toBe(0);
+    // ?fixMode's load-idle prewarm fires at 2 s; past it, nothing was built.
+    await page.waitForTimeout(3500);
+    expect((await fixState(page)).prewarmReady, 'no prewarm before the chooser').toBe(false);
+    await page.click('#fix-chooser-open');
+    await page.waitForSelector('.fix-chooser');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.prewarmReady, null, { timeout: 15_000 });
   });
 
   test('42.2 with ?fixMode ONE nav button opens the chooser: step 1 is the score against the reference, step 2 lists every other recording — locked until step 1 is reviewed or skipped — and the per-row buttons are gone', async ({
@@ -614,9 +618,15 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
   }) => {
     await gotoFixMode(page);
     await installWorkerStub(page);
-    // Entering immediately beats the 2 s prewarm timer, so this is the slow
-    // path: guard + layout run at entry, behind the painted overlay.
-    await enterFix(page, REF_ROW);
+    // Entering immediately beats the 2 s load prewarm, and both clicks land in
+    // ONE task, before the prewarm the chooser schedules can run: the slow
+    // path, guard + layout at entry behind the painted overlay.
+    await page.evaluate(() => {
+      (document.getElementById('fix-chooser-open') as HTMLButtonElement).click();
+      (document.getElementById('fix-chooser-open-ref') as HTMLButtonElement).click();
+    });
+    await page.waitForFunction(() => (window as any)._listenTest.fix.active);
+    await page.waitForFunction(() => (window as any)._listenTest.fix.ticksOnPage > 0);
     const st = await fixState(page);
     expect(st.lastEntry.usedPrewarm).toBe(false);
     expect(st.lastEntry.spinnerShown).toBe(true);

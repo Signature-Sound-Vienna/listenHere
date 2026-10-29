@@ -213,7 +213,10 @@ test.describe('4. Synchronisation & Alignment Visualisation', () => {
 
     // Hide the lowest row: the one above it is now the lowest, and vertical.
     const lowest = rows[rows.length - 1].ix;
-    await page.locator(`[id="${lowest}"] input[type=checkbox]`).first().click({ force: true });
+    // A DOM click, not a pointer one: at 1280×720 the sidebar's waveform list
+    // can be squeezed out of view (since 0.103.0 "Correct alignment…" always
+    // shows), and this test is about the lines, not the list's room.
+    await page.locator(`[id="${lowest}"] input[type=checkbox]`).first().evaluate((el) => (el as HTMLInputElement).click());
     await page.waitForTimeout(800);
     rows = await read();
     expect(rows.map((r) => r.ix)).not.toContain(lowest);

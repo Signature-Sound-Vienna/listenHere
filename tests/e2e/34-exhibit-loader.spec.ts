@@ -698,10 +698,23 @@ test.describe('34. The exhibit loader', () => {
     expect(Math.abs(carried.time - carried.literal), 'the waveform tap was not taken literally').toBeGreaterThan(60);
 
     // A medallion: the same aligned carry, back to A.
+    // The select is NOT awaited across page.evaluate: B's player may still be
+    // loading from the tap above, and awaiting this second select's promise
+    // over the protocol failed ~1 run in 13 with "Execution context was
+    // destroyed … navigation" — no navigation, crash, or page error happened,
+    // and every later call succeeded (0 in 60 fired and polled like this,
+    // 2026-10-29). Settled in the page, then polled: the same guarantee.
     await page.evaluate(
-      ({ fileB }) => (window as any)._exhibitTest.transport.select(fileB, 100, /* play */ false),
+      ({ fileB }) => {
+        const w = window as any;
+        w.__selB = 'pending';
+        w._exhibitTest.transport
+          .select(fileB, 100, /* play */ false)
+          .then(() => (w.__selB = 'done'), (e: any) => (w.__selB = `failed: ${e}`));
+      },
       { fileB },
     );
+    await expect.poll(() => page.evaluate(() => (window as any).__selB)).toBe('done');
     const expectedA = await page.evaluate(
       ({ fileA, fileB }) => (window as any)._exhibitTest.positionsFor(100, fileB)[fileA],
       { fileA, fileB },

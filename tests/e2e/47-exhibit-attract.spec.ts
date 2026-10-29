@@ -73,6 +73,20 @@ async function taps(page: Page) {
   return page.evaluate(() => (window as any)._taps as { file: string; time: number }[]);
 }
 
+/**
+ * The visitor at `page` keeps touching — every 400 ms, well inside IDLE's
+ * 1.2 s window — until `done()` holds or ~10 s pass. Any wait on the OTHER
+ * screen while this one must stay live goes through here: a bare expect.poll
+ * lets the window run out under a loaded suite, and the screen is then
+ * rightly taken over or swept before the check (47.15, 47.25 failed so).
+ */
+async function touchUntil(page: Page, done: () => Promise<boolean>, tries = 25) {
+  for (let i = 0; i < tries && !(await done()); i++) {
+    await page.evaluate(() => (window as any)._exhibitTest.room.touch());
+    await page.waitForTimeout(400);
+  }
+}
+
 test.describe('47. The attract loop', () => {
   test.use({ viewport: { width: 1024, height: 1366 } });
 
@@ -578,7 +592,9 @@ test.describe('47. The attract loop', () => {
     expect(await bandUp(pageB)).toBe(true);
     expect((await attract(pageB)).started).toBe(false);
     expect((await attract(pageB)).peerAudible).toBe(true);
-    await expect.poll(() => pageB.evaluate(() => (window as any)._exhibitTest.transport.activeFile), { timeout: 10_000 }).toBe(order[1]);
+    const activeB = () => pageB.evaluate(() => (window as any)._exhibitTest.transport.activeFile as string);
+    await touchUntil(pageA, async () => (await activeB()) === order[1]);
+    expect(await activeB()).toBe(order[1]);
     expect((await attract(pageA)).phase, 'A is live').toBe('idle-wait');
     expect(await bandUp(pageA)).toBe(false);
     // A's visitor has been gone T: A's band rises and A is TAKEN OVER from its
@@ -1008,8 +1024,10 @@ test.describe('47. The attract loop', () => {
     expect((await attract(pageA)).phase, 'A is live').toBe('idle-wait');
     expect(await bandUp(pageA)).toBe(false);
     // B mirrors A with A's audience; A's table is untouched by B's sweep.
-    await expect.poll(() => pageB.evaluate(() => (window as any)._exhibitTest.transport.activeFile), { timeout: 10_000 }).toBe(order[1]);
-    await expect.poll(() => audienceOf(pageB), { timeout: 5_000 }).toBe('expert');
+    const activeB = () => pageB.evaluate(() => (window as any)._exhibitTest.transport.activeFile as string);
+    await touchUntil(pageA, async () => (await activeB()) === order[1] && (await audienceOf(pageB)) === 'expert');
+    expect(await activeB()).toBe(order[1]);
+    expect(await audienceOf(pageB)).toBe('expert');
     const s = await turnsOf(pageA);
     expect(s.holder, "A's holder survives B's sweep").toBe(0);
     expect(s.selected[0], "A's choice survives").toBe(order[1]);

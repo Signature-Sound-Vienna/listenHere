@@ -139,6 +139,8 @@
   /* alignment grid lines (base)  */
   --color-alignment-peak: #dc2828;
   /* alignment max-displacement   */
+  --color-alignment-anchor: #4e1ca8;
+  /* anchored ticks in fix mode   */
   --color-alignment-playhead: #6464c8;
   /* position indicator line      */
   --color-score-band: #4682e6;
@@ -235,6 +237,7 @@
   --color-outlier: #f07070;
   --color-alignment: #c07878;
   --color-alignment-peak: #ff4040;
+  --color-alignment-anchor: #7ef8fe;
   --color-alignment-playhead: #9090f8;
   --color-score-band: #6090f8;
   --color-group-bg: rgba(51, 65, 85, 0.60);
@@ -312,6 +315,7 @@
   --color-outlier: #cb4b16;
   --color-alignment: #cb4b16;
   --color-alignment-peak: #dc322f;
+  --color-alignment-anchor: #4e1ca8;
   --color-alignment-playhead: #6c71c4;
   --color-score-band: #268bd2;
   --color-group-bg: rgba(205, 201, 184, 0.40);
@@ -365,6 +369,7 @@
   --color-outlier: #8c5020;
   --color-alignment: #8c5a3a;
   --color-alignment-peak: #b04030;
+  --color-alignment-anchor: #4e1ca8;
   --color-alignment-playhead: #6060a0;
   --color-score-band: #5878b0;
   --color-group-bg: rgba(200, 185, 154, 0.35);
@@ -418,6 +423,7 @@
   --color-outlier: #c04020;
   --color-alignment: #a04828;
   --color-alignment-peak: #d03030;
+  --color-alignment-anchor: #4e1ca8;
   --color-alignment-playhead: #6050a0;
   --color-score-band: #4878c8;
   --color-group-bg: rgba(245, 196, 154, 0.35);
@@ -475,6 +481,7 @@
   --color-outlier: #ffb86c;
   --color-alignment: #ff79c6;
   --color-alignment-peak: #ff4444;
+  --color-alignment-anchor: #c9c2fc;
   --color-alignment-playhead: #bd93f9;
   --color-score-band: #8be9fd;
   --color-group-bg: rgba(68, 71, 90, 0.60);
@@ -543,6 +550,7 @@
   --color-outlier: #ffb878;
   --color-alignment: #e8b870;
   --color-alignment-peak: #ff8040;
+  --color-alignment-anchor: #b082f7;
   --color-alignment-playhead: #a0d8f8;
   --color-score-band: #80c8f8;
   --color-group-bg: rgba(46, 77, 34, 0.60);
@@ -611,6 +619,7 @@
   --color-outlier: #d08770;
   --color-alignment: #d08770;
   --color-alignment-peak: #bf616a;
+  --color-alignment-anchor: #7ef8fe;
   --color-alignment-playhead: #b48ead;
   --color-score-band: #88c0d0;
   --color-group-bg: rgba(67, 76, 94, 0.60);
@@ -2509,7 +2518,8 @@ nav input[type="checkbox"]:focus-visible {
 }
 
 /* Session recovery: the offer after a load, and the file picker's note. */
-#recovery-banner {
+#recovery-banner,
+#recovery-lost-additions {
   position: fixed;
   top: 12px;
   left: 50%;
@@ -2537,12 +2547,14 @@ nav input[type="checkbox"]:focus-visible {
 }
 
 #recovery-banner .recovery-title,
+#recovery-lost-additions .recovery-title,
 #file-picker-recovery .recovery-title {
   margin: 0 0 0.5em;
   font-weight: 600;
 }
 
 #recovery-banner .recovery-list,
+#recovery-lost-additions .recovery-list,
 #file-picker-recovery .recovery-list {
   list-style: none;
   margin: 0;
@@ -2565,6 +2577,7 @@ nav input[type="checkbox"]:focus-visible {
 }
 
 #recovery-banner button,
+#recovery-lost-additions button,
 #file-picker-recovery button {
   flex-shrink: 0;
   padding: 0.25em 0.8em;
@@ -2582,7 +2595,8 @@ nav input[type="checkbox"]:focus-visible {
   color: var(--color-warning-bg, #fffbeb);
 }
 
-#recovery-banner button.recovery-later {
+#recovery-banner button.recovery-later,
+#recovery-lost-additions button.recovery-later {
   display: block;
   margin: 0.5em 0 0 auto;
 }
@@ -2823,6 +2837,209 @@ nav input[type="checkbox"]:focus-visible {
 
 #file-picker-continue:hover {
   background: var(--color-link-hover);
+}
+
+/* Manage recordings → Add Recordings */
+#add-rec-actions {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 1em;
+}
+
+#add-rec-actions button {
+  padding: 0.6em 1.4em;
+  border: 1px solid var(--color-border, #cbd5e1);
+  border-radius: 8px;
+  background: var(--color-surface-alt, #f8fafc);
+  color: var(--color-text, #1e293b);
+  font-size: 0.95em;
+  cursor: pointer;
+}
+
+#add-rec-actions button:hover {
+  border-color: var(--color-border, #94a3b8);
+}
+
+.add-rec-warning {
+  margin: 0 auto 1em;
+  padding: 0.6em 0.8em;
+  max-width: 36em;
+  border: 1px solid var(--color-warning, #f59e0b);
+  border-radius: 6px;
+  background: var(--color-warning-bg, #fffbeb);
+  color: var(--color-warning-text, #92400e);
+  font-size: 0.85em;
+  text-align: left;
+}
+
+#add-rec-table {
+  width: 100%;
+  max-width: 36em;
+  margin: 0 auto 1em;
+  border-collapse: collapse;
+  font-size: 0.9em;
+}
+
+#add-rec-table th {
+  padding: 0.3em 0.5em;
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+  color: var(--color-text-muted, #64748b);
+  font-weight: 600;
+}
+
+#add-rec-table th:first-child,
+#add-rec-table td:first-child {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+#add-rec-table td {
+  padding: 0.3em 0.5em;
+  border-bottom: 1px solid var(--color-border, #e2e8f0);
+}
+
+#add-rec-table td:nth-child(2),
+#add-rec-table td:nth-child(3) {
+  width: 5em;
+  text-align: center;
+}
+
+.add-rec-refused .add-rec-name {
+  color: var(--color-text-subtle, #94a3b8);
+  text-decoration: line-through;
+}
+
+.add-rec-refusal {
+  color: var(--color-danger, #dc2626);
+}
+
+.add-rec-remove {
+  border: none;
+  background: none;
+  color: var(--color-text-muted, #64748b);
+  font-size: 1.1em;
+  cursor: pointer;
+}
+
+#add-rec-params {
+  max-width: 36em;
+  margin: 0 auto 1em;
+  font-size: 0.88em;
+  text-align: left;
+}
+
+#add-rec-params summary {
+  cursor: pointer;
+  color: var(--color-text-muted, #64748b);
+  font-weight: 600;
+}
+
+#add-rec-params-note {
+  margin: 0.5em 0;
+  color: var(--color-text-muted, #64748b);
+  line-height: 1.45;
+}
+
+#add-rec-params-restore {
+  margin: 0.5em 0 0.2em;
+  padding: 0.3em 0.8em;
+  border: 1px solid var(--color-link, #2563eb);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-link, #2563eb);
+  font-size: 1em;
+  cursor: pointer;
+}
+
+#add-rec-params-restore[hidden],
+#add-rec-save-row[hidden] {
+  display: none;
+}
+
+#add-rec-presets,
+#add-rec-param-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4em 1.2em;
+  margin: 0.4em 0;
+}
+
+#add-rec-param-fields label {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+}
+
+/* Locked after an addition, until more files are chosen. */
+#add-rec-params label:has(:disabled) {
+  opacity: 0.55;
+}
+
+#add-rec-slack {
+  width: 5em;
+}
+
+#add-rec-run-row,
+#add-rec-save-row {
+  display: flex;
+  justify-content: center;
+}
+
+#add-rec-save-row {
+  margin-top: 0.8em;
+}
+
+#add-rec-start,
+#add-rec-save {
+  padding: 0.6em 1.6em;
+  border: none;
+  border-radius: 8px;
+  background: var(--color-link, #2563eb);
+  color: var(--color-surface, #fff);
+  font-size: 0.95em;
+  cursor: pointer;
+}
+
+#add-rec-start:hover:not(:disabled),
+#add-rec-save:hover {
+  background: var(--color-link-hover, #1e40af);
+}
+
+#add-rec-start:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+#add-rec-progress {
+  max-width: 36em;
+  width: 100%;
+  margin: 1em auto 0;
+}
+
+#add-rec-progress-bar-container {
+  height: 8px;
+  border-radius: 6px;
+  background: var(--color-surface-alt, #e2e8f0);
+  overflow: hidden;
+}
+
+#add-rec-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--color-link, #2563eb), #7c3aed);
+  transition: width 0.3s ease;
+}
+
+#add-rec-progress-text,
+#add-rec-result {
+  margin: 0.6em auto 0;
+  max-width: 36em;
+  font-size: 0.88em;
+  color: var(--color-text-muted, #64748b);
+}
+
+#add-rec-result:not(:empty) {
+  color: var(--color-success, #16a34a);
 }
 
 /* Legacy sidebar button styles removed to allow olive theme overrides */
@@ -3735,18 +3952,6 @@ body.marker-dragging * {
   display: block;
 }
 
-/* Output settings checkbox */
-#align-output-settings-row {
-  margin: 0.6em 0 1em;
-  font-size: 0.82em;
-  color: var(--color-text-muted, #64748b);
-  text-align: left;
-}
-
-#align-output-settings-row label {
-  cursor: pointer;
-}
-
 /* Progress */
 #align-progress-bar-container {
   width: 100%;
@@ -3843,6 +4048,24 @@ body.marker-dragging * {
 #align-progress-text:empty {
   min-height: 0;
   margin: 0;
+}
+
+/* The automatic reference: an option beside the Ref column, and the report */
+#align-ref-auto-row {
+  margin: 0.7em 0 0.2em;
+  text-align: left;
+}
+
+#align-ref-auto-hint {
+  font-size: 0.78em;
+  color: var(--color-text-subtle, #94a3b8);
+  margin: 0.2em 0 0 1.6em;
+}
+
+#align-ref-choice-report {
+  margin: 0 0 0.6em;
+  font-size: 0.85em;
+  color: var(--color-text-muted, #64748b);
 }
 
 /* Open-ended alignment: the global toggle, the per-row override, the report */
@@ -7193,8 +7416,9 @@ body.fix-mode-open #region-waveforms {
   flex: 1 1 0;
   min-width: 0;
 }
-/* The re-alignment reach: a label and its select sharing one row. */
-.fix-horizon-row select {
+/* The re-alignment reach and the bend: a label and its select sharing one row. */
+.fix-horizon-row select,
+.fix-bend-row select {
   flex: 1 1 auto;
   min-width: 0;
 }

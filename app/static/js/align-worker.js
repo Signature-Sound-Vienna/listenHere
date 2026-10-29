@@ -130,6 +130,13 @@ MIN_SPAN_RATIO    = 0.6    # aligned target span / reference span, lower bound
 MAX_SPAN_RATIO    = 1.667  # ... and upper bound; outside either = degenerate
 SPAN_REPORT_EPS   = 0.25   # seconds; below this a trim is not worth reporting
 
+# Automatic reference choice (choose_reference). The rate is the caller's, so a
+# later preset can set it; the rest are the measured method's constants.
+REF_CHOICE_RATE_HZ  = 1.0  # pooled chroma rate the candidates are compared at
+REF_CHOICE_ERR_SEC  = 2.0  # composed and direct maps disagree by more = wrong
+REF_CHOICE_LEAP     = 2.5  # pooled frames per step; a faster step = a leap, wrong
+REF_CHOICE_GUARD_SHARE = 0.1  # drop a candidate more targets than this would fail
+
 
 def _apply_options():
     """Override module constants from JS _opt_* globals (if set)."""
@@ -589,6 +596,24 @@ def make_monotonic(wp):
     return wp[:, keep]
 
 
+def monotonic_keep_start(wp):
+    """make_monotonic, keeping the path's starting corner.
+
+    make_monotonic keeps the LAST point of each target column, so a path
+    opening with a vertical run (the reference advancing while the target
+    holds its first frame) loses its first point. The grid between the
+    reference span's start and the first kept point was then extrapolated
+    backwards, past the aligned span's start: up to 0.21 s (32 entries) on the
+    Fledermaus corpus. Putting the corner back keeps the reference rows
+    strictly increasing and maps that run to the span's first frame. The end
+    corner needs no help: it is the last point of its row and its column.
+    """
+    m = make_monotonic(wp)
+    if m[0, 0] > wp[0, 0]:
+        m = np.concatenate([wp[:, :1], m], axis=1)
+    return m
+
+
 def chroma_peakiness(chroma):
     """Per-frame max/mean over the 12 pitch classes.
 
@@ -695,9 +720,10 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration,
       over that slice. The fine pass is NOT itself open-ended: it seeds only
       its origin cell and only when the band's first row starts at column 0
       (see _guided_band_dtw), so an open coarse band would leave every
-      accumulated cost at inf and backtrack a silent diagonal. Slicing keeps
-      j_lo[0] == 0 by construction and leaves that verified code alone.
-      Endpoint precision is therefore one coarse frame (0.1 s at hq).
+      accumulated cost at inf and backtrack a silent diagonal. Slicing alone
+      does NOT keep j_lo[0] == 0 (a row-0 horizontal run moves it), so the
+      band is forced to start there below. Endpoint precision is therefore
+      one coarse frame (0.1 s at hq).
 
     ref_chroma may be a SLICE of the reference (its usable span). ref_frame0
       is that slice's offset and ref_frames_total the full reference frame
@@ -788,11 +814,27 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration,
         if j_lo[fi] < j_lo[fi - 1]: j_lo[fi] = j_lo[fi - 1]
         if j_hi[fi] < j_hi[fi - 1]: j_hi[fi] = j_hi[fi - 1]
 
+    # CONNECTIVITY, the two ways this band used to sever the fine DP. Either
+    # leaves every cost after the break at inf, and the backtrack walks a
+    # straight diagonal while the span guard reports success: measured
+    # 2026-10-28 on 5.9 % of Radetzky and 6.7 % of Donau pairs, 0.7 % and
+    # 0.3 % after this fix (working-docs tools/reference-choice-2026-10-28).
+    # (a) The origin: _guided_band_dtw seeds (0, 0) only when j_lo[0] == 0.
+    #     Slicing does not guarantee it: a coarse path that runs along its
+    #     first row (target material before the reference starts, which the
+    #     music span let through) gives np.interp duplicated row-0 points, and
+    #     fj_centre[0] lands at the run's END.
+    # (b) A jump wider than the band (a long passage the reference lacks)
+    #     leaves adjacent rows disjoint. Bridging the floor to the previous
+    #     ceiling + 1 keeps every row reachable, as _fix_guided_warp does.
+    #     The min of two non-decreasing sequences, so j_lo stays monotonic.
+    j_lo[0] = 0
+    j_lo[1:] = np.minimum(j_lo[1:], j_hi[:-1] + 1)
+
     del wp_c, fj_centre, fi_pts, fj_pts
 
     # ── Level 2: guided band streaming DTW ───────────────────────────────
-    wp = _guided_band_dtw(ref_chroma, other_slice, j_lo, j_hi)
-    wp = make_monotonic(wp)
+    wp = monotonic_keep_start(_guided_band_dtw(ref_chroma, other_slice, j_lo, j_hi))
     del other_slice
 
     # ── Convert frame indices → times → transfer annotation grid ─────────
@@ -801,8 +843,8 @@ def align_pair(ref_chroma, other_chroma, ref_duration, other_duration,
 
     ref_grid   = np.arange(0, ref_duration, ANNOTATION_STEP)
     transferred = interp_linear_extrap(ref_times, other_times, ref_grid)
-    # Outside the warping path the grid is extrapolated, and make_monotonic
-    # can drop a leading vertical run, which used to push the first entries
+    # Outside the warping path the grid is extrapolated, and before the corner
+    # was restored a dropped leading vertical run pushed the first entries
     # below zero (four files in the Fledermaus corpus, -0.04 to -0.55 s). A
     # playhead cannot sit before the file starts or after it ends.
     np.clip(transferred, 0.0, other_duration, out=transferred)
@@ -847,6 +889,7 @@ _feature_total = 0
 _batch_open_ends = False     # global "ignore audio with no counterpart"
 _batch_open_by_file = {}     # per-file overrides; missing = follow the global
 _ref_span = None             # (from_sec, to_sec) of the reference's usable span
+_ref_choice = None           # how the reference was chosen, for the header
 
 
 def _open_ends_for(name):
@@ -858,16 +901,20 @@ def _open_ends_for(name):
 
 def begin_batch(ref_name, peak_count, score_mode, feature_total,
                 open_ends=False, open_by_file=None):
-    """Reset per-batch state at the start of a new alignment run."""
+    """Reset per-batch state at the start of a new alignment run.
+
+    An empty ref_name leaves the reference to choose_reference, after the
+    features are in."""
     global _chromas, _durations, _peaks_data, _ref_audio_copy
     global _batch_ref_name, _batch_peak_count, _batch_score_mode
     global _feature_count, _feature_total
-    global _batch_open_ends, _batch_open_by_file, _ref_span
+    global _batch_open_ends, _batch_open_by_file, _ref_span, _ref_choice
     _chromas = {}
     _durations = {}
     _peaks_data = {}
     _ref_audio_copy = None
     _batch_ref_name = str(ref_name)
+    _ref_choice = {"mode": "manual"} if _batch_ref_name else None
     _batch_peak_count = int(peak_count)
     _batch_score_mode = bool(score_mode)
     _feature_count = 0
@@ -901,6 +948,276 @@ def extract_feature(name, audio, is_ref):
     elapsed = _time.time() - t0
     reportStep("features", "done", name, _feature_count, _feature_total, elapsed)
     return elapsed
+
+
+def _align_to_ref(name, ref_slice, ref_f0, ref_frames_total, ref_duration,
+                  pair_count, total_pairs):
+    """Align one recording to the reference's usable span.
+
+    Returns (times, aligned, held): the transferred grid, the (from, to) span
+    the recording was aligned over or None, and False only when an open-ended
+    pair's span guard failed and it fell back to a pinned one.
+    """
+    reportStep("align", "start", name, pair_count, total_pairs, None)
+    reportProgress(
+        f"Aligning: {name} ({pair_count}/{total_pairs})",
+        int(30 + 65 * pair_count / total_pairs)
+    )
+    t0 = _time.time()
+    open_ends = _open_ends_for(name)
+    # What the DTW is ALLOWED to skip in this recording. Without this
+    # bound a free end trims a clean recording too (see _dtw_f32).
+    target_span = (
+        detect_music_span(_chromas[name]) if open_ends else None
+    )
+    pair = align_pair(
+        ref_slice, _chromas[name],
+        ref_duration, _durations[name],
+        open_ends=open_ends,
+        ref_frame0=ref_f0,
+        ref_frames_total=ref_frames_total,
+        target_span=target_span,
+    )
+    # Only an open-ended pair whose guard held makes a claim about
+    # where the counterpart begins and ends; a pinned pair covers the
+    # whole file by construction, and a guard failure fell back to one.
+    aligned = (pair["from"], pair["to"]) if open_ends and pair["guard"] else None
+    elapsed = _time.time() - t0
+    reportStep("align", "done", name, pair_count, total_pairs, elapsed)
+    return pair["times"], aligned, not (open_ends and not pair["guard"])
+
+
+def _audio_entry(name, times, aligned):
+    """One body.audio entry: a bare grid, or an object when it carries more."""
+    if not _peaks_data and aligned is None:
+        return times
+    entry = {"times": times, "duration": round(_durations[name], 6)}
+    if _peaks_data:
+        entry["peaks"] = _peaks_data[name]
+    if aligned is not None:
+        entry["alignedFrom"] = round(max(0.0, aligned[0]), 6)
+        entry["alignedTo"]   = round(min(_durations[name], aligned[1]), 6)
+    return entry
+
+
+def _is_trimmed(name, entry):
+    """Is there really material with no counterpart? A span covering the
+    whole file is not worth reporting."""
+    return (entry["alignedFrom"] > SPAN_REPORT_EPS
+            or (_durations[name] - entry["alignedTo"]) > SPAN_REPORT_EPS)
+
+
+def _dtw_f32_rows(C, open_ends=False, entry_max=None, exit_min=None):
+    """_dtw_f32 with each row vectorised: same recursion, initialisation and
+    backtrack. D[i, j] = min(tmp[j], D[i, j-1] + C[i, j]) unrolls to
+    S[j] + min over k <= j of (tmp[k] - S[k]), S the row's cumulative cost, so
+    one np.minimum.accumulate replaces the inner loop (the prefix-min trick
+    _guided_band_dtw uses). Rounding differs (float64 scan, float32 store), so
+    an exact tie may break the other way; on 9 Radetzky and Donau pairs the
+    grids were identical. 15-20x faster, which choose_reference's N(N - 1)
+    DTWs need."""
+    N, M = C.shape
+    C = C.astype(np.float32, copy=False)
+    D = np.full((N, M), np.inf, dtype=np.float32)
+    emax = 0
+    if open_ends:
+        emax = M - 1 if entry_max is None else max(0, min(M - 1, int(entry_max)))
+        D[0, :emax + 1] = C[0, :emax + 1]
+        if emax + 1 < M:
+            D[0, emax + 1:] = (np.float64(D[0, emax])
+                               + np.cumsum(C[0, emax + 1:], dtype=np.float64)).astype(np.float32)
+    else:
+        D[0] = np.cumsum(C[0], dtype=np.float64).astype(np.float32)
+    D[1:, 0] = (D[0, 0] + np.cumsum(C[1:, 0], dtype=np.float64)).astype(np.float32)
+    S = np.zeros(M, dtype=np.float64)
+    for i in range(1, N):
+        prev = D[i - 1].astype(np.float64)
+        row = C[i].astype(np.float64)
+        tmp = np.empty(M, dtype=np.float64)
+        tmp[0] = D[i, 0]
+        tmp[1:] = row[1:] + np.minimum(prev[:-1], prev[1:])
+        S[1:] = np.cumsum(row[1:])
+        D[i] = (S + np.minimum.accumulate(tmp - S)).astype(np.float32)
+    if open_ends:
+        xmin = 0 if exit_min is None else max(0, min(M - 1, int(exit_min)))
+        i, j = N - 1, xmin + int(np.argmin(D[N - 1, xmin:]))
+    else:
+        i, j = N - 1, M - 1
+    pi, pj = [i], [j]
+    stop_j = 0 if not open_ends else emax
+    while i > 0 or j > stop_j:
+        if i == 0: j -= 1
+        elif j == 0: i -= 1
+        else:
+            d, v, h = float(D[i-1, j-1]), float(D[i-1, j]), float(D[i, j-1])
+            if d <= v and d <= h: i -= 1; j -= 1
+            elif v <= h: i -= 1
+            else: j -= 1
+        pi.append(i); pj.append(j)
+    pi.reverse(); pj.reverse()
+    return np.array([pi, pj])
+
+
+def _cycle_error(fa, fb, d, a0):
+    """One triple's disagreement: A -> R -> B (fa, fb: R's rows to A's and
+    B's pooled frames) against the direct A -> B (d: A's span rows, from pooled
+    frame a0, to B's frames). The share of arc length off by more than the
+    threshold or in a leap, plus the A material the composition never reaches."""
+    rows_a = fa - a0
+    inside = (rows_a >= 0) & (rows_a <= len(d) - 1)
+    if inside.sum() < 3:
+        return None
+    xa, xb = fa[inside], fb[inside]
+    err = xb - np.interp(rows_a[inside], np.arange(len(d)), d)
+    w = np.abs(np.diff(xa)) + np.abs(np.diff(xb))
+    e = np.maximum(np.abs(err[:-1]), np.abs(err[1:]))
+    thr = max(1.0, REF_CHOICE_ERR_SEC * _ref_choice_rate)
+    bad = (e > thr) | (np.diff(xa) > REF_CHOICE_LEAP) | (np.diff(xb) > REF_CHOICE_LEAP)
+    lost = 2 * (max(0.0, rows_a[inside][0]) + max(0.0, len(d) - 1 - rows_a[inside][-1]))
+    tot = w.sum() + lost
+    return (w[bad].sum() + lost) / tot if tot > 0 else 0.0
+
+
+_ref_choice_rate = REF_CHOICE_RATE_HZ
+
+
+def choose_reference(rate_hz=None):
+    """Pick the reference the other recordings agree on best, from the chroma
+    already extracted, and make it this batch's reference.
+
+    Cycle consistency: aligning A to B through a good reference R should land
+    where aligning A to B directly does. For every candidate R, the mean over
+    pairs A, B of how far A -> R -> B strays from A -> B: Prätzlich & Müller's
+    triple error (ICASSP 2016, pp. 266-270), used by Zalkow et al. (AES
+    Semantic Audio 2017) to judge alignment through an intermediate version;
+    here it ranks the intermediate. All maps come from one open-ended coarse DTW
+    per ordered pair on chroma pooled to rate_hz, with the wizard's open-ends
+    semantics (R's music span as rows, the target's entry and exit bounded by
+    its music span). A candidate on which more than REF_CHOICE_GUARD_SHARE of
+    the targets would fail the span guard is ranked after every other.
+
+    Measured 2026-10-28 against every-file-as-reference sweeps of seven corpora
+    (working-docs tools/reference-choice-2026-10-28): at 1 Hz it picked the
+    best of 57 Radetzky, 19 Pizzicato, and 16 Eljen references, and its worst
+    pick anywhere scored 0.004 above the best; the longest file, the old
+    default, ranked last on Radetzky and Pizzicato.
+
+    Fewer than three recordings have no triple: the longest file is kept.
+    Returns {mode, method, ref, rateHz?, scores?, excluded?} for the header.
+    """
+    global _batch_ref_name, _ref_choice, _ref_choice_rate
+    names = list(_chromas.keys())
+    n = len(names)
+    rate = float(rate_hz) if rate_hz else REF_CHOICE_RATE_HZ
+    _ref_choice_rate = rate
+    if n < 3:
+        ref = max(names, key=lambda k: _durations[k])
+        _batch_ref_name = ref
+        _ref_choice = {"mode": "automatic", "method": "longest", "ref": ref}
+        return _ref_choice
+
+    t0 = _time.time()
+    reportStep("reference", "start", "Choose reference", None, None, None)
+    P = max(1, int(round(FEATURE_RATE / rate)))
+    F = {}
+    for k in names:
+        ch = _chromas[k]
+        f0, f1 = detect_music_span(ch) if _open_ends_for(k) else (0, ch.shape[1] - 1)
+        F[k] = {"f0": f0 // P, "f1": f1 // P,
+                "ref": _pool_features(ch[:, f0:f1 + 1], P),
+                "tgt": _pool_features(ch, P)}
+
+    # Every ordered pair: R's span rows -> the target's pooled frames, and
+    # whether the path would pass the span guard.
+    maps, held = {}, {}
+    for ri, R in enumerate(names, start=1):
+        reportProgress(f"Choosing a reference: comparing {R} ({ri}/{n})")
+        rc = F[R]["ref"]
+        for T in names:
+            if T == R:
+                continue
+            oc = F[T]["tgt"]
+            C = (1.0 - rc.T @ oc).clip(0, 2).astype(np.float32)
+            if _open_ends_for(T):
+                wp = _dtw_f32_rows(C, open_ends=True, entry_max=F[T]["f0"],
+                                   exit_min=min(oc.shape[1] - 1, F[T]["f1"]))
+            else:
+                wp = _dtw_f32_rows(C)
+            jmax = np.zeros(rc.shape[1], dtype=np.int64)
+            np.maximum.at(jmax, wp[0], wp[1])
+            ratio = max(1, int(jmax[-1] - wp[1][0])) / max(1, rc.shape[1] - 1)
+            maps[(R, T)] = jmax.astype(np.float64)
+            held[(R, T)] = MIN_SPAN_RATIO <= ratio <= MAX_SPAN_RATIO
+
+    scores, excluded = {}, []
+    for R in names:
+        vals = []
+        for i, A in enumerate(names):
+            if A == R:
+                continue
+            for B in names[i + 1:]:
+                if B == R or not held[(A, B)]:
+                    continue
+                v = _cycle_error(maps[(R, A)], maps[(R, B)], maps[(A, B)], F[A]["f0"])
+                if v is not None:
+                    vals.append(v)
+        scores[R] = float(np.mean(vals)) if vals else 1.0
+        if np.mean([not held[(R, T)] for T in names if T != R]) > REF_CHOICE_GUARD_SHARE:
+            excluded.append(R)
+    ref = min(names, key=lambda k: (k in excluded, scores[k]))
+    _batch_ref_name = ref
+    _ref_choice = {
+        "mode": "automatic", "method": "cycle", "ref": ref, "rateHz": rate,
+        "scores": {k: round(v, 4) for k, v in scores.items()},
+        "excluded": excluded,
+    }
+    reportStep("reference", "done", "Choose reference", None, None, _time.time() - t0)
+    return _ref_choice
+
+
+def align_added_from_features(ref_span):
+    """Align recordings added to an existing alignment, reference unchanged.
+
+    Every recording in an alignment is aligned to the reference alone, so an
+    addition is just more pairs: the other grids, the score alignment and
+    anything anchored to reference time stand as they are. ref_span is the
+    reference's usable span as the original run decided it, (from, to) in
+    seconds, or None for the whole file; it is pinned, not re-detected, so
+    the new pairs share the span the old ones were aligned over.
+
+    Returns {"audio": {name: entry}, "trimmed": [...], "guardFailed": [...]}
+    for the added recordings only.
+    """
+    import gc
+    ref_name = _batch_ref_name
+    if ref_name not in _chromas:
+        raise RuntimeError(f"Reference '{ref_name}' missing from extracted features")
+    ref_duration = _durations[ref_name]
+    ref_full = _chromas[ref_name]
+    ref_frames_total = ref_full.shape[1]
+    ref_scale = ref_duration / max(ref_frames_total - 1, 1)
+    ref_f0, ref_f1 = 0, ref_frames_total - 1
+    if ref_span is not None:
+        ref_f0 = max(0, min(ref_f1, int(round(float(ref_span[0]) / ref_scale))))
+        ref_f1 = max(ref_f0, min(ref_f1, int(round(float(ref_span[1]) / ref_scale))))
+    ref_slice = ref_full[:, ref_f0:ref_f1 + 1]
+
+    added = [n for n in _chromas.keys() if n != ref_name]
+    audio, trimmed, guard_failed = {}, [], []
+    for i, name in enumerate(added, start=1):
+        times, aligned, held = _align_to_ref(
+            name, ref_slice, ref_f0, ref_frames_total, ref_duration,
+            i, len(added),
+        )
+        if not held:
+            guard_failed.append(name)
+        audio[name] = _audio_entry(name, times, aligned)
+        if aligned is not None and _is_trimmed(name, audio[name]):
+            trimmed.append(name)
+        del _chromas[name]
+        gc.collect()
+    reportProgress("Done!", 100)
+    return {"audio": audio, "trimmed": trimmed, "guardFailed": guard_failed}
 
 
 def align_all_from_features():
@@ -948,52 +1265,15 @@ def align_all_from_features():
                 aligned = (ref_span_from, ref_span_to)
         else:
             pair_count += 1
-            reportStep("align", "start", name, pair_count, total_pairs, None)
-            reportProgress(
-                f"Aligning: {name} ({pair_count}/{total_pairs})",
-                int(30 + 65 * pair_count / total_pairs)
+            times, aligned, held = _align_to_ref(
+                name, ref_slice, ref_f0, ref_frames_total, ref_duration,
+                pair_count, total_pairs,
             )
-            t0 = _time.time()
-            open_ends = _open_ends_for(name)
-            # What the DTW is ALLOWED to skip in this recording. Without this
-            # bound a free end trims a clean recording too (see _dtw_f32).
-            target_span = (
-                detect_music_span(_chromas[name]) if open_ends else None
-            )
-            pair = align_pair(
-                ref_slice, _chromas[name],
-                ref_duration, _durations[name],
-                open_ends=open_ends,
-                ref_frame0=ref_f0,
-                ref_frames_total=ref_frames_total,
-                target_span=target_span,
-            )
-            times = pair["times"]
-            # Only an open-ended pair whose guard held makes a claim about
-            # where the counterpart begins and ends; a pinned pair covers the
-            # whole file by construction, and a guard failure fell back to one.
-            if open_ends and pair["guard"]:
-                aligned = (pair["from"], pair["to"])
-            if open_ends and not pair["guard"]:
+            if not held:
                 guard_failed.append(name)
-            elapsed = _time.time() - t0
-            reportStep("align", "done", name, pair_count, total_pairs, elapsed)
-        if _peaks_data or aligned is not None:
-            entry = {"times": times, "duration": round(_durations[name], 6)}
-            if _peaks_data:
-                entry["peaks"] = _peaks_data[name]
-            result[name] = entry
-        else:
-            result[name] = times
-        if aligned is not None:
-            a_from = round(max(0.0, aligned[0]), 6)
-            a_to   = round(min(_durations[name], aligned[1]), 6)
-            result[name]["alignedFrom"] = a_from
-            result[name]["alignedTo"]   = a_to
-            # "Trimmed" means there is really material with no counterpart —
-            # a span covering the whole file is not worth reporting.
-            if a_from > SPAN_REPORT_EPS or (_durations[name] - a_to) > SPAN_REPORT_EPS:
-                trimmed_files.append(name)
+        result[name] = _audio_entry(name, times, aligned)
+        if aligned is not None and _is_trimmed(name, result[name]):
+            trimmed_files.append(name)
         # Free the non-ref chroma as soon as it's been consumed.
         if name != ref_name:
             del _chromas[name]
@@ -1001,9 +1281,15 @@ def align_all_from_features():
 
     reportProgress("Done!", 100)
     header = {"ref": ref_name}
+    if _ref_choice is not None:
+        header["referenceChoice"] = {k: v for k, v in _ref_choice.items() if k != "ref"}
     if _batch_open_ends or _batch_open_by_file:
         header["openEnds"] = {
             "enabled": bool(_batch_open_ends),
+            # What each recording actually ran with, the per-file overrides
+            # resolved: without it a later reader has to infer the setting
+            # from alignedFrom/To and guardFailed.
+            "byFile": {name: _open_ends_for(name) for name in filenames},
             "trimmed": trimmed_files,
             "guardFailed": guard_failed,
         }
@@ -1766,6 +2052,13 @@ async function initPyodide() {
  *   main → worker: "feature" { name, samples, isRef }   (samples transferred)
  *   worker → main: "feature_done" { name }
  *
+ *   (an automatic reference: begin_batch had refName "")
+ *   main → worker: "choose_reference" { rateHz }
+ *   worker → main: "reference_chosen" { choice }   (choice.ref is the reference)
+ *   (and in score mode)
+ *   main → worker: "ref_audio" { samples }   (samples transferred)
+ *   worker → main: "ref_audio_done"
+ *
  *   main → worker: "align_all" { meiMidi, meiUri }
  *   worker → main: "result" { alignment }
  *
@@ -1865,6 +2158,32 @@ gc.collect()
       return;
     }
 
+    if (e.data.type === "choose_reference") {
+      // An automatic reference: chosen from the extracted features, before
+      // align_all. The batch's reference becomes the choice.
+      const pyodide = await pyodideReady;
+      pyodide.globals.set("_ref_choice_rate_arg", e.data.rateHz || 0);
+      const choiceJson = await pyodide.runPythonAsync(`
+import json
+json.dumps(choose_reference(float(_ref_choice_rate_arg) or None))
+`);
+      self.postMessage({ type: "reference_chosen", choice: JSON.parse(choiceJson) });
+      return;
+    }
+
+    if (e.data.type === "ref_audio") {
+      // Score mode with an automatic reference: no file was the reference
+      // while the features streamed, so its samples arrive again here.
+      const pyodide = await pyodideReady;
+      pyodide.globals.set("_ref_audio_data", e.data.samples);
+      await pyodide.runPythonAsync(`
+_ref_audio_copy = np.frombuffer(_ref_audio_data.to_py(), dtype=np.float32).copy()
+del globals()['_ref_audio_data']
+`);
+      self.postMessage({ type: "ref_audio_done" });
+      return;
+    }
+
     if (e.data.type === "align_all") {
       const pyodide = await pyodideReady;
       const { meiMidi, meiUri } = e.data;
@@ -1893,6 +2212,26 @@ json.dumps(result)
         type: "result",
         alignment: JSON.parse(resultJson),
       });
+      return;
+    }
+
+    if (e.data.type === "align_added") {
+      // Recordings added to a loaded alignment: the batch holds the
+      // reference and the new files only; no score, which is aligned to the
+      // reference and so is unchanged.
+      const pyodide = await pyodideReady;
+      pyodide.globals.set(
+        "_ref_span_json",
+        JSON.stringify(e.data.refSpan || null),
+      );
+      const resultJson = await pyodide.runPythonAsync(`
+import json
+_rs = json.loads(str(_ref_span_json))
+_added = align_added_from_features(tuple(_rs) if _rs else None)
+clear_batch_state()
+json.dumps(_added)
+`);
+      self.postMessage({ type: "added", result: JSON.parse(resultJson) });
       return;
     }
 

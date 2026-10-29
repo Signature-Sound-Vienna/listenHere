@@ -1,5 +1,77 @@
 # Listen Here! CHANGELOG.md
 
+### 0.101.0 -- Fix mode: anchors are easier to see and remove; pages overlap
+
+* Anchored ticks are drawn in their own colour per theme (violet on light themes, cyan or lavender on dark ones), apart from free ticks and the tick being dragged. Chosen for distance from everything else on the strip under the three dichromacies (Machado, Oliveira & Fernandes 2009), at WCAG 2.1 SC 1.4.11's 3:1 or better.
+* Enter on an anchored tick unanchors it; Backspace or Delete unanchors too, and a click on its square at the lanes' foot. The tick keeps its time but may be moved by later fixes (the bend, re-alignment ahead of a fix). Undoable. A gap's endpoints are still removed with G.
+* Auto-anchor on drag (on by default, sticky): off, a drag, nudge, or S moves the tick and re-aligns ahead without anchoring it. A tick already anchored stays anchored.
+* A page's window reaches 0.25 s past the neighbouring pages' nearest ticks, so a page whose notes run out before its audio still shows where the next page starts. The ticks of up to two pages before are drawn dashed and faint, and cannot be grabbed; later pages' ticks are not drawn.
+* After a re-alignment, undo, or redo, the strip widens when some of the page's ticks have left it, on that side only; otherwise it holds still. A page change fits it afresh.
+* Testing: 43.56–43.60.
+
+### 0.100.0 -- The wizard chooses the reference
+
+* Choose the reference automatically, below the file table, is the new default: once the files are read, the recording the others agree with best becomes the reference. It is ranked by cycle consistency (Prätzlich & Müller's triple error, ICASSP 2016) over 1 Hz alignments between every pair of recordings, setting aside candidates on which more than 10 % of the others would fail the span guard. A row picked in the Ref column overrides it.
+* It replaces the longest file as the default, which ranked last of 57 Radetzky and of 19 Pizzicato references.
+* Measured in Pyodide: about 8 s for 57 three-minute recordings and 32 s for 60 eleven-minute ones. With a score, the chosen reference is decoded a second time.
+* With two recordings, the longer one is the reference.
+* The results name the chosen reference. `header.referenceChoice` records the mode (automatic or manual) and, for an automatic choice, the method, rate, each candidate's score, and those set aside.
+* Testing: 53.1–53.7; 17.2 updated.
+
+### 0.99.1 -- Alignment: the fine pass no longer collapses into a straight line
+
+* The fine pass of an audio-to-audio pair could lose its path and come out as a straight line while the span guard reported success: after a passage the reference lacks, and where an open start ran along the reference's first frame. Measured on 5.9 % of Radetzky and 6.7 % of Donau pairs, now 0.7 % and 0.3 %. Saved alignments change only when re-aligned.
+* Testing: 44.24, 44.25.
+
+### 0.99.0 -- Fix mode: a tick dragged back bends the ticks behind it, and pushes them along
+
+* A tick dragged back toward the start is no longer stopped by the tick behind it.
+* Bend (beside Reach; off, 0.2, 0.6, 1.8, or 5 s, default 0.6 s, sticky): the ticks behind bend back with the dragged one, each by a share of its move that falls off smoothly (a one-sided Gaussian of that width) and reaches zero at the previous anchor or four widths back. Nothing further back moves.
+* A tick that comes within 30 ms of the one ahead of it is pushed along at 30 ms, and so on back, one tick at a time, so ticks never change order. Ticks already closer than 30 ms keep their own gap. With Bend off, only this push applies.
+* An anchored tick never moves: the drag stops where the ticks between would sit at their buffers against it.
+* Events between moved ticks (tremolo strokes, chord voices) follow them linearly. Nothing behind a fix is re-aligned, and Reach still governs only the re-alignment ahead. Forward drags move nothing behind.
+* While dragging, the moved ticks already show where they will land.
+* Audio-to-audio correction bends and pushes the projected ticks the same way, on the target recording's grid.
+* Testing: 43.44 is now the forward case; 43.49–43.51 cover the push with Bend off; 43.52 the bend's fall-off, preview, and undo; 43.53 a long drag that would flip ticks; 43.54 the bend reaching zero at an anchor and Bend's stickiness; 43.55 audio to audio.
+
+### 0.97.1 -- Add Recordings: restore the original settings; save from the tab
+
+* When the original run's settings are known and have been changed, a "Restore original alignment settings" button takes the place of the note about them and puts them back.
+* After an addition, a Save data button sits beside the result. The usual Save data button still works.
+* After an addition, the settings are locked to the ones it used until more audio files are chosen to align.
+* A file already in the alignment is refused under any folder or case (keys such as "Kaiserwalzer/VPO-1991.wav"), and a picked reference is listed as refused instead of disappearing.
+* Testing: 52.6, 52.7, 52.11.
+
+### 0.97.0 -- Add recordings to a loaded alignment
+
+* Manage recordings has an Add Recordings tab: picked or dropped audio files are aligned to the alignment's reference and join the session without a reload. Nothing already aligned changes; the score alignment is untouched.
+* The settings default to the original run's (`header.alignmentParams`), else Balanced with a note that the originals are unknown; they can be changed per addition. Trim ends defaults to the original run's switch, per file.
+* The reference's usable span is reused from the file (`alignedFrom`/`alignedTo`), not re-detected, so the new pairs are aligned over the same span as the old ones.
+* `header.alignmentParams` is never rewritten. Each addition appends a record to `header.additions`: time, version, recordings, settings, and per-file open ends with what was trimmed.
+* Without the reference's audio in a local-files session, the tab asks for it. Refused while fix mode is open.
+* Session recovery offers a session whose only work was an addition, and on restore names the added recordings it could not bring back (the snapshot holds no grids).
+* The wizard always writes its settings (the "Include alignment settings in output" opt-out is gone), and records each recording's resolved Trim ends in `header.openEnds.byFile`.
+* Manage recordings works for an alignment loaded from a URL: its tabs switch, and Close, Escape, or the backdrop close it. Nothing closed it before.
+* Switching grouping tabs keeps the sidebar's ticks and loading states.
+* Testing: 52.1–52.10.
+
+### 0.96.1 -- Trimmed ends are outside the alignment
+
+* The grid indices outside the reference's aligned span (alignedFrom–alignedTo) count as unaligned for every recording: they were extrapolated from a single path step, mapping applause onto applause or onto a recording's last sample.
+* No alignment lines are drawn in a trimmed head or tail, in either style.
+* A jump, seek, or marker from a trimmed head or tail parks the other recordings at their aligned span's edge; so do the relative-position indicators.
+* Alignments whose reference was not trimmed are unaffected.
+* Alignment: the fine path keeps its starting corner when it opens with the reference advancing on the target's first frame. Its grid no longer starts before alignedFrom (up to 0.21 s on three Fledermaus recordings); the rest of the grid is unchanged. Takes effect on the next alignment run.
+* Testing: 44.20–44.23.
+
+### 0.96.0 -- Alignments from the legacy CLI open, in fix mode too
+
+* Score tables written by the legacy SyncToolbox CLI (`align-to-score.py`: positions in seconds, onsets and offsets deduplicated separately) are converted on load to this app's table: one event per unique (start, end) tick pair of the rendered MIDI, in quarters. Fix mode refused them ("the freshly rendered score MIDI has 3926 events but the stored alignment has 2670").
+* A table counts as legacy only if its onsets do not match the rendered MIDI as quarters and do match its note starts as seconds (at least 98 % within 1 ms).
+* Reference times are taken from the legacy table where it has that score time, and interpolated otherwise (percussion, which the CLI drops).
+* The header records the conversion (`convertedFrom`: counts of legacy entries, events, and exact matches); saving writes the converted table.
+* Testing: 51.1–51.4.
+
 ### 0.95.0 -- Visualise alignments: each line runs on to the waveform below
 
 * With Visualise alignments on, each alignment line is vertical through its waveform and slants, in the bottom sixth, to the same alignment point in the next visible waveform below — across group headings. The lowest visible waveform's lines are vertical throughout. The vertical part is drawn in one style, top included; only the slant stands out.
@@ -22,6 +94,35 @@
 * Behind a fix, strokes follow the fix linearly, so a note dragged back past them cannot leave them sounding after it. The anchored onset's chord voices keep their times as before.
 * A stroke that already carries an anchor stays a marker. A gap cannot be laid while a tremolo runs on between the two onsets.
 * A moved onset's other alignment events at the same score position (notes that start together but end differently) now take its time. The realign ahead of a fix re-timed them from their old positions, so the marker moved but the synth still sounded that note late.
+
+### 0.90.1 -- The empty hook always puts the glass away
+* A tap on the empty hook removes the marker and rests the glass while the glass stands on a waveform, not only while it is in hand.
+* Testing: 38.22 a tap on the hook with the glass placed removes the marker.
+
+### 0.90.0 -- The Pizzicato-Polka on an HQ alignment, its annotations re-anchored
+* The Pizzicato-Polka's spine is an HQ audio-to-audio alignment on VPO-1989, without the Volksoper recording that played the piece twice. The other recordings no longer stall through about two minutes of it.
+* `tools/exhibit_annots_on_hq.py --piece pizzicato --reanchor` moves annotations onto a grid of another length: each region's index pair is voted from the authored per-recording seconds, and a recording whose old grid was flat at that point abstains. It reports every residual, and lists the text of targets dropped with a recording. Die Fledermaus's output is unchanged.
+* An endpoint the vote cannot settle can be placed by ear on one recording (`reanchor_fixed`), and every re-run keeps it.
+* The three Volksoper targets are dropped. Harnoncourt joins the ten. "The Coda Over Time" found no consensus, so its start is placed by ear, at 2:25.75 on VPO-1987.
+* The zero-length first region of "The poco rit. nobody plays" is deleted at source.
+* Harnoncourt's "Extra notes" starts one onset earlier, with a 70 ms lead-in so the attack is heard after a marker switch (0:39.30), hand-placed in `data/pizzicato-overrides.json`. The pair check ignores hand-placed times.
+* A marker placed with an annotation's Mark button lands on that annotation's own start on each recording it targets, hand-placed overrides included, when the reader switches recordings, as the jump button does. Elsewhere it follows the alignment as before.
+* Testing: 37.31 a Mark-placed marker lands on an injected override after a switch, follows the alignment on an untargeted recording, and stops following the override once the marker is placed by hand.
+
+### 0.89.0 -- "Did you know?" shows its first pictures: Jansons in the train polka, Karajan with Kathleen Battle
+* Mariss Jansons's and Herbert von Karajan's stories show AI-generated illustrations, in every register. Karajan's replaces the placeholder for the press photograph.
+* The AI mark is burned small into the corner of each picture, and its XMP carries IPTC `trainedAlgorithmicMedia`. While one is shown, the explorer's foot and the lightbox say "Images showing [mark] were generated using AI (Google Gemini)." The sidecar records model, style prompt, and date.
+* `tools/prep_exhibit_dyk.py` builds such illustrations from `assets/dyk-images/` (its `ILLUSTRATIONS` table: conductor, optional registers, caption, provenance) into `app/static/exhibit/dyk-images/` as 960 px WebP. The Nano Banana style fragment is in `content/dyk/image-style-prompt.md`.
+* A real picture grows with the room it has: full width above the text when the whole story still fits, otherwise beside it at up to half the pad. A tap shows it big over the reader's own half, the right way up for the far reader; a tap closes it.
+* The "more below" fade is measured again once a picture has loaded.
+* Testing: 46.16 an illustration shows in every register, loads, carries the disclosure on the foot and in the lightbox, and opens and closes big.
+
+### 0.88.0 -- The Pizzicato-Polka in the exhibit, provisionally; "Did you know?" for twenty conductors
+* `tools/prep_exhibit_data.py --piece pizzicato` builds the Pizzicato-Polka from Chanda's three annotation sets, which share one audio-to-audio alignment; the exhibit opens it with `?piece=pizzicato`. Provisional: the alignment's reference plays the piece twice, so the other recordings crawl through about two minutes of it, and the ten recordings are a proposal.
+* Zero-length regions and the hand-placement overrides file are per piece (`<piece>-overrides.json`; Die Fledermaus keeps `overrides.json`). Die Fledermaus's payload builds unchanged.
+* "Did you know?" tells twenty conductors, up from six, from Chanda's new export. Nézet-Séguin (2026) and Sokhiev (2027) are not shown yet: the concerts sidecar has no conductor after 2023. `tools/prep_exhibit_dyk.py` names such stories.
+* Testing: 46.13 compares the roster's marks with the stories whose conductor is on the roster.
+
 
 ### 0.86.0 -- Accented file names match however the browser spells them
 

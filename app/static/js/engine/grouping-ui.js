@@ -858,8 +858,64 @@ function _switchActiveTab(tabName) {
     firstRects.set(el, el.getBoundingClientRect());
   });
 
-  // Re-render sidebar with new tab's groups
+  refreshFileLayout(filenames);
+
+  // FLIP animation
+  waveformEls.forEach((el) => {
+    const first = firstRects.get(el);
+    if (!first) return;
+    const last = el.getBoundingClientRect();
+    const dx = first.left - last.left;
+    const dy = first.top - last.top;
+    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+    el.style.transform = `translate(${dx}px, ${dy}px)`;
+    el.style.transition = "none";
+    requestAnimationFrame(() => {
+      el.style.transition = "transform 0.3s ease";
+      el.style.transform = "";
+      el.addEventListener("transitionend", function handler() {
+        el.style.transition = "";
+        el.removeEventListener("transitionend", handler);
+      });
+    });
+  });
+
+  // Update pills
+  renderGroupingTabPills();
+
+  redrawTempoCurvesForGroupChange();
+
+  bumpChangeCounter();
+  updateDirtyState();
+  emitGroupingChanged();
+}
+
+/**
+ * Lay the recordings out again under the active tab's groups: the sidebar's
+ * lists and the pane's group containers, with every existing row moved into
+ * its container. For a tab switch, and for recordings added mid-session.
+ * The sidebar entries keep their checked and loading state across the
+ * re-render.
+ */
+export function refreshFileLayout(filenames) {
+  const states = new Map();
+  document.querySelectorAll("#audios li.renditionName").forEach((li) => {
+    const cb = li.querySelector("input[type='checkbox']");
+    states.set(li.id, {
+      checked: !!cb?.checked,
+      cls: ["queued", "loading", "ready"].filter((c) =>
+        li.querySelector("label")?.classList.contains(c),
+      ),
+    });
+  });
   renderSidebarFileList(filenames);
+  for (const [id, s] of states) {
+    const li = document.getElementById(id);
+    if (!li?.classList.contains("renditionName")) continue;
+    const cb = li.querySelector("input[type='checkbox']");
+    if (cb) cb.checked = s.checked;
+    li.querySelector("label")?.classList.add(...s.cls);
+  }
 
   // Rebuild content pane group containers
   ensureWaveformGroupContainers(
@@ -906,35 +962,6 @@ function _switchActiveTab(tabName) {
   });
 
   updateGroupCounts();
-
-  // FLIP animation
-  waveformEls.forEach((el) => {
-    const first = firstRects.get(el);
-    if (!first) return;
-    const last = el.getBoundingClientRect();
-    const dx = first.left - last.left;
-    const dy = first.top - last.top;
-    if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
-    el.style.transform = `translate(${dx}px, ${dy}px)`;
-    el.style.transition = "none";
-    requestAnimationFrame(() => {
-      el.style.transition = "transform 0.3s ease";
-      el.style.transform = "";
-      el.addEventListener("transitionend", function handler() {
-        el.style.transition = "";
-        el.removeEventListener("transitionend", handler);
-      });
-    });
-  });
-
-  // Update pills
-  renderGroupingTabPills();
-
-  redrawTempoCurvesForGroupChange();
-
-  bumpChangeCounter();
-  updateDirtyState();
-  emitGroupingChanged();
 }
 
 /** Find nav sidebar checkboxes corresponding to a content-pane file-group. */

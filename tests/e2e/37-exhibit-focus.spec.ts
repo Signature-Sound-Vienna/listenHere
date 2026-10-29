@@ -1358,6 +1358,88 @@ test.describe('37. Playhead-driven focus', () => {
     expect((await marker()).ix, 'a hand-placed marker stays put').toBe(byHand);
   });
 
+  // 37.31 A hand-placed override (prep's overrides file) moves ONE recording's
+  // region off the grid's projection; a mark-button marker must land on it
+  // when the reader switches there, as the jump button does (user, 2026-10-20,
+  // found on the Pizzicato-Polka). Recordings without one keep the projection.
+  test('37.31 a mark-button marker lands on a hand-placed override when the reader switches to that recording', async ({
+    page,
+  }) => {
+    // Inject the override into the payload: one adults annotation that targets
+    // the reference and another recording; that other recording's earliest
+    // region starts 1 s later than the grid says, marked hand-placed.
+    let pick: { annId: string; ref: string; other: string; start: number } | null = null;
+    await page.route('**/exhibit/data/fledermaus.json', async (route) => {
+      const json = await (await route.fetch()).json();
+      const ref = json.piece.ref;
+      for (const ann of json.annotations) {
+        if (ann.audience !== 'adults') continue;
+        const files = ann.targets.map((t: any) => t.file);
+        const other = files.find((f: string) => f !== ref);
+        if (!files.includes(ref) || !other) continue;
+        const tg = ann.targets.find((t: any) => t.file === other);
+        const [rid, span] = Object.entries(tg.regionTimes as Record<string, any>)
+          .filter(([, s]) => s && s.end - s.start > 2)
+          .sort(([, a], [, b]) => a.start - b.start)[0] || [];
+        if (!rid) continue;
+        tg.regionTimes[rid] = { start: span.start + 1, end: span.end, derived: false };
+        pick = { annId: ann.id, ref, other, start: span.start + 1 };
+        break;
+      }
+      await route.fulfill({ json });
+    });
+    await boot(page, 'debug=1&marker=glass');
+    expect(pick, 'an adults annotation targets the reference and another recording').toBeTruthy();
+    await page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const orig = T.transport.select.bind(T.transport);
+      T.transport.select = (file: string, time?: number) => orig(file, time, false);
+    });
+    const switchTo = (file: string) =>
+      page.evaluate((f) => {
+        const T = (window as any)._exhibitTest;
+        T.viewports[0].bareSwitch(f);
+        return { file: T.transport.activeFile, time: T.transport._time };
+      }, file);
+
+    await page.click(`.vp[data-viewport="0"] .ann-chip[data-ann="${pick!.annId}"]`);
+    await page.click('.vp[data-viewport="0"] .ann-mark');
+    const landed = await switchTo(pick!.other);
+    expect(landed.file).toBe(pick!.other);
+    expect(landed.time, 'the override, not the projection').toBeCloseTo(pick!.start, 3);
+
+    // A recording the annotation does not target keeps the grid's projection.
+    const untargeted = await page.evaluate((annId) => {
+      const T = (window as any)._exhibitTest;
+      const ann = T.exhibit.annotations.find((a: any) => a.id === annId);
+      const targeted = new Set(ann.targets.map((t: any) => t.file));
+      const file = T.exhibit.order.find((f: string) => !targeted.has(f));
+      const ix = T.marker(0).ix;
+      return file ? { file, expected: T.exhibit.grids[file][ix] } : null;
+    }, pick!.annId);
+    if (untargeted) {
+      const there = await switchTo(untargeted.file);
+      expect(there.time).toBeCloseTo(untargeted.expected, 3);
+    }
+
+    // A hand placement ends the anchoring: the same switch then projects.
+    const ref = pick!.ref;
+    await switchTo(ref);
+    await page.evaluate(
+      ([f]) => {
+        const T = (window as any)._exhibitTest;
+        T.placeMarker(0, f, T.transport._time);
+      },
+      [ref] as [string],
+    );
+    const projected = await page.evaluate((f) => {
+      const T = (window as any)._exhibitTest;
+      return T.exhibit.grids[f][T.marker(0).ix];
+    }, pick!.other);
+    const after = await switchTo(pick!.other);
+    expect(after.time, 'a hand-placed marker projects through the grid').toBeCloseTo(projected, 3);
+  });
+
   // 37.8 The genuine path, once: real playback crossing a region start raises
   // the entry and the wash focuses it, driven by the real per-frame clock.
   test('37.8 real playback washes focus in as the clock crosses a region start', async ({

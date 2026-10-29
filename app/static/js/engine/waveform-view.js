@@ -35,6 +35,7 @@
 import {
   alignmentGrids,
   alignedSpans,
+  alignedIxRange,
   wavesurfers,
   parseCssColor,
   wfBgCache,
@@ -203,6 +204,9 @@ export function updatePositionIndicator(filename) {
   if (currentGridIx <= 0 && currentTime > grid[grid.length - 1]) {
     currentGridIx = grid.length - 1;
   }
+  // A playhead in a trimmed head or tail parks the others at their span's edge.
+  const range = alignedIxRange();
+  if (range) currentGridIx = Math.min(Math.max(currentGridIx, range[0]), range[1]);
   // iterate through all positionIndicatorCanvases, drawing in current ix position
   const canvases = document.getElementsByClassName("position-indicator");
   const visrelalign = document.getElementById("visrelalign").checked;
@@ -448,6 +452,19 @@ function _sharedStride(order) {
   return stride;
 }
 
+/**
+ * Narrow [lo, hi] to the aligned index range: outside it the grid is
+ * extrapolated, not aligned, so no line is drawn there. `lo` stays on a stride
+ * multiple, which keeps the selection independent of scroll.
+ */
+function _clipToAligned(lo, hi, stride) {
+  const range = alignedIxRange();
+  if (!range) return [lo, hi];
+  const [rLo, rHi] = range;
+  if (lo < rLo) lo = rLo + ((stride - (rLo % stride)) % stride);
+  return [lo, Math.min(hi, rHi)];
+}
+
 /** The grid indices, in [lo, hi], whose time in `grid` maps into the visible
  *  x range [x0, x1] at (dur, fullW, scroll). */
 function _gridIndexSpan(grid, dur, fullW, scroll, x0, x1) {
@@ -510,6 +527,7 @@ export function drawAlignmentGrid(filename, { fromNeighbour = false } = {}) {
   const visalignNext = !!visalignEl?.checked && _visalignMode() === "next";
   view.visalignSig = "";
   view.visalignNext = null; // test surface: the waveform the lines run on to
+  view.gridIxDrawn = null; // test surface: [lo, hi] of the indices drawn
   if (visalignNext) {
     _watchRowOrder();
     const order = _visibleRowOrder();
@@ -535,6 +553,8 @@ export function drawAlignmentGrid(filename, { fromNeighbour = false } = {}) {
       // below rather than into a gap of the next waveform's own thinning.
       const stride = _sharedStride(order);
       lo -= lo % stride;
+      [lo, hi] = _clipToAligned(lo, hi, stride);
+      view.gridIxDrawn = [lo, hi];
       const _agC = parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-alignment").trim()) || { r: 140, g: 90, b: 90 };
       const _agRgb = `${_agC.r},${_agC.g},${_agC.b}`;
       ctx.lineWidth = 1;
@@ -597,6 +617,8 @@ export function drawAlignmentGrid(filename, { fromNeighbour = false } = {}) {
         gridLen - 1,
         Math.ceil(((scrollLeft + viewW + margin) / fullW) * gridLen),
       );
+      [loIdx, hiIdx] = _clipToAligned(loIdx, hiIdx, stride);
+      view.gridIxDrawn = [loIdx, hiIdx];
 
       // Draw solid lines for the top and bottom sections
       const _agC = parseCssColor(getComputedStyle(document.documentElement).getPropertyValue("--color-alignment").trim()) || { r: 140, g: 90, b: 90 };

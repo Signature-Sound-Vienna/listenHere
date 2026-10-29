@@ -383,6 +383,31 @@ test.describe('38. The listening marker', () => {
     ).toBe(0);
   });
 
+  // 38.22 The empty hook is ALWAYS the "put it away" target (user, 2026-10-20):
+  // with the glass placed on a waveform — not in hand — a tap on the hook
+  // removes the marker and rests the glass, as it already did while lifted.
+  test('38.22 tapping the empty hook while the glass is placed removes the marker', async ({ page }) => {
+    const { ref } = await boot(page, 'debug=1&marker=glass');
+    await page.evaluate((ref) => {
+      const T = (window as any)._exhibitTest;
+      T.placeMarker(0, ref, 60);
+      T.transport.pause();
+    }, ref);
+    await arrivedGlassBox(page, 0);
+    expect((await markerState(page)).lifted).toBe(false);
+    expect((await markerState(page)).ix).not.toBeNull();
+
+    await page.click('.vp[data-viewport="0"] .marker-hook');
+
+    const state = await markerState(page);
+    expect(state.ix).toBeNull();
+    expect(state.lifted).toBe(false);
+    await expect(page.locator('.vp[data-viewport="0"] .marker-glass')).toHaveClass(/is-resting/);
+    expect(
+      await page.locator('.vp[data-viewport="0"] .marker-tick:not([hidden])').count(),
+    ).toBe(0);
+  });
+
   // 38.11 The stretch that motivated the feature ("hey, listen here!"): the
   // other side's marker is a mirrored ghost here, and tapping it with my
   // glass lifted ADOPTS their moment — same index both sides, my audio jumps

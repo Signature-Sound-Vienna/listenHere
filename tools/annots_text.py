@@ -26,7 +26,8 @@ that new `body` and reports, line by line, every text it would overwrite.
   diff    authored vs full     -> what differs, and nothing written
 
 `--check` on `split` exits non-zero when the tracked copy is stale, which is the
-form to run before committing.
+form to run before committing. `--piece pizzicato` (2026-10-20) does the same for
+the Pizzicato-Polka's sets, as delivered and re-anchored (SETS below).
 
 TIMES ARE NOT AUTHORED DATA, with one exception. `targets[].regionTimes` rides
 along inside `annotations` and goes stale the moment the alignment is re-derived.
@@ -43,9 +44,25 @@ import os
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SETS = ["Kids", "Adults", "Expert"]
-SRC_TMPL = "Alignment_Fledermaus_{}.json"
-OUT_TMPL = "Alignment_Fledermaus_{}.authored.json"
+
+# Per piece: (label, full set relative to --src-dir, authored half relative to --out).
+# The Pizzicato-Polka (2026-10-20) keeps TWO kinds: Chanda's sets as delivered,
+# which are what `exhibit_annots_on_hq.py --reanchor` reads, and the re-anchored
+# on-hq sets prep builds from and she edits from now on.
+SETS = {
+    "fledermaus": [
+        (aud, f"Alignment_Fledermaus_{aud}.json", f"Alignment_Fledermaus_{aud}.authored.json")
+        for aud in ("Kids", "Adults", "Expert")
+    ],
+    "pizzicato": [
+        (aud, f"Pizzicato/PizzicatoPolka_{aud}.json", f"Pizzicato/PizzicatoPolka_{aud}.authored.json")
+        for aud in ("Kids", "Adults", "Experts")
+    ] + [
+        (f"{aud} on-hq", f"Pizzicato/on-hq/Pizzicato_{aud}_on_HQ.json",
+         f"Pizzicato/Pizzicato_{aud}_on_HQ.authored.json")
+        for aud in ("Kids", "Adults", "Expert")
+    ],
+}
 
 # The build product. Everything else in the file is authored and is kept.
 DROPPED = "body"
@@ -121,11 +138,10 @@ def report_text_diff(old, new, indent="    "):
 
 # ------------------------------------------------------------------------ actions
 def do_split(args):
-    os.makedirs(args.out, exist_ok=True)
     stale = 0
-    for aud in SETS:
-        src = os.path.join(args.src_dir, SRC_TMPL.format(aud))
-        dst = os.path.join(args.out, OUT_TMPL.format(aud))
+    for aud, src_rel, out_rel in SETS[args.piece]:
+        src = os.path.join(args.src_dir, src_rel)
+        dst = os.path.join(args.out, out_rel)
         if not os.path.exists(src):
             log(f"  MISSING {src}")
             stale += 1
@@ -141,6 +157,7 @@ def do_split(args):
             if current is not None:
                 report_text_diff(json.loads(current), lean(load(src)))
             continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
         with open(dst, "w", encoding="utf-8") as fh:
             fh.write(text)
         size = os.path.getsize(src) / 1048576
@@ -152,9 +169,9 @@ def do_split(args):
 
 
 def do_merge(args):
-    for aud in SETS:
-        src = os.path.join(args.src_dir, SRC_TMPL.format(aud))
-        authored = os.path.join(args.out, OUT_TMPL.format(aud))
+    for aud, src_rel, out_rel in SETS[args.piece]:
+        src = os.path.join(args.src_dir, src_rel)
+        authored = os.path.join(args.out, out_rel)
         if not (os.path.exists(src) and os.path.exists(authored)):
             log(f"  {aud:<7} SKIPPED — need both {src} and {authored}")
             continue
@@ -179,9 +196,9 @@ def do_merge(args):
 
 def do_diff(args):
     total = 0
-    for aud in SETS:
-        src = os.path.join(args.src_dir, SRC_TMPL.format(aud))
-        authored = os.path.join(args.out, OUT_TMPL.format(aud))
+    for aud, src_rel, out_rel in SETS[args.piece]:
+        src = os.path.join(args.src_dir, src_rel)
+        authored = os.path.join(args.out, out_rel)
         if not (os.path.exists(src) and os.path.exists(authored)):
             log(f"  {aud:<7} SKIPPED — need both files")
             continue
@@ -195,6 +212,8 @@ def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("action", choices=["split", "merge", "diff"])
+    ap.add_argument("--piece", default="fledermaus", choices=sorted(SETS),
+                    help="which piece's sets (default Die Fledermaus)")
     ap.add_argument("--src-dir", default=os.path.join(REPO, "ExhibitAnnots"))
     ap.add_argument("--out", default=os.path.join(REPO, "ExhibitAnnots/authored"),
                     help="where the authored halves live (a symlink into the "

@@ -235,6 +235,89 @@ PIECES = {
         "opus": "op. 437",
         "alignment_is_hq": False,
     },
+    # Pizzicato-Polka (2026-10-20), audio-to-audio only (no score):
+    #   * Chanda authored her three sets on a balanced-preset body whose
+    #     reference, the Volksoper "New Year's Concerto" recording (291 s),
+    #     plays the piece TWICE, so the others stalled over 106–132 s of it.
+    #     The spine is now an HQ re-alignment on VPO-1989 WITHOUT the Volksoper
+    #     (its stalls are gone: 0–11 isolated seconds per recording), and her
+    #     regions were re-anchored onto it from their per-recording seconds.
+    #     Her three Volksoper targets were dropped with it.
+    #   * "The Coda Over Time" found NO consensus in that vote (every authored
+    #     start came through the old stall): its pair is a best guess until the
+    #     author sets the coda's start by ear.
+    #   * the ten are a PROPOSAL (2026-10-20): every question annotation keeps
+    #     the recording that answers it (Järvi for "Extra notes", VPO-2005 for
+    #     "An extra pick-up" — user, 2026-10-20), and every recording a shown
+    #     text points to is shown too (VPO-1987, Karajan's VPO recording, from
+    #     Twinkle's answer; VPO-1941 and 1951-1954, Krauss a decade apart, in
+    #     the Coda). Harnoncourt is the tenth because he adds to the three
+    #     annotations otherwise down to two recordings. The author decides.
+    #   * no opus: the Cranz edition prints "Op. 257", unverified against the
+    #     catalogue, and the wall shows what it is given.
+    "pizzicato": {
+        "src_dir": os.path.join(REPO, "ExhibitAnnots/Pizzicato"),
+        # The HQ re-alignment (2026-10-20: reference VPO-1989, hq preset, open
+        # ends, the Volksoper left out). The audience sources are Chanda's sets
+        # RE-ANCHORED onto it (tools/exhibit_annots_on_hq.py --piece pizzicato
+        # --reanchor), so verify_pairs votes on the new grids; her originals,
+        # which carry the old Volksoper body, are what that tool reads.
+        "sources": {
+            "hq": "Alignment_Pizzicato_HQ.json",
+            "kids": "on-hq/Pizzicato_Kids_on_HQ.json",
+            "adults": "on-hq/Pizzicato_Adults_on_HQ.json",
+            "expert": "on-hq/Pizzicato_Expert_on_HQ.json",
+        },
+        "authored": {
+            "kids": "PizzicatoPolka_Kids.json",
+            "adults": "PizzicatoPolka_Adults.json",
+            "expert": "PizzicatoPolka_Experts.json",
+        },
+        "audiences": ["kids", "adults", "expert"],
+        "curated": [
+            "VPO-1989.wav",  # the reference
+            "VPO-1941 (& unbekannt).wav",
+            "VPO-1951-1954.wav",
+            "VPO-1987.wav",  # Karajan with the VPO: Twinkle's answer (1971) points to it
+            "VPO-2005.wav",  # the "yes" of "An extra pick-up"
+            "VPO-2012.wav",
+            "Berliner Philharmoniker, Herbert von Karajan (1971).wav",
+            "Estonian National Symphony Orchestra, Neeme Järvi (2017).wav",  # the "yes" of "Extra notes"
+            "Das Grosse Neujahrskonzert, mixed.wav",  # the sung version
+            "mixed, Nikolaus Harnoncourt (Johann Strauss II).wav",
+        ],
+        # On the VPO-1989 grid (10,129 frames), voted by --reanchor 2026-10-20;
+        # the vote and every residual are in on-hq/annots-on-hq-report.md.
+        "pairs": {
+            "rgn_mv6e4h6f_2": (2147, 2389),   # Adults, Extra notes
+            "rgn_mv6eui2q_7": (246, 566),     # Adults, Plucked throughout?
+            "rgn_mv6f30wj_9": (5257, 6968),   # Adults, Blimm bloom blimm
+            "rgn_mv6fv18j_11": (1381, 1810),  # Expert, An extra pick-up
+            "rgn_mv6g8s8m_14": (574, 1075),   # Expert, The poco rit. (b)
+            "rgn_mv6gvab3_16": (7674, 8598),  # Expert, The Coda Over Time — start by ear (reanchor_fixed)
+            "rgn_mv6n3dvj_18": (3050, 4150),  # Kids, Twinkle Twinkle Little Glockenspiel
+            "rgn_mv6nh4m7_20": (4166, 5286),  # Kids, The jingling tambourine
+            "rgn_mv6no4fq_22": (619, 2293),   # Kids, The singing version!
+        },
+        # Endpoints placed BY EAR, which --reanchor takes instead of its vote.
+        # The Coda's start (no consensus: every authored start came through the
+        # old stall): the user, 2026-10-20, on Karajan's VPO recording, "2:25,
+        # almost going into 2:26 — the start of the phrase, highest-pitch plucked
+        # note as the first"; 145.75 s is the spectral-flux onset there.
+        "reanchor_fixed": {
+            "rgn_mv6gvab3_16": {"start": ("VPO-1987.wav", 145.75)},
+        },
+        # EMPTY since 2026-10-20: poco rit. (a), rgn_mv6g84m9_13, 0.0–0.0 on all
+        # seven targets, was deleted at source on the user's ruling.
+        "degenerate": set(),
+        "needs_hand_placement": set(),
+        "wav_dir": "app/static/wav/Pizzicato",
+        "audio_subdir": "pizzicato",
+        "title": {"en": "Pizzicato-Polka", "de": "Pizzicato-Polka"},
+        "composer": "Johann Strauss II and Josef Strauss",
+        "opus": None,
+        "alignment_is_hq": True,
+    },
 }
 
 
@@ -242,16 +325,20 @@ def apply_piece(name):
     """Rebind the module's piece constants to PIECES[name]; the default stays put."""
     global PIECE, SOURCES, AUDIENCES, CURATED, CANONICAL_PAIRS, NEEDS_HAND_PLACEMENT
     global WAV_DIR, AUDIO_SUBDIR, PIECE_TITLE, PIECE_COMPOSER, PIECE_OPUS
-    global DEFAULT_SRC_DIR, ALIGNMENT_IS_HQ
+    global DEFAULT_SRC_DIR, ALIGNMENT_IS_HQ, DEGENERATE_REGIONS, OVERRIDES_FILE
     spec = PIECES[name]
     PIECE = name
     if spec is None:
         return
+    # Per piece: the default file is Die Fledermaus's, and region ids never repeat
+    # across pieces, so sharing it would only produce "unknown annotation" noise.
+    OVERRIDES_FILE = f"{name}-overrides.json"
     SOURCES = dict(spec["sources"])
     AUDIENCES = list(spec["audiences"])
     CURATED = list(spec["curated"])
     CANONICAL_PAIRS = dict(spec["pairs"])
     NEEDS_HAND_PLACEMENT = set(spec["needs_hand_placement"])
+    DEGENERATE_REGIONS = set(spec.get("degenerate", ()))
     WAV_DIR = spec["wav_dir"]
     AUDIO_SUBDIR = spec["audio_subdir"]
     PIECE_TITLE = spec["title"]
@@ -410,6 +497,10 @@ def verify_pairs(sets, warnings):
                     grid = audio.get(tgt["file"], {}).get("times")
                     if not rt or not grid:
                         continue
+                    if rt.get("derived") is False:
+                        # Hand-placed (an override overlaid by exhibit_annots_on_hq.py
+                        # onto a set that is also a source): not a vote on the pair.
+                        continue
                     votes[(closest_ix(grid, rt["start"]), closest_ix(grid, rt["end"]))] += 1
                 if not votes:
                     warnings.add("region-not-derivable",
@@ -495,7 +586,8 @@ def build_annotations(sets, warnings):
             for reg in ann.get("regions", []):
                 if reg["id"] in DEGENERATE_REGIONS:
                     warnings.add("degenerate-region-dropped",
-                                 f"{audience}/{ann['label']}/{reg['id']} is 0.0→0.0 at index 0–0; "
+                                 f"{audience}/{ann['label']}/{reg['id']} is zero-length at index "
+                                 f"{'–'.join(map(str, CANONICAL_PAIRS.get(reg['id'], ('?', '?'))))}; "
                                  f"dropped from the payload. The AUTHOR must delete it at source.")
                     continue
                 regions.append({
@@ -745,7 +837,10 @@ def step_payload(args, sets, warnings):
     corrections = summarise_corrections(hq_header.get("corrections"))
     if AUDIENCES:
         overrides_path = os.path.join(args.data_dir, OVERRIDES_FILE)
-        seed_overrides(overrides_path)
+        if NEEDS_HAND_PLACEMENT:
+            # The seed documents the D-or-E slot; another piece gets no template
+            # until it has a region that needs one.
+            seed_overrides(overrides_path)
         overrides = load_overrides(overrides_path, warnings)
         apply_overrides(annotations, overrides, warnings, corrections)
         pending_hand_placement(annotations, warnings)

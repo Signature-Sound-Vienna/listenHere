@@ -2470,7 +2470,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     return e;
   };
 
-  test('43.44 nothing behind a fix moves: every earlier onset keeps its exact value, only the previous note\'s offset follows, and a drag cannot cross the previous tick', async ({
+  test('43.44 nothing behind a FORWARD fix moves: every earlier onset keeps its exact value, only the previous note\'s offset follows', async ({
     page,
   }) => {
     await gotoFixMode(page);
@@ -2481,14 +2481,12 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     for (let k = 0; k < 6; k++) await page.click('.fix-onset-next');
     const i = (await fixState(page)).selEventIx;
     const t0 = await fullTables(page);
-    // A drag well past the previous tick stops just after it.
-    await dragSelectedTick(page, -150);
+    await dragSelectedTick(page, 30);
     const st = await fixState(page);
     expect(st.corrections.anchors).toHaveLength(1);
     const a = st.corrections.anchors[0];
     expect(a.i).toBe(i);
-    expect(a.t).toBeGreaterThan(t0.on[i - 1]);
-    expect(a.t).toBeLessThan(t0.on[i - 1] + 0.05);
+    expect(a.t).toBeGreaterThan(t0.on[i]);
     const t1 = await fullTables(page);
     for (let e = 0; e < i; e++) expect(t1.on[e], `onset ${e}`).toBe(t0.on[e]);
     for (let e = 0; e < i - 1; e++) expect(t1.off[e], `offset ${e}`).toBe(t0.off[e]);
@@ -2497,6 +2495,755 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     const posted = await realignsPosted(page);
     expect(posted).toHaveLength(1);
     expect(posted[0].iA).toBe(i);
+  });
+
+  /** The strip times of the ticks on the page, by group index. */
+  const tickTimes = async (page: Page) =>
+    new Map<number, number>((await fixState(page)).pageTicks.map((p: any) => [p.ix, p.t]));
+
+  /** The push rule (_pushPlan) on old tick times: a backward drag of group
+   *  gix to t pushes each tick behind only once its buffer (30 ms, or the
+   *  original gap if smaller) to the next is breached. */
+  const expectedPush = (old: Map<number, number>, gix: number, t: number) => {
+    const moves = new Map<number, number>();
+    let next = t;
+    let nextOld = old.get(gix)!;
+    for (let j = gix - 1; old.has(j); j--) {
+      const o = old.get(j)!;
+      const limit = next - Math.min(0.03, Math.max(0, nextOld - o));
+      if (o <= limit) break;
+      moves.set(j, limit);
+      next = limit;
+      nextOld = o;
+    }
+    return moves;
+  };
+
+  /** Press the selected tick and hold it (Alt: free placement, no snap). */
+  const pressSelectedTick = async (page: Page) => {
+    const st = await fixState(page);
+    const box = (await page.locator('.fix-ticks').boundingBox())!;
+    const x0 = box.x + st.selTickX;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x0, y);
+    await page.mouse.down();
+    await page.keyboard.down('Alt');
+    return { st, y, xAt: (t: number) => x0 + (t - st.selT) * st.stripPps };
+  };
+
+  const releaseTick = async (page: Page) => {
+    await page.mouse.up();
+    await page.keyboard.up('Alt');
+    await page.waitForFunction(() => {
+      const f = (window as any)._listenTest.fix;
+      return !f.realignBusy && f.chipState !== 'realign';
+    });
+  };
+
+  test('43.49 with Bend off, a BACKWARD drag pushes the tick behind along only once it comes within 30 ms of it, each tick behind in turn, previewed live; the events between follow, nothing behind goes to the worker, and undo restores every onset', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.selectOption('#fix-bend', '0'); // the pure push
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 12; k++) await page.click('.fix-onset-next');
+    const i = (await fixState(page)).selEventIx;
+    const t0 = await fullTables(page);
+    const old = await tickTimes(page);
+    const h = await pressSelectedTick(page);
+    const gix = h.st.selGroup;
+    const prevT = old.get(gix - 1)!;
+    const slack = 3 / h.st.stripPps; // a few pixels, in seconds
+    // Short of the buffer, nothing behind moves.
+    if (h.st.selT - prevT > 0.03 + 2 * slack) {
+      await page.mouse.move(h.xAt(prevT + 0.03 + slack), h.y, { steps: 3 });
+      await page.waitForFunction(() => Array.isArray((window as any)._listenTest.fix.dragPushed));
+      expect((await fixState(page)).dragPushed).toEqual([]);
+    }
+    // Past the tick behind, it is pushed — already in the preview.
+    await page.mouse.move(h.xAt(prevT - slack), h.y, { steps: 3 });
+    await page.waitForFunction(
+      () => ((window as any)._listenTest.fix.dragPushed || []).length > 0,
+    );
+    await releaseTick(page);
+
+    const st = await fixState(page);
+    expect(st.dragPushed).toBeNull();
+    expect(st.corrections.anchors).toHaveLength(1);
+    const a = st.corrections.anchors[0];
+    expect(a.i).toBe(i);
+    expect(a.t).toBeLessThan(prevT); // it passed the tick behind
+    const want = expectedPush(old, gix, a.t);
+    expect(want.size).toBeGreaterThan(0);
+    const now = await tickTimes(page);
+    for (const [j, o] of old) {
+      if (j >= gix) continue;
+      expect(now.get(j), `tick ${j}`).toBeCloseTo(want.get(j) ?? o, 9);
+    }
+    const t1 = await fullTables(page);
+    for (let e = 1; e < t1.on.length; e++) {
+      expect(t1.on[e], `order at ${e}`).toBeGreaterThanOrEqual(t1.on[e - 1]);
+    }
+    // Only the span AHEAD went to the worker.
+    const posted = await realignsPosted(page);
+    expect(posted).toHaveLength(1);
+    expect(posted[0].iA).toBe(i);
+
+    await page.click('#undo-btn');
+    const t2 = await fullTables(page);
+    expect(t2.on).toEqual(t0.on);
+    expect(t2.off).toEqual(t0.off);
+  });
+
+  test('43.51 with Bend off, an anchored tick is never pushed: a backward drag stops short of it by the buffers of the ticks between, and the anchor keeps its time', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.selectOption('#fix-bend', '0'); // the pure push
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 9; k++) await page.click('.fix-onset-next');
+    await page.keyboard.press('Enter'); // approve: an anchor at its own time
+    for (let k = 0; k < 3; k++) await page.click('.fix-onset-next');
+    const old = await tickTimes(page);
+    const anchorIx = (await fixState(page)).selGroup - 3;
+    const anchorT = old.get(anchorIx)!;
+    const h = await pressSelectedTick(page);
+    const gix = h.st.selGroup;
+    // The floor: the anchor plus one buffer per gap between it and the fix.
+    let floor = anchorT;
+    for (let j = anchorIx; j < gix; j++) {
+      floor += Math.min(0.03, old.get(j + 1)! - old.get(j)!);
+    }
+    await page.mouse.move(h.xAt(anchorT - 1), h.y, { steps: 5 });
+    await releaseTick(page);
+    const st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(2);
+    const anchored = st.corrections.anchors.find((a: any) => a.kind === 'approve');
+    expect(anchored.t).toBe(anchorT);
+    const dragged = st.corrections.anchors.find((a: any) => a.kind === 'drag');
+    expect(dragged.t).toBeCloseTo(floor + 0.01, 6); // ANCHOR_EPS above the floor
+    const now = await tickTimes(page);
+    expect(now.get(anchorIx)).toBe(anchorT);
+    for (let j = anchorIx + 1; j < gix; j++) {
+      expect(now.get(j)! - now.get(j - 1)!, `gap ${j}`).toBeGreaterThan(0);
+    }
+  });
+
+  test('43.50 audio mode with Bend off: a BACKWARD drag pushes the projected ticks behind it by the same rule, the grid behind the first tick left in place is untouched, only the span ahead goes to the worker, and undo restores the grid bit-exactly', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.selectOption('#fix-bend', '0'); // the pure push
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 12; k++) await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const before = await gridSnapshot(page);
+    const tg0: number[] = await page.evaluate(
+      (T) => (window as any)._listenTest.session.alignmentGrids[T].slice(),
+      TARGET_ROW,
+    );
+    const old = await tickTimes(page);
+    const h = await pressSelectedTick(page);
+    const gix = h.st.selGroup;
+    const prevT = old.get(gix - 1)!;
+    await page.mouse.move(h.xAt(prevT - 3 / h.st.stripPps), h.y, { steps: 5 });
+    await page.waitForFunction(
+      () => ((window as any)._listenTest.fix.dragPushed || []).length > 0,
+    );
+    await releaseTick(page);
+
+    const st = await fixState(page);
+    expect(st.chipState, st.chipText ?? '').not.toBe('error');
+    expect(st.gridAnchors).toHaveLength(1);
+    const a = st.gridAnchors[0];
+    expect(a.t).toBeLessThan(prevT);
+    const want = expectedPush(old, gix, a.t);
+    expect(want.size).toBeGreaterThan(0);
+    // Pushed ticks land on their targets through the grid's interpolation
+    // (within a raster step); ticks left in place keep their projection.
+    const now = await tickTimes(page);
+    for (const [j, o] of old) {
+      if (j >= gix) continue;
+      if (want.has(j)) expect(Math.abs(now.get(j)! - want.get(j)!), `tick ${j}`).toBeLessThan(0.02);
+      else expect(now.get(j), `tick ${j}`).toBeCloseTo(o, 9);
+    }
+    const tg1: number[] = await page.evaluate(
+      (T) => (window as any)._listenTest.session.alignmentGrids[T].slice(),
+      TARGET_ROW,
+    );
+    const stopT = Math.max(...[...old].filter(([j]) => j < gix && !want.has(j)).map(([, t]) => t));
+    for (let k = 0; k < tg1.length && tg0[k] <= stopT; k++) expect(tg1[k], `sample ${k}`).toBe(tg0[k]);
+    for (let k = 1; k < tg1.length; k++) expect(tg1[k], `order at ${k}`).toBeGreaterThanOrEqual(tg1[k - 1]);
+    const posted = await page.evaluate(() =>
+      (window as any).__fixStub.posted.filter((p: any) => p.type === 'fix_target_realign'),
+    );
+    expect(posted).toHaveLength(1);
+    expect(posted[0].refA).toBeCloseTo(a.refT, 9);
+
+    await page.click('#undo-btn');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gridAnchors.length === 0);
+    expect((await gridSnapshot(page)).checksum).toBe(before.checksum);
+  });
+
+  /** The Bend (_bendTargets + _pushPlan) on old tick times: a backward drag
+   *  of group gix to t bends the unanchored ticks behind by a one-sided
+   *  Gaussian of width sigma, zero at the floor (the previous anchor, 4σ back,
+   *  or the start), clamps them from the floor forward, then pushes from the
+   *  drag back, each keeping 30 ms (or its original gap if smaller). */
+  const expectedBend = (
+    old: Map<number, number>,
+    gix: number,
+    t: number,
+    sigma: number,
+    anchored = new Set<number>(),
+    start = 0,
+  ) => {
+    const B = 0.03;
+    const t0 = old.get(gix)!;
+    let floor = Math.max(t0 - 4 * sigma, start);
+    let k = gix - 1;
+    for (; old.has(k); k--) {
+      const o = old.get(k)!;
+      if (!(o > floor)) break;
+      if (anchored.has(k)) {
+        floor = o;
+        break;
+      }
+    }
+    const g = (d: number) => Math.exp(-(d * d) / (2 * sigma * sigma));
+    const gF = g(t0 - floor);
+    const bent = new Map<number, number>();
+    const tk = old.has(k) ? old.get(k)! : -Infinity;
+    let prev = Math.max(tk, start);
+    let prevOld = prev;
+    let prevGap = prev === tk;
+    for (let j = k + 1; j < gix; j++) {
+      const o = old.get(j)!;
+      const w = Math.max(0, (g(t0 - o) - gF) / (1 - gF));
+      const lo = prev + (prevGap ? Math.min(B, Math.max(0, o - prevOld)) : 0);
+      const to = Math.min(o, Math.max(o + (t - t0) * w, lo));
+      bent.set(j, to);
+      prev = to;
+      prevOld = o;
+      prevGap = true;
+    }
+    const moves = new Map<number, number>();
+    let next = t;
+    let nextOld = t0;
+    for (let j = gix - 1; old.has(j); j--) {
+      const o = old.get(j)!;
+      const limit = next - Math.min(B, Math.max(0, nextOld - o));
+      if ((!bent.has(j) && o <= limit) || anchored.has(j)) break;
+      const to = Math.min(bent.has(j) ? bent.get(j)! : o, limit);
+      moves.set(j, to);
+      next = to;
+      nextOld = o;
+    }
+    return { moves, floor, kernel: (o: number) => Math.max(0, (g(t0 - o) - gF) / (1 - gF)) };
+  };
+
+  /** Neighbouring ticks keep their order and at least min(30 ms, their
+   *  original gap) between them. */
+  const expectBuffered = (old: Map<number, number>, now: Map<number, number>) => {
+    const ixs = [...now.keys()].sort((a, b) => a - b);
+    for (let n = 1; n < ixs.length; n++) {
+      const [a, b] = [ixs[n - 1], ixs[n]];
+      if (b !== a + 1) continue;
+      const want = Math.min(0.03, old.get(b)! - old.get(a)!);
+      expect(now.get(b)! - now.get(a)!, `gap ${a}→${b}`).toBeGreaterThanOrEqual(want - 1e-9);
+    }
+  };
+
+  test('43.52 Bend (0.6 s by default): a short BACKWARD drag bends the ticks behind by a one-sided Gaussian that reaches zero 4σ back, previewed live, nothing further back moves, only the span ahead goes to the worker, and undo restores every onset', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    expect(await page.inputValue('#fix-bend')).toBe('0.6');
+    expect((await fixState(page)).bendSec).toBe(0.6);
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 12; k++) await page.click('.fix-onset-next');
+    const i = (await fixState(page)).selEventIx;
+    const t0 = await fullTables(page);
+    const old = await tickTimes(page);
+    const h = await pressSelectedTick(page);
+    const gix = h.st.selGroup;
+    const tSel = old.get(gix)!;
+    // Short of the tick behind and well under 1.65σ: no clamp is needed.
+    const back = Math.min(0.15, 0.5 * (tSel - old.get(gix - 1)!));
+    await page.mouse.move(h.xAt(tSel - back), h.y, { steps: 3 });
+    await page.waitForFunction(
+      () => ((window as any)._listenTest.fix.dragPushed || []).length > 0,
+    );
+    const preview = [...(await fixState(page)).dragPushed].sort((a: number, b: number) => a - b);
+    await releaseTick(page);
+
+    const st = await fixState(page);
+    expect(st.dragPushed).toBeNull();
+    expect(st.corrections.anchors).toHaveLength(1);
+    const a = st.corrections.anchors[0];
+    expect(a.i).toBe(i);
+    expect(a.t).toBeLessThan(tSel);
+    const { moves, floor, kernel } = expectedBend(old, gix, a.t, 0.6);
+    expect(moves.size).toBeGreaterThan(1);
+    expect(Math.min(...old.values()), 'the page reaches past the bend').toBeLessThan(floor);
+    const now = await tickTimes(page);
+    let lastShift = 0;
+    for (const j of [...old.keys()].filter((j) => j < gix).sort((x, y) => x - y)) {
+      const o = old.get(j)!;
+      if (o <= floor) {
+        expect(now.get(j), `tick ${j} beyond the bend`).toBe(o);
+        continue;
+      }
+      expect(now.get(j), `tick ${j}`).toBeCloseTo(moves.get(j)!, 9);
+      // No clamp bit: the closed form, and the shift grows toward the drag.
+      expect(now.get(j)! - o, `tick ${j} closed form`).toBeCloseTo((a.t - tSel) * kernel(o), 9);
+      const shift = o - now.get(j)!;
+      expect(shift).toBeGreaterThanOrEqual(lastShift);
+      lastShift = shift;
+    }
+    // The preview showed exactly where the release put them.
+    const landed = [...moves.keys()].map((j) => now.get(j)!).sort((x, y) => x - y);
+    expect(preview).toHaveLength(landed.length);
+    preview.forEach((p: number, n: number) => expect(p).toBeCloseTo(landed[n], 2));
+    const t1 = await fullTables(page);
+    for (let e = 1; e < t1.on.length; e++) {
+      expect(t1.on[e], `order at ${e}`).toBeGreaterThanOrEqual(t1.on[e - 1]);
+    }
+    const posted = await realignsPosted(page);
+    expect(posted).toHaveLength(1);
+    expect(posted[0].iA).toBe(i);
+
+    await page.click('#undo-btn');
+    const t2 = await fullTables(page);
+    expect(t2.on).toEqual(t0.on);
+    expect(t2.off).toEqual(t0.off);
+  });
+
+  test('43.53 a LONG backward drag never flips a tick: past ~1.65σ the bend alone would reverse neighbours, and the clamps keep every tick in order at its buffer', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.selectOption('#fix-bend', '0.2');
+    await page.click('#fix-replay-off');
+    // Onset 23: two ticks 38 ms apart sit 0.29 and 0.33 s behind it, inside 4σ.
+    for (let k = 0; k < 23; k++) await page.click('.fix-onset-next');
+    const t0 = await fullTables(page);
+    const old = await tickTimes(page);
+    const h = await pressSelectedTick(page);
+    const gix = h.st.selGroup;
+    const tSel = old.get(gix)!;
+    const back = 1.0; // 5σ
+    expect(tSel - back, 'room on the page').toBeGreaterThan(Math.min(...old.values()) + 0.3);
+    // The premise: the raw bend would reverse at least one pair.
+    const sigma = 0.2;
+    const { kernel } = expectedBend(old, gix, tSel - back, sigma);
+    const raw = [...old.keys()].filter((j) => j < gix).sort((x, y) => x - y);
+    const flips = raw.slice(1).filter((j) => {
+      const at = (x: number) => old.get(x)! - back * kernel(old.get(x)!);
+      return at(j) < at(j - 1);
+    });
+    expect(flips.length, 'the raw bend flips a pair').toBeGreaterThan(0);
+
+    await page.mouse.move(h.xAt(tSel - back), h.y, { steps: 6 });
+    await releaseTick(page);
+    const st = await fixState(page);
+    const a = st.corrections.anchors[0];
+    const want = expectedBend(old, gix, a.t, sigma).moves;
+    expect(want.size).toBeGreaterThan(1);
+    const now = await tickTimes(page);
+    for (const [j, o] of old) {
+      if (j >= gix) continue;
+      expect(now.get(j), `tick ${j}`).toBeCloseTo(want.get(j) ?? o, 9);
+    }
+    expectBuffered(old, now);
+    const t1 = await fullTables(page);
+    for (let e = 1; e < t1.on.length; e++) {
+      expect(t1.on[e], `order at ${e}`).toBeGreaterThanOrEqual(t1.on[e - 1]);
+    }
+    await page.click('#undo-btn');
+    expect((await fullTables(page)).on).toEqual(t0.on);
+  });
+
+  test('43.54 the bend reaches exactly zero at an anchor behind: the anchor and every tick before it keep their times, the ticks between bend less the nearer they are to it; Bend is sticky across exit and re-entry', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.selectOption('#fix-bend', '1.8');
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 6; k++) await page.click('.fix-onset-next');
+    await page.keyboard.press('Enter'); // approve: an anchor at its own time
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    const old = await tickTimes(page);
+    const gix = (await fixState(page)).selGroup;
+    const anchorIx = gix - 4;
+    const anchorT = old.get(anchorIx)!;
+    expect(old.get(gix)! - anchorT, 'the anchor sits inside 4σ').toBeLessThan(4 * 1.8);
+    const h = await pressSelectedTick(page);
+    const back = 0.3; // past the tick behind (94 ms here): bent and pushed
+    await page.mouse.move(h.xAt(old.get(gix)! - back), h.y, { steps: 3 });
+    await releaseTick(page);
+    const st = await fixState(page);
+    const dragged = st.corrections.anchors.find((a: any) => a.kind === 'drag');
+    const { moves, floor } = expectedBend(old, gix, dragged.t, 1.8, new Set([anchorIx]));
+    expect(floor).toBe(anchorT);
+    const now = await tickTimes(page);
+    for (const [j, o] of old) {
+      if (j > anchorIx) continue;
+      expect(now.get(j), `tick ${j} at or before the anchor`).toBe(o);
+    }
+    let lastShift = 0;
+    for (let j = anchorIx + 1; j < gix; j++) {
+      expect(now.get(j), `tick ${j}`).toBeCloseTo(moves.get(j)!, 9);
+      const shift = old.get(j)! - now.get(j)!;
+      expect(shift, `tick ${j} moved`).toBeGreaterThan(0);
+      expect(shift).toBeGreaterThan(lastShift);
+      lastShift = shift;
+    }
+    expectBuffered(old, now);
+
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await enterFix(page);
+    await waitLoopReady(page);
+    expect(await page.inputValue('#fix-bend')).toBe('1.8');
+  });
+
+  test('43.55 audio mode: Bend bends the projected ticks behind a backward drag the same way, the grid before the bend is untouched, only the span ahead goes to the worker, and undo restores the grid bit-exactly', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 12; k++) await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const before = await gridSnapshot(page);
+    const tg0: number[] = await page.evaluate(
+      (T) => (window as any)._listenTest.session.alignmentGrids[T].slice(),
+      TARGET_ROW,
+    );
+    const old = await tickTimes(page);
+    const h = await pressSelectedTick(page);
+    const gix = h.st.selGroup;
+    const tSel = old.get(gix)!;
+    const back = Math.min(0.15, 0.5 * (tSel - old.get(gix - 1)!));
+    await page.mouse.move(h.xAt(tSel - back), h.y, { steps: 3 });
+    await page.waitForFunction(
+      () => ((window as any)._listenTest.fix.dragPushed || []).length > 0,
+    );
+    await releaseTick(page);
+
+    const st = await fixState(page);
+    expect(st.chipState, st.chipText ?? '').not.toBe('error');
+    expect(st.gridAnchors).toHaveLength(1);
+    const a = st.gridAnchors[0];
+    const { moves } = expectedBend(old, gix, a.t, 0.6, new Set(), tg0[0]);
+    expect(moves.size).toBeGreaterThan(1);
+    // Bent ticks land on their targets through the grid's interpolation
+    // (within a raster step); ticks before the bend keep their projection.
+    const now = await tickTimes(page);
+    for (const [j, o] of old) {
+      if (j >= gix) continue;
+      if (moves.has(j)) expect(Math.abs(now.get(j)! - moves.get(j)!), `tick ${j}`).toBeLessThan(0.02);
+      else expect(now.get(j), `tick ${j}`).toBeCloseTo(o, 9);
+    }
+    const tg1: number[] = await page.evaluate(
+      (T) => (window as any)._listenTest.session.alignmentGrids[T].slice(),
+      TARGET_ROW,
+    );
+    // The grid follows the push map from the first tick left in place.
+    const stopT = Math.max(...[...old].filter(([j]) => j < gix && !moves.has(j)).map(([, t]) => t));
+    for (let k = 0; k < tg1.length && tg0[k] <= stopT; k++) expect(tg1[k], `sample ${k}`).toBe(tg0[k]);
+    for (let k = 1; k < tg1.length; k++) expect(tg1[k], `order at ${k}`).toBeGreaterThanOrEqual(tg1[k - 1]);
+    const posted = await page.evaluate(() =>
+      (window as any).__fixStub.posted.filter((p: any) => p.type === 'fix_target_realign'),
+    );
+    expect(posted).toHaveLength(1);
+    expect(posted[0].refA).toBeCloseTo(a.refT, 9);
+
+    await page.click('#undo-btn');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gridAnchors.length === 0);
+    expect((await gridSnapshot(page)).checksum).toBe(before.checksum);
+  });
+
+  /** The RGBA the tick canvas holds at the selected tick, mid-height. */
+  const selTickPixel = async (page: Page) =>
+    page.evaluate(() => {
+      const f = (window as any)._listenTest.fix;
+      const c = document.querySelector('.fix-ticks') as HTMLCanvasElement;
+      const x = Math.round(f.selTickX);
+      const d = c.getContext('2d')!.getImageData(x, Math.round(c.height / 3), 1, 1).data;
+      return [d[0], d[1], d[2], d[3]];
+    });
+
+  test('43.56 Enter anchors the selected tick and Enter again unanchors it; Backspace and Delete unanchor too; the times stay, each is one undo step, and a gap endpoint is left to G', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 3; k++) await page.click('.fix-onset-next');
+    const sum0 = await refChecksum(page);
+    const brown = await selTickPixel(page);
+    expect(brown[0], 'an unanchored tick is drawn brown').toBeGreaterThan(brown[2]);
+
+    await page.keyboard.press('Enter');
+    let st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    const violet = await selTickPixel(page);
+    expect(violet[2], 'an anchored tick is drawn violet').toBeGreaterThan(violet[0]);
+
+    await page.keyboard.press('Enter');
+    st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(0);
+    expect(st.corrections.headerPresent).toBe(false);
+    expect(st.lastCommit).toMatchObject({ kind: 'unanchor' });
+    expect(await refChecksum(page)).toEqual(sum0);
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: remove alignment anchor');
+    await page.click('#undo-btn');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(1);
+    await page.click('#redo-btn');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(0);
+
+    // A drag anchors; Backspace takes the anchor and keeps the dragged times.
+    await dragSelectedTick(page, 12);
+    const sumDragged = await refChecksum(page);
+    expect(sumDragged).not.toEqual(sum0);
+    expect((await fixState(page)).corrections.anchors).toHaveLength(1);
+    await page.keyboard.press('Backspace');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(0);
+    expect(await refChecksum(page)).toEqual(sumDragged);
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Delete');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(0);
+    expect(await refChecksum(page)).toEqual(sumDragged);
+
+    // A gap's endpoints belong to the gap.
+    await page.click('.fix-onset-next');
+    await page.keyboard.press('g');
+    st = await fixState(page);
+    expect(st.corrections.gapCount).toBe(1);
+    const gapAnchors = st.corrections.anchors.length;
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('Enter');
+    st = await fixState(page);
+    expect(st.corrections.gapCount).toBe(1);
+    expect(st.corrections.anchors).toHaveLength(gapAnchors);
+  });
+
+  test('43.57 a click on an anchored tick\'s base square unanchors it and keeps its time; a click higher up the line only selects, and a drag from the square still moves it', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    await dragSelectedTick(page, 12);
+    const sumDragged = await refChecksum(page);
+    const st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    const ticks = (await page.locator('.fix-ticks').boundingBox())!;
+    const lanes = (await page.locator('.fix-lanes').boundingBox())!;
+    const x = ticks.x + st.selTickX;
+    const ySquare = ticks.y + lanes.height - 5.5; // the square's centre, in the tick canvas
+
+    await page.mouse.click(x, ticks.y + 20);
+    expect((await fixState(page)).corrections.anchors, 'a click on the line').toHaveLength(1);
+
+    await page.mouse.click(x, ySquare);
+    const after = await fixState(page);
+    expect(after.corrections.anchors).toHaveLength(0);
+    expect(after.lastCommit).toMatchObject({ kind: 'unanchor' });
+    expect(await refChecksum(page)).toEqual(sumDragged);
+
+    await page.keyboard.press('Enter');
+    await page.mouse.move(x, ySquare);
+    await page.mouse.down();
+    await page.mouse.move(x + 14, ySquare, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForFunction(() => {
+      const f = (window as any)._listenTest.fix;
+      return !f.realignBusy && f.chipState !== 'realign';
+    });
+    const moved = await fixState(page);
+    expect(moved.corrections.anchors).toHaveLength(1);
+    expect(moved.corrections.anchors[0].kind).toBe('drag');
+    expect(await refChecksum(page)).not.toEqual(sumDragged);
+  });
+
+  test('43.58 with Auto-anchor off a drag moves its tick and re-aligns ahead but lays no anchor, so a later backward drag bends it; an anchored tick keeps its anchor when moved; undo and redo are exact; the switch is sticky', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    await page.uncheck('#fix-auto-anchor');
+    expect((await fixState(page)).autoAnchor).toBe(false);
+    for (let k = 0; k < 6; k++) await page.click('.fix-onset-next');
+    const sum0 = await refChecksum(page);
+    const gix = (await fixState(page)).selGroup;
+    await dragSelectedTick(page, 10);
+    let st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(0);
+    expect(st.corrections.headerPresent).toBe(false);
+    expect(st.lastCommit).toMatchObject({ kind: 'drag' });
+    expect(await realignsPosted(page), 'the span ahead still re-aligns').toHaveLength(1);
+    const sumFree = await refChecksum(page);
+    expect(sumFree).not.toEqual(sum0);
+    await page.click('#undo-btn');
+    expect(await refChecksum(page)).toEqual(sum0);
+    await page.click('#redo-btn');
+    expect(await refChecksum(page)).toEqual(sumFree);
+    expect((await fixState(page)).corrections.anchors, 'redo lays no anchor').toHaveLength(0);
+
+    // The freed tick is fair game for the next fix's bend.
+    const freed = (await tickTimes(page)).get(gix)!;
+    await page.click('.fix-onset-next');
+    const h = await pressSelectedTick(page);
+    await page.mouse.move(h.xAt(h.st.selT - 0.3), h.y, { steps: 3 });
+    await releaseTick(page);
+    expect((await tickTimes(page)).get(gix)!, 'the freed tick moved').toBeLessThan(freed);
+
+    // An anchored tick moved with Auto-anchor off stays anchored.
+    await page.keyboard.press('Enter');
+    st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    await dragSelectedTick(page, 10);
+    st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    expect(st.corrections.anchors[0].kind).toBe('drag');
+
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await enterFix(page);
+    await waitLoopReady(page);
+    expect(await page.isChecked('#fix-auto-anchor')).toBe(false);
+  });
+
+  test('43.59 neighbouring pages\' windows overlap: each reaches past the previous page\'s last tick and the next page\'s first; only the earlier pages\' ticks show, as ghosts that a click does not grab', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    const n = Math.min((await fixState(page)).pageCount, 3);
+    expect(n, 'the fixture has several pages').toBeGreaterThan(1);
+    const pages: { win: { t0: number; t1: number }; times: number[]; ghosts: number; ixs: number[] }[] = [];
+    for (let p = 1; p <= n; p++) {
+      const st = await fixState(page);
+      expect(st.page).toBe(p);
+      const finite = st.pageTicks.filter((q: any) => Number.isFinite(q.t));
+      pages.push({
+        win: st.stripWindow,
+        times: finite.map((q: any) => q.t),
+        ghosts: st.ghostTicksDrawn,
+        ixs: finite.map((q: any) => q.ix),
+      });
+      if (p < n) {
+        await page.keyboard.press('ArrowDown');
+        await page.waitForFunction((pp) => (window as any)._listenTest.fix.page === pp, p + 1);
+      }
+    }
+    for (let p = 0; p < n; p++) {
+      const { win, ghosts } = pages[p];
+      if (p > 0) {
+        expect(win.t0).toBeLessThanOrEqual(Math.max(...pages[p - 1].times) - 0.25 + 1e-6);
+        expect(win.t0, 'overlap with the page before').toBeLessThan(pages[p - 1].win.t1);
+      }
+      if (p < n - 1) {
+        expect(win.t1).toBeGreaterThanOrEqual(Math.min(...pages[p + 1].times) + 0.25 - 1e-6);
+      }
+      if (p === 0) expect(ghosts, 'page 1 ghosts nothing: no page before, none after').toBe(0);
+      else expect(ghosts, `page ${p + 1} shows the page before's ticks`).toBeGreaterThan(0);
+    }
+    // On the last page visited, the ghost of the page before is not grabbable:
+    // a press on it selects nothing of that page.
+    const st = await fixState(page);
+    const prevLast = Math.max(...pages[n - 2].times);
+    const box = (await page.locator('.fix-ticks').boundingBox())!;
+    const xGhost = box.x + prevLast * st.stripPps - st.stripScroll.left;
+    const nearest = Math.min(...pages[n - 1].times.map((t) => Math.abs(t - prevLast)));
+    if (nearest * st.stripPps > 10) {
+      await page.mouse.click(xGhost, box.y + 20);
+      const after = await fixState(page);
+      expect(pages[n - 2].ixs).not.toContain(after.selGroup);
+      expect(after.page).toBe(n);
+    }
+  });
+
+  test('43.60 the strip grows when a re-alignment moves the page\'s ticks off it, on that side only; undo and redo never shrink or shift it; a page change starts afresh', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    await page.click('.fix-onset-next');
+    const pageTimes = (st: any) => st.pageTicks.map((q: any) => q.t).filter((t: number) => Number.isFinite(t));
+    const before = await fixState(page);
+    const w0 = before.stripWindow;
+    expect(Math.min(...pageTimes(before))).toBeGreaterThanOrEqual(w0.t0);
+    // The second tick dragged back to the strip's left edge: the bend pushes
+    // the first out past it, by the left.
+    const box = (await page.locator('.fix-ticks').boundingBox())!;
+    const x0 = box.x + before.selTickX;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x0, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 1, y, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForFunction((g) => (window as any)._listenTest.fix.stripGrows > g, before.stripGrows);
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.realignBusy);
+    const grown = await fixState(page);
+    const w1 = grown.stripWindow;
+    expect(Math.min(...pageTimes(grown)), 'a tick had left by the left').toBeLessThan(w0.t0);
+    expect(w1.t1, 'the right edge holds').toBe(w0.t1);
+    expect(w1.t0).toBeLessThanOrEqual(Math.min(...pageTimes(grown)));
+    // Undo brings the ticks back inside: the strip holds still. Redo puts them
+    // where they were, inside the grown strip: still nothing moves.
+    for (const key of ['#undo-btn', '#redo-btn']) {
+      await page.click(key);
+      await page.waitForTimeout(150);
+      const st = await fixState(page);
+      expect(st.stripWindow, key).toEqual(w1);
+      expect(st.stripGrows, key).toBe(grown.stripGrows);
+    }
+    // A page change and back computes the window afresh from the ticks.
+    await page.keyboard.press('ArrowDown');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.page === 2);
+    await page.keyboard.press('ArrowUp');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.page === 1);
+    const fresh = await fixState(page);
+    expect(fresh.stripWindow.t0).toBeLessThanOrEqual(Math.min(...pageTimes(fresh)));
+    expect(fresh.stripWindow.t1).toBeGreaterThanOrEqual(Math.max(...pageTimes(fresh)));
+    expect(fresh.stripGrows).toBe(grown.stripGrows);
   });
 
   test('43.45 the refill ahead stops at the horizon (10 s here, or to the next anchor), and with nothing ahead its corner is where the aligned music ends, not the file\'s end', async ({

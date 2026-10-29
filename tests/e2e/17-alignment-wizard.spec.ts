@@ -64,9 +64,10 @@ test.describe('17. Alignment Wizard', () => {
     const rows = page.locator('#align-file-table tbody tr');
     await expect(rows).toHaveCount(3);
 
-    // One file should be auto-selected as reference
+    // No row is pre-selected: the reference is chosen automatically (spec 53)
     const refRadios = page.locator('#align-file-table input[type="radio"]:checked');
-    await expect(refRadios).toHaveCount(1);
+    await expect(refRadios).toHaveCount(0);
+    await expect(page.locator('#align-ref-auto')).toBeChecked();
   });
 
   // 17.4 Step 1 — change reference audio

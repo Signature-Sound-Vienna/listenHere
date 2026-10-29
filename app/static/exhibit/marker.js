@@ -380,6 +380,9 @@ export function createMarkerLayer({
       glass.classList.remove("is-offview");
       moveGlass(hookAnchor());
     }
+    // The hook is empty whenever the glass is anywhere but on it — in hand OR
+    // placed — and an empty hook is always the "put it away" target.
+    layer.classList.toggle("is-hook-empty", lifted || ix != null);
     paintTicks(ix);
     paintGhosts();
   };
@@ -547,10 +550,11 @@ export function createMarkerLayer({
   };
   document.addEventListener("pointerdown", onDocPointerDown, true);
 
-  // "Put it away": the empty hook is the removal target while the glass is in
-  // hand — tappable only then (CSS gates pointer-events on the layer state).
+  // "Put it away": the empty hook is the removal target whether the glass is
+  // in hand or placed on a waveform (user, 2026-10-20: not only in hand) —
+  // CSS gates pointer-events on the layer's is-hook-empty state.
   hook.addEventListener("click", () => {
-    if (!lifted) return;
+    if (!lifted && ix == null) return;
     if (ix != null) onRemove();
     settle();
   });

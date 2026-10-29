@@ -122,6 +122,17 @@
                 <th title="Ignore audio at the start or end of this recording that has no counterpart in the reference. Follows the setting below until you change it here.">Trim ends</th></tr></thead>
               <tbody></tbody>
             </table>
+            <div id="align-ref-auto-row">
+              <label>
+                <input type="radio" name="ref" value="" id="align-ref-auto" checked />
+                Choose the reference automatically
+                <span class="preset-badge">recommended</span>
+              </label>
+              <p id="align-ref-auto-hint">
+                The recording the others agree with best, found once the files
+                are read. To choose one yourself, use the <em>Ref</em> column.
+              </p>
+            </div>
             <div id="align-open-ends-row">
               <label>
                 <input type="checkbox" id="align-open-ends-checkbox" checked />
@@ -202,12 +213,6 @@
               </div>
             </details>
           </div>
-          <div id="align-output-settings-row">
-            <label>
-              <input type="checkbox" id="align-include-params" checked />
-              Include alignment settings in output
-            </label>
-          </div>
         </div>
 
         <!-- ─── Tab 3: URIs ─── -->
@@ -257,6 +262,7 @@
           </div>
           <div id="align-results" style="display:none">
             <h3>Alignment complete!</h3>
+            <p id="align-ref-choice-report" hidden></p>
             <div id="align-open-ends-report"></div>
             <label id="align-label-row" title="Names the saved file, and helps find unsaved work again">
               <span>Name this session</span>
@@ -288,6 +294,7 @@
         <div id="fp-tabs">
           <button class="fp-tab active" data-tab="fp-tab-files">Load Files</button>
           <button class="fp-tab" data-tab="fp-tab-uris">Linked Data URIs</button>
+          <button class="fp-tab disabled" data-tab="fp-tab-add">Add Recordings</button>
         </div>
 
         <!-- Tab 1: Load Files -->
@@ -346,6 +353,66 @@
           <p id="ld-uri-empty-hint" class="ld-uri-hint" style="display:none;">
             Load an alignment JSON first to configure Linked Data URIs.
           </p>
+        </div>
+
+        <!-- Tab 3: Add recordings to the loaded alignment -->
+        <div id="fp-tab-add" class="fp-tab-pane">
+          <p class="file-picker-hint">
+            Each recording you add is aligned to the reference,
+            <strong id="add-rec-ref"></strong>. The recordings already aligned
+            stay as they are.
+          </p>
+          <div id="add-rec-actions">
+            <button type="button" id="add-rec-files-btn">Choose Audio Files</button>
+            <input type="file" id="add-rec-input" multiple accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac,.opus" style="position:absolute;opacity:0;width:0;height:0;overflow:hidden;pointer-events:none;" />
+          </div>
+          <p class="file-picker-drop-hint">or drag &amp; drop audio files anywhere on this panel</p>
+          <p id="add-rec-ref-needed" class="add-rec-warning" hidden>
+            The reference recording, <strong id="add-rec-ref-needed-name"></strong>,
+            isn’t loaded in this session. Choose it as well: the new recordings
+            are aligned against it.
+          </p>
+          <table id="add-rec-table" hidden>
+            <thead><tr><th>File</th>
+              <th title="Ignore audio at the start or end of this recording that has no counterpart in the reference.">Trim ends</th>
+              <th></th></tr></thead>
+            <tbody id="add-rec-tbody"></tbody>
+          </table>
+          <details id="add-rec-params">
+            <summary>Alignment settings</summary>
+            <p id="add-rec-params-note"></p>
+            <button type="button" id="add-rec-params-restore" hidden>Restore original alignment settings</button>
+            <div id="add-rec-presets">
+              <label><input type="radio" name="add-rec-quality" value="fast" /> Fast</label>
+              <label><input type="radio" name="add-rec-quality" value="balanced" /> Balanced</label>
+              <label><input type="radio" name="add-rec-quality" value="hq" /> High quality</label>
+            </div>
+            <div id="add-rec-param-fields">
+              <label>Coarse factor
+                <select id="add-rec-coarse">
+                  <option value="1">1 (finest)</option>
+                  <option value="2">2</option>
+                  <option value="4">4 (coarsest)</option>
+                </select></label>
+              <label>Band slack <input type="number" id="add-rec-slack" min="40" max="240" step="10" /></label>
+              <label>Feature rate
+                <select id="add-rec-feature-rate">
+                  <option value="10">10 Hz</option>
+                  <option value="20">20 Hz</option>
+                </select></label>
+            </div>
+          </details>
+          <div id="add-rec-run-row">
+            <button type="button" id="add-rec-start" disabled>Align and Add</button>
+          </div>
+          <div id="add-rec-progress" hidden>
+            <div id="add-rec-progress-bar-container"><div id="add-rec-progress-bar"></div></div>
+            <p id="add-rec-progress-text"></p>
+          </div>
+          <p id="add-rec-result" role="status"></p>
+          <div id="add-rec-save-row" hidden>
+            <button type="button" id="add-rec-save">Save data</button>
+          </div>
         </div>
 
         <button type="button" id="file-picker-continue" style="display:none;">Continue</button>

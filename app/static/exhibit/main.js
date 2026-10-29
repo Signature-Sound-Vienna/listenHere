@@ -1080,7 +1080,16 @@ async function boot() {
       ? transport.activeFile
       : [...vp.strips.keys()].find((f) => targeted.has(f));
     if (!file) return null;
-    const target = ann.targets.find((t) => t.file === file);
+    const start = annotationStartOn(ann, file);
+    return start == null ? null : { file, time: start };
+  };
+  // Where an annotation starts on one recording: its earliest non-empty
+  // region there, from the payload's per-recording times — which carry the
+  // hand-placed overrides, so this is the annotation's own word, not a grid
+  // projection. null when the annotation does not target that recording.
+  const annotationStartOn = (ann, file) => {
+    const target = ann?.targets?.find((t) => t.file === file);
+    if (!target) return null;
     let start = null;
     for (const region of ann.regions || []) {
       const span = target.regionTimes?.[region.id];
@@ -1088,7 +1097,17 @@ async function boot() {
         start = span.start;
       }
     }
-    return start == null ? null : { file, time: start };
+    return start;
+  };
+  // Where this viewport's marker stands on `file`. A marker the Mark button
+  // put on an annotation lands on that annotation's own start on each
+  // recording it targets (user, 2026-10-20: a hand-placed override on one
+  // recording must hold when the reader switches to it); anywhere else, and
+  // for any other marker, it is the alignment's projection of its index. The
+  // two agree wherever region times are derived from the grid.
+  const markerTimeOn = (vp, file) => {
+    const anchored = vp.markerFromAnnotation ? annotationStartOn(vp.markerAnn, file) : null;
+    return anchored ?? getCorrespondingTime(exhibit.grids, file, vp.markerIx);
   };
 
   // ?marker=glass (week 4, ruled 2026-08-27): the SEMANTIC state — which
@@ -1149,10 +1168,11 @@ async function boot() {
   // reader placed by hand on the waveform is a moment they chose, and a chip
   // tap leaves it standing. Any hand placement, adoption, or removal ends the
   // following.
-  const placeMarker = (vp, file, time, { fromAnnotation = false } = {}) => {
+  const placeMarker = (vp, file, time, { fromAnnotation = false, ann = null } = {}) => {
     vp.markerIx = getClosestAlignmentIx(exhibit.grids, time, file);
     vp.markerFile = file;
     vp.markerFromAnnotation = fromAnnotation;
+    vp.markerAnn = fromAnnotation ? ann : null;
     vp.marker.setMarker(vp.markerIx, file);
     publishMarker(vp);
     syncGhosts();
@@ -1175,6 +1195,7 @@ async function boot() {
     vp.markerIx = other.ix;
     vp.markerFile = other.file;
     vp.markerFromAnnotation = false;
+    vp.markerAnn = null;
     vp.marker.setMarker(vp.markerIx, vp.markerFile);
     publishMarker(vp);
     syncGhosts();
@@ -1186,12 +1207,13 @@ async function boot() {
     vp.markerIx = null;
     vp.markerFile = null;
     vp.markerFromAnnotation = false;
+    vp.markerAnn = null;
     vp.marker.setMarker(null, null);
     publishMarker(vp);
     syncGhosts();
   };
   const markerSnapSwitch = (vp, file) => {
-    const landing = getCorrespondingTime(exhibit.grids, file, vp.markerIx);
+    const landing = markerTimeOn(vp, file);
     // A grid gap degrades to the aligned carry rather than a dead button.
     if (!Number.isFinite(landing)) return turns.request(vp.roomId, file, undefined);
     markerJump(vp, file, landing);
@@ -1311,7 +1333,10 @@ async function boot() {
         // The lens spans one strip top-to-bottom when placed.
         stripHeight: config.stripHeight,
         ixFor: (file, time) => getClosestAlignmentIx(exhibit.grids, time, file),
-        timeFor: (file, ix) => getCorrespondingTime(exhibit.grids, file, ix),
+        // This marker's own index is drawn where it lands (markerTimeOn);
+        // ghosts and a mid-drag hover are plain projections.
+        timeFor: (file, ix) =>
+          ix === vp.markerIx ? markerTimeOn(vp, file) : getCorrespondingTime(exhibit.grids, file, ix),
         // For the drag's client→local mapping: the viewport's own rotation
         // composed with the debug stage rotation (both right angles).
         rotationOf: () =>
@@ -1402,11 +1427,9 @@ async function boot() {
       showMark: config.marker === "glass",
       onMarkTap: (annId) => {
         if (!vp.marker) return;
-        const spot = jumpTarget(
-          vp.currentAnnotations?.find((a) => a.id === annId),
-          vp,
-        );
-        if (spot) placeMarker(vp, spot.file, spot.time, { fromAnnotation: true });
+        const ann = vp.currentAnnotations?.find((a) => a.id === annId);
+        const spot = jumpTarget(ann, vp);
+        if (spot) placeMarker(vp, spot.file, spot.time, { fromAnnotation: true, ann });
       },
       // What a chip tap MEANS depends on the layout, so the machine lives
       // here, not in the component. Below the strips (default): a plain focus
@@ -1461,11 +1484,9 @@ async function boot() {
           vp.markerFromAnnotation &&
           vp.shownId === annId
         ) {
-          const spot = jumpTarget(
-            vp.currentAnnotations?.find((a) => a.id === annId),
-            vp,
-          );
-          if (spot) placeMarker(vp, spot.file, spot.time, { fromAnnotation: true });
+          const ann = vp.currentAnnotations?.find((a) => a.id === annId);
+          const spot = jumpTarget(ann, vp);
+          if (spot) placeMarker(vp, spot.file, spot.time, { fromAnnotation: true, ann });
         }
         // Any tap is engagement: a pin (re-)arms its expiry clock, an
         // unfocus cancels it.

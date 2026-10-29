@@ -18,6 +18,8 @@
 // Pure apart from the storage object passed in, so every function here takes
 // it explicitly; listen.js owns the timing and the UI.
 
+import { addedRecordings } from "./additions.js";
+
 export const RECOVERY_PREFIX = "lh-recovery:";
 export const RECOVERY_FORMAT = 1;
 export const RECOVERY_MAX_COUNT = 20;
@@ -140,6 +142,9 @@ export function contentSignature(header, annotations) {
     markers: header?.markers ?? [],
     groupingTabs: header?.groupingTabs ?? null,
     activeTab: header?.activeTab ?? null,
+    // Recordings added mid-session are work too: a snapshot holding only
+    // those must still be offered, if only to say they were lost.
+    added: addedRecordings(header),
     annotations: annotations ?? [],
   });
 }
@@ -164,7 +169,9 @@ export function offersFor(storage, { fingerprint, currentId, loadedSignature }) 
  */
 export function restoredHeader(loadedHeader, snapHeader) {
   const h = { ...(snapHeader || {}) };
-  for (const k of ["ref", "meiUri", "alignmentParams", "createdBy", "createdAt"]) {
+  // additions and openEnds describe body entries: a snapshot's may name
+  // recordings the loaded file does not hold (see lostAdditions).
+  for (const k of ["ref", "meiUri", "alignmentParams", "createdBy", "createdAt", "additions", "openEnds"]) {
     if (loadedHeader && k in loadedHeader) h[k] = loadedHeader[k];
     else delete h[k];
   }
@@ -211,6 +218,8 @@ export function describeSnapshot(s, { labels = 3 } = {}) {
     nm + " marker" + (nm === 1 ? "" : "s"),
     anns.length + " annotation" + (anns.length === 1 ? "" : "s"),
   ];
+  const added = addedRecordings(s.header).length;
+  if (added) parts.push(added + " added recording" + (added === 1 ? "" : "s"));
   let text = parts.join(", ");
   const names = anns.map((a) => a.label).filter(Boolean);
   if (names.length) {

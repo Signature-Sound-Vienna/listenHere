@@ -93,8 +93,12 @@ const FIX_SCALE = 40;
  *  seconds, or this fraction of the span, whichever is larger. */
 const STRIP_PAD_SEC = 1.5;
 const STRIP_PAD_FRAC = 0.08;
+/** How far past the neighbouring pages' nearest ticks the strip window reaches. */
+const STRIP_NEIGHBOUR_SEC = 0.25;
 /** Tick hit radius for selecting an onset by clicking the strip (CSS px). */
 const TICK_HIT_PX = 8;
+/** Half the hit box around an anchored tick's 7 px base square (a click there unanchors). */
+const ANCHOR_GLYPH_HIT_PX = 6;
 /** Peak count for strip peaks derived from the bootstrap's decoded samples. */
 const STRIP_PEAK_COUNT = 8000;
 /** The aligner's sample rate — fix_begin expects ref samples at this rate. */
@@ -312,6 +316,10 @@ let _bendSec = 0.6;
 /** Its choices: off, then the legacy marker drag's Narrow / Medium / Wide
  *  (10 / 30 / 90 grid steps of 20 ms), and a wide one. */
 const BEND_CHOICES = [0, 0.2, 0.6, 1.8, 5];
+/** Whether a move (drag, nudge, S) anchors its tick. Off: the tick keeps its
+ *  new time but stays free, so a later fix may move it again; a tick already
+ *  anchored keeps its anchor, moved. Sticky. */
+let _autoAnchor = true;
 /** A user-resized strip (px) and lane weights; null = the CSS defaults. Both
  *  sticky, and both part of what the prewarm probe must reproduce. */
 let _stripHeightPx = null;
@@ -1934,6 +1942,17 @@ function _buildDom(contentEl, waveformsEl) {
   realignBtn.id = "fix-realign-btn";
   realignBtn.title =
     "Re-align the spans ahead of the fixes pinned since the last re-alignment (Shift+R)";
+  const [anchorRow] = _navCheckbox(
+    "fix-auto-anchor",
+    "Auto-anchor on drag",
+    "Anchor each moved tick (drag, Shift+arrows, S), so later fixes cannot move it. " +
+      "Off: the tick keeps its new time but stays free. Enter anchors the selected " +
+      "tick; Enter again, Backspace, Delete, or a click on its base square unanchors it.",
+    _autoAnchor,
+    (on) => {
+      _autoAnchor = on;
+    },
+  );
   realignBtn.addEventListener("mousedown", (e) => e.preventDefault());
   realignBtn.addEventListener("click", () => {
     _realignPending().catch((err) => console.error("fix mode: re-align failed:", err));
@@ -1979,7 +1998,7 @@ function _buildDom(contentEl, waveformsEl) {
   bendLabel.textContent = "Bend";
   bendLabel.title = bendSel.title;
   bendRow.append(bendLabel, bendSel);
-  fsEdits.body.append(undoRow, gapRow, autoRow, realignRow, horizonRow, bendRow);
+  fsEdits.body.append(undoRow, gapRow, anchorRow, autoRow, realignRow, horizonRow, bendRow);
   navBody.append(title, chip, fsScore.fs, fsPlayback.fs, fsSnap.fs, fsLanes.fs, fsEdits.fs);
   _borrowNavActions({ "undo-btn": undoRow, "redo-btn": undoRow }, fsEdits.body);
 
@@ -2594,27 +2613,75 @@ function _buildStrip(source) {
   _updateStripWindow();
 }
 
-/** The current page's reference-time window (span of its onsets + padding). */
-function _pageWindow() {
-  const f = _fix;
-  const times = _groupsOnPage(f.page)
+/** A page's tick times on the strip (finite ones only). */
+function _pageTimes(page) {
+  return _groupsOnPage(page)
     .map((g) => _groupStripTime(g))
     .filter((t) => Number.isFinite(t));
+}
+
+/**
+ * The current page's reference-time window: the span of its onsets plus
+ * padding, stretched to reach the previous page's last tick and the next
+ * page's first (plus STRIP_NEIGHBOUR_SEC), so neighbouring windows always
+ * overlap. The window is drawn from the alignment being fixed: where that
+ * runs ahead or behind by more than the padding, a page's first notes would
+ * otherwise sit beside audio that is not theirs, with theirs off the strip
+ * (the user's report, 2026-10-28; the time-domain form of repeating a
+ * page's last bar on the next).
+ */
+function _pageWindow() {
+  const f = _fix;
+  const times = _pageTimes(f.page);
   const duration = f.stripSource?.duration || 0;
   if (!times.length) return { t0: 0, t1: duration || 1 };
   let t0 = Math.min(...times);
   let t1 = Math.max(...times);
   const pad = Math.max(STRIP_PAD_SEC, (t1 - t0) * STRIP_PAD_FRAC);
-  return { t0: t0 - pad, t1: t1 + pad };
+  t0 -= pad;
+  t1 += pad;
+  const prev = f.page > 1 ? _pageTimes(f.page - 1) : [];
+  const next = f.page < f.pageCount ? _pageTimes(f.page + 1) : [];
+  if (prev.length) t0 = Math.min(t0, Math.max(...prev) - STRIP_NEIGHBOUR_SEC);
+  if (next.length) t1 = Math.max(t1, Math.min(...next) + STRIP_NEIGHBOUR_SEC);
+  return { t0, t1 };
 }
 
 /** Zoom + scroll the strip so the current page's window fills it. */
 function _updateStripWindow() {
+  const { t0, t1 } = _pageWindow();
+  _applyStripWindow(t0, t1);
+}
+
+/**
+ * After a re-alignment or an undo/redo hop: widen the strip only when some of
+ * the page's ticks have left it, on the side they left by. Never shrinks or
+ * shifts otherwise, so the view holds
+ * still under the hands through a run of fixes; a page change starts afresh
+ * (the user's report and ruling, 2026-10-29: the audio a page's last bar
+ * needed appeared only after paging away and back).
+ */
+function _growStripWindow() {
+  const f = _fix;
+  if (!f?.stripWindow) return;
+  const times = _pageTimes(f.page);
+  if (!times.length) return;
+  const { t0, t1 } = f.stripWindow;
+  const outLeft = Math.min(...times) < t0;
+  const outRight = Math.max(...times) > t1;
+  if (!outLeft && !outRight) return;
+  // Only the side a tick left by moves, out to where the page's fresh
+  // window would put that edge.
+  const fresh = _pageWindow();
+  f.stripGrows = (f.stripGrows || 0) + 1; // test surface
+  _applyStripWindow(outLeft ? Math.min(t0, fresh.t0) : t0, outRight ? Math.max(t1, fresh.t1) : t1);
+}
+
+function _applyStripWindow(t0, t1) {
   const f = _fix;
   if (!f.stripWS || !f.stripSource) return;
   const w = f.els.stripWs.clientWidth;
   if (!w) return;
-  const { t0, t1 } = _pageWindow();
   const span = Math.max(t1 - t0, 0.5);
   const pps = w / span;
   f.stripPps = pps;
@@ -2656,6 +2723,12 @@ function _scheduleRedraw() {
   f.raf = requestAnimationFrame(() => {
     if (!_fix) return;
     _fix.raf = 0;
+    // Checked here, not where the flag is set: the tick times (and in audio
+    // mode the projection) are current by the frame, and never mid-drag.
+    if (_fix.growPending && !_fix.drag) {
+      _fix.growPending = false;
+      _growStripWindow();
+    }
     _redrawOverlays();
   });
 }
@@ -2943,6 +3016,10 @@ function _layoutLaneBadge(f) {
  *  pulses, the strip's cursor says so, and the magnet button stands down. */
 function _setRealignBusy(f, on) {
   f.realignBusy = on;
+  if (!on) {
+    f.growPending = true; // the re-aligned ticks may have left the strip
+    _scheduleRedraw();
+  }
   f.els.strip?.classList.toggle("fix-realigning", on);
   const btn = document.getElementById("fix-snap-sel");
   if (btn) btn.disabled = on;
@@ -3591,6 +3668,11 @@ function _redrawOverlays() {
   const style = getComputedStyle(document.documentElement);
   const tickColor =
     style.getPropertyValue("--color-alignment").trim() || "rgb(140,90,90)";
+  // Anchored ticks wear their own colour, chosen per theme as the most distinct
+  // from the ticks, both playheads, the waveform, the pending band, and the
+  // spectrogram ramp, the three dichromacies included (violet on the light
+  // themes, cyan on Dark and Nord).
+  const anchorColor = style.getPropertyValue("--color-alignment-anchor").trim() || "#4e1ca8";
 
   // Connectors rebuilt wholesale — a page has at most a few hundred onsets.
   const conn = f.els.conn;
@@ -3681,6 +3763,31 @@ function _redrawOverlays() {
     for (const m of _pushPlan(dr.groupIx, dr.curT).moves) pushed.set(f.groups[m.ix], m.to);
   }
   f.dragPushed = dr ? [...pushed.values()] : null; // test surface
+  // The earlier pages' ticks inside the window, as ghosts: dashed, faint, not
+  // grabbable — where the page before ended. Only the pages before: a later
+  // page's ticks that a misalignment crowds into this window would otherwise
+  // bury the page's own (the user's ruling, 2026-10-29). They follow a drag's
+  // push preview like the page's own.
+  let ghosts = 0;
+  ctx.setLineDash([2, 3]);
+  ctx.lineWidth = 1;
+  for (let p = f.page - 2; p < f.page; p++) {
+    if (p < 1) continue;
+    for (const g of _groupsOnPage(p)) {
+      const t = pushed.get(g) ?? _groupStripTime(g);
+      const x = Number.isFinite(t) ? _timeToStripX(t) : null;
+      if (x === null || x < -1 || x > w + 1) continue;
+      ctx.globalAlpha = 0.3;
+      ctx.strokeStyle = _groupAnchored(g) ? anchorColor : tickColor;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, wb);
+      ctx.stroke();
+      ghosts++;
+    }
+  }
+  ctx.setLineDash([]);
+  f.ghostTicksDrawn = ghosts; // test surface
   ctx.globalAlpha = 1;
 
   for (const g of pageGroups) {
@@ -3697,10 +3804,11 @@ function _redrawOverlays() {
         : findAnchor(_corrections, _anchorEventOf(g));
     // Tick: the vertical line on the strip — the loop's drag handle.
     if (x >= -1 && x <= w + 1) {
+      const col = anchor ? anchorColor : tickColor;
       ctx.beginPath();
-      ctx.lineWidth = selected || anchor || multi ? 2 : 1;
-      ctx.strokeStyle = tickColor;
-      ctx.globalAlpha = selected || dragging || multi ? 0.95 : anchor ? 0.7 : 0.35;
+      ctx.lineWidth = selected || anchor || multi || dragging ? 2 : 1;
+      ctx.strokeStyle = col;
+      ctx.globalAlpha = selected || dragging || multi ? 0.95 : anchor ? 0.8 : 0.35;
       ctx.moveTo(x, 0);
       ctx.lineTo(x, wb);
       ctx.stroke();
@@ -3709,13 +3817,13 @@ function _redrawOverlays() {
         // belongs to the playhead alone, and the two sat at the same height
         // in the same few pixels.
         ctx.globalAlpha = 0.95;
-        ctx.fillStyle = tickColor;
+        ctx.fillStyle = col;
         ctx.fillRect(x - 5, 0, 10, 3);
       } else if (multi) {
         // The multi-selection's members wear the cap in outline.
         ctx.globalAlpha = 0.95;
         ctx.lineWidth = 1.5;
-        ctx.strokeStyle = tickColor;
+        ctx.strokeStyle = col;
         ctx.strokeRect(x - 4.5, 0.75, 9, 2.5);
       }
       if (anchor) {
@@ -3723,6 +3831,7 @@ function _redrawOverlays() {
         // open square for an approve (zero-drag) anchor, and a bracket facing
         // the unscored audio for a gap endpoint.
         ctx.globalAlpha = 0.95;
+        ctx.strokeStyle = col;
         ctx.beginPath();
         if (anchor.kind === "gap") {
           const dir = _corrections.gaps.some((gp) => gp.i === anchor.i) ? 1 : -1;
@@ -3738,7 +3847,7 @@ function _redrawOverlays() {
             ctx.lineWidth = 1.6;
             ctx.stroke();
           } else {
-            ctx.fillStyle = tickColor;
+            ctx.fillStyle = col;
             ctx.fill();
           }
         }
@@ -3814,7 +3923,7 @@ function _redrawOverlays() {
       const x = _timeToStripX(_refToTarget(a.refT));
       if (x === null || x < -4 || x > w + 4) continue;
       ctx.globalAlpha = 0.8;
-      ctx.strokeStyle = tickColor;
+      ctx.strokeStyle = anchorColor;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x, wb - 16);
@@ -3826,7 +3935,7 @@ function _redrawOverlays() {
         ctx.lineWidth = 1.6;
         ctx.stroke();
       } else {
-        ctx.fillStyle = tickColor;
+        ctx.fillStyle = anchorColor;
         ctx.fill();
       }
       freeAnchors++;
@@ -4054,11 +4163,21 @@ function _onTickMouseDown(e) {
   // the first error is how the first real-corpus run got stuck).
   const editable = f.engineReady && !f.realignBusy;
   const t0 = _groupStripTime(f.groups[hit]);
+  // A press on an anchored tick's base square: released without moving, it
+  // unanchors (a drag from it is still a drag).
+  const y = e.clientY - rect.y;
+  const wb = _lanesBottomY();
+  const onGlyph =
+    _groupAnchored(f.groups[hit]) &&
+    !_gapAtGroup(f.groups[hit]) &&
+    Math.abs(_timeToStripX(t0) - x) <= ANCHOR_GLYPH_HIT_PX &&
+    Math.abs(y - (wb - 5.5)) <= ANCHOR_GLYPH_HIT_PX; // the 7 px square's centre
   f.drag = {
     groupIx: hit,
     startX: e.clientX,
     startT: t0,
     curT: t0,
+    onGlyph,
     moved: false,
     editable,
     bounds: editable ? _dragBounds(hit) : null,
@@ -4109,8 +4228,10 @@ function _onTickMouseUp(e) {
   if (!d) return;
   _endDrag(f);
   if (!d.moved) {
-    // A plain click: select (and seek to) the grabbed onset.
-    _select(d.groupIx, { seek: true });
+    // A plain click: select (and seek to) the grabbed onset — and, on an
+    // anchored tick's base square, unanchor it.
+    _select(d.groupIx, { seek: !d.onGlyph });
+    if (d.onGlyph) _unanchorGroup(d.groupIx);
     return;
   }
   if (!d.editable || !Number.isFinite(d.curT) || d.curT === d.startT) {
@@ -5743,8 +5864,15 @@ async function _commitAnchor(groupIx, t, kind) {
   }
   _setRealignBusy(f, false);
   f.lastCommit = { kind, i, t, realigned, linear: linearFilled, local: localFilled, degenerate };
+  // Auto-anchor off: the anchor that bounded the realign comes off again —
+  // the times stay, the tick is free. With nothing pinned, nothing waits.
+  if (kind === "drag" && !_autoAnchor && !entry.prevAnchor) {
+    entry.floating = true;
+    const at = _corrections.anchors.findIndex((a) => a.i === i);
+    if (at !== -1) _corrections.anchors.splice(at, 1);
+  }
   // Auto re-align off: the span ahead waits for Re-align (Shift+R).
-  const pending = !_autoRealign;
+  const pending = !_autoRealign && !entry.floating;
   if (pending) {
     entry.pendingAhead = true;
     _addPending(f, { i });
@@ -6035,7 +6163,12 @@ async function _commitGridAnchor(groupIx, t, kind) {
     local: localFilled,
     degenerate: 0,
   };
-  const pending = !_autoRealign;
+  if (kind === "drag" && !_autoAnchor && !entry.prevAnchor) {
+    entry.floating = true; // see _commitAnchor
+    const slot = targetSlot(_corrections, file, true);
+    slot.anchors = slot.anchors.filter((a) => Math.abs(a.refT - refT) > 1e-6);
+  }
+  const pending = !_autoRealign && !entry.floating;
   if (pending) {
     entry.pendingAhead = true;
     _addPending(f, { refT });
@@ -6303,11 +6436,18 @@ function _redoRealignData(entry) {
   _syncCorrectionsHeader();
 }
 
+/** Whether a history entry changes a target recording's grid (audio mode). */
+function _isGridEntry(entry) {
+  return (
+    entry.type === "fix-grid-anchor" ||
+    ((entry.type === "fix-realign" || entry.type === "fix-unanchor") && entry.mode === "audio")
+  );
+}
+
 /** Whether the open session is the one a history entry's pending spans
  *  belong to (the same mode, and in audio mode the same recording). */
 function _sessionOwns(f, entry) {
-  const audio =
-    entry.type === "fix-grid-anchor" || (entry.type === "fix-realign" && entry.mode === "audio");
+  const audio = _isGridEntry(entry);
   return audio ? f.mode === "audio" && f.targetFile === entry.file : f.mode !== "audio";
 }
 
@@ -6369,6 +6509,7 @@ function _redoGridEntryData(entry) {
     if (entry.own) grid[entry.own.k] = entry.own.after;
     _dirtyGridFiles.add(entry.file);
   }
+  if (entry.floating) return; // an auto-anchor-off move laid none
   const slot = targetSlot(_corrections, entry.file, true);
   slot.anchors = slot.anchors.filter((a) => Math.abs(a.refT - entry.refT) > 1e-6);
   slot.anchors.push({ refT: entry.refT, t: entry.t, kind: entry.kind, ts: null, i: entry.i, q: entry.q });
@@ -6380,6 +6521,92 @@ function _redoGridEntryData(entry) {
 function _pushCommitEntry(entry) {
   if (_batch) _batch.entries.push(entry);
   else pushFixUndoEntry(entry);
+}
+
+/**
+ * Unanchor a tick (Enter on an anchored tick, Backspace / Delete, or a click
+ * on its base square; the user's ruling, 2026-10-28): the anchor goes, the
+ * times stay, and the tick is free again for a later fix's bend, push, or
+ * re-alignment to move. A gap's endpoints belong to the gap: G removes it.
+ */
+function _unanchorGroup(groupIx) {
+  const f = _fix;
+  const g = f?.groups[groupIx];
+  if (!g) return false;
+  if (f.realignBusy) {
+    _announce(_notEditableWhy());
+    return false;
+  }
+  const audio = f.mode === "audio";
+  const i = audio ? g.eventIxs[0] : _anchorEventOf(g);
+  const a = audio
+    ? findTargetAnchor(_corrections, f.targetFile, scoreAlignment.ref_onset[i])
+    : findAnchor(_corrections, i);
+  if (!a) {
+    _announce("This onset is not anchored.");
+    return false;
+  }
+  if (a.kind === "gap") {
+    _announce("This onset bounds a gap: G removes the gap.");
+    return false;
+  }
+  const entry = {
+    type: "fix-unanchor",
+    mode: f.mode,
+    file: audio ? f.targetFile : null,
+    i,
+    refT: audio ? a.refT : null,
+    barHint: _barOfQuarter(f.qOn[i]),
+    removed: { ...a },
+    pendingAhead: false,
+    window: null,
+  };
+  const key = audio ? { refT: a.refT } : { i };
+  entry.pendingAhead = f.pending.some((p) =>
+    audio ? Math.abs(p.refT - a.refT) <= REF_T_EPS : p.i === i,
+  );
+  _unanchorData(entry, false);
+  if (entry.pendingAhead) _dropPending(f, key); // nothing pinned, nothing waits
+  _pushCommitEntry(entry);
+  f.lastCommit = { kind: "unanchor", i, t: a.t, realigned: 0, linear: 0, degenerate: 0 };
+  _syncRealignUi();
+  _scheduleRedraw();
+  _announce(
+    `Unanchored near bar ${entry.barHint ?? "?"}: it keeps its time, and later fixes may move it.`,
+  );
+  return true;
+}
+
+/** Take an unanchor entry's anchor off (redo) or put it back (undo). */
+function _unanchorData(entry, restore) {
+  if (entry.mode === "audio") {
+    const slot = targetSlot(_corrections, entry.file, true);
+    slot.anchors = slot.anchors.filter((a) => Math.abs(a.refT - entry.refT) > 1e-6);
+    if (restore) {
+      slot.anchors.push({ ...entry.removed });
+      slot.anchors.sort((a, b) => a.refT - b.refT);
+    }
+  } else {
+    const at = _corrections.anchors.findIndex((a) => a.i === entry.i);
+    if (at !== -1) _corrections.anchors.splice(at, 1);
+    if (restore) {
+      const ins = _corrections.anchors.findIndex((x) => x.i > entry.i);
+      if (ins === -1) _corrections.anchors.push({ ...entry.removed });
+      else _corrections.anchors.splice(ins, 0, { ...entry.removed });
+    }
+  }
+  _syncCorrectionsHeader();
+}
+
+/** An unanchor entry through history: the anchor, and its waiting span. */
+function _unanchorHop(entry, undo) {
+  _unanchorData(entry, undo);
+  const f = _fix;
+  if (entry.pendingAhead && f && _sessionOwns(f, entry)) {
+    const key = entry.mode === "audio" ? { refT: entry.refT } : { i: entry.i };
+    if (undo) _addPending(f, key);
+    else _dropPending(f, key);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -6931,6 +7158,12 @@ function _barOfQuarter(q) {
  * off-screen (the cluster-B nicety).
  */
 export function applyFixCorrectionUndo(entry) {
+  if (entry.type === "fix-unanchor") {
+    _unanchorHop(entry, true);
+    _afterHistoryHop(entry, "Undid");
+    _syncRealignUi();
+    return;
+  }
   if (entry.type === "fix-gap") {
     _undoGapEntry(entry);
     _afterHistoryHop(entry, "Undid");
@@ -6980,6 +7213,12 @@ function _undoEntryData(entry) {
 
 /** Apply the REDO of a fix-anchor entry: the after-values and the anchor. */
 export function applyFixCorrectionRedo(entry) {
+  if (entry.type === "fix-unanchor") {
+    _unanchorHop(entry, false);
+    _afterHistoryHop(entry, "Redid");
+    _syncRealignUi();
+    return;
+  }
   if (entry.type === "fix-gap") {
     _redoGapEntry(entry);
     _afterHistoryHop(entry, "Redid");
@@ -7022,6 +7261,7 @@ function _redoEntryData(entry) {
     refOn[entry.i] = entry.selfAfter.on;
     refOff[entry.i] = entry.selfAfter.off;
   }
+  if (entry.floating) return; // an auto-anchor-off move laid none
   // Re-lay the anchor (and re-dissolve any gap it had replaced).
   const at = _corrections.anchors.findIndex((a) => a.i === entry.i);
   if (at !== -1) _corrections.anchors.splice(at, 1);
@@ -7050,8 +7290,7 @@ function _batchWindow(batch) {
 
 function _afterHistoryHop(entry, verb, count = 1, win = null) {
   const f = _fix;
-  const gridEntry =
-    entry.type === "fix-grid-anchor" || (entry.type === "fix-realign" && entry.mode === "audio");
+  const gridEntry = _isGridEntry(entry);
   // A grid hop is visible only to a session on THAT recording; any other open
   // session neither shows nor plays it, so it is announced like an off-screen
   // hop and the main view catches up at exit.
@@ -7063,6 +7302,7 @@ function _afterHistoryHop(entry, verb, count = 1, win = null) {
     const w =
       win || (entry.window ? { t0: entry.window.t0, t1: entry.renderT1 ?? entry.window.t1 } : null);
     if (w) _auditionRerender(w.t0, w.t1);
+    f.growPending = true;
     _scheduleRedraw();
   } else {
     const where = entry.barHint ? `near bar ${entry.barHint}` : `at event ${entry.i}`;
@@ -7219,14 +7459,26 @@ function _onFixKeydown(e) {
         _commitPendingNudge();
         break;
       }
+      // Enter anchors the selected tick where it stands; Enter again unanchors.
       const g = f.groups[f.selGroupIx];
-      if (g) {
+      if (g && _groupAnchored(g) && !_gapAtGroup(g)) _unanchorGroup(f.selGroupIx);
+      else if (g) {
         _commitAnchor(f.selGroupIx, _groupStripTime(g), "approve").catch((err) =>
           console.error("fix mode: approve failed:", err),
         );
       }
       break;
     }
+    case "Backspace":
+    case "Delete":
+      if (e.altKey || e.shiftKey) {
+        handled = false;
+        break;
+      }
+      // A floating nudge is the move in hand: it is dropped, nothing else.
+      if (hadPendingNudge) _cancelPendingNudge();
+      else if (f.groups[f.selGroupIx]) _unanchorGroup(f.selGroupIx);
+      break;
     case "KeyR":
       if (e.altKey) {
         handled = false;
@@ -7585,6 +7837,7 @@ export function fixTestState() {
     targetReady: f.targetReady,
     targetInfo: f.targetInfo ? { ...f.targetInfo } : null,
     freeAnchorsDrawn: f.freeAnchorsDrawn ?? 0,
+    ghostTicksDrawn: f.ghostTicksDrawn ?? 0,
     gridAnchors: f.targetFile
       ? targetAnchors(_corrections, f.targetFile).map((a) => ({ ...a }))
       : [],
@@ -7631,6 +7884,7 @@ export function fixTestState() {
     autoRealign: _autoRealign,
     horizonSec: _horizonSec,
     bendSec: _bendSec,
+    autoAnchor: _autoAnchor,
     pending: f.pending.map((p) => ({ ...p })),
     pendingSpans: (f.pendingSpans || []).map((s) => ({ ...s })),
     dragPushed: f.dragPushed ? f.dragPushed.slice() : null,
@@ -7639,6 +7893,7 @@ export function fixTestState() {
     gapBands: f.gapBands ?? 0,
     relayouts: f.relayouts ?? 0,
     refits: f.refits ?? 0,
+    stripGrows: f.stripGrows ?? 0,
     lastLoading: f.lastLoading ? { ...f.lastLoading } : null,
     soundingGroup: f.soundingGroupIx,
     pageOnly: _pageOnly,

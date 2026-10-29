@@ -1,5 +1,14 @@
 # Listen Here! CHANGELOG.md
 
+### 0.101.0 -- Fix mode: anchors are easier to see and remove; pages overlap
+
+* Anchored ticks are drawn in their own colour per theme (violet on light themes, cyan or lavender on dark ones), apart from free ticks and the tick being dragged. Chosen for distance from everything else on the strip under the three dichromacies (Machado, Oliveira & Fernandes 2009), at WCAG 2.1 SC 1.4.11's 3:1 or better.
+* Enter on an anchored tick unanchors it; Backspace or Delete unanchors too, and a click on its square at the lanes' foot. The tick keeps its time but may be moved by later fixes (the bend, re-alignment ahead of a fix). Undoable. A gap's endpoints are still removed with G.
+* Auto-anchor on drag (on by default, sticky): off, a drag, nudge, or S moves the tick and re-aligns ahead without anchoring it. A tick already anchored stays anchored.
+* A page's window reaches 0.25 s past the neighbouring pages' nearest ticks, so a page whose notes run out before its audio still shows where the next page starts. The ticks of up to two pages before are drawn dashed and faint, and cannot be grabbed; later pages' ticks are not drawn.
+* After a re-alignment, undo, or redo, the strip widens when some of the page's ticks have left it, on that side only; otherwise it holds still. A page change fits it afresh.
+* Testing: 43.56–43.60.
+
 ### 0.100.0 -- The wizard chooses the reference
 
 * Choose the reference automatically, below the file table, is the new default: once the files are read, the recording the others agree with best becomes the reference. It is ranked by cycle consistency (Prätzlich & Müller's triple error, ICASSP 2016) over 1 Hz alignments between every pair of recordings, setting aside candidates on which more than 10 % of the others would fail the span guard. A row picked in the Ref column overrides it.

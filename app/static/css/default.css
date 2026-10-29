@@ -139,6 +139,8 @@
   /* alignment grid lines (base)  */
   --color-alignment-peak: #dc2828;
   /* alignment max-displacement   */
+  --color-alignment-anchor: #4e1ca8;
+  /* anchored ticks in fix mode   */
   --color-alignment-playhead: #6464c8;
   /* position indicator line      */
   --color-score-band: #4682e6;
@@ -235,6 +237,7 @@
   --color-outlier: #f07070;
   --color-alignment: #c07878;
   --color-alignment-peak: #ff4040;
+  --color-alignment-anchor: #7ef8fe;
   --color-alignment-playhead: #9090f8;
   --color-score-band: #6090f8;
   --color-group-bg: rgba(51, 65, 85, 0.60);
@@ -312,6 +315,7 @@
   --color-outlier: #cb4b16;
   --color-alignment: #cb4b16;
   --color-alignment-peak: #dc322f;
+  --color-alignment-anchor: #4e1ca8;
   --color-alignment-playhead: #6c71c4;
   --color-score-band: #268bd2;
   --color-group-bg: rgba(205, 201, 184, 0.40);
@@ -365,6 +369,7 @@
   --color-outlier: #8c5020;
   --color-alignment: #8c5a3a;
   --color-alignment-peak: #b04030;
+  --color-alignment-anchor: #4e1ca8;
   --color-alignment-playhead: #6060a0;
   --color-score-band: #5878b0;
   --color-group-bg: rgba(200, 185, 154, 0.35);
@@ -418,6 +423,7 @@
   --color-outlier: #c04020;
   --color-alignment: #a04828;
   --color-alignment-peak: #d03030;
+  --color-alignment-anchor: #4e1ca8;
   --color-alignment-playhead: #6050a0;
   --color-score-band: #4878c8;
   --color-group-bg: rgba(245, 196, 154, 0.35);
@@ -475,6 +481,7 @@
   --color-outlier: #ffb86c;
   --color-alignment: #ff79c6;
   --color-alignment-peak: #ff4444;
+  --color-alignment-anchor: #c9c2fc;
   --color-alignment-playhead: #bd93f9;
   --color-score-band: #8be9fd;
   --color-group-bg: rgba(68, 71, 90, 0.60);
@@ -543,6 +550,7 @@
   --color-outlier: #ffb878;
   --color-alignment: #e8b870;
   --color-alignment-peak: #ff8040;
+  --color-alignment-anchor: #b082f7;
   --color-alignment-playhead: #a0d8f8;
   --color-score-band: #80c8f8;
   --color-group-bg: rgba(46, 77, 34, 0.60);
@@ -611,6 +619,7 @@
   --color-outlier: #d08770;
   --color-alignment: #d08770;
   --color-alignment-peak: #bf616a;
+  --color-alignment-anchor: #7ef8fe;
   --color-alignment-playhead: #b48ead;
   --color-score-band: #88c0d0;
   --color-group-bg: rgba(67, 76, 94, 0.60);

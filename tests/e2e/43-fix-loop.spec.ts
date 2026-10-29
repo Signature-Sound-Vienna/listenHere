@@ -2985,6 +2985,267 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect((await gridSnapshot(page)).checksum).toBe(before.checksum);
   });
 
+  /** The RGBA the tick canvas holds at the selected tick, mid-height. */
+  const selTickPixel = async (page: Page) =>
+    page.evaluate(() => {
+      const f = (window as any)._listenTest.fix;
+      const c = document.querySelector('.fix-ticks') as HTMLCanvasElement;
+      const x = Math.round(f.selTickX);
+      const d = c.getContext('2d')!.getImageData(x, Math.round(c.height / 3), 1, 1).data;
+      return [d[0], d[1], d[2], d[3]];
+    });
+
+  test('43.56 Enter anchors the selected tick and Enter again unanchors it; Backspace and Delete unanchor too; the times stay, each is one undo step, and a gap endpoint is left to G', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 3; k++) await page.click('.fix-onset-next');
+    const sum0 = await refChecksum(page);
+    const brown = await selTickPixel(page);
+    expect(brown[0], 'an unanchored tick is drawn brown').toBeGreaterThan(brown[2]);
+
+    await page.keyboard.press('Enter');
+    let st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    const violet = await selTickPixel(page);
+    expect(violet[2], 'an anchored tick is drawn violet').toBeGreaterThan(violet[0]);
+
+    await page.keyboard.press('Enter');
+    st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(0);
+    expect(st.corrections.headerPresent).toBe(false);
+    expect(st.lastCommit).toMatchObject({ kind: 'unanchor' });
+    expect(await refChecksum(page)).toEqual(sum0);
+    await expect(page.locator('#undo-btn')).toHaveText('Undo: remove alignment anchor');
+    await page.click('#undo-btn');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(1);
+    await page.click('#redo-btn');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(0);
+
+    // A drag anchors; Backspace takes the anchor and keeps the dragged times.
+    await dragSelectedTick(page, 12);
+    const sumDragged = await refChecksum(page);
+    expect(sumDragged).not.toEqual(sum0);
+    expect((await fixState(page)).corrections.anchors).toHaveLength(1);
+    await page.keyboard.press('Backspace');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(0);
+    expect(await refChecksum(page)).toEqual(sumDragged);
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Delete');
+    expect((await fixState(page)).corrections.anchors).toHaveLength(0);
+    expect(await refChecksum(page)).toEqual(sumDragged);
+
+    // A gap's endpoints belong to the gap.
+    await page.click('.fix-onset-next');
+    await page.keyboard.press('g');
+    st = await fixState(page);
+    expect(st.corrections.gapCount).toBe(1);
+    const gapAnchors = st.corrections.anchors.length;
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('Enter');
+    st = await fixState(page);
+    expect(st.corrections.gapCount).toBe(1);
+    expect(st.corrections.anchors).toHaveLength(gapAnchors);
+  });
+
+  test('43.57 a click on an anchored tick\'s base square unanchors it and keeps its time; a click higher up the line only selects, and a drag from the square still moves it', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
+    await dragSelectedTick(page, 12);
+    const sumDragged = await refChecksum(page);
+    const st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    const ticks = (await page.locator('.fix-ticks').boundingBox())!;
+    const lanes = (await page.locator('.fix-lanes').boundingBox())!;
+    const x = ticks.x + st.selTickX;
+    const ySquare = ticks.y + lanes.height - 5.5; // the square's centre, in the tick canvas
+
+    await page.mouse.click(x, ticks.y + 20);
+    expect((await fixState(page)).corrections.anchors, 'a click on the line').toHaveLength(1);
+
+    await page.mouse.click(x, ySquare);
+    const after = await fixState(page);
+    expect(after.corrections.anchors).toHaveLength(0);
+    expect(after.lastCommit).toMatchObject({ kind: 'unanchor' });
+    expect(await refChecksum(page)).toEqual(sumDragged);
+
+    await page.keyboard.press('Enter');
+    await page.mouse.move(x, ySquare);
+    await page.mouse.down();
+    await page.mouse.move(x + 14, ySquare, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForFunction(() => {
+      const f = (window as any)._listenTest.fix;
+      return !f.realignBusy && f.chipState !== 'realign';
+    });
+    const moved = await fixState(page);
+    expect(moved.corrections.anchors).toHaveLength(1);
+    expect(moved.corrections.anchors[0].kind).toBe('drag');
+    expect(await refChecksum(page)).not.toEqual(sumDragged);
+  });
+
+  test('43.58 with Auto-anchor off a drag moves its tick and re-aligns ahead but lays no anchor, so a later backward drag bends it; an anchored tick keeps its anchor when moved; undo and redo are exact; the switch is sticky', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    await page.uncheck('#fix-auto-anchor');
+    expect((await fixState(page)).autoAnchor).toBe(false);
+    for (let k = 0; k < 6; k++) await page.click('.fix-onset-next');
+    const sum0 = await refChecksum(page);
+    const gix = (await fixState(page)).selGroup;
+    await dragSelectedTick(page, 10);
+    let st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(0);
+    expect(st.corrections.headerPresent).toBe(false);
+    expect(st.lastCommit).toMatchObject({ kind: 'drag' });
+    expect(await realignsPosted(page), 'the span ahead still re-aligns').toHaveLength(1);
+    const sumFree = await refChecksum(page);
+    expect(sumFree).not.toEqual(sum0);
+    await page.click('#undo-btn');
+    expect(await refChecksum(page)).toEqual(sum0);
+    await page.click('#redo-btn');
+    expect(await refChecksum(page)).toEqual(sumFree);
+    expect((await fixState(page)).corrections.anchors, 'redo lays no anchor').toHaveLength(0);
+
+    // The freed tick is fair game for the next fix's bend.
+    const freed = (await tickTimes(page)).get(gix)!;
+    await page.click('.fix-onset-next');
+    const h = await pressSelectedTick(page);
+    await page.mouse.move(h.xAt(h.st.selT - 0.3), h.y, { steps: 3 });
+    await releaseTick(page);
+    expect((await tickTimes(page)).get(gix)!, 'the freed tick moved').toBeLessThan(freed);
+
+    // An anchored tick moved with Auto-anchor off stays anchored.
+    await page.keyboard.press('Enter');
+    st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    await dragSelectedTick(page, 10);
+    st = await fixState(page);
+    expect(st.corrections.anchors).toHaveLength(1);
+    expect(st.corrections.anchors[0].kind).toBe('drag');
+
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await enterFix(page);
+    await waitLoopReady(page);
+    expect(await page.isChecked('#fix-auto-anchor')).toBe(false);
+  });
+
+  test('43.59 neighbouring pages\' windows overlap: each reaches past the previous page\'s last tick and the next page\'s first; only the earlier pages\' ticks show, as ghosts that a click does not grab', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    const n = Math.min((await fixState(page)).pageCount, 3);
+    expect(n, 'the fixture has several pages').toBeGreaterThan(1);
+    const pages: { win: { t0: number; t1: number }; times: number[]; ghosts: number; ixs: number[] }[] = [];
+    for (let p = 1; p <= n; p++) {
+      const st = await fixState(page);
+      expect(st.page).toBe(p);
+      const finite = st.pageTicks.filter((q: any) => Number.isFinite(q.t));
+      pages.push({
+        win: st.stripWindow,
+        times: finite.map((q: any) => q.t),
+        ghosts: st.ghostTicksDrawn,
+        ixs: finite.map((q: any) => q.ix),
+      });
+      if (p < n) {
+        await page.keyboard.press('ArrowDown');
+        await page.waitForFunction((pp) => (window as any)._listenTest.fix.page === pp, p + 1);
+      }
+    }
+    for (let p = 0; p < n; p++) {
+      const { win, ghosts } = pages[p];
+      if (p > 0) {
+        expect(win.t0).toBeLessThanOrEqual(Math.max(...pages[p - 1].times) - 0.25 + 1e-6);
+        expect(win.t0, 'overlap with the page before').toBeLessThan(pages[p - 1].win.t1);
+      }
+      if (p < n - 1) {
+        expect(win.t1).toBeGreaterThanOrEqual(Math.min(...pages[p + 1].times) + 0.25 - 1e-6);
+      }
+      if (p === 0) expect(ghosts, 'page 1 ghosts nothing: no page before, none after').toBe(0);
+      else expect(ghosts, `page ${p + 1} shows the page before's ticks`).toBeGreaterThan(0);
+    }
+    // On the last page visited, the ghost of the page before is not grabbable:
+    // a press on it selects nothing of that page.
+    const st = await fixState(page);
+    const prevLast = Math.max(...pages[n - 2].times);
+    const box = (await page.locator('.fix-ticks').boundingBox())!;
+    const xGhost = box.x + prevLast * st.stripPps - st.stripScroll.left;
+    const nearest = Math.min(...pages[n - 1].times.map((t) => Math.abs(t - prevLast)));
+    if (nearest * st.stripPps > 10) {
+      await page.mouse.click(xGhost, box.y + 20);
+      const after = await fixState(page);
+      expect(pages[n - 2].ixs).not.toContain(after.selGroup);
+      expect(after.page).toBe(n);
+    }
+  });
+
+  test('43.60 the strip grows when a re-alignment moves the page\'s ticks off it, on that side only; undo and redo never shrink or shift it; a page change starts afresh', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    await page.click('.fix-onset-next');
+    const pageTimes = (st: any) => st.pageTicks.map((q: any) => q.t).filter((t: number) => Number.isFinite(t));
+    const before = await fixState(page);
+    const w0 = before.stripWindow;
+    expect(Math.min(...pageTimes(before))).toBeGreaterThanOrEqual(w0.t0);
+    // The second tick dragged back to the strip's left edge: the bend pushes
+    // the first out past it, by the left.
+    const box = (await page.locator('.fix-ticks').boundingBox())!;
+    const x0 = box.x + before.selTickX;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(x0, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 1, y, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForFunction((g) => (window as any)._listenTest.fix.stripGrows > g, before.stripGrows);
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.realignBusy);
+    const grown = await fixState(page);
+    const w1 = grown.stripWindow;
+    expect(Math.min(...pageTimes(grown)), 'a tick had left by the left').toBeLessThan(w0.t0);
+    expect(w1.t1, 'the right edge holds').toBe(w0.t1);
+    expect(w1.t0).toBeLessThanOrEqual(Math.min(...pageTimes(grown)));
+    // Undo brings the ticks back inside: the strip holds still. Redo puts them
+    // where they were, inside the grown strip: still nothing moves.
+    for (const key of ['#undo-btn', '#redo-btn']) {
+      await page.click(key);
+      await page.waitForTimeout(150);
+      const st = await fixState(page);
+      expect(st.stripWindow, key).toEqual(w1);
+      expect(st.stripGrows, key).toBe(grown.stripGrows);
+    }
+    // A page change and back computes the window afresh from the ticks.
+    await page.keyboard.press('ArrowDown');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.page === 2);
+    await page.keyboard.press('ArrowUp');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.page === 1);
+    const fresh = await fixState(page);
+    expect(fresh.stripWindow.t0).toBeLessThanOrEqual(Math.min(...pageTimes(fresh)));
+    expect(fresh.stripWindow.t1).toBeGreaterThanOrEqual(Math.max(...pageTimes(fresh)));
+    expect(fresh.stripGrows).toBe(grown.stripGrows);
+  });
+
   test('43.45 the refill ahead stops at the horizon (10 s here, or to the next anchor), and with nothing ahead its corner is where the aligned music ends, not the file\'s end', async ({
     page,
   }) => {

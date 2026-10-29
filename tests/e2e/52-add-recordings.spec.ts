@@ -238,6 +238,10 @@ async function pickToAdd(page: Page, files: string[]) {
 }
 
 async function alignAndAdd(page: Page) {
+  // The wait below is 90 s, but a test's own cap is 30 s: under a full,
+  // loaded suite the Pyodide boot plus the alignment ran past it (52.9,
+  // 2026-10-29; 10/10 alone). Raise the cap so the wait can be used.
+  test.setTimeout(120_000);
   await page.click('#add-rec-start');
   // Real Pyodide: the first boot fetches the runtime.
   await expect(page.locator('#add-rec-result')).toContainText('Added', { timeout: 90_000 });
@@ -404,6 +408,7 @@ test.describe('52. add recordings — the listen view', () => {
 
 test.describe('52. add recordings — the wizard', () => {
   test('52.10 the settings are always written, and per-file open ends with them', async ({ page }) => {
+    test.setTimeout(120_000); // a real Pyodide alignment, as in alignAndAdd
     await page.goto('/?mode=align');
     await page.waitForLoadState('networkidle');
     await expect(page.locator('#align-include-params')).toHaveCount(0);

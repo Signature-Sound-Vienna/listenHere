@@ -130,6 +130,13 @@ MIN_SPAN_RATIO    = 0.6    # aligned target span / reference span, lower bound
 MAX_SPAN_RATIO    = 1.667  # ... and upper bound; outside either = degenerate
 SPAN_REPORT_EPS   = 0.25   # seconds; below this a trim is not worth reporting
 
+# Automatic reference choice (choose_reference). The rate is the caller's, so a
+# later preset can set it; the rest are the measured method's constants.
+REF_CHOICE_RATE_HZ  = 1.0  # pooled chroma rate the candidates are compared at
+REF_CHOICE_ERR_SEC  = 2.0  # composed and direct maps disagree by more = wrong
+REF_CHOICE_LEAP     = 2.5  # pooled frames per step; a faster step = a leap, wrong
+REF_CHOICE_GUARD_SHARE = 0.1  # drop a candidate more targets than this would fail
+
 
 def _apply_options():
     """Override module constants from JS _opt_* globals (if set)."""
@@ -882,6 +889,7 @@ _feature_total = 0
 _batch_open_ends = False     # global "ignore audio with no counterpart"
 _batch_open_by_file = {}     # per-file overrides; missing = follow the global
 _ref_span = None             # (from_sec, to_sec) of the reference's usable span
+_ref_choice = None           # how the reference was chosen, for the header
 
 
 def _open_ends_for(name):
@@ -893,16 +901,20 @@ def _open_ends_for(name):
 
 def begin_batch(ref_name, peak_count, score_mode, feature_total,
                 open_ends=False, open_by_file=None):
-    """Reset per-batch state at the start of a new alignment run."""
+    """Reset per-batch state at the start of a new alignment run.
+
+    An empty ref_name leaves the reference to choose_reference, after the
+    features are in."""
     global _chromas, _durations, _peaks_data, _ref_audio_copy
     global _batch_ref_name, _batch_peak_count, _batch_score_mode
     global _feature_count, _feature_total
-    global _batch_open_ends, _batch_open_by_file, _ref_span
+    global _batch_open_ends, _batch_open_by_file, _ref_span, _ref_choice
     _chromas = {}
     _durations = {}
     _peaks_data = {}
     _ref_audio_copy = None
     _batch_ref_name = str(ref_name)
+    _ref_choice = {"mode": "manual"} if _batch_ref_name else None
     _batch_peak_count = int(peak_count)
     _batch_score_mode = bool(score_mode)
     _feature_count = 0
@@ -993,6 +1005,174 @@ def _is_trimmed(name, entry):
     whole file is not worth reporting."""
     return (entry["alignedFrom"] > SPAN_REPORT_EPS
             or (_durations[name] - entry["alignedTo"]) > SPAN_REPORT_EPS)
+
+
+def _dtw_f32_rows(C, open_ends=False, entry_max=None, exit_min=None):
+    """_dtw_f32 with each row vectorised: same recursion, initialisation and
+    backtrack. D[i, j] = min(tmp[j], D[i, j-1] + C[i, j]) unrolls to
+    S[j] + min over k <= j of (tmp[k] - S[k]), S the row's cumulative cost, so
+    one np.minimum.accumulate replaces the inner loop (the prefix-min trick
+    _guided_band_dtw uses). Rounding differs (float64 scan, float32 store), so
+    an exact tie may break the other way; on 9 Radetzky and Donau pairs the
+    grids were identical. 15-20x faster, which choose_reference's N(N - 1)
+    DTWs need."""
+    N, M = C.shape
+    C = C.astype(np.float32, copy=False)
+    D = np.full((N, M), np.inf, dtype=np.float32)
+    emax = 0
+    if open_ends:
+        emax = M - 1 if entry_max is None else max(0, min(M - 1, int(entry_max)))
+        D[0, :emax + 1] = C[0, :emax + 1]
+        if emax + 1 < M:
+            D[0, emax + 1:] = (np.float64(D[0, emax])
+                               + np.cumsum(C[0, emax + 1:], dtype=np.float64)).astype(np.float32)
+    else:
+        D[0] = np.cumsum(C[0], dtype=np.float64).astype(np.float32)
+    D[1:, 0] = (D[0, 0] + np.cumsum(C[1:, 0], dtype=np.float64)).astype(np.float32)
+    S = np.zeros(M, dtype=np.float64)
+    for i in range(1, N):
+        prev = D[i - 1].astype(np.float64)
+        row = C[i].astype(np.float64)
+        tmp = np.empty(M, dtype=np.float64)
+        tmp[0] = D[i, 0]
+        tmp[1:] = row[1:] + np.minimum(prev[:-1], prev[1:])
+        S[1:] = np.cumsum(row[1:])
+        D[i] = (S + np.minimum.accumulate(tmp - S)).astype(np.float32)
+    if open_ends:
+        xmin = 0 if exit_min is None else max(0, min(M - 1, int(exit_min)))
+        i, j = N - 1, xmin + int(np.argmin(D[N - 1, xmin:]))
+    else:
+        i, j = N - 1, M - 1
+    pi, pj = [i], [j]
+    stop_j = 0 if not open_ends else emax
+    while i > 0 or j > stop_j:
+        if i == 0: j -= 1
+        elif j == 0: i -= 1
+        else:
+            d, v, h = float(D[i-1, j-1]), float(D[i-1, j]), float(D[i, j-1])
+            if d <= v and d <= h: i -= 1; j -= 1
+            elif v <= h: i -= 1
+            else: j -= 1
+        pi.append(i); pj.append(j)
+    pi.reverse(); pj.reverse()
+    return np.array([pi, pj])
+
+
+def _cycle_error(fa, fb, d, a0):
+    """One triple's disagreement: A -> R -> B (fa, fb: R's rows to A's and
+    B's pooled frames) against the direct A -> B (d: A's span rows, from pooled
+    frame a0, to B's frames). The share of arc length off by more than the
+    threshold or in a leap, plus the A material the composition never reaches."""
+    rows_a = fa - a0
+    inside = (rows_a >= 0) & (rows_a <= len(d) - 1)
+    if inside.sum() < 3:
+        return None
+    xa, xb = fa[inside], fb[inside]
+    err = xb - np.interp(rows_a[inside], np.arange(len(d)), d)
+    w = np.abs(np.diff(xa)) + np.abs(np.diff(xb))
+    e = np.maximum(np.abs(err[:-1]), np.abs(err[1:]))
+    thr = max(1.0, REF_CHOICE_ERR_SEC * _ref_choice_rate)
+    bad = (e > thr) | (np.diff(xa) > REF_CHOICE_LEAP) | (np.diff(xb) > REF_CHOICE_LEAP)
+    lost = 2 * (max(0.0, rows_a[inside][0]) + max(0.0, len(d) - 1 - rows_a[inside][-1]))
+    tot = w.sum() + lost
+    return (w[bad].sum() + lost) / tot if tot > 0 else 0.0
+
+
+_ref_choice_rate = REF_CHOICE_RATE_HZ
+
+
+def choose_reference(rate_hz=None):
+    """Pick the reference the other recordings agree on best, from the chroma
+    already extracted, and make it this batch's reference.
+
+    Cycle consistency: aligning A to B through a good reference R should land
+    where aligning A to B directly does. For every candidate R, the mean over
+    pairs A, B of how far A -> R -> B strays from A -> B: Prätzlich & Müller's
+    triple error (ICASSP 2016, pp. 266-270), used by Zalkow et al. (AES
+    Semantic Audio 2017) to judge alignment through an intermediate version;
+    here it ranks the intermediate. All maps come from one open-ended coarse DTW
+    per ordered pair on chroma pooled to rate_hz, with the wizard's open-ends
+    semantics (R's music span as rows, the target's entry and exit bounded by
+    its music span). A candidate on which more than REF_CHOICE_GUARD_SHARE of
+    the targets would fail the span guard is ranked after every other.
+
+    Measured 2026-10-28 against every-file-as-reference sweeps of seven corpora
+    (working-docs tools/reference-choice-2026-10-28): at 1 Hz it picked the
+    best of 57 Radetzky, 19 Pizzicato, and 16 Eljen references, and its worst
+    pick anywhere scored 0.004 above the best; the longest file, the old
+    default, ranked last on Radetzky and Pizzicato.
+
+    Fewer than three recordings have no triple: the longest file is kept.
+    Returns {mode, method, ref, rateHz?, scores?, excluded?} for the header.
+    """
+    global _batch_ref_name, _ref_choice, _ref_choice_rate
+    names = list(_chromas.keys())
+    n = len(names)
+    rate = float(rate_hz) if rate_hz else REF_CHOICE_RATE_HZ
+    _ref_choice_rate = rate
+    if n < 3:
+        ref = max(names, key=lambda k: _durations[k])
+        _batch_ref_name = ref
+        _ref_choice = {"mode": "automatic", "method": "longest", "ref": ref}
+        return _ref_choice
+
+    t0 = _time.time()
+    reportStep("reference", "start", "Choose reference", None, None, None)
+    P = max(1, int(round(FEATURE_RATE / rate)))
+    F = {}
+    for k in names:
+        ch = _chromas[k]
+        f0, f1 = detect_music_span(ch) if _open_ends_for(k) else (0, ch.shape[1] - 1)
+        F[k] = {"f0": f0 // P, "f1": f1 // P,
+                "ref": _pool_features(ch[:, f0:f1 + 1], P),
+                "tgt": _pool_features(ch, P)}
+
+    # Every ordered pair: R's span rows -> the target's pooled frames, and
+    # whether the path would pass the span guard.
+    maps, held = {}, {}
+    for ri, R in enumerate(names, start=1):
+        reportProgress(f"Choosing a reference: comparing {R} ({ri}/{n})")
+        rc = F[R]["ref"]
+        for T in names:
+            if T == R:
+                continue
+            oc = F[T]["tgt"]
+            C = (1.0 - rc.T @ oc).clip(0, 2).astype(np.float32)
+            if _open_ends_for(T):
+                wp = _dtw_f32_rows(C, open_ends=True, entry_max=F[T]["f0"],
+                                   exit_min=min(oc.shape[1] - 1, F[T]["f1"]))
+            else:
+                wp = _dtw_f32_rows(C)
+            jmax = np.zeros(rc.shape[1], dtype=np.int64)
+            np.maximum.at(jmax, wp[0], wp[1])
+            ratio = max(1, int(jmax[-1] - wp[1][0])) / max(1, rc.shape[1] - 1)
+            maps[(R, T)] = jmax.astype(np.float64)
+            held[(R, T)] = MIN_SPAN_RATIO <= ratio <= MAX_SPAN_RATIO
+
+    scores, excluded = {}, []
+    for R in names:
+        vals = []
+        for i, A in enumerate(names):
+            if A == R:
+                continue
+            for B in names[i + 1:]:
+                if B == R or not held[(A, B)]:
+                    continue
+                v = _cycle_error(maps[(R, A)], maps[(R, B)], maps[(A, B)], F[A]["f0"])
+                if v is not None:
+                    vals.append(v)
+        scores[R] = float(np.mean(vals)) if vals else 1.0
+        if np.mean([not held[(R, T)] for T in names if T != R]) > REF_CHOICE_GUARD_SHARE:
+            excluded.append(R)
+    ref = min(names, key=lambda k: (k in excluded, scores[k]))
+    _batch_ref_name = ref
+    _ref_choice = {
+        "mode": "automatic", "method": "cycle", "ref": ref, "rateHz": rate,
+        "scores": {k: round(v, 4) for k, v in scores.items()},
+        "excluded": excluded,
+    }
+    reportStep("reference", "done", "Choose reference", None, None, _time.time() - t0)
+    return _ref_choice
 
 
 def align_added_from_features(ref_span):
@@ -1101,6 +1281,8 @@ def align_all_from_features():
 
     reportProgress("Done!", 100)
     header = {"ref": ref_name}
+    if _ref_choice is not None:
+        header["referenceChoice"] = {k: v for k, v in _ref_choice.items() if k != "ref"}
     if _batch_open_ends or _batch_open_by_file:
         header["openEnds"] = {
             "enabled": bool(_batch_open_ends),
@@ -1870,6 +2052,13 @@ async function initPyodide() {
  *   main → worker: "feature" { name, samples, isRef }   (samples transferred)
  *   worker → main: "feature_done" { name }
  *
+ *   (an automatic reference: begin_batch had refName "")
+ *   main → worker: "choose_reference" { rateHz }
+ *   worker → main: "reference_chosen" { choice }   (choice.ref is the reference)
+ *   (and in score mode)
+ *   main → worker: "ref_audio" { samples }   (samples transferred)
+ *   worker → main: "ref_audio_done"
+ *
  *   main → worker: "align_all" { meiMidi, meiUri }
  *   worker → main: "result" { alignment }
  *
@@ -1966,6 +2155,32 @@ import gc
 gc.collect()
 `);
       self.postMessage({ type: "feature_done", name });
+      return;
+    }
+
+    if (e.data.type === "choose_reference") {
+      // An automatic reference: chosen from the extracted features, before
+      // align_all. The batch's reference becomes the choice.
+      const pyodide = await pyodideReady;
+      pyodide.globals.set("_ref_choice_rate_arg", e.data.rateHz || 0);
+      const choiceJson = await pyodide.runPythonAsync(`
+import json
+json.dumps(choose_reference(float(_ref_choice_rate_arg) or None))
+`);
+      self.postMessage({ type: "reference_chosen", choice: JSON.parse(choiceJson) });
+      return;
+    }
+
+    if (e.data.type === "ref_audio") {
+      // Score mode with an automatic reference: no file was the reference
+      // while the features streamed, so its samples arrive again here.
+      const pyodide = await pyodideReady;
+      pyodide.globals.set("_ref_audio_data", e.data.samples);
+      await pyodide.runPythonAsync(`
+_ref_audio_copy = np.frombuffer(_ref_audio_data.to_py(), dtype=np.float32).copy()
+del globals()['_ref_audio_data']
+`);
+      self.postMessage({ type: "ref_audio_done" });
       return;
     }
 

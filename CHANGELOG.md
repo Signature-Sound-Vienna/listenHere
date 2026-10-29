@@ -1,5 +1,14 @@
 # Listen Here! CHANGELOG.md
 
+### 0.100.0 -- The wizard chooses the reference
+
+* Choose the reference automatically, below the file table, is the new default: once the files are read, the recording the others agree with best becomes the reference. It is ranked by cycle consistency (Prätzlich & Müller's triple error, ICASSP 2016) over 1 Hz alignments between every pair of recordings, setting aside candidates on which more than 10 % of the others would fail the span guard. A row picked in the Ref column overrides it.
+* It replaces the longest file as the default, which ranked last of 57 Radetzky and of 19 Pizzicato references.
+* Measured in Pyodide: about 8 s for 57 three-minute recordings and 32 s for 60 eleven-minute ones. With a score, the chosen reference is decoded a second time.
+* With two recordings, the longer one is the reference.
+* The results name the chosen reference. `header.referenceChoice` records the mode (automatic or manual) and, for an automatic choice, the method, rate, each candidate's score, and those set aside.
+* Testing: 53.1–53.7; 17.2 updated.
+
 ### 0.99.1 -- Alignment: the fine pass no longer collapses into a straight line
 
 * The fine pass of an audio-to-audio pair could lose its path and come out as a straight line while the span guard reported success: after a passage the reference lacks, and where an open start ran along the reference's first frame. Measured on 5.9 % of Radetzky and 6.7 % of Donau pairs, now 0.7 % and 0.3 %. Saved alignments change only when re-aligned.

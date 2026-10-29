@@ -14,6 +14,7 @@ import {
 const TARGET_SR = 22050;
 
 let selectedFiles = []; // Array of File objects
+let _refPick = null; // the reference picked in the Ref column; null = automatic
 let alignmentResult = null;
 let currentTab = 1; // Active wizard tab: 1=Files, 2=Quality, 3=URIs, 4=Align
 let alignmentRunning = false; // true while worker is active
@@ -39,6 +40,11 @@ export const PRESETS = {
     featureRate: 20,
     scoreDownsample: 1,  },
 };
+
+// The automatic reference choice (the worker's choose_reference) compares the
+// recordings on chroma pooled to this rate. A parameter, not a constant of the
+// worker, so a later preset can set it.
+const REF_CHOICE_RATE_HZ = 1;
 
 const STORAGE_KEY = "listenHere_alignQuality";
 
@@ -311,16 +317,12 @@ function renderFileTable() {
     return;
   }
   container.style.display = "";
-  // Default reference = longest file by duration
-  let longestIdx = 0;
-  let longestDur = 0;
-  selectedFiles.forEach((f, i) => {
-    if ((f._duration || 0) > longestDur) {
-      longestDur = f._duration;
-      longestIdx = i;
-    }
-  });
-  selectedFiles.forEach((f, i) => {
+  // No row is checked by default: the reference is chosen automatically
+  // (the radio below the table) until a row is picked.
+  if (_refPick && !selectedFiles.some((f) => f.name === _refPick)) _refPick = null;
+  const autoRadio = document.getElementById("align-ref-auto");
+  if (autoRadio) autoRadio.checked = _refPick == null;
+  selectedFiles.forEach((f) => {
     const tr = document.createElement("tr");
     const tdName = document.createElement("td");
     tdName.textContent = f.name;
@@ -339,7 +341,10 @@ function renderFileTable() {
     radio.type = "radio";
     radio.name = "ref";
     radio.value = f.name;
-    if (i === longestIdx) radio.checked = true;
+    if (f.name === _refPick) radio.checked = true;
+    radio.addEventListener("change", () => {
+      if (radio.checked) _refPick = f.name;
+    });
     tdRef.appendChild(radio);
     const tdTrim = document.createElement("td");
     tdTrim.style.textAlign = "center";
@@ -433,7 +438,8 @@ async function startAlignment() {
     alert("Please select at least 2 audio files.");
     return;
   }
-  const refName = document.querySelector('input[name="ref"]:checked').value;
+  // "" = automatic: the worker chooses once the features are in.
+  let refName = _refPick || "";
   const openEnds = globalOpenEnds();
   const openEndsByFile = openEndsOverrides();
   const peaksChecked = document.getElementById("align-peaks-checkbox").checked;
@@ -526,7 +532,7 @@ async function startAlignment() {
       const key = d.phase + ":" + d.file;
       if (d.step === "start") {
         let label;
-        if (d.phase === "score") {
+        if (d.phase === "score" || d.phase === "reference") {
           label = d.file;
         } else {
           const phaseLabel = d.phase === "features" ? "Features" : "Align";
@@ -556,6 +562,15 @@ async function startAlignment() {
       if (w) {
         pendingWaiters.delete(k);
         w.resolve();
+      }
+    } else if (
+      e.data.type === "reference_chosen" ||
+      e.data.type === "ref_audio_done"
+    ) {
+      const w = pendingWaiters.get(e.data.type);
+      if (w) {
+        pendingWaiters.delete(e.data.type);
+        w.resolve(e.data.choice);
       }
     } else if (e.data.type === "result") {
       clearInterval(elapsedTimer);
@@ -615,6 +630,7 @@ async function startAlignment() {
       }
       const labelInput = document.getElementById("align-label-input");
       if (labelInput) labelInput.value = alignmentResult.header?.label || "";
+      renderReferenceReport(alignmentResult);
       renderOpenEndsReport(alignmentResult);
       progressBar.style.width = "100%";
       progressText.textContent = "";
@@ -715,6 +731,34 @@ async function startAlignment() {
       }%`;
     }
 
+    // --- An automatic reference: chosen from the features just extracted ---
+    if (!refName) {
+      if (workerFailed) return;
+      progressText.textContent = "Choosing a reference…";
+      const chosen = waitFor("reference_chosen");
+      worker.postMessage({ type: "choose_reference", rateHz: REF_CHOICE_RATE_HZ });
+      refName = (await chosen).ref;
+      // Score mode aligns the score to the reference's audio, and no file was
+      // the reference while the features streamed: decode it once more.
+      if (scoreMode) {
+        const f = selectedFiles.find((s) => s.name === refName);
+        const li = addStep(`Decode: ${f.name} (reference)`);
+        let samples;
+        try {
+          samples = await decodeAudio(f);
+          completeStep(li);
+        } catch (err) {
+          progressText.textContent = `Error decoding ${f.name}: ${err.message}`;
+          clearInterval(elapsedTimer);
+          worker.terminate();
+          return;
+        }
+        const refAudioDone = waitFor("ref_audio_done");
+        worker.postMessage({ type: "ref_audio", samples }, [samples.buffer]);
+        await refAudioDone;
+      }
+    }
+
     // --- Optionally fetch MEI and render to MIDI ---
     let meiMidi = null;
     _meiMidiVerovioVersion = null;
@@ -763,6 +807,19 @@ function formatTrim(secs) {
   const s = Math.round(secs);
   if (s < 90) return `${s} s`;
   return `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+
+/** Name the reference when the wizard chose it, so the choice can be checked. */
+function renderReferenceReport(result) {
+  const el = document.getElementById("align-ref-choice-report");
+  if (!el) return;
+  const choice = result?.header?.referenceChoice;
+  el.hidden = !choice || choice.mode !== "automatic";
+  if (el.hidden) return;
+  el.textContent =
+    choice.method === "cycle"
+      ? `Reference, chosen automatically: ${result.header.ref}, the recording the others agree with best.`
+      : `Reference, chosen automatically: ${result.header.ref}, the longest. Two recordings give nothing to compare.`;
 }
 
 /**
@@ -954,8 +1011,7 @@ function goPrev() {
 function buildSummary() {
   const el = document.getElementById("align-summary");
   if (!el) return;
-  const refRadio = document.querySelector('input[name="ref"]:checked');
-  const refName = refRadio ? refRadio.value : selectedFiles[0]?.name || "?";
+  const refName = _refPick || "chosen automatically";
   const presetRadio = document.querySelector(
     'input[name="align-quality"]:checked',
   );
@@ -1027,6 +1083,14 @@ export function initAlignPanel() {
   document
     .getElementById("align-start-btn")
     .addEventListener("click", startAlignment);
+
+  // The automatic reference: picking it undoes a pick in the Ref column.
+  const refAuto = document.getElementById("align-ref-auto");
+  if (refAuto) {
+    refAuto.addEventListener("change", () => {
+      if (refAuto.checked) _refPick = null;
+    });
+  }
 
   // Global "ignore audio with no counterpart" toggle. Rows that have never
   // been clicked follow it; rows that have been clicked keep their own value.

@@ -122,6 +122,17 @@
                 <th title="Ignore audio at the start or end of this recording that has no counterpart in the reference. Follows the setting below until you change it here.">Trim ends</th></tr></thead>
               <tbody></tbody>
             </table>
+            <div id="align-ref-auto-row">
+              <label>
+                <input type="radio" name="ref" value="" id="align-ref-auto" checked />
+                Choose the reference automatically
+                <span class="preset-badge">recommended</span>
+              </label>
+              <p id="align-ref-auto-hint">
+                The recording the others agree with best, found once the files
+                are read. To choose one yourself, use the <em>Ref</em> column.
+              </p>
+            </div>
             <div id="align-open-ends-row">
               <label>
                 <input type="checkbox" id="align-open-ends-checkbox" checked />
@@ -251,6 +262,7 @@
           </div>
           <div id="align-results" style="display:none">
             <h3>Alignment complete!</h3>
+            <p id="align-ref-choice-report" hidden></p>
             <div id="align-open-ends-report"></div>
             <label id="align-label-row" title="Names the saved file, and helps find unsaved work again">
               <span>Name this session</span>

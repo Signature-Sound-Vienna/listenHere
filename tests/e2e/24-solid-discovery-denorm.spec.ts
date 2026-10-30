@@ -126,7 +126,8 @@ async function installPod(
 /** Flip the default session to logged-in and list annotations for the audio. */
 async function listForAudio(page: Page) {
   return page.evaluate(async (audioUri) => {
-    const s = (window as any).solidClientAuthentication.default.getDefaultSession();
+    const sca = (window as any).solidClientAuthentication;
+    const s = (sca.default || sca).getDefaultSession();
     s.info.isLoggedIn = true;
     s.info.webId = 'https://pod.example/profile/card#me';
     return await (window as any).__annotationV6.listAnnotationsForAudio(audioUri);

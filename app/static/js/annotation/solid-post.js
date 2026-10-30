@@ -42,9 +42,11 @@ import * as adapter from "./mao-adapter.js";
 import { nsp } from "../linked-data.js";
 import {
   createResourceAtUri,
+  discoveryUriFor,
   establishContainers,
   establishDiscoveryResource,
   getSolidStorage,
+  newDiscoveryDocument,
   safelyPatchResource,
   selectionContainer,
   extractContainer,
@@ -75,9 +77,13 @@ function _invalidateContainersCache() {
   _discoveryCache.clear();
 }
 
+// Used by the update flow, which needs the resource to EXIST before it
+// reconciles it. Callers have awaited `_ensureContainers`, so the discovery
+// container is not checked again. The post flow does not come through here:
+// it needs only the URI, and creates the resource when it patches it.
 async function _ensureDiscoveryFor(audioUri) {
   if (_discoveryCache.has(audioUri)) return _discoveryCache.get(audioUri);
-  const r = await establishDiscoveryResource(audioUri);
+  const r = await establishDiscoveryResource(audioUri, { containerKnown: true });
   if (!r || !r.url) {
     throw new Error("Couldn't establish discovery resource for " + audioUri);
   }
@@ -90,28 +96,21 @@ function _invalidateDiscoveryFor(audioUri) {
 }
 
 /**
- * Fire-and-forget container + per-audio discovery establishment, called
- * after login so the first user-triggered post doesn't pay for the
- * ~3 round trips that `_ensureContainers` + `_ensureDiscoveryFor` would
- * otherwise add to its critical path. Safe to call repeatedly: cached
- * results short-circuit on the second call.
+ * Fire-and-forget container establishment, called after login so the first
+ * user-triggered post doesn't pay for it. Safe to call repeatedly: a cached
+ * result short-circuits on the second call.
  *
- * If we don't know the audio URIs yet (e.g. alignment hasn't loaded),
- * we just warm the containers and let discovery establish on demand.
+ * Per-audio discovery resources are deliberately NOT warmed here: one HEAD
+ * (and, for a new one, PUT) per loaded recording right after login overran
+ * solidcommunity.net's request limit. `_ensureDiscoveryFor` establishes
+ * them on demand, for the recordings a post targets.
  */
-export async function prewarmCaches(audioUris) {
+export async function prewarmCaches() {
   try {
     await _ensureContainers();
   } catch (err) {
     console.warn("[annotation/v6] prewarm: container establish failed", err);
   }
-  if (!Array.isArray(audioUris) || audioUris.length === 0) return;
-  await Promise.all(
-    audioUris.map(async (u) => {
-      try { await _ensureDiscoveryFor(u); }
-      catch (err) { console.warn("[annotation/v6] prewarm: discovery establish failed for", u, err); }
-    }),
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -331,10 +330,12 @@ export async function postAnnotationToSolid(annId, opts = {}) {
   const fileToAudioUri = _resolveAudioUris(ann);
 
   await _ensureContainers();
+  // Only the URIs: each discovery resource is created, if it is missing, when
+  // it is patched at the end (a GET that answers 404 becomes the creating PUT).
   const uniqueAudioUris = [...new Set(Object.values(fileToAudioUri))];
   const discoveryByAudio = {};
   for (const audioUri of uniqueAudioUris) {
-    discoveryByAudio[audioUri] = await _ensureDiscoveryFor(audioUri);
+    discoveryByAudio[audioUri] = await discoveryUriFor(audioUri);
   }
 
   const { templates } = adapter.serialize(ann, {
@@ -566,7 +567,9 @@ async function _patchDiscoveryResources(
         ...oaUris.map((o) => _datasetOp(datasetPath, o, nsp.OA + "Annotation")),
       ];
       try {
-        await safelyPatchResource(discoveryUri, ops);
+        await safelyPatchResource(discoveryUri, ops, 5, {
+          createIfMissing: () => newDiscoveryDocument(discoveryUri, audioUri),
+        });
       } catch (err) {
         // Discovery is for findability, not correctness — log but don't abort
         // the whole post over a patch failure.

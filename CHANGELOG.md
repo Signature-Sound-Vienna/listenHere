@@ -1,5 +1,18 @@
 # Listen Here! CHANGELOG.md
 
+### 0.103.1 -- Solid sign-in library 5.0.3; Dependabot alerts cleared; Solid requests stay within the pod's limit
+
+* `@inrupt/solid-client-authn-browser` 1.16.0 → 5.0.3. The vendored bundle shrinks from 424 KB to 104 KB; the old `oidc-client`, with its inlined `crypto-js` and `jsrsasign`, is gone.
+* `solid.js` and specs 23 and 24 read the API from `solidClientAuthentication.default` when present, else from the global itself (the 5.x bundle has no `.default`).
+* `app/static/npm`: `overrides` holds `undici` at `^6.28.0` (reached through `jsonld`, build-time only). `npm audit` reports 0 vulnerabilities.
+* `requirements.txt`: Flask 2.2.5 → 3.1.3, Werkzeug 3.0.6 → 3.1.6, Jinja2 3.1.2 → 3.1.6, itsdangerous 2.1.2 → 2.2.0, blinker 1.9.0 added. `Flask-CLI` is dropped (Flask has had its own CLI since 2.0), so only one `flask` script is installed.
+* `python-dotenv` stays at 1.0.0: 1.2.2 needs Python 3.10, and the code never calls `set_key`.
+* `solid.fetch` keeps within a pod host's request limit: at most 8 requests per 10 s to solidcommunity.net (`solid-fetch.js`; the figure is `hostLimits`), and a 429, or the bare network error a 429 without CORS headers becomes, is retried after a cool-down.
+* Signing in no longer establishes a discovery resource for every loaded recording (19 recordings drew 429s and a failed post); they are established when a post needs them.
+* Posting makes two requests fewer per recording: a discovery resource's URI is derived, not looked up, and the GET that patches it creates it when it is missing. A failure to create one is logged and skipped, as a patch failure already was, instead of stopping the post before anything is written.
+* `solid.js` defines the `log` it called (a ReferenceError hid every network error), and a missing discovery container fails with a clear message instead of a URL beginning `undefined`.
+* Testing: 54.1–54.11; 23 and 24 pass (9/9); the functional suite passes (570, 2 skipped).
+
 ### 0.103.0 -- Fix mode is standard; the active tick stands out
 
 * "Correct alignment…" shows for every alignment with a score, without `?fixMode`. A saved correction record is resumed on every load.

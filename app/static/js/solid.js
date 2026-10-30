@@ -9,6 +9,7 @@
 //} from './main.js';
 
 import { nsp, politeness } from "./linked-data.js";
+import { withLimitedFetch } from "./solid-fetch.js";
 
 import { storage, versionString } from "./listen.js";
 import { ensureRelativeURL } from "./utils.js";
@@ -23,11 +24,19 @@ import { ensureRelativeURL } from "./utils.js";
 // never running at all — which silently kills the entire listen UI (including
 // the local-file "Manage recordings" modal, which has no Solid dependency).
 // When unavailable, `solid` is null and Solid features degrade to no-ops.
-export const solid =
+// The 1.x bundle puts the API on `.default`; the 5.x bundle exports it directly.
+// `solid.fetch` keeps within the pod host's request limit (see solid-fetch.js).
+const solidLibrary =
   (typeof solidClientAuthentication !== "undefined" &&
     solidClientAuthentication &&
-    solidClientAuthentication.default) ||
+    (solidClientAuthentication.default || solidClientAuthentication)) ||
   null;
+export const solid = solidLibrary && withLimitedFetch(solidLibrary);
+
+// Never ported from mei-friend's main.js, where it wrote to the log pane: the
+// error branches below called an undefined `log`, so a network error became a
+// ReferenceError.
+const log = (...args) => console.warn(...args);
 
 // mei-friend resource containers (internal path within Solid storage)
 export const friendContainer = "at.ac.mdw.mei-friend/";
@@ -160,12 +169,37 @@ export async function createResourceAtUri(uri, body) {
  * we do this instead.
  */
 
-export async function safelyPatchResource(uri, patch, _retries = 5) {
+export async function safelyPatchResource(
+  uri,
+  patch,
+  _retries = 5,
+  options = {},
+) {
   const resp = await solid.fetch(uri, {
     headers: {
       Accept: "application/ld+json",
     },
   });
+  if (resp.status === 404 && options.createIfMissing) {
+    // The resource doesn't exist yet: create it from the supplied initial
+    // document with the patch applied. One GET and one PUT, where establishing
+    // it first (HEAD, then PUT) would have added a request.
+    const created = jsonpatch.applyPatch(
+      options.createIfMissing(),
+      patch,
+    ).newDocument;
+    const createResp = await solid.fetch(uri, {
+      method: "PUT",
+      headers: { "Content-Type": "application/ld+json" },
+      body: JSON.stringify(created),
+    });
+    if (createResp.status >= 400) {
+      console.warn("Couldn't create resource: ", createResp);
+    } else {
+      console.log("Created and patched: ", uri);
+    }
+    return createResp;
+  }
   const etag = resp.headers.get("ETag");
   const freshlyFetched = await resp.json();
   const patched = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
@@ -186,7 +220,7 @@ export async function safelyPatchResource(uri, patch, _retries = 5) {
       "Precondition failed: resource changed while patching. Retrying...",
     );
     await new Promise((r) => setTimeout(r, politeness));
-    return safelyPatchResource(uri, patch, _retries - 1);
+    return safelyPatchResource(uri, patch, _retries - 1, options);
   } else if (putResp.status >= 400) {
     console.warn("Couldn't PUT patched resource: ", putResp);
   } else {
@@ -330,19 +364,63 @@ export async function establishContainerResource(container) {
   });
 }
 
-export async function establishDiscoveryResource(currentFileUri) {
+/**
+ * The discovery resource's URI for a recording. Derived from the storage root
+ * and the recording's URI alone, so it costs no request once the storage root
+ * is known.
+ */
+export async function discoveryUriFor(currentFileUri) {
+  const storage = await getSolidStorage();
+  return (
+    storage +
+    friendContainer +
+    discoveryFragment +
+    encodeURIComponent(currentFileUri)
+  );
+}
+
+/** A new, empty discovery resource (a DataCatalog) for a recording. */
+export function newDiscoveryDocument(discoveryUri, currentFileUri) {
+  return {
+    "@id": discoveryUri,
+    "@type": nsp.SCHEMA + "DataCatalog",
+    [nsp.SCHEMA + "description"]:
+      "Collection of datasets about " + currentFileUri,
+    [nsp.SCHEMA + "about"]: { "@id": currentFileUri },
+    [nsp.SCHEMA + "dataset"]: [],
+  };
+}
+
+/**
+ * Establish a recording's discovery resource (HEAD; PUT if it is missing).
+ * `containerKnown`: the caller has already established the discovery
+ * container, so it is not checked again.
+ */
+export async function establishDiscoveryResource(
+  currentFileUri,
+  { containerKnown = false } = {},
+) {
+  if (containerKnown) {
+    const discoveryUri = await discoveryUriFor(currentFileUri);
+    return establishResource(
+      discoveryUri,
+      newDiscoveryDocument(discoveryUri, currentFileUri),
+    );
+  }
   return establishContainerResource(friendContainer + discoveryFragment).then(
     (discoveryContainer) => {
+      if (!discoveryContainer) {
+        throw new Error(
+          "Couldn't establish the discovery container in your Solid pod; try again in a moment.",
+        );
+      }
       // establish a discovery resource (if it doesn't already exist)
       const currentFileUriHash = encodeURIComponent(currentFileUri);
       const discoveryUri = discoveryContainer + currentFileUriHash;
-      return establishResource(discoveryUri, {
-        "@type": nsp.SCHEMA + "DataCatalog",
-        [nsp.SCHEMA + "description"]:
-          "Collection of datasets about " + currentFileUri,
-        [nsp.SCHEMA + "about"]: { "@id": currentFileUri },
-        [nsp.SCHEMA + "dataset"]: [],
-      });
+      return establishResource(
+        discoveryUri,
+        newDiscoveryDocument(discoveryUri, currentFileUri),
+      );
     },
   );
 }

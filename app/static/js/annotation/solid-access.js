@@ -196,6 +196,38 @@ export async function setAnnotationAccess(lastPostedUris, isPublic, opts = {}) {
 }
 
 /**
+ * After an update: give each folder that `afterUris` has and `beforeUris` did
+ * not the access the annotation has now (read from the MusicalMaterial).
+ *
+ * Some resources are optional (an oa:Annotation exists only once there is
+ * text), so an update can add the first resource of its type, in a folder that
+ * did not exist when the annotation was made public or private. Left alone,
+ * that folder inherits from its type container, which is private, and the
+ * annotation would read as public while that part of it is not. Nor can a
+ * folder that reappears be trusted to be private: one emptied by an earlier
+ * update keeps its old ACL. So every new folder gets an ACL; no request is
+ * made when there is none. Annotations in the flat layout, and pods that are
+ * not WAC, are left as they are.
+ * @returns {Promise<string[]>} the folders that were set
+ */
+export async function matchNewFolderAccess(beforeUris, afterUris) {
+  const before = new Set(
+    annotationFoldersOf(Object.values(beforeUris || {}).filter(Boolean)),
+  );
+  const fresh = annotationFoldersOf(
+    Object.values(afterUris || {}).filter(Boolean),
+  ).filter((f) => !before.has(f));
+  if (fresh.length === 0) return [];
+  const access = await getAnnotationAccess(afterUris);
+  if (access.state !== "public" && access.state !== "private") return [];
+  const webId = solid.getDefaultSession().info.webId;
+  for (const folder of fresh) {
+    await setFolderAccess(folder, access.state === "public", webId);
+  }
+  return fresh;
+}
+
+/**
  * After an annotation's resources were deleted: remove each annotation folder
  * all of whose resources are gone (the folder's ACL goes with it). Best
  * effort; a folder that still has something in it simply stays.

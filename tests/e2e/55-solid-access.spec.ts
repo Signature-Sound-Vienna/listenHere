@@ -91,9 +91,15 @@ async function wacPod(page: Page, opts: { acp?: boolean } = {}): Promise<WacPod>
   return pod;
 }
 
-/** Sign in (faked), then post a new annotation to two recordings; returns what was posted. */
-async function postAnnotation(page: Page): Promise<{ id: string; uris: Record<string, string>; files: string[] }> {
-  return page.evaluate(async () => {
+/**
+ * Sign in (faked), then post a new annotation to two recordings; returns what was posted.
+ * `withNote: false` leaves out the note, so the annotation has no oa:Annotation (and no oa/ folder).
+ */
+async function postAnnotation(
+  page: Page,
+  { withNote = true }: { withNote?: boolean } = {},
+): Promise<{ id: string; uris: Record<string, string>; files: string[] }> {
+  return page.evaluate(async (withNote) => {
     const sca = (window as any).solidClientAuthentication;
     const s = (sca.default || sca).getDefaultSession();
     s.info.isLoggedIn = true;
@@ -104,11 +110,33 @@ async function postAnnotation(page: Page): Promise<{ id: string; uris: Record<st
     const id = v6.state.createAnnotation({ label: 'access test' });
     v6.state.addRegion(id, files[0], 1, 2);
     v6.state.addTarget(id, files[1]);
-    v6.state.updateTargetNote(id, files[0], 'a note on the first recording'); // makes an oa:Annotation
+    if (withNote) v6.state.updateTargetNote(id, files[0], 'a note on the first recording'); // makes an oa:Annotation
     await v6.postAnnotationToSolid(id);
     return { id, uris: v6.state.getById(id).lastPostedUris, files };
-  });
+  }, withNote);
 }
+
+/** Set the note on `file` (empty removes it), update, and return the new lastPostedUris. */
+async function updateNote(page: Page, id: string, file: string, text: string): Promise<Record<string, string>> {
+  return page.evaluate(async ({ id, file, text }) => {
+    const v6 = (window as any).__annotationV6;
+    v6.state.updateTargetNote(id, file, text);
+    await v6.updateAnnotationOnSolid(id);
+    return v6.state.getById(id).lastPostedUris;
+  }, { id, file, text });
+}
+
+/** Whether the pod lets anyone read `uri`, from its WAC-Allow header. */
+async function publiclyReadable(page: Page, uri: string): Promise<boolean> {
+  return page.evaluate(async (u) => {
+    const m = await import('/static/js/annotation/solid-access.js');
+    return (await m.discoverAccessControl(u)).wacAllow.public.has('read');
+  }, uri);
+}
+
+const oaUriOf = (uris: Record<string, string>) =>
+  Object.entries(uris).find(([k]) => k.startsWith('oa/'))?.[1];
+const folderOf = (uri: string) => uri.slice(0, uri.lastIndexOf('/') + 1);
 
 const resourcePuts = (pod: WacPod) =>
   pod.log
@@ -338,5 +366,56 @@ test.describe('55. Annotation folders and public access', () => {
     expect(r.wac).toEqual(['read']);
     expect(r.none).toEqual([]);
     expect(r.absent).toBe(0);
+  });
+
+  // 55.12 / 55.13 An oa:Annotation exists only once there is text, so an update
+  // can add the first one, in an oa/ folder the annotation did not have when
+  // its access was set. That folder gets the annotation's access.
+  test('55.12 the first text an update adds to a public annotation is public too', async ({ loadedPage: page }) => {
+    const pod = await wacPod(page);
+    const { id, uris, files } = await postAnnotation(page, { withNote: false });
+    expect(oaUriOf(uris), 'no oa:Annotation before the note').toBeUndefined();
+    await page.evaluate((u) => (window as any).__annotationV6.setAnnotationAccess(u, true), uris);
+    pod.log.length = 0;
+
+    const newUris = await updateNote(page, id, files[0], 'written after it was made public');
+    const oaUri = oaUriOf(newUris)!;
+    expect(oaUri, 'the update created an oa:Annotation').toBeTruthy();
+    expect(aclPuts(pod), 'one ACL, for the new oa/ folder').toEqual(['PUT ' + folderOf(oaUri) + '.acl']);
+    expect(await publiclyReadable(page, oaUri)).toBe(true);
+    const r = await page.evaluate((u) => (window as any).__annotationV6.getAnnotationAccess(u), newUris);
+    expect(r.state).toBe('public');
+  });
+
+  test('55.13 text re-added to a private annotation stays private, though its old folder was left public', async ({ loadedPage: page }) => {
+    const pod = await wacPod(page);
+    const { id, uris, files } = await postAnnotation(page);
+    const v6Access = (u: Record<string, string>, isPublic: boolean) =>
+      page.evaluate(({ u, isPublic }) => (window as any).__annotationV6.setAnnotationAccess(u, isPublic), { u, isPublic });
+    await v6Access(uris, true);
+    const oldOaFolder = folderOf(oaUriOf(uris)!);
+
+    // Removing the note deletes the oa:Annotation; its folder's public ACL stays
+    // behind, and making the annotation private no longer reaches that folder.
+    const noNote = await updateNote(page, id, files[0], '');
+    expect(oaUriOf(noNote)).toBeUndefined();
+    await v6Access(noNote, false);
+    expect(pod.acls.get(oldOaFolder + '.acl'), 'the emptied folder kept its public ACL').toMatch(/<#public>/);
+
+    const again = await updateNote(page, id, files[0], 'written again while private');
+    const oaUri = oaUriOf(again)!;
+    expect(folderOf(oaUri)).toBe(oldOaFolder);
+    expect(await publiclyReadable(page, oaUri), 'the new text is not public').toBe(false);
+    expect(pod.acls.get(oldOaFolder + '.acl')).not.toMatch(/<#public>/);
+  });
+
+  test('55.14 an update that adds no folder makes no access request', async ({ loadedPage: page }) => {
+    const pod = await wacPod(page);
+    const { id, files } = await postAnnotation(page);
+    pod.log.length = 0;
+    await updateNote(page, id, files[0], 'an edited note');
+    // (The update establishes each recording's discovery resource with a HEAD; those aren't access requests.)
+    const access = pod.log.filter((r) => (r.startsWith('HEAD ') && !r.startsWith('HEAD ' + DISC)) || r.endsWith('.acl'));
+    expect(access, 'no access HEAD, no ACL').toEqual([]);
   });
 });

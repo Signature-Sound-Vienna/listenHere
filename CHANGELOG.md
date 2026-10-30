@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.104.2 -- A public annotation's later text is public too; Solid writes that may repeat or race
+
+* An update that adds an annotation's first resource of a type (its first text, so its first `oa:Annotation`) gives the new folder the annotation's public/private setting. Before, that folder kept its container's private default, so the card read Public while the new text was private; and a folder emptied by an earlier update kept its old ACL, which could make text re-added to a private annotation public.
+* A discovery resource is created with `If-None-Match: *`, so one that another writer created first is patched, not overwritten.
+* A write repeated by `solid.fetch` after its reply was lost no longer fails or doubles: `createResourceAtUri` recognises its own resource by its `dct:created` stamp when the repeat meets 412, and a post's discovery patch adds only the entries the resource does not list yet. `safelyPatchResource` takes the patch as a function of the current document for this.
+* Testing: 54.20–54.22, 55.12–55.14; the functional suite passes (595, 2 skipped).
+
 ### 0.104.1 -- Loading annotations from Solid no longer fails behind the request limiter
 
 * Listing the annotations for many recordings failed for most of them ("Couldn't reach your pod for 20 sources") after minutes: the loader's 15 s read timeout ran while a request waited its turn at the pod's request limit (0.103.1), so queued reads were aborted before they were sent. A read's timeout now starts when the request is sent (`timeoutMs` in `solid-fetch.js`), and a request aborted while queued leaves the queue at once.

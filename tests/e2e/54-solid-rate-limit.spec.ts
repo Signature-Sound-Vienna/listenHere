@@ -518,4 +518,132 @@ test.describe('54. Request limit for pod hosts', () => {
       expect(JSON.stringify(doc['https://schema.org/dataset'])).toContain('MusicalMaterial');
     }
   });
+
+  // 54.20 / 54.21 Writes that may meet a resource that already changed. The pod
+  // here keeps ETags, honours If-Match and If-None-Match, and answers an
+  // unconditional PUT by overwriting, as a real server does.
+  const OTHER_MM = 'https://elsewhere.example/someone-elses-musical-material';
+  const CORS_ALL = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': '*',
+    'Access-Control-Allow-Methods': '*',
+    'Access-Control-Expose-Headers': 'ETag',
+  };
+  const urlsListed = (doc: any): string[] =>
+    [].concat(doc['https://schema.org/dataset'] || []).map((e: any) => e['https://schema.org/url']['@id']);
+
+  /**
+   * `raceCreate`: the first PUT to a missing discovery resource finds that another
+   * writer has just created it (listing OTHER_MM).
+   * `loseFirstReply`: the first PUT to each resource lands, but its reply is lost
+   * (the request fails as a network error), so solid.fetch repeats it.
+   */
+  async function conditionalPod(page: Page, opts: { raceCreate?: boolean; loseFirstReply?: boolean; existingDiscovery?: boolean }) {
+    const log: string[] = [];
+    const store = new Map<string, { doc: any; v: number }>();
+    const raced = new Set<string>();
+    const lost = new Set<string>();
+    await page.route(POD2 + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS_ALL });
+      const url = req.url();
+      const h = req.headers();
+      log.push(req.method() + ' ' + url + (h['if-none-match'] ? ' [If-None-Match ' + h['if-none-match'] + ']' : ''));
+      const etagOf = (v: number) => '"' + v + '"';
+      if (url === POD2 + 'profile/card') {
+        return route.fulfill({ status: 200, contentType: 'application/ld+json', headers: CORS_ALL,
+          body: JSON.stringify([{ '@id': POD2 + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': POD2 }] }]) });
+      }
+      const isDiscoveryResource = url.startsWith(DISC) && url !== DISC;
+      if (opts.existingDiscovery && isDiscoveryResource && !store.has(url)) {
+        store.set(url, { doc: { '@id': url, '@type': 'https://schema.org/DataCatalog', 'https://schema.org/dataset': [] }, v: 1 });
+      }
+      if (req.method() === 'PUT' && !url.endsWith('/')) {
+        if (opts.raceCreate && isDiscoveryResource && !store.has(url) && !raced.has(url)) {
+          raced.add(url);
+          store.set(url, { doc: { '@id': url, '@type': 'https://schema.org/DataCatalog',
+            'https://schema.org/dataset': [{ '@type': 'https://schema.org/Dataset', 'https://schema.org/url': { '@id': OTHER_MM } }] }, v: 1 });
+        }
+        const cur = store.get(url);
+        if (h['if-none-match'] === '*' && cur) return route.fulfill({ status: 412, headers: CORS_ALL, body: '' });
+        if (h['if-match'] && (!cur || h['if-match'] !== etagOf(cur.v))) return route.fulfill({ status: 412, headers: CORS_ALL, body: '' });
+        store.set(url, { doc: JSON.parse(req.postData() || '{}'), v: (cur ? cur.v : 0) + 1 });
+        if (opts.loseFirstReply && !lost.has(url)) {
+          lost.add(url);
+          return route.abort('failed');
+        }
+        return route.fulfill({ status: 201, headers: CORS_ALL, body: '' });
+      }
+      if (req.method() === 'GET' && !url.endsWith('/')) {
+        const cur = store.get(url);
+        if (!cur) return route.fulfill({ status: 404, headers: CORS_ALL, body: '' });
+        return route.fulfill({ status: 200, contentType: 'application/ld+json',
+          headers: { ...CORS_ALL, ETag: etagOf(cur.v) }, body: JSON.stringify(cur.doc) });
+      }
+      if (req.method() === 'HEAD' && isDiscoveryResource && !store.has(url)) {
+        return route.fulfill({ status: 404, headers: CORS_ALL, body: '' });
+      }
+      return route.fulfill({ status: 200, headers: CORS_ALL, body: '' });
+    });
+    return { log, store, lost };
+  }
+
+  test('54.20 a discovery resource another writer creates first is patched, not overwritten', async ({ loadedPage: page }) => {
+    const { log, store } = await conditionalPod(page, { raceCreate: true });
+    expect(await postToTwoRecordings(page)).toBe(2);
+
+    const creates = log.filter((r) => r.startsWith('PUT ' + DISC + 'https') && r.includes('[If-None-Match *]'));
+    expect(creates, 'each creating PUT is conditional').toHaveLength(2);
+    const docs = [...store.entries()].filter(([u]) => u.startsWith(DISC + 'https'));
+    expect(docs).toHaveLength(2);
+    for (const [, { doc }] of docs) {
+      const urls = urlsListed(doc);
+      expect(urls, 'the other writer\'s entry survives').toContain(OTHER_MM);
+      expect(JSON.stringify(doc['https://schema.org/dataset'])).toContain('MusicalMaterial');
+    }
+  });
+
+  test('54.21 writes whose replies are lost and that solid.fetch repeats: the post succeeds and lists nothing twice', async ({ loadedPage: page }) => {
+    const { store, lost } = await conditionalPod(page, { loseFirstReply: true, existingDiscovery: true });
+    // Limit the mocked pod's host too, with a short window, so its failed
+    // requests are retried as solidcommunity.net's are.
+    await page.evaluate(async () => {
+      const m = await import('/static/js/solid-fetch.js');
+      m.hostLimits.push({ hostSuffix: 'pod.example', max: 1000, windowMs: 20 });
+    });
+    expect(await postToTwoRecordings(page)).toBe(2);
+
+    const resources = [...lost].filter((u) => !u.startsWith(DISC));
+    expect(resources.length, 'replies to the resource PUTs were lost').toBeGreaterThan(0);
+    expect([...lost].filter((u) => u.startsWith(DISC)), 'and to both discovery PUTs').toHaveLength(2);
+    for (const u of resources) expect(store.has(u)).toBe(true);
+    const docs = [...store.entries()].filter(([u]) => u.startsWith(DISC + 'https'));
+    expect(docs).toHaveLength(2);
+    for (const [, { doc }] of docs) {
+      const urls = urlsListed(doc);
+      expect(urls.length).toBeGreaterThan(0);
+      expect(new Set(urls).size, 'no entry listed twice').toBe(urls.length);
+    }
+  });
+
+  test('54.22 a create that meets someone else\'s resource at its URI still fails', async ({ loadedPage: page }) => {
+    await conditionalPod(page, {});
+    const r = await page.evaluate(async (pod) => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = pod + 'profile/card#me';
+      const m = await import('/static/js/solid.js');
+      const uri = pod + 'at.ac.mdw.mei-friend/mao/extract/x/taken';
+      await m.createResourceAtUri(uri, { note: 'someone else' });
+      await new Promise((r) => setTimeout(r, 5)); // a different dct:created stamp
+      try {
+        await m.createResourceAtUri(uri, { note: 'mine' });
+        return 'resolved';
+      } catch (e: any) {
+        return e.message;
+      }
+    }, POD2);
+    expect(r).toMatch(/PUT failed .* 412/);
+  });
 });

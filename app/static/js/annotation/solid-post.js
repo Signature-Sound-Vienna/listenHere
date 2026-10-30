@@ -41,6 +41,7 @@ import * as state from "./state.js";
 import * as adapter from "./mao-adapter.js";
 import { nsp } from "../linked-data.js";
 import { folderIdOf } from "./solid-layout.js";
+import { matchNewFolderAccess } from "./solid-access.js";
 import {
   createResourceAtUri,
   discoveryUriFor,
@@ -567,12 +568,21 @@ async function _patchDiscoveryResources(
       if (!discoveryUri) return;
       const selUris = audioToSelUris[audioUri] || [];
       const oaUris = audioToOaUris[audioUri] || [];
-      const ops = [
-        _datasetOp(datasetPath, mmUri, nsp.MAO + "MusicalMaterial", mmMeta),
-        _datasetOp(datasetPath, extractUri, nsp.MAO + "Extract"),
-        ...selUris.map((s) => _datasetOp(datasetPath, s, nsp.MAO + "Selection")),
-        ...oaUris.map((o) => _datasetOp(datasetPath, o, nsp.OA + "Annotation")),
+      const entries = [
+        [mmUri, nsp.MAO + "MusicalMaterial", mmMeta],
+        [extractUri, nsp.MAO + "Extract"],
+        ...selUris.map((s) => [s, nsp.MAO + "Selection"]),
+        ...oaUris.map((o) => [o, nsp.OA + "Annotation"]),
       ];
+      // Only the entries the document doesn't list yet, worked out from each
+      // fetch, so a patch that already landed (its reply lost) adds nothing
+      // twice when it is repeated.
+      const ops = (doc) => {
+        const listed = new Set(_datasetOf(doc).map(_entryUrl));
+        return entries
+          .filter(([url]) => !listed.has(url))
+          .map(([url, type, meta]) => _datasetOp(datasetPath, url, type, meta));
+      };
       try {
         await safelyPatchResource(discoveryUri, ops, 5, {
           createIfMissing: () => newDiscoveryDocument(discoveryUri, audioUri),
@@ -617,6 +627,18 @@ function _discoveryEntryValue(url, additionalTypeIri, meta) {
 
 function _datasetOp(path, url, additionalTypeIri, meta) {
   return { op: "add", path, value: _discoveryEntryValue(url, additionalTypeIri, meta) };
+}
+
+/** A discovery document's schema:dataset entries, as an array. */
+function _datasetOf(doc) {
+  const d = doc && doc[nsp.SCHEMA + "dataset"];
+  return d === undefined ? [] : Array.isArray(d) ? d : [d];
+}
+
+/** The URL a discovery dataset entry points at. */
+function _entryUrl(e) {
+  const url = e && e[nsp.SCHEMA + "url"];
+  return url && (Array.isArray(url) ? url[0] : url)["@id"];
 }
 
 /** Read a JSON-LD literal that may be a bare string, a value object, or an
@@ -667,6 +689,7 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
 
   const fileToAudioUri = _resolveAudioUris(ann);
   const oldHashes = ann.lastPostedHashes || {};
+  const previousUris = { ...ann.lastPostedUris };
 
   await _ensureContainers();
   const uniqueAudioUris = [...new Set(Object.values(fileToAudioUri))];
@@ -829,6 +852,18 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
 
   state.markPosted(annId, localToUri, localToHash);
   if (loadedAlignmentJSON) commitAnnotationsToAlignment(loadedAlignmentJSON);
+
+  // A resource of a type the annotation had none of (its first text, say)
+  // sits in a new folder, which must get the annotation's access.
+  try {
+    await matchNewFolderAccess(previousUris, localToUri);
+  } catch (err) {
+    throw new Error(
+      "The update was saved, but its new part may not have the annotation's public/private setting: " +
+        (err && err.message ? err.message : err) +
+        " Make it private and public again (or the reverse) to repair it.",
+    );
+  }
   return localToUri;
 }
 
@@ -1020,21 +1055,16 @@ async function _patchDiscoveryReconcile(discoveryUri, adds, removeUriSet, mmName
   const etag = getResp.headers.get("ETag");
   const body = await getResp.json();
   const datasetKey = nsp.SCHEMA + "dataset";
-  let dataset = body[datasetKey] || [];
-  if (!Array.isArray(dataset)) dataset = [dataset];
-  const entryUrl = (e) => {
-    const url = e && e[nsp.SCHEMA + "url"];
-    return url && (Array.isArray(url) ? url[0] : url)["@id"];
-  };
+  let dataset = _datasetOf(body);
   let changed = false;
 
   if (removeUriSet.size > 0) {
     const before = dataset.length;
-    dataset = dataset.filter((entry) => !removeUriSet.has(entryUrl(entry)));
+    dataset = dataset.filter((entry) => !removeUriSet.has(_entryUrl(entry)));
     if (dataset.length !== before) changed = true;
   }
   for (const { uri, type, meta } of adds) {
-    const exists = dataset.some((e) => entryUrl(e) === uri);
+    const exists = dataset.some((e) => _entryUrl(e) === uri);
     if (!exists) {
       dataset.push(_discoveryEntryValue(uri, type, meta));
       changed = true;
@@ -1046,7 +1076,7 @@ async function _patchDiscoveryReconcile(discoveryUri, adds, removeUriSet, mmName
   // updated) MM, so they reflect the new title without our help.
   if (mmNameRefresh && mmNameRefresh.uri) {
     for (const e of dataset) {
-      if (entryUrl(e) !== mmNameRefresh.uri) continue;
+      if (_entryUrl(e) !== mmNameRefresh.uri) continue;
       if (e[nsp.SCHEMA + "dateCreated"] === undefined) continue;
       const desired = mmNameRefresh.name || undefined;
       if (desired === undefined) {

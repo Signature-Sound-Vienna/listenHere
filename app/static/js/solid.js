@@ -151,10 +151,39 @@ export async function createResourceAtUri(uri, body) {
     },
     body: JSON.stringify(body),
   });
+  if (resp.status === 412) {
+    // Something is already at this (freshly minted) URI. If it is this very
+    // write, sent once with its reply lost and repeated by solid.fetch (see
+    // solid-fetch.js), the resource was created after all.
+    const existing = await _ownWriteAt(uri, body[nsp.DCT + "created"]);
+    if (existing) return existing;
+  }
   if (!resp.ok) {
     throw new Error("PUT failed for " + uri + ": " + resp.status + " " + resp.statusText);
   }
   return resp;
+}
+
+/**
+ * The GET response for `uri` if the resource there is the one this client
+ * wrote with the given dct:created stamp; otherwise null.
+ */
+async function _ownWriteAt(uri, createdStamp) {
+  try {
+    const resp = await solid.fetch(uri, {
+      headers: { Accept: "application/ld+json" },
+    });
+    if (!resp.ok) return null;
+    const doc = await resp.clone().json();
+    const nodes = Array.isArray(doc) ? doc : doc["@graph"] || [doc];
+    const node = nodes.find((n) => n && n["@id"] === uri);
+    let created = node && node[nsp.DCT + "created"];
+    if (Array.isArray(created)) created = created[0];
+    if (created && typeof created === "object") created = created["@value"];
+    return created === createdStamp ? resp : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 /**
@@ -167,6 +196,14 @@ export async function createResourceAtUri(uri, body) {
  * n.b. in the glorious future, this should be done using HTTP PATCH.
  * but while the implementation of this in Solid is still under discussion,
  * we do this instead.
+ *
+ * `patch` is a JSON Patch, or a function from the resource's current document
+ * to one. A function is asked afresh on every attempt, so a patch that may
+ * already have landed (a PUT whose reply was lost, repeated by solid.fetch;
+ * see solid-fetch.js) can return only what is still missing, and an empty
+ * patch writes nothing.
+ * `options.createIfMissing`: a function returning the initial document, used
+ * when the GET answers 404.
  */
 
 export async function safelyPatchResource(
@@ -175,6 +212,7 @@ export async function safelyPatchResource(
   _retries = 5,
   options = {},
 ) {
+  const opsFor = (doc) => (typeof patch === "function" ? patch(doc) : patch);
   const resp = await solid.fetch(uri, {
     headers: {
       Accept: "application/ld+json",
@@ -184,15 +222,25 @@ export async function safelyPatchResource(
     // The resource doesn't exist yet: create it from the supplied initial
     // document with the patch applied. One GET and one PUT, where establishing
     // it first (HEAD, then PUT) would have added a request.
-    const created = jsonpatch.applyPatch(
-      options.createIfMissing(),
-      patch,
-    ).newDocument;
+    const initial = options.createIfMissing();
+    const created = jsonpatch.applyPatch(initial, opsFor(initial)).newDocument;
     const createResp = await solid.fetch(uri, {
       method: "PUT",
-      headers: { "Content-Type": "application/ld+json" },
+      headers: {
+        "Content-Type": "application/ld+json",
+        "If-None-Match": "*",
+      },
       body: JSON.stringify(created),
     });
+    if (createResp.status === 412) {
+      // It was created after our GET (by another writer, or by this PUT sent
+      // once already, its reply lost): patch what is there now.
+      if (_retries <= 0) {
+        console.error("safelyPatchResource: max retries exceeded for", uri);
+        return createResp;
+      }
+      return safelyPatchResource(uri, patch, _retries - 1, options);
+    }
     if (createResp.status >= 400) {
       console.warn("Couldn't create resource: ", createResp);
     } else {
@@ -202,7 +250,9 @@ export async function safelyPatchResource(
   }
   const etag = resp.headers.get("ETag");
   const freshlyFetched = await resp.json();
-  const patched = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
+  const ops = opsFor(freshlyFetched);
+  if (ops.length === 0) return resp; // already as the patch would make it
+  const patched = jsonpatch.applyPatch(freshlyFetched, ops).newDocument;
   const putResp = await solid.fetch(uri, {
     method: "PUT",
     headers: {

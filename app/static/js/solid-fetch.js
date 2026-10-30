@@ -24,8 +24,10 @@ export const hostLimits = [
 ];
 
 // Safe to send twice: a request that reached the server but whose response was
-// lost does no harm. (A PUT repeated after a lost reply meets 412 at worst, and
-// the callers already handle that.)
+// lost does no harm. A repeated PUT whose first attempt did land meets 412 if
+// it is conditional, and the callers expect that: createResourceAtUri
+// recognises its own write by its dct:created stamp, and safelyPatchResource
+// works the patch out afresh from what is there, so nothing is added twice.
 const REPEATABLE = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"]);
 
 const MAX_RETRY_AFTER_MS = 60000;

@@ -1,5 +1,21 @@
 # Listen Here! CHANGELOG.md
 
+### 0.104.1 -- Loading annotations from Solid no longer fails behind the request limiter
+
+* Listing the annotations for many recordings failed for most of them ("Couldn't reach your pod for 20 sources") after minutes: the loader's 15 s read timeout ran while a request waited its turn at the pod's request limit (0.103.1), so queued reads were aborted before they were sent. A read's timeout now starts when the request is sent (`timeoutMs` in `solid-fetch.js`), and a request aborted while queued leaves the queue at once.
+* Listing asks the pod which discovery resources exist with one request for the discovery container, and fetches only those, instead of one request per recording and URI variant. The container's description is merged from all the nodes a server returns for it, and names are compared decoded (Community Solid Server lists a child as `https%253A…` that it was written as `https%3A…`). A listing that names none of the loaded recordings is not believed: each is then read, as before, as it is when the container can't be listed.
+* The profile card is fetched once however many reads need it at the same time (twenty at once made twenty fetches).
+* Testing: 54.12–54.19; 55.1–55.11 for 0.104.0; the functional suite passes (589, 2 skipped).
+
+### 0.104.0 -- Make an annotation public or private; one folder per annotation
+
+* A posted annotation's card (signed in) shows Public or Private and a Make public / Make private button. Making it public asks first, in an amber dialog (and a brown backdrop) rather than the red ones used for deleting.
+* Access is set with Web Access Control, once per folder: a HEAD and a PUT of each folder's `.acl` (at most four folders), then a read-back. The ACL gives the owner full control and, when public, everyone read access to the folder's members, not to listing it. It replaces the folder's earlier rules. A pod that uses Access Control Policies is recognised and refused.
+* New posts put each resource in its annotation's folder inside its type container, as `mao/selection/<annotation>/<slug>`, and likewise for `oa/`, `mao/extract/`, and `mao/musicalMaterial/`. An update adds resources to the same folder, so they inherit its access. Annotations posted before this keep their flat URIs and cannot be made public; post them again.
+* Deleting an annotation from the pod also removes its folders.
+* An annotation's access is read past the browser's HTTP cache: Firefox answered a HEAD from an older copy, so a change that had worked was read back as unchanged and reported as failed.
+* Testing: 55.1–55.11.
+
 ### 0.103.1 -- Solid sign-in library 5.0.3; Dependabot alerts cleared; Solid requests stay within the pod's limit
 
 * `@inrupt/solid-client-authn-browser` 1.16.0 → 5.0.3. The vendored bundle shrinks from 424 KB to 104 KB; the old `oidc-client`, with its inlined `crypto-js` and `jsrsasign`, is gone.

@@ -6,7 +6,14 @@
 
 import * as state from "./state.js";
 import * as uiState from "./ui-state.js";
-import { el, clearChildren, bouncingDots, confirmDeleteFromPod } from "./ui-common.js";
+import {
+  el,
+  clearChildren,
+  bouncingDots,
+  confirmDeleteFromPod,
+  confirmMakePublic,
+} from "./ui-common.js";
+import { getAnnotationAccess, setAnnotationAccess } from "./solid-access.js";
 import { renderEditor } from "./ui-editor.js";
 import { renderViewer } from "./ui-viewer.js";
 import {
@@ -327,7 +334,108 @@ function _renderPublishBar(bar, ann) {
         text: "↗ pod",
       }),
     );
+    if (isLoggedIn) _renderAccessControl(bar, ann);
+    else _accessUi.delete(ann.id); // a new sign-in re-reads it
   }
+}
+
+// Per-annotation public/private state, read from the pod when the card first
+// shows it (one HEAD) and kept here. { mm, state, reason?, busy?, step?, total? };
+// state: loading | public | private | legacy | unsupported | error.
+const _accessUi = new Map();
+
+function _renderAccessControl(bar, ann) {
+  const mm = ann.lastPostedUris["mm"];
+  let st = _accessUi.get(ann.id);
+  if (!st || st.mm !== mm) {
+    st = { mm, state: "loading" };
+    _accessUi.set(ann.id, st);
+    getAnnotationAccess(ann.lastPostedUris)
+      .then((r) => {
+        st.state = r.state;
+        st.reason = r.reason;
+      })
+      .catch((err) => {
+        st.state = "error";
+        st.reason = err && err.message ? err.message : String(err);
+      })
+      .finally(() => {
+        if (_rerenderPublishBar) _rerenderPublishBar();
+      });
+  }
+
+  if (st.state === "loading") {
+    bar.appendChild(
+      el("span", { class: "lh-v6-access-status", text: "checking access…" }),
+    );
+    return;
+  }
+
+  const settable = st.state === "public" || st.state === "private";
+  const goingPublic = st.state !== "public";
+  let label;
+  if (st.busy) {
+    label = [goingPublic ? "Making public" : "Making private", bouncingDots()];
+    if (st.total > 0) label.push(" " + st.step + "/" + st.total);
+  } else {
+    label = [goingPublic ? "Make public" : "Make private"];
+  }
+  if (settable) {
+    bar.appendChild(
+      el("span", {
+        class: "lh-v6-access-status is-" + st.state,
+        text: st.state === "public" ? "Public" : "Private",
+        title:
+          st.state === "public"
+            ? "Anyone can read this annotation at its pod address."
+            : "Only you can read this annotation.",
+      }),
+    );
+  }
+  bar.appendChild(
+    el(
+      "button",
+      {
+        class: "lh-v6-access-btn" + (st.busy ? " is-busy" : ""),
+        type: "button",
+        disabled: st.busy || !settable,
+        title: settable
+          ? goingPublic
+            ? "Let anyone read this annotation."
+            : "Only you can read this annotation again."
+          : st.reason || "Access can't be changed for this annotation.",
+        onclick: async () => {
+          if (goingPublic && !(await confirmMakePublic(ann.label || "(untitled)"))) return;
+          st.busy = true;
+          st.step = 0;
+          st.total = 0;
+          if (_rerenderPublishBar) _rerenderPublishBar();
+          try {
+            const r = await setAnnotationAccess(ann.lastPostedUris, goingPublic, {
+              onProgress: (done, total) => {
+                st.step = done;
+                st.total = total;
+                if (_rerenderPublishBar) _rerenderPublishBar();
+              },
+            });
+            st.state = r.state;
+            st.busy = false;
+          } catch (err) {
+            console.error("[annotation/v6] changing access failed:", err);
+            // Part of it may have been applied: read the real state afresh.
+            _accessUi.delete(ann.id);
+            window.alert(
+              (goingPublic ? "Making public" : "Making private") +
+                " failed: " +
+                (err && err.message ? err.message : err),
+            );
+          }
+          if (_rerenderPublishBar) _rerenderPublishBar();
+        },
+      },
+      label,
+    ),
+  );
 }
 
 function _saveFocus(body) {

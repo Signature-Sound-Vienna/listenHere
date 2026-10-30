@@ -182,6 +182,248 @@ test.describe('54. Request limit for pod hosts', () => {
     expect(heads.filter((s) => s.includes('/discovery/') && !s.endsWith('/discovery/'))).toEqual([]);
   });
 
+  // 54.12–54.13 A request that waits for its turn must not be timed out, or kept
+  // in the queue, as if it were being sent: a long queue made the loader's 15 s
+  // timeout abort requests that had never left it, so a listing of 20 sources
+  // failed for all of them.
+  test('54.12 a queued request whose signal aborts leaves the queue without sending or taking a slot', async ({ loadedPage: page }) => {
+    const r = await page.evaluate(async (limited) => {
+      const mod = await import('/static/js/solid-fetch.js');
+      const sent: string[] = [];
+      const pending: (() => void)[] = [];
+      let t = 0;
+      const f = mod.createLimitedFetch(async (u: string) => { sent.push(u); return new Response('', { status: 200 }); },
+        { now: () => t, sleep: () => new Promise<void>((res) => pending.push(res)) });
+      const first = Array.from({ length: 8 }, (_, i) => f(limited + 'a' + i, { method: 'HEAD' }));
+      await Promise.all(first);
+      const ctrl = new AbortController();
+      const queued = f(limited + 'aborted', { method: 'HEAD', signal: ctrl.signal }).then(() => 'sent', (e: any) => e.name);
+      await new Promise((r) => setTimeout(r, 20));
+      ctrl.abort();
+      const outcome = await queued; // settles at once, without the window opening
+      t += 10000;
+      pending.splice(0).forEach((res) => res());
+      await f(limited + 'next', { method: 'HEAD' });
+      return { outcome, sent: sent.length, abortedSent: sent.includes(limited + 'aborted') };
+    }, LIMITED);
+    expect(r).toEqual({ outcome: 'AbortError', sent: 9, abortedSent: false });
+  });
+
+  test('54.13 timeoutMs counts from the send: a request still waiting is not timed out, one that was sent is', async ({ loadedPage: page }) => {
+    const r = await page.evaluate(async (limited) => {
+      const mod = await import('/static/js/solid-fetch.js');
+      const pending: (() => void)[] = [];
+      let t = 0;
+      let sentAt = 0;
+      const base = (u: string, init: any) => new Promise<Response>((res, rej) => {
+        if (u.endsWith('slow')) {
+          sentAt = Date.now();
+          init.signal.addEventListener('abort', () => rej(init.signal.reason));
+          return; // never answers
+        }
+        res(new Response('', { status: 200 }));
+      });
+      const f = mod.createLimitedFetch(base as any,
+        { now: () => t, sleep: () => new Promise<void>((res) => pending.push(res)) });
+      await Promise.all(Array.from({ length: 8 }, (_, i) => f(limited + 'a' + i, { method: 'HEAD' })));
+      const slow = f(limited + 'slow', { method: 'GET', timeoutMs: 80 }).then(() => 'answered', (e: any) => e.name);
+      let settledEarly = false;
+      slow.then(() => { settledEarly = true; });
+      await new Promise((res) => setTimeout(res, 250)); // three times the timeout, still in the queue
+      const whileQueued = settledEarly;
+      t += 10000;
+      pending.splice(0).forEach((res) => res());
+      const outcome = await slow;
+      return { whileQueued, outcome, afterSend: Date.now() - sentAt };
+    }, LIMITED);
+    expect(r.whileQueued, 'not timed out while queued').toBe(false);
+    expect(r.outcome).toBe('TimeoutError');
+    expect(r.afterSend).toBeGreaterThanOrEqual(70);
+  });
+
+  test('54.14 a host without a limit also gets its timeoutMs', async ({ loadedPage: page }) => {
+    const outcome = await page.evaluate(async (free) => {
+      const mod = await import('/static/js/solid-fetch.js');
+      const f = mod.createLimitedFetch(((u: string, init: any) => new Promise((_, rej) => {
+        init.signal.addEventListener('abort', () => rej(init.signal.reason));
+      })) as any);
+      return f(free + 'x', { timeoutMs: 50 }).then(() => 'answered', (e: any) => e.name);
+    }, FREE);
+    expect(outcome).toBe('TimeoutError');
+  });
+
+  // 54.15 A listing fans out one call per recording, each needing the profile.
+  test('54.15 twenty concurrent callers share one fetch of the profile card', async ({ loadedPage: page }) => {
+    const POD = 'https://pod.example/';
+    const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
+    const cards: string[] = [];
+    await page.route(POD + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
+      if (req.url() === POD + 'profile/card') {
+        cards.push(req.method());
+        await new Promise((r) => setTimeout(r, 100)); // slow enough that all callers arrive first
+        return route.fulfill({ status: 200, contentType: 'application/ld+json', headers: CORS, body: JSON.stringify([
+          { '@id': POD + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': POD }] },
+        ]) });
+      }
+      return route.fulfill({ status: 404, headers: CORS, body: '' });
+    });
+    const storages = await page.evaluate(async () => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://pod.example/profile/card#me';
+      const m = await import('/static/js/solid.js');
+      return Promise.all(Array.from({ length: 20 }, () => m.getSolidStorage()));
+    });
+    expect(storages.every((s: string) => s === POD)).toBe(true);
+    expect(cards, 'one GET of the card').toEqual(['GET']);
+  });
+
+  // 54.16 / 54.17 Listing asks the pod which discovery resources exist (one
+  // request) instead of GETting one per recording to learn that most are 404.
+  const LPOD = 'https://pod.example/';
+  const LDISC = LPOD + 'at.ac.mdw.mei-friend/discovery/';
+  const LDP_CONTAINS = 'http://www.w3.org/ns/ldp#contains';
+
+  async function listingPod(page: Page, listing: 'ok' | 'error' | 'unrelated', existsFor: string[]) {
+    const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
+    const log: string[] = [];
+    const MM = LPOD + 'at.ac.mdw.mei-friend/mao/musicalMaterial/ann1/mm1';
+    await page.route(LPOD + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
+      const url = req.url();
+      log.push(req.method() + ' ' + url);
+      const json = (body: unknown, status = 200) =>
+        route.fulfill({ status, contentType: 'application/ld+json', headers: CORS, body: JSON.stringify(body) });
+      if (url === LPOD + 'profile/card') {
+        return json([{ '@id': LPOD + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': LPOD }] }]);
+      }
+      if (url === LDISC) {
+        if (listing === 'error') return route.fulfill({ status: 500, headers: CORS, body: '' });
+        // As Community Solid Server writes it: the container is TWO nodes with one @id (its types, and
+        // its ldp:contains), and a child is named in another percent-encoding from the one it was PUT
+        // under (`https%3A` is listed as `https%253A`), though the server resolves either.
+        const named = listing === 'unrelated' ? ['https://example.org/unrelated.wav'] : existsFor;
+        return json([
+          { '@id': LDISC, '@type': ['http://www.w3.org/ns/ldp#Container', 'http://www.w3.org/ns/ldp#BasicContainer'] },
+          { '@id': LDISC, [LDP_CONTAINS]: named.map((u) => ({ '@id': LDISC + encodeURIComponent(u).replace(/%3A/g, '%253A') })) },
+        ]);
+      }
+      const hit = existsFor.find((u) => url === LDISC + encodeURIComponent(u));
+      if (hit) {
+        return json([{
+          '@id': url,
+          'https://schema.org/dataset': [{
+            '@type': ['https://schema.org/Dataset'],
+            'https://schema.org/additionalType': [{ '@id': 'https://domestic-beethoven.eu/ontology/1.0/music-annotation-ontology.ttl#MusicalMaterial' }],
+            'https://schema.org/url': [{ '@id': MM }],
+            'https://schema.org/name': 'listed annotation',
+            'https://schema.org/dateCreated': '2026-10-30T10:00:00.000Z',
+          }],
+        }]);
+      }
+      return route.fulfill({ status: 404, headers: CORS, body: '' });
+    });
+    return { log, MM };
+  }
+
+  async function sourcesOf(page: Page): Promise<string[]> {
+    return page.evaluate(async () => {
+      const m = (await import('/static/js/listen.js')) as any;
+      return Object.keys(m.loadedAlignmentJSON.body.audio).map((f: string) => m.getAudioLinkedDataUri(f)).filter(Boolean);
+    });
+  }
+
+  async function listAll(page: Page) {
+    return page.evaluate(async () => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://pod.example/profile/card#me';
+      return (window as any).__annotationV6.listAnnotationsForLoadedAudios();
+    });
+  }
+
+  test('54.16 listing reads the discovery container once and fetches only the discovery resources it names', async ({ loadedPage: page }) => {
+    const sources = await sourcesOf(page);
+    expect(sources.length).toBeGreaterThan(2);
+    const { log, MM } = await listingPod(page, 'ok', [sources[0]]);
+    const r = await listAll(page);
+
+    expect(r.errors).toEqual([]);
+    expect(r.entries.map((e: any) => e.mmUri)).toEqual([MM]);
+    const gets = log.filter((l) => l.startsWith('GET '));
+    expect(gets.filter((l) => l === 'GET ' + LDISC), 'the container, once').toHaveLength(1);
+    expect(gets.filter((l) => l.startsWith('GET ' + LDISC + 'http')), 'only the one it lists').toHaveLength(1);
+  });
+
+  test('54.19 a non-empty listing that names none of the sources is not believed: every source is read', async ({ loadedPage: page }) => {
+    const sources = await sourcesOf(page);
+    const { log, MM } = await listingPod(page, 'unrelated', [sources[0]]);
+    const r = await listAll(page);
+
+    // The listing could be a naming mismatch as easily as a pod with nothing for these, so each is asked for.
+    expect(r.errors).toEqual([]);
+    expect(r.entries.map((e: any) => e.mmUri)).toEqual([MM]);
+    const perSource = log.filter((l) => l.startsWith('GET ' + LDISC + 'http'));
+    expect(perSource.length).toBeGreaterThanOrEqual(sources.length);
+  });
+
+  test('54.17 if the container cannot be listed, listing falls back to one request per recording', async ({ loadedPage: page }) => {
+    const sources = await sourcesOf(page);
+    const { log, MM } = await listingPod(page, 'error', [sources[0]]);
+    const r = await listAll(page);
+
+    expect(r.errors).toEqual([]);
+    expect(r.entries.map((e: any) => e.mmUri)).toEqual([MM]);
+    const perSource = log.filter((l) => l.startsWith('GET ' + LDISC + 'http'));
+    expect(perSource.length).toBeGreaterThanOrEqual(sources.length);
+  });
+
+  // 54.18 The failure as it was seen: 30 reads queue behind the limiter for far
+  // longer than the loader's 15 s read timeout, and all must still be answered.
+  // The clock is faked, so a minute of waiting takes a couple of seconds.
+  test('54.18 reads queued behind the limiter for longer than the loader\'s read timeout all complete', async ({ loadedPage: page }) => {
+    const HOST = 'https://listenhere.solidcommunity.net/';
+    const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
+    let gets = 0;
+    await page.route(HOST + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
+      if (req.url() === HOST + 'profile/card') {
+        return route.fulfill({ status: 200, contentType: 'application/ld+json', headers: CORS, body: JSON.stringify([
+          { '@id': HOST + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': HOST }] },
+        ]) });
+      }
+      gets++;
+      return route.fulfill({ status: 404, headers: CORS, body: '' });
+    });
+    await page.clock.install();
+    const done = page.evaluate(async () => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://listenhere.solidcommunity.net/profile/card#me';
+      const m = await import('/static/js/annotation/solid-load.js');
+      const results = await Promise.allSettled(
+        Array.from({ length: 30 }, (_, i) => m.listAnnotationsForAudio('https://example.org/recording-' + i + '.wav')),
+      );
+      return results.map((r) => (r.status === 'fulfilled' ? 'ok' : String((r as any).reason?.name || r.reason)));
+    });
+    let finished = false;
+    done.then(() => { finished = true; });
+    for (let i = 0; i < 400 && !finished; i++) {
+      await page.clock.runFor(1000);
+      await page.waitForTimeout(25);
+    }
+    const outcomes = await done;
+    expect(outcomes.filter((o) => o !== 'ok'), 'every source answered').toEqual([]);
+    expect(gets, 'one GET per recording').toBe(30);
+  });
+
   // 54.10 / 54.11 Posting costs no HEAD per recording: a discovery resource's
   // URI is derived, and the GET that patches it creates it when it is missing.
   const POD2 = 'https://pod.example/';

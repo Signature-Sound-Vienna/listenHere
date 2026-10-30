@@ -9,6 +9,15 @@
 // cool-down as if it had been a 429.
 // The figure is a colleague's report (Oct 2026), not measured here: tune it in
 // `hostLimits`.
+//
+// A request may have to wait its turn for many seconds when many are queued, so
+// two things must not run during that wait:
+//  - the caller's `signal` is honoured while queued: an aborted request leaves
+//    the queue at once and neither sends nor holds a slot;
+//  - `init.timeoutMs` (this wrapper's own option, not fetch's) is a timeout on
+//    the request itself, started when it is sent. A timeout set by the caller
+//    before calling would also count the wait and abort requests that never
+//    left the queue.
 
 export const hostLimits = [
   { hostSuffix: "solidcommunity.net", max: 8, windowMs: 10000 },
@@ -42,6 +51,59 @@ function retryAfterMs(resp, fallbackMs) {
     : fallbackMs;
 }
 
+function abortReason(signal) {
+  return signal.reason !== undefined
+    ? signal.reason
+    : new DOMException("The operation was aborted.", "AbortError");
+}
+
+/** `promise`, rejected as soon as `signal` aborts. */
+function abortable(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** `init` with `timeoutMs` turned into an abort signal (joined to any caller's), and a cleanup. */
+function applyTimeout(init, timeoutMs) {
+  const { timeoutMs: _drop, ...rest } = init || {};
+  if (!timeoutMs) return { init: rest, done: () => {} };
+  const ctrl = new AbortController();
+  const timer = setTimeout(
+    () => ctrl.abort(new DOMException("The request timed out.", "TimeoutError")),
+    timeoutMs,
+  );
+  const outer = rest.signal;
+  let onOuterAbort = null;
+  if (outer) {
+    if (outer.aborted) ctrl.abort(abortReason(outer));
+    else {
+      onOuterAbort = () => ctrl.abort(abortReason(outer));
+      outer.addEventListener("abort", onOuterAbort, { once: true });
+    }
+  }
+  return {
+    init: { ...rest, signal: ctrl.signal },
+    done: () => {
+      clearTimeout(timer);
+      if (outer && onOuterAbort) outer.removeEventListener("abort", onOuterAbort);
+    },
+  };
+}
+
 /**
  * @param {(input, init?) => Promise<Response>} baseFetch
  * @param {object} [opts]
@@ -71,10 +133,12 @@ export function createLimitedFetch(baseFetch, opts = {}) {
   }
 
   // Requests are admitted one at a time, in arrival order, so a burst queues
-  // behind the window instead of all finding it free at once.
-  function admit(state, limit) {
+  // behind the window instead of all finding it free at once. A request whose
+  // signal aborts while it waits is dropped without taking a slot.
+  function admit(state, limit, signal) {
     const run = state.tail.then(async () => {
       for (;;) {
+        if (signal && signal.aborted) throw abortReason(signal);
         const t = now();
         while (
           state.stamps.length &&
@@ -83,9 +147,9 @@ export function createLimitedFetch(baseFetch, opts = {}) {
           state.stamps.shift();
         }
         if (t < state.cooldownUntil) {
-          await sleep(state.cooldownUntil - t);
+          await abortable(sleep(state.cooldownUntil - t), signal);
         } else if (state.stamps.length >= limit.max) {
-          await sleep(state.stamps[0] + limit.windowMs - t);
+          await abortable(sleep(state.stamps[0] + limit.windowMs - t), signal);
         } else {
           state.stamps.push(t);
           return;
@@ -93,13 +157,21 @@ export function createLimitedFetch(baseFetch, opts = {}) {
       }
     });
     state.tail = run.catch(() => {});
-    return run;
+    return abortable(run, signal);
   }
 
   return async function limitedFetch(input, init) {
     const url = typeof input === "string" ? input : input && input.url;
     const limit = url ? limitFor(url, limits) : null;
-    if (!limit) return baseFetch(input, init);
+    const timeoutMs = init && init.timeoutMs;
+    if (!limit) {
+      const t = applyTimeout(init, timeoutMs);
+      try {
+        return await baseFetch(input, t.init);
+      } finally {
+        t.done();
+      }
+    }
     const state = stateFor(limit);
     const method = (
       (init && init.method) ||
@@ -107,17 +179,22 @@ export function createLimitedFetch(baseFetch, opts = {}) {
       "GET"
     ).toUpperCase();
     const repeatable = REPEATABLE.has(method);
+    const callerSignal = init && init.signal;
     for (let attempt = 0; ; attempt++) {
-      await admit(state, limit);
+      await admit(state, limit, callerSignal);
+      // The clock for `timeoutMs` starts here, at the send.
+      const t = applyTimeout(init, timeoutMs);
       let resp;
       try {
-        resp = await baseFetch(input, init);
+        resp = await baseFetch(input, t.init);
       } catch (err) {
         if (!(err instanceof TypeError) || !repeatable || attempt >= retries) {
           throw err;
         }
         state.cooldownUntil = now() + limit.windowMs;
         continue;
+      } finally {
+        t.done();
       }
       if (resp.status === 429 && repeatable && attempt < retries) {
         state.cooldownUntil = now() + retryAfterMs(resp, limit.windowMs);

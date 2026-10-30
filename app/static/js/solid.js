@@ -771,12 +771,30 @@ export async function populateSolidDrawer() {
 
 // Session-scoped profile cache, keyed by webId (see getSolidStorage).
 let _profileCache = { webId: null, profile: null };
+// The fetch in progress, so callers that arrive before it ends (a listing
+// fans out one call per recording) share it instead of each fetching the card.
+let _profileInFlight = { webId: null, promise: null };
 
 export async function getProfile() {
   const webId = solid.getDefaultSession().info.webId;
   if (_profileCache.webId === webId && _profileCache.profile) {
     return _profileCache.profile;
   }
+  if (_profileInFlight.webId === webId && _profileInFlight.promise) {
+    return _profileInFlight.promise;
+  }
+  const promise = _fetchProfile(webId);
+  _profileInFlight = { webId, promise };
+  try {
+    return await promise;
+  } finally {
+    if (_profileInFlight.promise === promise) {
+      _profileInFlight = { webId: null, promise: null };
+    }
+  }
+}
+
+async function _fetchProfile(webId) {
   const resp = await solid.fetch(webId, {
     headers: { Accept: "application/ld+json" },
   });
@@ -1062,5 +1080,6 @@ export async function solidLogout() {
 // clearing them on logout is the correct hygiene.
 function _clearSessionCaches() {
   _profileCache = { webId: null, profile: null };
+  _profileInFlight = { webId: null, promise: null };
   _storageCache = { webId: null, storage: null };
 }

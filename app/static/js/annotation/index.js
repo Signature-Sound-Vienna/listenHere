@@ -21,6 +21,7 @@ import {
   prewarmCaches,
   updateAnnotationOnSolid,
 } from "./solid-post.js";
+import { getAnnotationAccess, setAnnotationAccess } from "./solid-access.js";
 import {
   deleteAnnotationFromPod,
   loadAnnotationFromMM,
@@ -166,6 +167,8 @@ export function initAnnotationV6() {
     loadAnnotationsFromAlignment,
     postAnnotationToSolid,
     updateAnnotationOnSolid,
+    getAnnotationAccess,
+    setAnnotationAccess,
     loadAnnotationFromMM,
     listAnnotationsForAudio,
     listAnnotationsForLoadedAudios,

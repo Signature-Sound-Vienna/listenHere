@@ -18,6 +18,7 @@ import * as state from "./state.js";
 import * as adapter from "./mao-adapter.js";
 import { nsp } from "../linked-data.js";
 import { solid, friendContainer, discoveryFragment, getSolidStorage } from "../solid.js";
+import { removeEmptiedAnnotationFolders } from "./solid-access.js";
 import {
   correctedSynthOffsets,
   correctedSynthOnsets,
@@ -40,7 +41,7 @@ import {
  * @param {string} audioUri — the audio's Linked Data URI.
  * @returns {Promise<Array<{ mmUri, label, created }>>}
  */
-export async function listAnnotationsForAudio(audioUri) {
+export async function listAnnotationsForAudio(audioUri, opts = {}) {
   const session = solid.getDefaultSession();
   if (!session || !session.info || !session.info.isLoggedIn) {
     throw new Error("Sign in to your Solid pod first.");
@@ -50,7 +51,10 @@ export async function listAnnotationsForAudio(audioUri) {
   // don't know which form mei-friend (or another writer) used. Try the
   // normalised (short) form first, then any equivalent forms — return the
   // first one that exists.
-  const discovery = await _readFirstDiscovery(_iriVariantsForLookup(audioUri));
+  const discovery = await _readFirstDiscovery(
+    _iriVariantsForLookup(audioUri),
+    opts.knownDiscovery || null,
+  );
   if (!discovery) return [];
   const dataset = _asArray(discovery[nsp.SCHEMA + "dataset"]);
   const mmEntries = dataset.filter((entry) => {
@@ -137,6 +141,25 @@ export async function listAnnotationsForLoadedAudios(opts = {}) {
   const total = sources.length;
   let done = 0;
   onProgress("Checking " + total + " source" + (total === 1 ? "" : "s") + " on your pod…");
+  // One request lists which of them the pod has a discovery resource for. The
+  // listing is only believed once it has proved it can name one of THESE
+  // sources: a non-empty listing that matches none of them is as likely to be a
+  // naming mismatch as a pod with nothing for them, so it is ignored and every
+  // source is read, as before.
+  let knownDiscovery = await _listDiscoveryResources();
+  if (knownDiscovery && knownDiscovery.keys.size > 0) {
+    let matched = false;
+    for (const src of sources) {
+      for (const variant of _iriVariantsForLookup(src.uri)) {
+        const uri = await _discoveryUriFor(variant);
+        if (uri && _listingHas(knownDiscovery, uri) === true) matched = true;
+      }
+    }
+    if (!matched) {
+      console.info("[annotation/v6] the discovery listing names none of the loaded sources; reading each instead.");
+      knownDiscovery = null;
+    }
+  }
 
   const snapshot = () =>
     [...byMm.values()].map((e) => ({
@@ -148,7 +171,7 @@ export async function listAnnotationsForLoadedAudios(opts = {}) {
     sources.map(async (src) => {
       let entries = [];
       try {
-        entries = await listAnnotationsForAudio(src.uri);
+        entries = await listAnnotationsForAudio(src.uri, { knownDiscovery });
       } catch (err) {
         errors.push({ kind: src.kind, file: src.file, error: err });
       }
@@ -381,6 +404,12 @@ export async function deleteAnnotationFromPod(mmUri, opts = {}) {
         }
       }),
     );
+  }
+
+  // Remove the annotation's now-empty folders (with their ACLs). Best-effort.
+  if (deletedUris.length > 0) {
+    onProgress("Removing folders");
+    await removeEmptiedAnnotationFolders(deletedUris);
   }
 
   // Drop matching local state if present — the user's pod-side copy is gone.
@@ -778,13 +807,17 @@ async function _mapLimit(items, limit, fn) {
 async function _solidFetchResilient(uri, init = {}, authenticated = true) {
   let lastErr;
   for (let attempt = 0; attempt <= READ_RETRIES; attempt++) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), READ_TIMEOUT_MS);
+    // An authenticated read goes through the pod host's request limiter
+    // (solid-fetch.js), where it may wait many seconds for its turn behind
+    // other reads. The timeout must run from the send, not from here, or a
+    // long queue aborts requests that never left it: so the limiter is given
+    // `timeoutMs` to start the clock itself.
+    const ctrl = authenticated ? null : new AbortController();
+    const timer = ctrl ? setTimeout(() => ctrl.abort(), READ_TIMEOUT_MS) : null;
     try {
-      const reqInit = { ...init, signal: ctrl.signal };
       const resp = authenticated
-        ? await solid.fetch(uri, reqInit)
-        : await fetch(uri, reqInit);
+        ? await solid.fetch(uri, { ...init, timeoutMs: READ_TIMEOUT_MS })
+        : await fetch(uri, { ...init, signal: ctrl.signal });
       clearTimeout(timer);
       if ((resp.status >= 500 || resp.status === 429) && attempt < READ_RETRIES) {
         lastErr = new Error("GET " + uri + " failed: " + resp.status);
@@ -937,6 +970,91 @@ async function _discoveryUriFor(audioUri) {
  * branch-shorthand before the `/refs/heads/` long form. Non-GH URIs
  * round-trip to a single-entry array.
  */
+// The discovery resources a pod has, from ONE listing of the discovery
+// container. A listing of N sources would otherwise GET one resource per
+// source (and per URI variant) just to learn that most are 404, and on a pod
+// with a request limit those requests are what makes it slow.
+//
+// Two things about real servers, both seen on Community Solid Server:
+//  - the container comes back as SEVERAL nodes with the container's @id (one
+//    with its types, another with ldp:contains), so every such node is read,
+//    not the first;
+//  - a child is named in a different percent-encoding from the one it was PUT
+//    under (`https%3A%2F%2F…` is listed as `https%253A%2F%2F…`), though the
+//    server resolves every spelling. Names are therefore compared decoded to a
+//    fixed point (_canonName), and the listing is trusted only as far as it can
+//    be checked (see listAnnotationsForLoadedAudios): a match that fails means
+//    one more request, never a missed annotation.
+//
+// Returns null when the container can't be read (callers then ask for each
+// resource as before); a container that does not exist is an empty listing.
+async function _listDiscoveryResources() {
+  try {
+    const storage = await getSolidStorage();
+    if (!storage) return null;
+    const container = storage + friendContainer + discoveryFragment;
+    const resp = await _solidFetchResilient(
+      container,
+      { headers: { Accept: "application/ld+json" } },
+      await _isPodOrigin(container),
+    );
+    if (resp.status === 404) return { container, keys: new Set() };
+    if (!resp.ok) throw new Error("GET " + container + " failed: " + resp.status);
+    const raw = await resp.json();
+    let nodes = Array.isArray(raw) ? raw : [raw];
+    if (typeof globalThis.jsonld !== "undefined") {
+      try {
+        nodes = await globalThis.jsonld.expand(raw);
+      } catch (_) {
+        /* keep the raw nodes */
+      }
+    }
+    const own = nodes.filter((n) => n && n["@id"] === container);
+    if (own.length === 0) return null; // not the container's own description: don't guess
+    const keys = new Set();
+    for (const node of own) {
+      for (const child of _asArray(node["http://www.w3.org/ns/ldp#contains"])) {
+        const id = child && child["@id"];
+        if (typeof id !== "string" || !id.startsWith(container)) continue;
+        const key = _canonName(id.slice(container.length));
+        if (key === null) return null; // a name we can't read: don't guess
+        keys.add(key);
+      }
+    }
+    return { container, keys };
+  } catch (err) {
+    console.warn("[annotation/v6] couldn't list the discovery container; reading each resource instead.", err);
+    return null;
+  }
+}
+
+/** A resource name decoded until it stops changing, so spellings of it compare equal; null if undecodable. */
+function _canonName(name) {
+  let cur = name;
+  try {
+    for (let i = 0; i < 5; i++) {
+      const next = decodeURIComponent(cur);
+      if (next === cur) return cur;
+      cur = next;
+    }
+  } catch (_) {
+    return null;
+  }
+  return cur;
+}
+
+/** true / false when the listing says the discovery resource is / is not there; null when that can't be told. */
+function _listingHas(known, discoveryUri) {
+  if (!known || !discoveryUri.startsWith(known.container)) return null;
+  const key = _canonName(discoveryUri.slice(known.container.length));
+  return key === null ? null : known.keys.has(key);
+}
+
+/** False only when a listing was read and says the discovery resource is not in it. */
+function _mayExistInListing(known, discoveryUri) {
+  return _listingHas(known, discoveryUri) !== false;
+}
+
 function _iriVariantsForLookup(uri) {
   const normalised = _normaliseIri(uri);
   const variants = [normalised];
@@ -958,11 +1076,13 @@ function _iriVariantsForLookup(uri) {
  * first one that successfully GETs as JSON-LD. Returns null if none
  * resolve (e.g. all 404).
  */
-async function _readFirstDiscovery(uriVariants) {
+async function _readFirstDiscovery(uriVariants, known = null) {
   let nonMissingErr = null;
   for (const variant of uriVariants) {
     const discoveryUri = await _discoveryUriFor(variant);
     if (!discoveryUri) continue;
+    // The container listing says there is none: no request needed.
+    if (!_mayExistInListing(known, discoveryUri)) continue;
     try {
       return await _fetchJsonLd(discoveryUri);
     } catch (err) {

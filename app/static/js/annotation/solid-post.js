@@ -40,6 +40,7 @@
 import * as state from "./state.js";
 import * as adapter from "./mao-adapter.js";
 import { nsp } from "../linked-data.js";
+import { folderIdOf } from "./solid-layout.js";
 import {
   createResourceAtUri,
   discoveryUriFor,
@@ -158,8 +159,13 @@ function _mintSlug() {
  * Container paths come from the existing solid.js constants and are
  * appended to the user's storage root, which we resolve once. Caller is
  * responsible for ensuring containers exist (see _ensureContainers).
+ *
+ * `folderId` puts every resource in its annotation's own folder inside the
+ * type container (see solid-layout.js), which the server creates with the
+ * first resource. Null keeps the older flat layout, for updating an
+ * annotation that was posted that way.
  */
-async function _mintUrisFor(templates) {
+async function _mintUrisFor(templates, folderId = null) {
   const storage = await getSolidStorage();
   if (!storage) throw new Error("Couldn't resolve Solid storage root.");
   const containers = {
@@ -172,7 +178,8 @@ async function _mintUrisFor(templates) {
   for (const t of templates) {
     const root = containers[t.kind];
     if (!root) throw new Error("Unknown resource kind: " + t.kind);
-    localToUri[t.localKey] = root + _mintSlug();
+    localToUri[t.localKey] =
+      root + (folderId ? folderId + "/" : "") + _mintSlug();
   }
   return localToUri;
 }
@@ -349,7 +356,7 @@ export async function postAnnotationToSolid(annId, opts = {}) {
   // Mint every resource URI up front. From here on we don't need to wait
   // on Location headers or do post-POST @id-fixup PUTs: every body can be
   // substituted with the final URIs before any I/O fires.
-  const localToUri = await _mintUrisFor(templates);
+  const localToUri = await _mintUrisFor(templates, _mintSlug());
 
   const total = templates.length + Object.keys(discoveryByAudio).length;
   let step = 0;
@@ -704,8 +711,11 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
   // Mint URIs for templates that don't yet have one. The minted URIs are
   // also what we'll consider "created" for discovery reconciliation.
   const freshTemplates = templates.filter((t) => !oldKeys.has(t.localKey));
+  // New resources join the annotation's existing folder (so they inherit its
+  // access); an annotation posted in the older flat layout stays flat.
+  const folderId = folderIdOf(Object.values(ann.lastPostedUris));
   if (freshTemplates.length > 0) {
-    const fresh = await _mintUrisFor(freshTemplates);
+    const fresh = await _mintUrisFor(freshTemplates, folderId);
     for (const k of Object.keys(fresh)) localToUri[k] = fresh[k];
   }
   const localToHash = {};
@@ -746,7 +756,7 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
               console.warn(
                 "[annotation/v6] " + t.localKey + " missing on pod; re-creating at a fresh URI.",
               );
-              const replacementUri = (await _mintUrisFor([t]))[t.localKey];
+              const replacementUri = (await _mintUrisFor([t], folderId))[t.localKey];
               await _safePutResource(replacementUri, body, t.localKey);
               return { template: t, uri: replacementUri, hash: newHash, skipped: false, created: true, createdAt: body[nsp.DCT + "created"] || null };
             }

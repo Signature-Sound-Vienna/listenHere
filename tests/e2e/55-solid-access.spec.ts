@@ -94,11 +94,19 @@ async function wacPod(page: Page, opts: { acp?: boolean } = {}): Promise<WacPod>
 /**
  * Sign in (faked), then post a new annotation to two recordings; returns what was posted.
  * `withNote: false` leaves out the note, so the annotation has no oa:Annotation (and no oa/ folder).
+ * Returns once the card has read the new annotation's access (one HEAD of its
+ * MusicalMaterial), so that read never lands in a log a test clears after posting.
  */
 async function postAnnotation(
   page: Page,
   { withNote = true }: { withNote?: boolean } = {},
 ): Promise<{ id: string; uris: Record<string, string>; files: string[] }> {
+  const posted = await _post(page, withNote);
+  await page.locator('.lh-v6-access-btn').first().waitFor(); // drawn when the card's read is done
+  return posted;
+}
+
+async function _post(page: Page, withNote: boolean): Promise<{ id: string; uris: Record<string, string>; files: string[] }> {
   return page.evaluate(async (withNote) => {
     const sca = (window as any).solidClientAuthentication;
     const s = (sca.default || sca).getDefaultSession();

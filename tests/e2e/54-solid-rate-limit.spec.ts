@@ -543,6 +543,9 @@ test.describe('54. Request limit for pod hosts', () => {
     const store = new Map<string, { doc: any; v: number }>();
     const raced = new Set<string>();
     const lost = new Set<string>();
+    // Set `interfere` and the next conditional PUT to a discovery resource
+    // finds that another writer has just added OTHER_MM to it (so it meets 412).
+    const ctl = { interfere: false };
     await page.route(POD2 + '**', async (route) => {
       const req = route.request();
       if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS_ALL });
@@ -565,6 +568,12 @@ test.describe('54. Request limit for pod hosts', () => {
             'https://schema.org/dataset': [{ '@type': 'https://schema.org/Dataset', 'https://schema.org/url': { '@id': OTHER_MM } }] }, v: 1 });
         }
         const cur = store.get(url);
+        if (ctl.interfere && h['if-match'] && isDiscoveryResource && cur) {
+          ctl.interfere = false;
+          cur.doc['https://schema.org/dataset'] = [].concat(cur.doc['https://schema.org/dataset'] || [],
+            [{ '@type': 'https://schema.org/Dataset', 'https://schema.org/url': { '@id': OTHER_MM } }] as any);
+          cur.v++;
+        }
         if (h['if-none-match'] === '*' && cur) return route.fulfill({ status: 412, headers: CORS_ALL, body: '' });
         if (h['if-match'] && (!cur || h['if-match'] !== etagOf(cur.v))) return route.fulfill({ status: 412, headers: CORS_ALL, body: '' });
         store.set(url, { doc: JSON.parse(req.postData() || '{}'), v: (cur ? cur.v : 0) + 1 });
@@ -583,9 +592,39 @@ test.describe('54. Request limit for pod hosts', () => {
       if (req.method() === 'HEAD' && isDiscoveryResource && !store.has(url)) {
         return route.fulfill({ status: 404, headers: CORS_ALL, body: '' });
       }
+      if (req.method() === 'DELETE') {
+        store.delete(url);
+        return route.fulfill({ status: 204, headers: CORS_ALL, body: '' });
+      }
       return route.fulfill({ status: 200, headers: CORS_ALL, body: '' });
     });
-    return { log, store, lost };
+    return { log, store, lost, ctl };
+  }
+
+  /** Post an annotation on two recordings (signed in, faked) for a test to update; three files are returned. */
+  async function postForUpdate(page: Page): Promise<{ id: string; files: string[] }> {
+    return page.evaluate(async () => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://pod.example/profile/card#me';
+      const v6 = (window as any).__annotationV6;
+      const files = Object.keys(((await import('/static/js/listen.js')) as any).loadedAlignmentJSON.body.audio).slice(0, 3);
+      const id = v6.state.createAnnotation({ label: 'update test' });
+      v6.state.addRegion(id, files[0], 1, 2);
+      v6.state.addTarget(id, files[1]);
+      await v6.postAnnotationToSolid(id);
+      return { id, files };
+    });
+  }
+
+  /** The discovery resource URI for a loaded file, as the app derives it. */
+  async function discoveryOf(page: Page, file: string): Promise<string> {
+    return page.evaluate(async (file) => {
+      const listen = (await import('/static/js/listen.js')) as any;
+      const m = await import('/static/js/solid.js');
+      return m.discoveryUriFor(listen.getAudioLinkedDataUri(file));
+    }, file);
   }
 
   test('54.20 a discovery resource another writer creates first is patched, not overwritten', async ({ loadedPage: page }) => {
@@ -645,5 +684,126 @@ test.describe('54. Request limit for pod hosts', () => {
       }
     }, POD2);
     expect(r).toMatch(/PUT failed .* 412/);
+  });
+
+  // 54.23–54.25 The update's discovery reconcile goes through
+  // safelyPatchResource, as the post's patch does.
+  test('54.23 an update makes no HEAD per recording; a recording it adds gets its discovery resource from one GET and one conditional PUT', async ({ loadedPage: page }) => {
+    const { log, store } = await conditionalPod(page, {});
+    const { id, files } = await postForUpdate(page);
+    log.length = 0;
+    await page.evaluate(async ({ id, third }) => {
+      const v6 = (window as any).__annotationV6;
+      v6.state.addTarget(id, third);
+      await v6.updateAnnotationOnSolid(id);
+    }, { id, third: files[2] });
+
+    const perRecording = log.filter((r) => r.includes(DISC + 'https'));
+    expect(perRecording.filter((r) => r.startsWith('HEAD ')), 'no HEAD per recording').toEqual([]);
+    const third = await discoveryOf(page, files[2]);
+    expect(perRecording.filter((r) => r.startsWith('GET ' + third))).toHaveLength(1);
+    expect(perRecording.filter((r) => r.startsWith('PUT ')), 'one creating PUT, for the added recording')
+      .toEqual(['PUT ' + third + ' [If-None-Match *]']);
+    expect(JSON.stringify(store.get(third)!.doc)).toContain('Selection');  });
+
+  test('54.24 a discovery resource changed by someone else during an update is reconciled again, not lost', async ({ loadedPage: page }) => {
+    const { store, ctl } = await conditionalPod(page, {});
+    const { id, files } = await postForUpdate(page);
+    ctl.interfere = true;
+    const oaUri = await page.evaluate(async ({ id, file }) => {
+      const v6 = (window as any).__annotationV6;
+      v6.state.updateTargetNote(id, file, 'a note added in the update');
+      await v6.updateAnnotationOnSolid(id);
+      return v6.state.getById(id).lastPostedUris['oa/track/' + file];
+    }, { id, file: files[0] });
+
+    expect(oaUri).toBeTruthy();
+    expect(ctl.interfere, 'the interference happened').toBe(false);
+    const urls = urlsListed(store.get(await discoveryOf(page, files[0]))!.doc);
+    expect(urls, 'the other writer\'s entry').toContain(OTHER_MM);
+    expect(urls, 'the update\'s entry').toContain(oaUri);
+  });
+
+  test('54.25 detaching a recording whose discovery resource is gone does not create one just to remove from it', async ({ loadedPage: page }) => {
+    const { log, store } = await conditionalPod(page, {});
+    const { id, files } = await postForUpdate(page);
+    const second = await discoveryOf(page, files[1]);
+    expect(store.has(second)).toBe(true);
+    store.delete(second);
+    log.length = 0;
+    await page.evaluate(async ({ id, file }) => {
+      const v6 = (window as any).__annotationV6;
+      v6.state.removeTarget(id, file);
+      await v6.updateAnnotationOnSolid(id);
+    }, { id, file: files[1] });
+
+    expect(log.filter((r) => r.startsWith('PUT ' + second))).toEqual([]);
+    expect(store.has(second)).toBe(false);
+  });
+
+  // 54.26–54.28 Every request to a limited host is counted, and retried once over.
+  test('54.26 two limited fetches given the same states share one budget per host', async ({ loadedPage: page }) => {
+    const r = await inPage<{ maxInWindow: number; n: number }>(page, `
+      const states = new Map();
+      const base = async (u) => { calls.push({ url: u, t: clock.now() }); return ok(); };
+      const a = mod.createLimitedFetch(base, { now: clock.now, sleep: clock.sleep, states });
+      const b = mod.createLimitedFetch(base, { now: clock.now, sleep: clock.sleep, states });
+      await Promise.all(Array.from({ length: 20 }, (_, i) => (i % 2 ? a : b)('${LIMITED}d' + i, { method: 'HEAD' })));
+      const ts = calls.map((c) => c.t);
+      let maxInWindow = 0;
+      for (const t0 of ts) maxInWindow = Math.max(maxInWindow, ts.filter((t) => t >= t0 && t < t0 + 10000).length);
+      return { maxInWindow, n: calls.length };
+    `);
+    expect(r.n).toBe(20);
+    expect(r.maxInWindow).toBeLessThanOrEqual(8);
+  });
+
+  test('54.27 the signed-in fetch and the plain one (publicFetch) count against the same host limit', async ({ loadedPage: page }) => {
+    await conditionalPod(page, {});
+    const at = await page.evaluate(async (pod) => {
+      const lim = await import('/static/js/solid-fetch.js');
+      lim.hostLimits.push({ hostSuffix: 'pod.example', max: 2, windowMs: 600 });
+      const m = await import('/static/js/solid.js');
+      const t0 = performance.now();
+      const when = async (p: Promise<Response>) => { await p; return performance.now() - t0; };
+      return Promise.all([
+        when(m.solid.fetch(pod + 'a', { method: 'HEAD' })),
+        when(m.solid.fetch(pod + 'b', { method: 'HEAD' })),
+        when(m.publicFetch(pod + 'c', { method: 'HEAD' })),
+      ]);
+    }, POD2);
+    expect(Math.max(at[0], at[1]), 'the first two go at once').toBeLessThan(500);
+    expect(at[2], 'the plain one waits for the window').toBeGreaterThanOrEqual(550);
+  });
+
+  test('54.28 a read on a limited host that keeps failing is sent 3 times, not 3 × 3', async ({ loadedPage: page }) => {
+    const MM = POD2 + 'at.ac.mdw.mei-friend/mao/musicalMaterial/x/unreachable';
+    let attempts = 0;
+    await page.route(POD2 + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS_ALL });
+      if (req.url() === POD2 + 'profile/card') {
+        return route.fulfill({ status: 200, contentType: 'application/ld+json', headers: CORS_ALL,
+          body: JSON.stringify([{ '@id': POD2 + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': POD2 }] }]) });
+      }
+      if (req.url() === MM) { attempts++; return route.abort('failed'); }
+      return route.fulfill({ status: 200, headers: CORS_ALL, body: '' });
+    });
+    const err = await page.evaluate(async (mm) => {
+      const lim = await import('/static/js/solid-fetch.js');
+      lim.hostLimits.push({ hostSuffix: 'pod.example', max: 1000, windowMs: 20 });
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://pod.example/profile/card#me';
+      try {
+        await (window as any).__annotationV6.loadAnnotationFromMM(mm);
+        return 'resolved';
+      } catch (e: any) {
+        return e.name + ': ' + e.message;
+      }
+    }, MM);
+    expect(err).not.toBe('resolved');
+    expect(attempts).toBe(3);
   });
 });

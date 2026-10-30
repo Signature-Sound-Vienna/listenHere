@@ -1,5 +1,14 @@
 # Listen Here! CHANGELOG.md
 
+### 0.104.3 -- Updates reconcile discovery as posts do; every request to a limited pod host is counted once
+
+* An update no longer sends a HEAD per recording before writing: discovery URIs are derived, and the reconcile goes through `safelyPatchResource`, so a discovery resource another writer changed meanwhile (412) is reconciled again instead of silently left out, a missing one is created by a conditional PUT when there is something to add, and one with nothing to add is not created.
+* `safelyPatchResource` throws on a failed GET (other than a 404 it may create from) instead of patching the error body.
+* Unauthenticated reads (`publicFetch`, for other people's pods) keep within the same per-host limit as signed-in ones, sharing one budget per host. The loader no longer retries a 429 or a network error that the limiter has already retried, so a failing read on a limited host is sent 3 times, not 9.
+* `solid-load.js` uses `discoveryUriFor` from `solid.js` instead of its own copy.
+* Spec 55: the post helper waits for the card's own access read, which could land in a request log a test had just cleared (seen once in 55.3).
+* Testing: 54.23–54.28; the functional suite passes (601, 2 skipped).
+
 ### 0.104.2 -- A public annotation's later text is public too; Solid writes that may repeat or race
 
 * An update that adds an annotation's first resource of a type (its first text, so its first `oa:Annotation`) gives the new folder the annotation's public/private setting. Before, that folder kept its container's private default, so the card read Public while the new text was private; and a folder emptied by an earlier update kept its old ACL, which could make text re-added to a private annotation public.

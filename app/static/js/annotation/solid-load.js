@@ -17,7 +17,15 @@
 import * as state from "./state.js";
 import * as adapter from "./mao-adapter.js";
 import { nsp } from "../linked-data.js";
-import { solid, friendContainer, discoveryFragment, getSolidStorage } from "../solid.js";
+import { isLimited } from "../solid-fetch.js";
+import {
+  solid,
+  publicFetch,
+  discoveryUriFor,
+  friendContainer,
+  discoveryFragment,
+  getSolidStorage,
+} from "../solid.js";
 import { removeEmptiedAnnotationFolders } from "./solid-access.js";
 import {
   correctedSynthOffsets,
@@ -151,7 +159,7 @@ export async function listAnnotationsForLoadedAudios(opts = {}) {
     let matched = false;
     for (const src of sources) {
       for (const variant of _iriVariantsForLookup(src.uri)) {
-        const uri = await _discoveryUriFor(variant);
+        const uri = await discoveryUriFor(variant);
         if (uri && _listingHas(knownDiscovery, uri) === true) matched = true;
       }
     }
@@ -691,7 +699,7 @@ async function _fetchChainAsGraph(mmUri, onProgress) {
   await Promise.all(
     uniqueAudios.map(async (audioUri) => {
       try {
-        const discoveryUri = await _discoveryUriFor(audioUri);
+        const discoveryUri = await discoveryUriFor(audioUri);
         if (!discoveryUri) return;
         const disc = await _fetchJsonLd(discoveryUri);
         for (const entry of _asArray(disc[nsp.SCHEMA + "dataset"])) {
@@ -733,7 +741,7 @@ async function _fetchChainAsGraph(mmUri, onProgress) {
  * how many discoveries were actually touched.
  */
 async function _purgeDeletedFromDiscovery(audioUri, deletedSet) {
-  const discoveryUri = await _discoveryUriFor(audioUri);
+  const discoveryUri = await discoveryUriFor(audioUri);
   if (!discoveryUri) return false;
   const resp = await solid.fetch(discoveryUri, {
     headers: { Accept: "application/ld+json" },
@@ -801,34 +809,36 @@ async function _mapLimit(items, limit, fn) {
   return results;
 }
 
-// When `authenticated` is false the request is issued with the plain global
-// fetch, so the user's Solid access token / DPoP proof never leaves their pod
-// origin (see _isPodOrigin). Same retry/timeout behaviour either way.
+// When `authenticated` is false the request is issued with the plain fetch
+// (publicFetch), so the user's Solid access token / DPoP proof never leaves
+// their pod origin (see _isPodOrigin). Same retry/timeout behaviour either way.
 async function _solidFetchResilient(uri, init = {}, authenticated = true) {
+  const send = authenticated ? solid.fetch : publicFetch;
+  // On a host with a request limit, the limiter has already retried a 429 and
+  // a network error after a cool-down; retrying them here as well would
+  // multiply the attempts (three of its for each of ours).
+  const limiterRetries = isLimited(uri);
   let lastErr;
   for (let attempt = 0; attempt <= READ_RETRIES; attempt++) {
-    // An authenticated read goes through the pod host's request limiter
-    // (solid-fetch.js), where it may wait many seconds for its turn behind
-    // other reads. The timeout must run from the send, not from here, or a
-    // long queue aborts requests that never left it: so the limiter is given
-    // `timeoutMs` to start the clock itself.
-    const ctrl = authenticated ? null : new AbortController();
-    const timer = ctrl ? setTimeout(() => ctrl.abort(), READ_TIMEOUT_MS) : null;
     try {
-      const resp = authenticated
-        ? await solid.fetch(uri, { ...init, timeoutMs: READ_TIMEOUT_MS })
-        : await fetch(uri, { ...init, signal: ctrl.signal });
-      clearTimeout(timer);
-      if ((resp.status >= 500 || resp.status === 429) && attempt < READ_RETRIES) {
+      // Either fetch goes through the pod host's request limiter
+      // (solid-fetch.js), where a read may wait many seconds for its turn.
+      // The timeout must run from the send, not from here, or a long queue
+      // aborts requests that never left it: so the limiter is given
+      // `timeoutMs` to start the clock itself.
+      const resp = await send(uri, { ...init, timeoutMs: READ_TIMEOUT_MS });
+      const transient =
+        resp.status >= 500 || (resp.status === 429 && !limiterRetries);
+      if (transient && attempt < READ_RETRIES) {
         lastErr = new Error("GET " + uri + " failed: " + resp.status);
         await _sleep(READ_BACKOFF_MS * (attempt + 1));
         continue;
       }
       return resp;
     } catch (err) {
-      clearTimeout(timer);
       lastErr = err;
-      if (attempt < READ_RETRIES) {
+      const retriedAlready = limiterRetries && err instanceof TypeError;
+      if (!retriedAlready && attempt < READ_RETRIES) {
         await _sleep(READ_BACKOFF_MS * (attempt + 1));
         continue;
       }
@@ -951,25 +961,6 @@ async function _fetchJsonLd(uri) {
   );
 }
 
-/**
- * Compute the URI of the discovery resource for a given audio URI. We
- * don't go through establishDiscoveryResource here — that would CREATE
- * the resource if missing, but for Load we only want to READ. Mirror the
- * naming convention (`<storage>/at.ac.mdw.mei-friend/discovery/<encoded>`).
- */
-async function _discoveryUriFor(audioUri) {
-  const storage = await getSolidStorage();
-  if (!storage) return null;
-  return storage + friendContainer + discoveryFragment + encodeURIComponent(audioUri);
-}
-
-/**
- * Return URI variants to try when reading a discovery resource — they
- * all reference the same blob but differ in surface form. Order: most-
- * canonical first. For raw.githubusercontent.com URLs that means
- * branch-shorthand before the `/refs/heads/` long form. Non-GH URIs
- * round-trip to a single-entry array.
- */
 // The discovery resources a pod has, from ONE listing of the discovery
 // container. A listing of N sources would otherwise GET one resource per
 // source (and per URI variant) just to learn that most are 404, and on a pod
@@ -1055,6 +1046,13 @@ function _mayExistInListing(known, discoveryUri) {
   return _listingHas(known, discoveryUri) !== false;
 }
 
+/**
+ * Return URI variants to try when reading a discovery resource — they
+ * all reference the same blob but differ in surface form. Order: most-
+ * canonical first. For raw.githubusercontent.com URLs that means
+ * branch-shorthand before the `/refs/heads/` long form. Non-GH URIs
+ * round-trip to a single-entry array.
+ */
 function _iriVariantsForLookup(uri) {
   const normalised = _normaliseIri(uri);
   const variants = [normalised];
@@ -1072,14 +1070,14 @@ function _iriVariantsForLookup(uri) {
 }
 
 /**
- * Try `_discoveryUriFor` for each URI variant in turn; return the
+ * Try `discoveryUriFor` for each URI variant in turn; return the
  * first one that successfully GETs as JSON-LD. Returns null if none
  * resolve (e.g. all 404).
  */
 async function _readFirstDiscovery(uriVariants, known = null) {
   let nonMissingErr = null;
   for (const variant of uriVariants) {
-    const discoveryUri = await _discoveryUriFor(variant);
+    const discoveryUri = await discoveryUriFor(variant);
     if (!discoveryUri) continue;
     // The container listing says there is none: no request needed.
     if (!_mayExistInListing(known, discoveryUri)) continue;

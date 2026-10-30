@@ -46,7 +46,6 @@ import {
   createResourceAtUri,
   discoveryUriFor,
   establishContainers,
-  establishDiscoveryResource,
   getSolidStorage,
   newDiscoveryDocument,
   safelyPatchResource,
@@ -60,13 +59,14 @@ import { getAudioLinkedDataUri, loadedAlignmentJSON } from "../listen.js";
 import { commitAnnotationsToAlignment } from "./index.js";
 
 // ---------------------------------------------------------------------------
-// Session-scoped existence cache. We don't HEAD containers / discovery
-// resources twice per session — once verified, we trust them. Both caches
-// are invalidated lazily on 404 (see _safePostResource).
+// Session-scoped existence cache. We don't HEAD the containers twice per
+// session — once verified, we trust them; the cache is invalidated lazily on
+// 404 (see _safePutResource). Per-recording discovery resources need no such
+// check: their URIs are derived (discoveryUriFor), and the patch that writes
+// to one creates it when it is missing.
 // ---------------------------------------------------------------------------
 
 let _containersEstablished = false;
-const _discoveryCache = new Map(); // audioUri → discoveryResourceUri
 
 async function _ensureContainers() {
   if (_containersEstablished) return;
@@ -76,25 +76,6 @@ async function _ensureContainers() {
 
 function _invalidateContainersCache() {
   _containersEstablished = false;
-  _discoveryCache.clear();
-}
-
-// Used by the update flow, which needs the resource to EXIST before it
-// reconciles it. Callers have awaited `_ensureContainers`, so the discovery
-// container is not checked again. The post flow does not come through here:
-// it needs only the URI, and creates the resource when it patches it.
-async function _ensureDiscoveryFor(audioUri) {
-  if (_discoveryCache.has(audioUri)) return _discoveryCache.get(audioUri);
-  const r = await establishDiscoveryResource(audioUri, { containerKnown: true });
-  if (!r || !r.url) {
-    throw new Error("Couldn't establish discovery resource for " + audioUri);
-  }
-  _discoveryCache.set(audioUri, r.url);
-  return r.url;
-}
-
-function _invalidateDiscoveryFor(audioUri) {
-  _discoveryCache.delete(audioUri);
 }
 
 /**
@@ -104,8 +85,8 @@ function _invalidateDiscoveryFor(audioUri) {
  *
  * Per-audio discovery resources are deliberately NOT warmed here: one HEAD
  * (and, for a new one, PUT) per loaded recording right after login overran
- * solidcommunity.net's request limit. `_ensureDiscoveryFor` establishes
- * them on demand, for the recordings a post targets.
+ * solidcommunity.net's request limit. A post or update creates the ones it
+ * writes to, when it patches them.
  */
 export async function prewarmCaches() {
   try {
@@ -551,10 +532,7 @@ async function _patchDiscoveryResources(
     }
   }
 
-  const datasetPath =
-    "/" +
-    nsp.SCHEMA.replaceAll("~", "~0").replaceAll("/", "~1") +
-    "dataset/-";
+  const datasetPath = _DATASET_POINTER + "/-";
 
   const allAudios = new Set([
     ...Object.keys(audioToSelUris),
@@ -594,9 +572,6 @@ async function _patchDiscoveryResources(
           "[annotation/v6] discovery patch failed for " + discoveryUri,
           err,
         );
-        // Soft-invalidate so the next run re-establishes (in case the resource
-        // disappeared between sessions).
-        _invalidateDiscoveryFor(audioUri);
       }
       if (typeof onAudioPatched === "function") onAudioPatched();
     }),
@@ -628,6 +603,10 @@ function _discoveryEntryValue(url, additionalTypeIri, meta) {
 function _datasetOp(path, url, additionalTypeIri, meta) {
   return { op: "add", path, value: _discoveryEntryValue(url, additionalTypeIri, meta) };
 }
+
+/** The JSON Pointer to a discovery document's schema:dataset. */
+const _DATASET_POINTER =
+  "/" + (nsp.SCHEMA + "dataset").replaceAll("~", "~0").replaceAll("/", "~1");
 
 /** A discovery document's schema:dataset entries, as an array. */
 function _datasetOf(doc) {
@@ -694,21 +673,17 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
   await _ensureContainers();
   const uniqueAudioUris = [...new Set(Object.values(fileToAudioUri))];
   const discoveryByAudio = {};
+  // Only the URIs, as in the post: the reconcile creates a missing discovery
+  // resource when it has something to add to it.
   for (const audioUri of uniqueAudioUris) {
-    try {
-      discoveryByAudio[audioUri] = await _ensureDiscoveryFor(audioUri);
-    } catch (err) {
-      console.warn("[annotation/v6] discovery establish failed; skipping", audioUri, err);
-    }
+    discoveryByAudio[audioUri] = await discoveryUriFor(audioUri);
   }
   // Audios that were involved before but aren't anymore (detached files)
   // — we still need to touch their discovery resource to remove stale entries.
   const oldFileToAudioUri = _oldFileToAudioUri(ann.lastPostedUris);
   for (const oldAudio of Object.values(oldFileToAudioUri)) {
     if (!discoveryByAudio[oldAudio]) {
-      try {
-        discoveryByAudio[oldAudio] = await _ensureDiscoveryFor(oldAudio);
-      } catch (_) { /* leave gap; reconcile will skip */ }
+      discoveryByAudio[oldAudio] = await discoveryUriFor(oldAudio);
     }
   }
 
@@ -1034,28 +1009,38 @@ async function _reconcileDiscoveryResources(
         return;
       }
       try {
-        await _patchDiscoveryReconcile(discoveryUri, adds, deletedSet, mmNameRefresh);
+        await _patchDiscoveryReconcile(discoveryUri, audioUri, adds, deletedSet, mmNameRefresh);
       } catch (err) {
         console.warn(
           "[annotation/v6] discovery reconcile failed for " + discoveryUri,
           err,
         );
-        _invalidateDiscoveryFor(audioUri);
       }
       if (typeof onAudioReconciled === "function") onAudioReconciled();
     }),
   );
 }
 
-async function _patchDiscoveryReconcile(discoveryUri, adds, removeUriSet, mmNameRefresh) {
-  const getResp = await solid.fetch(discoveryUri, {
-    headers: { Accept: "application/ld+json" },
-  });
-  if (!getResp.ok) return;
-  const etag = getResp.headers.get("ETag");
-  const body = await getResp.json();
-  const datasetKey = nsp.SCHEMA + "dataset";
-  let dataset = _datasetOf(body);
+/**
+ * Bring one recording's discovery resource up to date: drop the entries for
+ * deleted resources, add the created ones it doesn't list, refresh the MM's
+ * denormalised name. Through safelyPatchResource, so the change is worked out
+ * afresh from each fetch: a 412 (the resource changed meanwhile) is retried
+ * rather than lost, and a missing resource is created when there is something
+ * to add to it (and left missing when there isn't).
+ */
+async function _patchDiscoveryReconcile(discoveryUri, audioUri, adds, removeUriSet, mmNameRefresh) {
+  await safelyPatchResource(
+    discoveryUri,
+    (doc) => _reconcileOps(doc, adds, removeUriSet, mmNameRefresh),
+    5,
+    { createIfMissing: () => newDiscoveryDocument(discoveryUri, audioUri) },
+  );
+}
+
+/** The patch (one replacement of the dataset, or none) that reconciles `doc`. */
+function _reconcileOps(doc, adds, removeUriSet, mmNameRefresh) {
+  let dataset = _datasetOf(doc).map((e) => ({ ...e }));
   let changed = false;
 
   if (removeUriSet.size > 0) {
@@ -1090,15 +1075,5 @@ async function _patchDiscoveryReconcile(discoveryUri, adds, removeUriSet, mmName
       }
     }
   }
-  if (!changed) return;
-  body[datasetKey] = dataset;
-
-  await solid.fetch(discoveryUri, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/ld+json",
-      ...(etag ? { "If-Match": etag } : {}),
-    },
-    body: JSON.stringify(body),
-  });
+  return changed ? [{ op: "add", path: _DATASET_POINTER, value: dataset }] : [];
 }

@@ -32,6 +32,11 @@ const REPEATABLE = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"]);
 
 const MAX_RETRY_AFTER_MS = 60000;
 
+/** Whether requests to `url` go through a host limit (and so are retried by it). */
+export function isLimited(url, limits = hostLimits) {
+  return limitFor(url, limits) !== null;
+}
+
 function limitFor(url, limits) {
   let host;
   try {
@@ -113,6 +118,8 @@ function applyTimeout(init, timeoutMs) {
  * @param {number} [opts.retries] extra attempts after a 429 or a TypeError
  * @param {() => number} [opts.now] clock in ms (for tests)
  * @param {(ms: number) => Promise<void>} [opts.sleep] wait (for tests)
+ * @param {Map} [opts.states] the per-host windows and queues; pass the same
+ *   Map to several limited fetches to make them share one budget per host
  */
 export function createLimitedFetch(baseFetch, opts = {}) {
   const {
@@ -120,8 +127,8 @@ export function createLimitedFetch(baseFetch, opts = {}) {
     retries = 2,
     now = () => Date.now(),
     sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+    states = new Map(), // limit → { stamps, cooldownUntil, tail }
   } = opts;
-  const states = new Map(); // limit → { stamps, cooldownUntil, tail }
 
   function stateFor(limit) {
     if (!states.has(limit)) {

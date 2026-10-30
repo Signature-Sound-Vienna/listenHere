@@ -9,7 +9,7 @@
 //} from './main.js';
 
 import { nsp, politeness } from "./linked-data.js";
-import { withLimitedFetch } from "./solid-fetch.js";
+import { createLimitedFetch, withLimitedFetch } from "./solid-fetch.js";
 
 import { storage, versionString } from "./listen.js";
 import { ensureRelativeURL } from "./utils.js";
@@ -31,7 +31,20 @@ const solidLibrary =
     solidClientAuthentication &&
     (solidClientAuthentication.default || solidClientAuthentication)) ||
   null;
-export const solid = solidLibrary && withLimitedFetch(solidLibrary);
+// One budget per pod host, shared by the signed-in fetch and `publicFetch`:
+// whether the host counts requests per session or per client isn't known, so
+// they are counted together.
+const _hostStates = new Map();
+export const solid =
+  solidLibrary && withLimitedFetch(solidLibrary, { states: _hostStates });
+/**
+ * The plain (unauthenticated) fetch, kept within the same host limits, for
+ * reading other people's pods without sending the user's credentials there.
+ */
+export const publicFetch = createLimitedFetch(
+  (input, init) => fetch(input, init),
+  { states: _hostStates },
+);
 
 // Never ported from mei-friend's main.js, where it wrote to the log pane: the
 // error branches below called an undefined `log`, so a network error became a
@@ -203,7 +216,8 @@ async function _ownWriteAt(uri, createdStamp) {
  * see solid-fetch.js) can return only what is still missing, and an empty
  * patch writes nothing.
  * `options.createIfMissing`: a function returning the initial document, used
- * when the GET answers 404.
+ * when the GET answers 404 and the patch has something to put in it.
+ * Any other failed GET throws.
  */
 
 export async function safelyPatchResource(
@@ -223,7 +237,9 @@ export async function safelyPatchResource(
     // document with the patch applied. One GET and one PUT, where establishing
     // it first (HEAD, then PUT) would have added a request.
     const initial = options.createIfMissing();
-    const created = jsonpatch.applyPatch(initial, opsFor(initial)).newDocument;
+    const initialOps = opsFor(initial);
+    if (initialOps.length === 0) return resp; // nothing to put in it: leave it missing
+    const created = jsonpatch.applyPatch(initial, initialOps).newDocument;
     const createResp = await solid.fetch(uri, {
       method: "PUT",
       headers: {
@@ -247,6 +263,11 @@ export async function safelyPatchResource(
       console.log("Created and patched: ", uri);
     }
     return createResp;
+  }
+  if (!resp.ok) {
+    // Not a document to patch (a missing resource without createIfMissing, a
+    // refusal, a server error): say so, rather than patching an error body.
+    throw new Error("GET " + uri + " failed: " + resp.status);
   }
   const etag = resp.headers.get("ETag");
   const freshlyFetched = await resp.json();
@@ -417,10 +438,11 @@ export async function establishContainerResource(container) {
 /**
  * The discovery resource's URI for a recording. Derived from the storage root
  * and the recording's URI alone, so it costs no request once the storage root
- * is known.
+ * is known. Null when the storage root can't be found.
  */
 export async function discoveryUriFor(currentFileUri) {
   const storage = await getSolidStorage();
+  if (!storage) return null;
   return (
     storage +
     friendContainer +

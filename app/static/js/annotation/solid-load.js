@@ -26,6 +26,7 @@ import {
   friendContainer,
   discoveryFragment,
   getSolidStorage,
+  safelyPatchResource,
 } from "../solid.js";
 import { removeEmptiedAnnotationFolders } from "./solid-access.js";
 import {
@@ -40,6 +41,24 @@ import {
   scoreAlignment,
   tk,
 } from "../listen.js";
+
+// The MusicalMaterials being deleted in this page. A delete's tidy-up runs on
+// behind the pod's request limit after the annotation is gone, so until it
+// ends they are kept out of every listing, and leaving the page asks first:
+// a tidy-up cut short leaves discovery entries that list a deleted annotation.
+const _deleting = new Set();
+let _warnOnLeaveAdded = false;
+
+function _markDeleting(mmUri) {
+  _deleting.add(mmUri);
+  if (_warnOnLeaveAdded) return;
+  _warnOnLeaveAdded = true;
+  window.addEventListener("beforeunload", (e) => {
+    if (_deleting.size === 0) return;
+    e.preventDefault();
+    e.returnValue = "";
+  });
+}
 
 /**
  * List annotations that involve a given audio. We read the audio's
@@ -68,7 +87,8 @@ export async function listAnnotationsForAudio(audioUri, opts = {}) {
   const dataset = _asArray(discovery[nsp.SCHEMA + "dataset"]);
   const mmEntries = dataset.filter((entry) => {
     const t = _firstId(_asArray(entry?.[nsp.SCHEMA + "additionalType"]));
-    return t === nsp.MAO + "MusicalMaterial";
+    const url = _firstId(_asArray(entry?.[nsp.SCHEMA + "url"]));
+    return t === nsp.MAO + "MusicalMaterial" && !_deleting.has(url);
   });
 
   // §3 fast path: discovery entries written by current Listen Here carry
@@ -170,11 +190,17 @@ export async function listAnnotationsForLoadedAudios(opts = {}) {
     }
   }
 
-  const snapshot = () =>
-    [...byMm.values()].map((e) => ({
+  // `uncheckedFiles`: the loaded recordings whose discovery resource couldn't
+  // be read, so whether they list an annotation is unknown. A delete of an
+  // already-deleted one (see _cleanupStaleDiscoveryRefs) cleans them as well.
+  const snapshot = () => {
+    const uncheckedFiles = errors.filter((e) => e.kind === "audio" && e.file).map((e) => e.file).sort();
+    return [...byMm.values()].map((e) => ({
       ...e,
       coveredFiles: [...e.coveredFiles].sort(),
+      uncheckedFiles,
     }));
+  };
 
   await Promise.all(
     sources.map(async (src) => {
@@ -320,10 +346,11 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
 
 /**
  * Delete an annotation chain (MM + Extract + Selections + related OAs)
- * from the pod, then patch each affected audio's discovery resource to
- * remove the dataset entries pointing at the deleted resources. Best-
- * effort on discovery cleanup: a discovery PATCH failure doesn't roll the
- * deletions back, just logs and surfaces a warning to the caller.
+ * from the pod: the MM, then each affected audio's discovery entries for the
+ * chain, then the rest and its folders. A discovery write that fails doesn't
+ * roll the deletions back; it is logged and returned in `failedUris`. Until
+ * the whole delete ends, listings in this page leave the annotation out and
+ * leaving the page asks first.
  *
  * If a local annotation with the same lastPostedUris.mm exists, it's also
  * removed from state — having a local copy that points at non-existent
@@ -343,11 +370,23 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
  *   listed this annotation (from the load modal's per-row metadata). When the
  *   chain is reachable, this hint is unused; when it isn't (stale case), it
  *   scopes the cleanup pass to just those audios.
+ * @param {string[]} [opts.uncheckedFiles] — local file keys whose discovery
+ *   resources the listing couldn't read; the stale case cleans them as well.
  * @param {() => void} [opts.onGone] — called as soon as the MusicalMaterial is
- *   deleted, before the rest is cleared; the promise resolves when all of it is.
+ *   deleted (at once in the stale case, where it already is), before the rest
+ *   is cleared; the promise resolves when all of it is.
  * @returns {Promise<{ deletedUris: string[], failedUris: string[], stale?: boolean, cleanedAudios?: number }>}
  */
 export async function deleteAnnotationFromPod(mmUri, opts = {}) {
+  _markDeleting(mmUri);
+  try {
+    return await _deleteFromPod(mmUri, opts);
+  } finally {
+    _deleting.delete(mmUri);
+  }
+}
+
+async function _deleteFromPod(mmUri, opts) {
   const onProgress = opts.onProgress || (() => {});
   const session = solid.getDefaultSession();
   if (!session || !session.info || !session.info.isLoggedIn) {
@@ -402,12 +441,31 @@ export async function deleteAnnotationFromPod(mmUri, opts = {}) {
       console.warn("[annotation/v6] DELETE threw for", uri, err);
     }
   };
+  // Drop each audio's discovery entries pointing at these URIs. A failure is
+  // reported with the deletes that failed: the entry then lists a deleted
+  // annotation until a later delete of it tidies up.
+  const purgeDiscovery = async (uris) => {
+    if (uris.size === 0 || uniqueAudios.length === 0) return;
+    onProgress("Cleaning discovery resources");
+    await Promise.all(
+      uniqueAudios.map(async (audioUri) => {
+        try {
+          await _purgeDeletedFromDiscovery(audioUri, uris);
+        } catch (err) {
+          failedUris.push((await discoveryUriFor(audioUri)) || audioUri);
+          console.warn("[annotation/v6] discovery purge failed for " + audioUri, err);
+        }
+      }),
+    );
+  };
+
   // The MusicalMaterial first, on its own: once it is gone the annotation
   // can't be loaded any more, so the caller can show it as deleted at once
-  // (`onGone`). The rest (its other resources, its discovery entries, its
-  // folders) follows behind the pod's request limit, which on
-  // solidcommunity.net took about 20 s more for a two-recording annotation
-  // (measured on a mocked pod), with nothing to see until the end.
+  // (`onGone`). Its discovery entries next, so it is no longer listed either
+  // (here they are kept out of listings until the end, see _deleting); then
+  // its other resources and its folders, which behind the pod's request
+  // limit took about 20 s more on solidcommunity.net for a two-recording
+  // annotation (measured on a mocked pod).
   if (urisToDelete.includes(mmUri)) {
     await deleteOne(mmUri);
     if (deletedUris.includes(mmUri)) {
@@ -415,26 +473,12 @@ export async function deleteAnnotationFromPod(mmUri, opts = {}) {
       if (typeof opts.onGone === "function") opts.onGone();
     }
   }
+  const mmGone = deletedUris.includes(mmUri);
+  if (mmGone) await purgeDiscovery(new Set([...urisToDelete, ...skippedUris]));
   await Promise.all(urisToDelete.filter((u) => u !== mmUri).map(deleteOne));
-
-  // Reconcile each audio's discovery: drop dataset entries pointing at any
-  // URI we deleted, or left alone as not the user's. Best-effort.
-  if (deletedUris.length + skippedUris.length > 0 && uniqueAudios.length > 0) {
-    onProgress("Cleaning discovery resources");
-    const deletedSet = new Set([...deletedUris, ...skippedUris]);
-    await Promise.all(
-      uniqueAudios.map(async (audioUri) => {
-        try {
-          await _purgeDeletedFromDiscovery(audioUri, deletedSet);
-        } catch (err) {
-          console.warn(
-            "[annotation/v6] discovery purge failed for " + audioUri,
-            err,
-          );
-        }
-      }),
-    );
-  }
+  // The MusicalMaterial is still there (its DELETE failed, or it isn't the
+  // user's): only what was deleted, or left alone, comes out of discovery.
+  if (!mmGone) await purgeDiscovery(new Set([...deletedUris, ...skippedUris]));
 
   // Remove the annotation's now-empty folders (with their ACLs). Best-effort.
   if (deletedUris.length > 0) {
@@ -463,15 +507,20 @@ function _dropLocalCopy(mmUri) {
  * the roadmap.)
  */
 async function _cleanupStaleDiscoveryRefs(mmUri, opts, onProgress) {
-  // Resolve which audios to scan. Prefer the hint from the UI (covered
-  // files from the per-row metadata) so we don't touch unrelated audios.
+  // There is nothing left to delete, so the caller can show it as gone at once.
+  _dropLocalCopy(mmUri);
+  if (typeof opts.onGone === "function") opts.onGone();
+  // Resolve which audios to scan. Prefer the hint from the UI (the files the
+  // listing found it under, and those it couldn't read) so we don't touch
+  // unrelated audios, each costing a request behind the pod's limit.
   // Fallback: every locally-loaded recording.
   const reverseMap = _buildReverseAudioMap();
+  const hinted = [...new Set([...(opts.coveredFiles || []), ...(opts.uncheckedFiles || [])])];
   let audioUris;
-  if (Array.isArray(opts.coveredFiles) && opts.coveredFiles.length > 0) {
+  if (hinted.length > 0) {
     const fileToAudio = new Map();
     for (const [audio, file] of reverseMap.entries()) fileToAudio.set(file, audio);
-    audioUris = opts.coveredFiles
+    audioUris = hinted
       .map((f) => fileToAudio.get(f))
       .filter(Boolean);
   } else {
@@ -485,12 +534,14 @@ async function _cleanupStaleDiscoveryRefs(mmUri, opts, onProgress) {
   onProgress("Removing stale references from " + audioUris.length + " discovery resource(s)");
   const deadSet = new Set([mmUri]);
   let cleanedAudios = 0;
+  const failedUris = [];
   await Promise.all(
     audioUris.map(async (audioUri) => {
       try {
         const cleaned = await _purgeDeletedFromDiscovery(audioUri, deadSet);
         if (cleaned) cleanedAudios++;
       } catch (err) {
+        failedUris.push((await discoveryUriFor(audioUri)) || audioUri);
         console.warn(
           "[annotation/v6] stale-ref cleanup failed for " + audioUri,
           err,
@@ -499,11 +550,7 @@ async function _cleanupStaleDiscoveryRefs(mmUri, opts, onProgress) {
     }),
   );
 
-  // Drop any local copy that points at this dead MM, just in case.
-  const local = state.getAll().find((a) => a.lastPostedUris && a.lastPostedUris.mm === mmUri);
-  if (local) state.removeAnnotation(local.id);
-
-  return { deletedUris: [], failedUris: [], stale: true, cleanedAudios };
+  return { deletedUris: [], failedUris, stale: true, cleanedAudios };
 }
 
 function _isMissingResourceError(err) {
@@ -759,39 +806,38 @@ async function _fetchChainAsGraph(mmUri, onProgress) {
 }
 
 /**
- * Read an audio's discovery resource and PUT it back with all dataset
- * entries pointing at deleted URIs filtered out. Uses ETag if-match.
- * Returns true if at least one entry was removed (and the PUT fired),
- * false otherwise — callers in the stale-cleanup path use this to count
- * how many discoveries were actually touched.
+ * Remove an audio's discovery entries pointing at deleted URIs, through
+ * safelyPatchResource: a write that meets a resource changed since it was
+ * read (412; another tab's or another delete's tidy-up) is redone on what is
+ * there now, not lost. Returns true if at least one entry was removed, false
+ * if there was nothing to remove or no discovery resource — callers in the
+ * stale-cleanup path use this to count how many discoveries were touched.
+ * Throws if the resource can't be read (other than missing) or written.
  */
 async function _purgeDeletedFromDiscovery(audioUri, deletedSet) {
   const discoveryUri = await discoveryUriFor(audioUri);
   if (!discoveryUri) return false;
-  const resp = await solid.fetch(discoveryUri, {
-    headers: { Accept: "application/ld+json" },
-  });
-  if (!resp.ok) return false; // no discovery — nothing to clean
-  const etag = resp.headers.get("ETag");
-  const body = await resp.json();
   const datasetKey = nsp.SCHEMA + "dataset";
-  let dataset = _asArray(body[datasetKey]);
-  const before = dataset.length;
-  dataset = dataset.filter((entry) => {
-    const url = _firstId(_asArray(entry?.[nsp.SCHEMA + "url"]));
-    return !url || !deletedSet.has(url);
-  });
-  if (dataset.length === before) return false; // nothing to remove
-  body[datasetKey] = dataset;
-  await solid.fetch(discoveryUri, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/ld+json",
-      ...(etag ? { "If-Match": etag } : {}),
-    },
-    body: JSON.stringify(body),
-  });
-  return true;
+  const pointer = "/" + datasetKey.replace(/~/g, "~0").replace(/\//g, "~1");
+  let removed = false;
+  const patch = (doc) => {
+    const dataset = _asArray(doc[datasetKey]);
+    const kept = dataset.filter((entry) => {
+      const url = _firstId(_asArray(entry?.[nsp.SCHEMA + "url"]));
+      return !url || !deletedSet.has(url);
+    });
+    removed = kept.length < dataset.length;
+    return removed ? [{ op: "replace", path: pointer, value: kept }] : [];
+  };
+  let resp;
+  try {
+    resp = await safelyPatchResource(discoveryUri, patch);
+  } catch (err) {
+    if (_isMissingResourceError(err)) return false; // no discovery: nothing to clean
+    throw err;
+  }
+  if (!resp.ok) throw new Error("PUT " + discoveryUri + " failed: " + resp.status);
+  return removed;
 }
 
 // ---------------------------------------------------------------------------

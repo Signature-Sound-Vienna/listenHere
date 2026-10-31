@@ -227,7 +227,9 @@ export async function safelyPatchResource(
   options = {},
 ) {
   const opsFor = (doc) => (typeof patch === "function" ? patch(doc) : patch);
+  // Never from the browser's HTTP cache: the ETag read here guards the write.
   const resp = await solid.fetch(uri, {
+    cache: "no-store",
     headers: {
       Accept: "application/ld+json",
     },

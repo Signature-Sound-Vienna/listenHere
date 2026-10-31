@@ -574,6 +574,7 @@ export function openLoadModal(opts = {}) {
       // Hint for the stale-cleanup branch: scope discovery patches to the
       // audios that surfaced this entry in the first place.
       coveredFiles: entry && entry.coveredFiles,
+      uncheckedFiles: entry && entry.uncheckedFiles,
     })
       .then((res) => {
         removeRow();
@@ -582,11 +583,14 @@ export function openLoadModal(opts = {}) {
           // dataset references. Report that distinctly so the user knows
           // nothing live was deleted.
           const n = res.cleanedAudios || 0;
+          const failed = res.failedUris.length;
           _setStatus(
             footerStatus,
-            n > 0
-              ? "✓ Pod copy was already missing. Pruned stale references from " + n + " discovery resource(s)."
-              : "Pod copy was already missing and no stale references were found.",
+            failed > 0
+              ? "Pod copy was already missing. Couldn't remove its references from " + failed + " discovery resource(s) — see console."
+              : n > 0
+                ? "✓ Pod copy was already missing. Pruned stale references from " + n + " discovery resource(s)."
+                : "Pod copy was already missing and no stale references were found.",
           );
           return;
         }

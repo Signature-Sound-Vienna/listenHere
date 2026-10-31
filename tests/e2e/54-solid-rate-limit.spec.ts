@@ -948,6 +948,192 @@ test.describe('54. Request limit for pod hosts', () => {
     expect(await inert()).toEqual([false, false, false]);
   });
 
+  /** The MusicalMaterial URI of a posted annotation. */
+  const mmOf = (page: Page, id: string): Promise<string> =>
+    page.evaluate((id) => (window as any).__annotationV6.state.getById(id).lastPostedUris.mm, id);
+
+  /** Is this MusicalMaterial in a listing of the loaded recordings' annotations? */
+  const listed = (page: Page, mm: string): Promise<boolean> =>
+    page.evaluate(async (mm) => {
+      const load = await import('/static/js/annotation/solid-load.js');
+      return (await load.listAnnotationsForLoadedAudios()).entries.some((e: any) => e.mmUri === mm);
+    }, mm);
+
+  /**
+   * Start deleting `mm` with part of its tidy-up held at the pod (the
+   * Extract's DELETE, or the discovery writes), and wait until the annotation
+   * is gone (its MusicalMaterial deleted) while the rest of the delete waits.
+   * `finish()` releases it and awaits the delete.
+   */
+  async function deleteWithTidyUpHeld(page: Page, mm: string, hold: 'extract' | 'discovery' = 'extract') {
+    let release!: () => void;
+    const released = new Promise<void>((r) => { release = r; });
+    await page.route(POD2 + '**', async (route) => {
+      const req = route.request();
+      const held = hold === 'extract'
+        ? req.method() === 'DELETE' && req.url().includes('/mao/extract/') && !req.url().endsWith('/')
+        : req.method() === 'PUT' && req.url().startsWith(DISC);
+      if (held) await released;
+      return route.fallback();
+    });
+    await page.evaluate((mm) => {
+      const w = window as any;
+      w.__gone = false;
+      w.__deleted = w.__annotationV6.deleteAnnotationFromPod(mm, { onGone: () => { w.__gone = true; } });
+    }, mm);
+    await page.waitForFunction(() => (window as any).__gone === true);
+    return {
+      finish: async () => {
+        release();
+        return page.evaluate(() => (window as any).__deleted);
+      },
+    };
+  }
+
+  test('54.33 deleting: the discovery entries go right after the MusicalMaterial, before its other resources and folders', async ({ loadedPage: page }) => {
+    const { log, store } = await conditionalPod(page, {});
+    const { id, files } = await postForUpdate(page);
+    const mm = await mmOf(page, id);
+    log.length = 0;
+    const res = await page.evaluate((mm) => (window as any).__annotationV6.deleteAnnotationFromPod(mm), mm);
+    expect(res.failedUris).toEqual([]);
+
+    const at = (pred: (r: string) => boolean) => log.map((r, i) => (pred(r) ? i : -1)).filter((i) => i >= 0);
+    const mmDelete = at((r) => r === 'DELETE ' + mm);
+    const discoveryPuts = at((r) => r.startsWith('PUT ' + DISC));
+    const otherDeletes = at((r) => r.startsWith('DELETE ') && r !== 'DELETE ' + mm);
+    expect(mmDelete, 'the MusicalMaterial is deleted').toHaveLength(1);
+    expect(discoveryPuts, 'both recordings\' discovery resources are written').toHaveLength(2);
+    expect(otherDeletes.length, 'its other resources and folders are deleted').toBeGreaterThan(3);
+    expect(Math.min(...discoveryPuts), 'after the MusicalMaterial').toBeGreaterThan(mmDelete[0]);
+    expect(Math.max(...discoveryPuts), 'before anything else is deleted').toBeLessThan(Math.min(...otherDeletes));
+    for (const file of files.slice(0, 2)) {
+      expect(urlsListed(store.get(await discoveryOf(page, file))!.doc), 'nothing of it is listed').toEqual([]);
+    }
+  });
+
+  test('54.34 a listing taken while a delete is tidying up leaves the annotation out; one whose delete failed is listed again', async ({ loadedPage: page }) => {
+    await conditionalPod(page, {});
+    const mmCtl = await mmDeleteControl(page);
+    const kept = await mmOf(page, (await postForUpdate(page)).id);
+    const doomed = await mmOf(page, (await postForUpdate(page)).id);
+    expect(await listed(page, doomed)).toBe(true);
+
+    // A delete that fails before anything is deleted: listed as before.
+    mmCtl.fail = true;
+    const err = await page.evaluate((mm) =>
+      (window as any).__annotationV6.deleteAnnotationFromPod(mm).then(() => null, (e: Error) => e.message), doomed);
+    expect(err, 'the delete failed').toContain('500');
+    mmCtl.fail = false;
+    expect(await listed(page, doomed), 'still listed after the failed delete').toBe(true);
+
+    // Held before its discovery entries are written: the pod still lists it.
+    const del = await deleteWithTidyUpHeld(page, doomed, 'discovery');
+    expect(await listed(page, doomed), 'not listed while the tidy-up runs').toBe(false);
+    expect(await listed(page, kept), 'the listing itself works').toBe(true);
+    const res = await del.finish();
+    expect(res.failedUris).toEqual([]);
+    expect(await listed(page, doomed), 'nor once it is done').toBe(false);
+    expect(await listed(page, kept)).toBe(true);
+  });
+
+  test('54.35 leaving the page while a delete is tidying up asks first; not before or after', async ({ loadedPage: page }) => {
+    await conditionalPod(page, {});
+    const mm = await mmOf(page, (await postForUpdate(page)).id);
+    const leaveIsStopped = () => page.evaluate(() => {
+      const e = new Event('beforeunload', { cancelable: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    });
+    expect(await leaveIsStopped(), 'before').toBe(false);
+    const del = await deleteWithTidyUpHeld(page, mm);
+    expect(await leaveIsStopped(), 'while it tidies up').toBe(true);
+    await del.finish();
+    expect(await leaveIsStopped(), 'after').toBe(false);
+  });
+
+  test('54.36 the discovery clean-up of a delete is redone when the resource changed (412), and reported when it is refused', async ({ loadedPage: page }) => {
+    const { store, ctl } = await conditionalPod(page, {});
+    const { id, files } = await postForUpdate(page);
+    const mm = await mmOf(page, id);
+
+    // Another writer adds an entry between the clean-up's read and its write.
+    ctl.interfere = true;
+    const res = await page.evaluate((mm) => (window as any).__annotationV6.deleteAnnotationFromPod(mm), mm);
+    expect(ctl.interfere, 'the clean-up met the 412').toBe(false);
+    expect(res.failedUris).toEqual([]);
+    const listedNow = await Promise.all(files.slice(0, 2).map(async (f) => urlsListed(store.get(await discoveryOf(page, f))!.doc)));
+    expect(listedNow.flat(), 'the other writer\'s entry is kept, ours are gone').toEqual([OTHER_MM]);
+
+    // A clean-up the pod refuses is reported, not counted as done.
+    const { id: id2 } = await postForUpdate(page);
+    const mm2 = await mmOf(page, id2);
+    await page.route(POD2 + '**', (route) =>
+      route.request().method() === 'PUT' && route.request().url().startsWith(DISC)
+        ? route.fulfill({ status: 403, headers: CORS_ALL, body: '' })
+        : route.fallback());
+    const refused = await page.evaluate((mm) => (window as any).__annotationV6.deleteAnnotationFromPod(mm), mm2);
+    const discoveries = await Promise.all(files.slice(0, 2).map((f) => discoveryOf(page, f)));
+    expect(refused.failedUris.sort(), 'both discovery resources reported').toEqual(discoveries.sort());
+  });
+
+  /** Post an annotation, then delete its MusicalMaterial behind the app's back: its discovery entries are left over. */
+  async function postLeftover(page: Page, store: Map<string, any>) {
+    const { id, files } = await postForUpdate(page);
+    const mm = await mmOf(page, id);
+    await page.evaluate((id) => (window as any).__annotationV6.state.removeAnnotation(id), id);
+    store.delete(mm);
+    return { mm, files };
+  }
+
+  const openLoadList = (page: Page) =>
+    page.evaluate(async () => (await import('/static/js/annotation/ui-ribbon.js')).openLoadModal());
+
+  test('54.37 deleting an already-deleted annotation from the load list: the row goes at once, before its discovery entries are cleaned', async ({ loadedPage: page }) => {
+    const { store } = await conditionalPod(page, {});
+    await postLeftover(page, store);
+    let release!: () => void;
+    const released = new Promise<void>((r) => { release = r; });
+    let holding = false;
+    await page.route(POD2 + '**', async (route) => {
+      if (holding && route.request().method() === 'PUT' && route.request().url().startsWith(DISC)) await released;
+      return route.fallback();
+    });
+    await openLoadList(page);
+    const row = page.locator('.lh-v6-load-row-result', { hasText: 'update test' });
+    await row.waitFor();
+    await row.locator('.lh-v6-load-trash').click();
+    holding = true;
+    await page.locator('.lh-v6-confirm-dialog .lh-v6-confirm-delete').click();
+    await row.waitFor({ state: 'detached', timeout: 15_000 }).finally(() => release());
+    await expect(page.locator('.lh-v6-load-footer')).toContainText('Pruned stale references from 2 discovery resource(s).');
+  });
+
+  test('54.38 deleting an already-deleted annotation also cleans the recordings the listing couldn\'t read', async ({ loadedPage: page }) => {
+    const { store } = await conditionalPod(page, {});
+    const { mm, files } = await postLeftover(page, store);
+    // The listing can't read the second recording's discovery resource.
+    const unreadable = await discoveryOf(page, files[1]);
+    let failListing = true;
+    await page.route(POD2 + '**', (route) =>
+      failListing && route.request().method() === 'GET' && route.request().url() === unreadable
+        ? route.fulfill({ status: 500, headers: CORS_ALL, body: '' })
+        : route.fallback());
+    await openLoadList(page);
+    await expect(page.locator('.lh-v6-load-status').first()).toContainText("couldn't reach 1 source(s)", { timeout: 20_000 });
+    const row = page.locator('.lh-v6-load-row-result', { hasText: 'update test' });
+    await expect(row.locator('.lh-v6-load-covers'), 'found under the first recording only').toHaveText('covers: ' + files[0]);
+
+    failListing = false;
+    await row.locator('.lh-v6-load-trash').click();
+    await page.locator('.lh-v6-confirm-dialog .lh-v6-confirm-delete').click();
+    await expect(page.locator('.lh-v6-load-footer')).toContainText('Pruned stale references from 2 discovery resource(s).');
+    for (const file of files.slice(0, 2)) {
+      expect(urlsListed(store.get(await discoveryOf(page, file))!.doc), file + ' lists nothing of it').not.toContain(mm);
+    }
+    expect(await listed(page, mm), 'not listed again').toBe(false);
+  });
+
   // 54.26–54.28 Every request to a limited host is counted, and retried once over.
   test('54.26 two limited fetches given the same states share one budget per host', async ({ loadedPage: page }) => {
     const r = await inPage<{ maxInWindow: number; n: number }>(page, `

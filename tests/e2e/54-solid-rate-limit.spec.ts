@@ -1206,6 +1206,71 @@ test.describe('54. Request limit for pod hosts', () => {
     await expect(listStatus(page)).toContainText('Found 1 annotation(s)');
   });
 
+  /**
+   * Post an annotation with annotation-level text (so it has an oa:Annotation
+   * too), then delete only its MusicalMaterial behind the app's back: its other
+   * resources and all its discovery entries are left over.
+   */
+  async function postLeftoverWithParts(page: Page, store: Map<string, any>) {
+    const { id, files } = await postForUpdate(page, { description: 'about the horns' });
+    const uris: Record<string, string> = await page.evaluate((id) => ({ ...(window as any).__annotationV6.state.getById(id).lastPostedUris }), id);
+    await page.evaluate((id) => (window as any).__annotationV6.state.removeAnnotation(id), id);
+    store.delete(uris.mm);
+    return { mm: uris.mm, parts: Object.values(uris).filter((u) => u !== uris.mm), files };
+  }
+
+  test('54.43 deleting an already-deleted annotation removes all its discovery entries, its remaining resources, and its folders', async ({ loadedPage: page }) => {
+    const { log, store } = await conditionalPod(page, {});
+    const { mm, parts, files } = await postLeftoverWithParts(page, store);
+    expect(parts.length, 'an Extract, Selections, and an oa:Annotation are left').toBeGreaterThanOrEqual(4);
+    for (const p of parts) expect(store.has(p), p + ' is still on the pod').toBe(true);
+    log.length = 0;
+
+    const res = await page.evaluate((mm) => (window as any).__annotationV6.deleteAnnotationFromPod(mm), mm);
+    expect(res.stale).toBe(true);
+    expect(res.failedUris).toEqual([]);
+    for (const file of files.slice(0, 2)) {
+      expect(urlsListed(store.get(await discoveryOf(page, file))!.doc), file + ' lists nothing of it').toEqual([]);
+    }
+    for (const p of parts) expect(store.has(p), p + ' is deleted').toBe(false);
+    expect(log.filter((r) => r.startsWith('DELETE ') && r.endsWith('/')).length, 'its folders are removed').toBeGreaterThanOrEqual(3);
+  });
+
+  test('54.44 Tidy up removes all the discovery entries of an already-deleted annotation, not only its MusicalMaterial\'s', async ({ loadedPage: page }) => {
+    const { store } = await conditionalPod(page, {});
+    await headFollowsStore(page, store);
+    const { parts, files } = await postLeftoverWithParts(page, store);
+    await openLoadList(page);
+    await expect(listStatus(page)).toContainText('Found 1 annotation(s)');
+    await page.locator('.lh-v6-load-tidy').click();
+    await expect(page.locator('.lh-v6-load-footer')).toContainText('✓ Removed 1 already-deleted annotation(s)');
+    for (const file of files.slice(0, 2)) {
+      expect(urlsListed(store.get(await discoveryOf(page, file))!.doc), file + ' lists nothing of it').toEqual([]);
+    }
+    for (const p of parts) expect(store.has(p), p + ' is deleted').toBe(false);
+  });
+
+  test('54.45 an update that drops a recording removes the annotation from that recording\'s discovery resource', async ({ loadedPage: page }) => {
+    const { store } = await conditionalPod(page, {});
+    const { id, files } = await postForUpdate(page, { description: 'about the horns' });
+    const before = await discoveryOf(page, files[1]);
+    expect(urlsListed(store.get(before)!.doc).length, 'listed under the second recording at first').toBeGreaterThan(0);
+
+    await page.evaluate(async ({ id, file }) => {
+      const v6 = (window as any).__annotationV6;
+      v6.state.removeTarget(id, file);
+      await v6.updateAnnotationOnSolid(id);
+    }, { id, file: files[1] });
+    const mm = await mmOf(page, id);
+    expect(urlsListed(store.get(before)!.doc), 'the dropped recording lists nothing of it').toEqual([]);
+    expect(urlsListed(store.get(await discoveryOf(page, files[0]))!.doc), 'the kept one still lists it').toContain(mm);
+    const covered = await page.evaluate(async (mm) => {
+      const load = await import('/static/js/annotation/solid-load.js');
+      return (await load.listAnnotationsForLoadedAudios()).entries.find((e: any) => e.mmUri === mm)?.coveredFiles;
+    }, mm);
+    expect(covered, 'listed under the kept recording only').toEqual([files[0]]);
+  });
+
   // Pods send no Cache-Control, and Firefox answered a Load list from cached
   // discovery resources minutes old: annotations deleted since came back.
   test('54.42 the loader\'s reads (listing, discovery, an annotation\'s resources) are checked with the pod, never taken from the browser cache', async ({ loadedPage: page }) => {

@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.105.1 -- Nothing of a deleted annotation is left in the pod
+
+* Deleting an already-deleted annotation, or tidying it up, removed only its MusicalMaterial's discovery entry. Now every entry of the annotation goes (its Extract, Selections, and oa:Annotations, matched by its folder in the per-annotation layout), and those resources, if still there, and their folders are deleted too. Annotations from before the folder layout (0.104.0) have nothing to match by: only their MusicalMaterial's entry goes.
+* An update that removed a recording from an annotation left the annotation listed under that recording (its MusicalMaterial, Extract, and shared oa:Annotation entries stayed), and a later delete didn't clean it. The recording's discovery resource now loses every entry of the annotation.
+* Testing: 54.43–54.45; the functional suite passes (632, 2 skipped).
+
 ### 0.105.0 -- Tidy up the Load list
 
 * 🧹 Tidy up, beside ↻ Reload in Load from Solid: checks that each listed annotation's MusicalMaterial still exists (one HEAD each) and removes those already deleted from the list and from the pod's discovery resources (one write per resource, however many it lists). An annotation it can't check is kept, and the footer says so.

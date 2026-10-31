@@ -580,7 +580,7 @@ export function openLoadModal(opts = {}) {
       const n = res.gone.length;
       const failures = [];
       if (res.unchecked.length > 0) failures.push("couldn't check " + res.unchecked.length + " of them");
-      if (res.failedUris.length > 0) failures.push("couldn't update " + res.failedUris.length + " discovery resource(s)");
+      if (res.failedUris.length > 0) failures.push("couldn't clean up " + res.failedUris.length + " resource(s) on your pod");
       const done = n > 0
         ? "Removed " + n + " already-deleted annotation(s) from this list."
         : res.unchecked.length === 0

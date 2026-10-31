@@ -729,6 +729,10 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
   // doesn't go stale.
   let mmCreatedAt = null;
   let mmReplacedInPlace = false;
+  let mmKeptCreated = null; // the MM's dct:created, when replacing it read it
+  // Recordings this update adds to the annotation: their discovery resources
+  // list none of it yet.
+  const addedAudios = _addedAudios(previousUris, fileToAudioUri);
   onProgress(step, total, null);
 
   for (const level of levels) {
@@ -744,8 +748,8 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
             return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: true };
           }
           try {
-            await _safelyReplaceResource(localToUri[t.localKey], body);
-            return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: false, createdAt: null };
+            const kept = await _safelyReplaceResource(localToUri[t.localKey], body);
+            return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: false, createdAt: null, keptCreated: kept.created };
           } catch (err) {
             // If the resource disappeared from the pod, fall back to a
             // fresh PUT-to-URI under a newly-minted URI (so creator /
@@ -774,6 +778,7 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
       if (r.template.localKey === "mm") {
         mmCreatedAt = r.createdAt || null;
         mmReplacedInPlace = !r.created && !r.skipped;
+        mmKeptCreated = r.keptCreated || null;
       }
       onProgress(++step, total, _labelForKind(r.template.kind));
     }
@@ -799,8 +804,18 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
     }),
   );
 
-  // Reconcile each audio's discovery: add entries for newly-created URIs,
-  // remove entries pointing at deleted ones.
+  // The MM's discovery entry carries its creation date (the loader's sign of a
+  // denormalised entry). An added recording needs that entry even though the
+  // MM wasn't created now: take the date from the MM, as read while replacing
+  // it, or else read it.
+  let mmDateCreated = mmCreatedAt || mmKeptCreated;
+  if (!mmDateCreated && addedAudios.size > 0) {
+    mmDateCreated = await _readCreated(localToUri["mm"]);
+  }
+
+  // Reconcile each audio's discovery: add entries for newly-created URIs (and,
+  // for an added recording, everything a post would have listed), remove
+  // entries pointing at deleted ones.
   await _reconcileDiscoveryResources(
     templates,
     byKey,
@@ -813,10 +828,11 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
     {
       uri: localToUri["mm"],
       name: ann.label,
-      createdAt: mmCreatedAt,
+      createdAt: mmDateCreated,
       refreshName: mmReplacedInPlace,
     },
     () => onProgress(++step, total, "Discovery"),
+    addedAudios,
   );
 
   if (skipped > 0) {
@@ -867,11 +883,44 @@ function _oldFileToAudioUri(oldUris) {
 }
 
 /**
+ * The audios of the recordings an update adds: targeted now, with no
+ * Selection posted before, and not shared with a recording that had one.
+ */
+function _addedAudios(previousUris, fileToAudioUri) {
+  const before = new Set();
+  const now = new Set();
+  for (const [file, audio] of Object.entries(fileToAudioUri)) {
+    if (!audio) continue;
+    (previousUris["sel/" + file] ? before : now).add(audio);
+  }
+  for (const audio of before) now.delete(audio);
+  return now;
+}
+
+/** A resource's dct:created, read from the pod; null if it can't be. */
+async function _readCreated(uri) {
+  try {
+    const resp = await solid.fetch(uri, {
+      headers: { Accept: "application/ld+json" },
+    });
+    if (!resp.ok) return null;
+    const doc = await resp.json();
+    const nodes = Array.isArray(doc) ? doc : doc["@graph"] || [doc];
+    const node = nodes.find((n) => n && n["@id"] === uri) || nodes[0];
+    return _litValue(node && node[nsp.DCT + "created"]) || null;
+  } catch (err) {
+    console.warn("[annotation/v6] couldn't read dct:created of", uri, err);
+    return null;
+  }
+}
+
+/**
  * PUT a new body to an existing Solid resource, preserving its
  * dct:creator / dct:created / dct:provenance fields and adding a fresh
  * dct:modified. Retries on 412 (ETag conflict) up to MAX_RETRIES times,
  * each retry refetching the current body + ETag so the merge is against
- * the latest server state.
+ * the latest server state. Returns the PUT's response and the resource's
+ * dct:created as it was read (or null).
  */
 async function _safelyReplaceResource(uri, newContentBody) {
   const MAX_RETRIES = 5;
@@ -908,7 +957,9 @@ async function _safelyReplaceResource(uri, newContentBody) {
       },
       body: JSON.stringify(merged),
     });
-    if (putResp.ok) return putResp;
+    if (putResp.ok) {
+      return { resp: putResp, created: _litValue(current[nsp.DCT + "created"]) || null };
+    }
     if (putResp.status === 412) {
       // ETag conflict — wait briefly then refetch and retry.
       await new Promise((r) => setTimeout(r, 200));
@@ -924,8 +975,12 @@ async function _safelyReplaceResource(uri, newContentBody) {
 /**
  * Reconcile each audio's discovery resource. Adds dataset entries for newly
  * created URIs (associated with this audio, or for the shared MM/Extract);
- * removes entries pointing at any URI we just DELETEd. Best-effort: a
- * failure logs a warning but doesn't abort the overall update.
+ * removes entries pointing at any URI we just DELETEd. A recording in
+ * `addedAudios` (new to the annotation) gets every entry a post would have
+ * given it — MM, Extract, its Selections, and the OAs covering it — since
+ * the MM and Extract were not created now, and the loader lists annotations
+ * by their MM entries. Best-effort: a failure logs a warning but doesn't
+ * abort the overall update.
  */
 async function _reconcileDiscoveryResources(
   templates,
@@ -938,6 +993,7 @@ async function _reconcileDiscoveryResources(
   deletedUris,
   mmInfo,
   onAudioReconciled,
+  addedAudios = new Set(),
 ) {
   const audioCount = Object.keys(discoveryByAudio).length;
   if (audioCount === 0) return;
@@ -945,7 +1001,12 @@ async function _reconcileDiscoveryResources(
   // created/deleted sets — but the denormalised schema:name on its discovery
   // entries must still be refreshed, so don't short-circuit in that case.
   const needNameRefresh = !!(mmInfo && mmInfo.refreshName && mmInfo.uri);
-  if (createdUris.length === 0 && deletedUris.length === 0 && !needNameRefresh) {
+  if (
+    createdUris.length === 0 &&
+    deletedUris.length === 0 &&
+    !needNameRefresh &&
+    addedAudios.size === 0
+  ) {
     // Still report progress for the audios we'd have reconciled, to keep
     // the caller's step counter consistent.
     if (typeof onAudioReconciled === "function") {
@@ -954,7 +1015,7 @@ async function _reconcileDiscoveryResources(
     return;
   }
 
-  // Map created Selection URIs to their audio (one-to-one).
+  // Map every current Selection URI to its audio (one-to-one).
   const selUriToAudio = {};
   for (const [key, uri] of Object.entries(newUris)) {
     if (key.startsWith("sel/")) {
@@ -963,7 +1024,7 @@ async function _reconcileDiscoveryResources(
       if (audio) selUriToAudio[uri] = audio;
     }
   }
-  // Map created OA URIs to the set of audios they cover (potentially many).
+  // Map every current OA URI to the set of audios it covers (potentially many).
   const oaUriToAudios = new Map();
   for (const t of templates) {
     if (t.kind !== "oa:Annotation") continue;
@@ -981,17 +1042,21 @@ async function _reconcileDiscoveryResources(
   await Promise.all(
     Object.entries(discoveryByAudio).map(async ([audioUri, discoveryUri]) => {
       const adds = [];
-      if (createdSet.has(newUris["mm"])) {
+      const added = addedAudios.has(audioUri);
+      if (added || createdSet.has(newUris["mm"])) {
         adds.push({
           uri: newUris["mm"],
           type: nsp.MAO + "MusicalMaterial",
           meta: { name: mmInfo && mmInfo.name, dateCreated: mmInfo && mmInfo.createdAt },
         });
       }
-      if (createdSet.has(newUris["extract"])) {
+      if (added || createdSet.has(newUris["extract"])) {
         adds.push({ uri: newUris["extract"], type: nsp.MAO + "Extract" });
       }
-      for (const uri of createdUris) {
+      const candidates = added
+        ? [...Object.keys(selUriToAudio), ...oaUriToAudios.keys()]
+        : createdUris;
+      for (const uri of candidates) {
         if (selUriToAudio[uri] === audioUri) {
           adds.push({ uri, type: nsp.MAO + "Selection" });
         } else if (oaUriToAudios.has(uri) && oaUriToAudios.get(uri).has(audioUri)) {

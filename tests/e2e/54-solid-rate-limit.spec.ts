@@ -601,9 +601,12 @@ test.describe('54. Request limit for pod hosts', () => {
     return { log, store, lost, ctl };
   }
 
-  /** Post an annotation on two recordings (signed in, faked) for a test to update; three files are returned. */
-  async function postForUpdate(page: Page): Promise<{ id: string; files: string[] }> {
-    return page.evaluate(async () => {
+  /**
+   * Post an annotation on two recordings (signed in, faked) for a test to update; three files are returned.
+   * `description` adds the annotation-level text, an oa:Annotation that covers every recording.
+   */
+  async function postForUpdate(page: Page, { description = '' }: { description?: string } = {}): Promise<{ id: string; files: string[] }> {
+    return page.evaluate(async (description) => {
       const sca = (window as any).solidClientAuthentication;
       const s = (sca.default || sca).getDefaultSession();
       s.info.isLoggedIn = true;
@@ -613,9 +616,10 @@ test.describe('54. Request limit for pod hosts', () => {
       const id = v6.state.createAnnotation({ label: 'update test' });
       v6.state.addRegion(id, files[0], 1, 2);
       v6.state.addTarget(id, files[1]);
+      if (description) v6.state.updateAnnotationField(id, 'description', description);
       await v6.postAnnotationToSolid(id);
       return { id, files };
-    });
+    }, description);
   }
 
   /** The discovery resource URI for a loaded file, as the app derives it. */
@@ -739,6 +743,31 @@ test.describe('54. Request limit for pod hosts', () => {
 
     expect(log.filter((r) => r.startsWith('PUT ' + second))).toEqual([]);
     expect(store.has(second)).toBe(false);
+  });
+
+  test('54.29 a recording an update adds lists the whole annotation, so the annotation is found from it', async ({ loadedPage: page }) => {
+    const { store } = await conditionalPod(page, {});
+    const { id, files } = await postForUpdate(page, { description: 'about the whole annotation' });
+    const { uris, rows } = await page.evaluate(async ({ id, third }) => {
+      const v6 = (window as any).__annotationV6;
+      v6.state.addTarget(id, third);
+      await v6.updateAnnotationOnSolid(id);
+      const listen = (await import('/static/js/listen.js')) as any;
+      const rows = await v6.listAnnotationsForAudio(listen.getAudioLinkedDataUri(third));
+      return { uris: v6.state.getById(id).lastPostedUris, rows };
+    }, { id, third: files[2] });
+
+    expect(uris['oa/top'], 'the annotation-level text').toBeTruthy();
+    const doc = store.get(await discoveryOf(page, files[2]))!.doc;
+    expect(urlsListed(doc).sort()).toEqual(
+      [uris.mm, uris.extract, uris['sel/' + files[2]], uris['oa/top']].sort(),
+    );
+    const mmEntry = [].concat(doc['https://schema.org/dataset']).find(
+      (e: any) => e['https://schema.org/url']['@id'] === uris.mm,
+    ) as any;
+    expect(mmEntry['https://schema.org/dateCreated'], 'the MM\'s own creation date')
+      .toBe(store.get(uris.mm)!.doc['http://purl.org/dc/terms/created']);
+    expect(rows.map((r: any) => r.mmUri), 'listed from the added recording').toEqual([uris.mm]);
   });
 
   // 54.26–54.28 Every request to a limited host is counted, and retried once over.

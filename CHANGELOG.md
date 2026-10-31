@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.104.4 -- An annotation is found from a recording an update adds to it
+
+* A recording added to a posted annotation by an update got only its own Selection (and new OAs) in its discovery resource, never the MusicalMaterial, which the loader lists annotations by: the annotation could not be found from that recording. The update now gives an added recording every entry a post would: MusicalMaterial (with its name and creation date), Extract, its Selections, and the OAs covering it.
+* The MusicalMaterial's creation date comes from the pod: as read while the update replaces the MusicalMaterial, or else from one GET, only when a recording was added.
+* Testing: 54.29; the functional suite passes (602, 2 skipped).
+
 ### 0.104.3 -- Updates reconcile discovery as posts do; every request to a limited pod host is counted once
 
 * An update no longer sends a HEAD per recording before writing: discovery URIs are derived, and the reconcile goes through `safelyPatchResource`, so a discovery resource another writer changed meanwhile (412) is reconciled again instead of silently left out, a missing one is created by a conditional PUT when there is something to add, and one with nothing to add is not created.

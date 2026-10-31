@@ -553,6 +553,84 @@ async function _cleanupStaleDiscoveryRefs(mmUri, opts, onProgress) {
   return { deletedUris: [], failedUris, stale: true, cleanedAudios };
 }
 
+/**
+ * Tidy up a Load list: check that each listed annotation's MusicalMaterial
+ * still exists, and remove the discovery entries of those that don't
+ * (deleted, with entries left over). One HEAD per annotation; then one read
+ * and one write per discovery resource that lists any of them, however many
+ * it lists. The resources cleaned are those of the recordings each was listed
+ * under or the listing couldn't read (all loaded recordings when it names
+ * none), as for a delete of one (_cleanupStaleDiscoveryRefs).
+ *
+ * @param {Array<{ mmUri: string, coveredFiles?: string[], uncheckedFiles?: string[] }>} entries
+ *   rows of listAnnotationsForLoadedAudios.
+ * @param {object} [opts]
+ * @param {(label: string) => void} [opts.onProgress]
+ * @param {(mmUri: string) => void} [opts.onGone] — called for each one found
+ *   deleted, as it is found; it is kept out of listings until the end.
+ * @returns {Promise<{ gone: string[], unchecked: string[], failedUris: string[] }>}
+ *   `unchecked`: those whose MusicalMaterial couldn't be checked (kept);
+ *   `failedUris`: discovery resources that couldn't be cleaned.
+ */
+export async function tidyUpListed(entries, opts = {}) {
+  const onProgress = opts.onProgress || (() => {});
+  const gone = [];
+  const unchecked = [];
+  let checked = 0;
+  await _mapLimit(entries, READ_CONCURRENCY, async (entry) => {
+    let status = 0;
+    try {
+      const send = (await _isPodOrigin(entry.mmUri)) ? solid.fetch : publicFetch;
+      status = (await send(entry.mmUri, { method: "HEAD", cache: "no-store" })).status;
+    } catch (err) {
+      console.warn("[annotation/v6] tidy-up couldn't check", entry.mmUri, err);
+    }
+    checked++;
+    onProgress("Checked " + checked + " of " + entries.length);
+    if (status === 404 || status === 410) {
+      _markDeleting(entry.mmUri);
+      _dropLocalCopy(entry.mmUri);
+      gone.push(entry);
+      if (typeof opts.onGone === "function") opts.onGone(entry.mmUri);
+    } else if (!(status >= 200 && status < 300)) {
+      if (status) console.warn("[annotation/v6] tidy-up couldn't check", entry.mmUri, status);
+      unchecked.push(entry.mmUri);
+    }
+  });
+
+  const failedUris = [];
+  try {
+    const reverseMap = _buildReverseAudioMap();
+    const fileToAudio = new Map();
+    for (const [audio, file] of reverseMap.entries()) fileToAudio.set(file, audio);
+    const byAudio = new Map(); // audio URI → the deleted MMs to remove from its discovery
+    for (const entry of gone) {
+      const files = [...new Set([...(entry.coveredFiles || []), ...(entry.uncheckedFiles || [])])];
+      const audios = files.length > 0 ? files.map((f) => fileToAudio.get(f)).filter(Boolean) : [...reverseMap.keys()];
+      for (const audio of audios) {
+        if (!byAudio.has(audio)) byAudio.set(audio, new Set());
+        byAudio.get(audio).add(entry.mmUri);
+      }
+    }
+    if (byAudio.size > 0) {
+      onProgress("Removing " + gone.length + " from " + byAudio.size + " discovery resource(s)");
+      await Promise.all(
+        [...byAudio].map(async ([audio, mms]) => {
+          try {
+            await _purgeDeletedFromDiscovery(audio, mms);
+          } catch (err) {
+            failedUris.push((await discoveryUriFor(audio)) || audio);
+            console.warn("[annotation/v6] tidy-up couldn't clean the discovery of " + audio, err);
+          }
+        }),
+      );
+    }
+  } finally {
+    for (const entry of gone) _deleting.delete(entry.mmUri);
+  }
+  return { gone: gone.map((e) => e.mmUri), unchecked, failedUris };
+}
+
 function _isMissingResourceError(err) {
   const msg = err && err.message ? err.message : String(err);
   return /\b404\b/.test(msg) || /\b410\b/.test(msg);
@@ -897,7 +975,12 @@ async function _solidFetchResilient(uri, init = {}, authenticated = true) {
       // The timeout must run from the send, not from here, or a long queue
       // aborts requests that never left it: so the limiter is given
       // `timeoutMs` to start the clock itself.
-      const resp = await send(uri, { ...init, timeoutMs: READ_TIMEOUT_MS });
+      // `no-cache`: always checked with the pod (a 304 when unchanged). Pods
+      // send no Cache-Control, so Firefox otherwise answers from a copy it
+      // guesses is fresh (about a tenth of its age since last modified,
+      // minutes to hours), even after our own write to it: a Load list then
+      // showed annotations deleted minutes before (seen on solidcommunity.net).
+      const resp = await send(uri, { cache: "no-cache", ...init, timeoutMs: READ_TIMEOUT_MS });
       const transient =
         resp.status >= 500 || (resp.status === 429 && !limiterRetries);
       if (transient && attempt < READ_RETRIES) {

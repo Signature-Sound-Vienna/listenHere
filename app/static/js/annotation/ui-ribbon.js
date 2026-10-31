@@ -12,6 +12,7 @@ import {
   deleteAnnotationFromPod,
   listAnnotationsForLoadedAudios,
   loadAnnotationFromMM,
+  tidyUpListed,
 } from "./solid-load.js";
 import { solid } from "../solid.js";
 
@@ -435,9 +436,19 @@ export function openLoadModal(opts = {}) {
     "aria-label": "Reload the list of annotations",
     onclick: () => _reload(),
   });
+  // Tidy up: drop from the list (and from the pod's discovery resources) any
+  // annotation that was deleted but is still listed (entries left over).
+  const tidyBtn = el("button", {
+    class: "lh-v6-load-tidy",
+    type: "button",
+    text: "🧹 Tidy up",
+    title: "Check the listed annotations still exist on your pod, and remove any already deleted from this list",
+    "aria-label": "Tidy up: remove already-deleted annotations from this list",
+    onclick: () => _tidyUp(),
+  });
   const defaultSectionHead = el("div", { class: "lh-v6-load-section-head" }, [
     el("h3", { class: "lh-v6-load-section-title", text: "Annotations involving your loaded recordings" }),
-    reloadBtn,
+    el("div", { class: "lh-v6-load-section-actions" }, [tidyBtn, reloadBtn]),
   ]);
   const defaultSection = el(
     "section",
@@ -535,6 +546,58 @@ export function openLoadModal(opts = {}) {
     loadSelectedBtn.disabled = selection.size === 0;
   }
 
+  // Sources the finished listing couldn't reach; null while it runs (or if it
+  // failed), when the status line is the listing's own.
+  let listErrors = null;
+
+  function _removeRow(mmUri, rowEl) {
+    rowEl.remove();
+    entryByUri.delete(mmUri);
+    selection.delete(mmUri);
+    _refreshBulkBtn();
+    if (defaultResults.children.length === 0) defaultAllLink.style.display = "none";
+    // Keep "Found N annotation(s)" true to the rows left.
+    if (listErrors !== null) _setStatus(defaultStatus, _discoverySummary(entryByUri.size, listErrors));
+  }
+
+  async function _tidyUp() {
+    const entries = [...entryByUri.values()];
+    if (entries.length === 0) {
+      _setStatus(footerStatus, "Nothing listed to tidy up.");
+      return;
+    }
+    tidyBtn.disabled = true;
+    reloadBtn.disabled = true;
+    _setStatus(footerStatus, "Checking " + entries.length + " listed annotation(s) on your pod…");
+    try {
+      const res = await tidyUpListed(entries, {
+        onProgress: (label) => _setStatus(footerStatus, "Tidying up: " + label + "…"),
+        onGone: (mmUri) => {
+          const rowEl = [...defaultResults.children].find((r) => r.dataset.mmUri === mmUri);
+          if (rowEl) _removeRow(mmUri, rowEl);
+        },
+      });
+      const n = res.gone.length;
+      const failures = [];
+      if (res.unchecked.length > 0) failures.push("couldn't check " + res.unchecked.length + " of them");
+      if (res.failedUris.length > 0) failures.push("couldn't update " + res.failedUris.length + " discovery resource(s)");
+      const done = n > 0
+        ? "Removed " + n + " already-deleted annotation(s) from this list."
+        : res.unchecked.length === 0
+          ? "All " + entries.length + " listed annotations exist."
+          : "No already-deleted annotations found.";
+      _setStatus(
+        footerStatus,
+        failures.length === 0 ? "✓ " + done : done + " But " + failures.join(", and ") + " — see console.",
+      );
+    } catch (err) {
+      _setStatus(footerStatus, "Couldn't tidy up: " + (err.message || err));
+    } finally {
+      tidyBtn.disabled = false;
+      reloadBtn.disabled = false;
+    }
+  }
+
   function _onToggle(mmUri, checked) {
     if (checked) selection.add(mmUri);
     else selection.delete(mmUri);
@@ -551,13 +614,7 @@ export function openLoadModal(opts = {}) {
     _refreshBulkBtn();
     _setStatus(footerStatus, "Deleting " + title + "…");
     let gone = false;
-    const removeRow = () => {
-      rowEl.remove();
-      entryByUri.delete(mmUri);
-      selection.delete(mmUri);
-      _refreshBulkBtn();
-      if (defaultResults.children.length === 0) defaultAllLink.style.display = "none";
-    };
+    const removeRow = () => _removeRow(mmUri, rowEl);
     deleteAnnotationFromPod(mmUri, {
       onProgress: (label) =>
         _setStatus(
@@ -669,7 +726,11 @@ export function openLoadModal(opts = {}) {
   }
 
   function _reload() {
-    _autoListForLoaded(defaultStatus, defaultResults, defaultAllLink, entryByUri, _onToggle, _onDelete, selection, reloadBtn);
+    tidyBtn.disabled = true; // until there is a whole list to tidy
+    listErrors = null;
+    _autoListForLoaded(defaultStatus, defaultResults, defaultAllLink, entryByUri, _onToggle, _onDelete, selection, reloadBtn)
+      .then((n) => { listErrors = typeof n === "number" ? n : null; })
+      .finally(() => { tidyBtn.disabled = false; });
   }
 
   // Default flow: auto-list annotations for loaded recordings.
@@ -713,6 +774,7 @@ async function _autoListForLoaded(status, results, allLink, entryByUri, onToggle
     });
     render(entries);
     _setStatus(status, _discoverySummary(entries.length, errors.length));
+    return errors.length;
   } catch (err) {
     _setStatus(status, "Couldn't list: " + (err.message || err));
   } finally {
@@ -782,7 +844,7 @@ function _resultRow(entry, onToggle, onDelete, checked) {
     onchange: (e) => onToggle(entry.mmUri, e.target.checked),
   });
   checkbox.checked = !!checked;
-  const row = el("div", { class: "lh-v6-load-row-result" }, [
+  const row = el("div", { class: "lh-v6-load-row-result", dataset: { mmUri: entry.mmUri } }, [
     checkbox,
     el("div", { class: "lh-v6-load-meta" }, metaChildren),
   ]);

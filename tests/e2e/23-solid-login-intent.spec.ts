@@ -106,7 +106,8 @@ test.describe('23. Load-from-Solid login intent (simulated)', () => {
     // session's info to logged-in. getDefaultSession is a read-only accessor,
     // but the session singleton is stable and its info is mutable.
     await page.evaluate(() => {
-      const session = (window as any).solidClientAuthentication.default.getDefaultSession();
+      const sca = (window as any).solidClientAuthentication;
+      const session = (sca.default || sca).getDefaultSession();
       session.info.isLoggedIn = true;
       session.info.webId = 'https://example.test/card#me';
       document.dispatchEvent(

@@ -125,6 +125,7 @@ export function confirmDialog({
   cancelLabel = "Cancel",
   confirmClass = "lh-v6-confirm-ok",
   dialogClass = "",
+  overlayClass = "",
   labelId = "lh-v6-confirm-h",
   focus = "confirm",
   enterConfirms = true,
@@ -190,7 +191,7 @@ export function confirmDialog({
     const overlay = el(
       "div",
       {
-        class: "lh-v6-confirm-overlay",
+        class: ("lh-v6-confirm-overlay " + overlayClass).trim(),
         onclick: (e) => {
           if (e.target === overlay) settle(false);
         },
@@ -225,6 +226,74 @@ export function confirmDeleteFromPod(title) {
         text: "This removes the MusicalMaterial, Extract, Selections, and every related OA Annotation. If a local copy is loaded in this session, it will also be removed.",
       }),
       el("p", { class: "lh-v6-confirm-warn", text: "This cannot be undone." }),
+    ],
+  });
+}
+
+/**
+ * Confirmation before a link (`?loadMM=`) loads an annotation from an address
+ * the user didn't choose in Listen Here.
+ * @returns {Promise<boolean>}
+ */
+export function confirmLoadFromLink(url) {
+  let host = url;
+  try {
+    host = new URL(url).host;
+  } catch (_) {
+    /* shown as given */
+  }
+  return confirmDialog({
+    title: "Load an annotation from a link?",
+    icon: "🔗",
+    confirmLabel: "Load",
+    // Amber, like making an annotation public: a choice to make with care,
+    // not a danger (red is for deleting).
+    confirmClass: "lh-v6-confirm-caution-ok",
+    dialogClass: "lh-v6-confirm-caution",
+    overlayClass: "lh-v6-confirm-overlay-caution",
+    focus: "cancel",
+    body: [
+      el("p", { class: "lh-v6-confirm-target" }, [
+        "This link asks to load an annotation from ",
+        el("strong", { text: host }),
+        ":",
+      ]),
+      el("p", { class: "lh-v6-confirm-detail lh-v6-confirm-url", text: url }),
+      el("p", {
+        class: "lh-v6-confirm-detail",
+        text: "Load it only if you trust where the link came from. An annotation that isn't in your pod can be read here, but not updated.",
+      }),
+    ],
+  });
+}
+
+/**
+ * Confirmation before an annotation is made readable by anyone.
+ * @returns {Promise<boolean>}
+ */
+export function confirmMakePublic(title) {
+  return confirmDialog({
+    title: "Make this annotation public?",
+    icon: "🌐",
+    confirmLabel: "Make public",
+    confirmClass: "lh-v6-confirm-caution-ok",
+    dialogClass: "lh-v6-confirm-caution",
+    overlayClass: "lh-v6-confirm-overlay-caution",
+    focus: "cancel",
+    body: [
+      el("p", { class: "lh-v6-confirm-target" }, [
+        "Anyone on the internet will be able to read ",
+        el("strong", { text: '"' + title + '"' }),
+        " at its address in your Solid pod.",
+      ]),
+      el("p", {
+        class: "lh-v6-confirm-detail",
+        text: "This opens its MusicalMaterial, Extract, Selections, and Annotations, including your text and the recordings and times they refer to. The rest of your pod is not affected.",
+      }),
+      el("p", {
+        class: "lh-v6-confirm-warn",
+        text: "You can make it private again, but that cannot recall copies already made.",
+      }),
     ],
   });
 }

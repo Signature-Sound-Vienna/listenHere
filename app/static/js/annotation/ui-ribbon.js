@@ -546,20 +546,37 @@ export function openLoadModal(opts = {}) {
     const title = (entry && entry.label) || mmUri;
     const ok = await confirmDeleteFromPod(title);
     if (!ok) return;
-    rowEl.classList.add("is-busy");
+    _setRowBusy(rowEl, true);
+    selection.delete(mmUri);
+    _refreshBulkBtn();
     _setStatus(footerStatus, "Deleting " + title + "…");
+    let gone = false;
+    const removeRow = () => {
+      rowEl.remove();
+      entryByUri.delete(mmUri);
+      selection.delete(mmUri);
+      _refreshBulkBtn();
+      if (defaultResults.children.length === 0) defaultAllLink.style.display = "none";
+    };
     deleteAnnotationFromPod(mmUri, {
-      onProgress: (label) => _setStatus(footerStatus, "Deleting " + title + ": " + label + "…"),
+      onProgress: (label) =>
+        _setStatus(
+          footerStatus,
+          (gone ? "✓ Deleted " + title + ". Tidying up: " : "Deleting " + title + ": ") + label + "…",
+        ),
+      // The annotation is gone once its MusicalMaterial is: the row goes at
+      // once, while the rest of it is cleared behind the pod's request limit.
+      onGone: () => {
+        gone = true;
+        removeRow();
+        _setStatus(footerStatus, "✓ Deleted " + title + ". Tidying up the rest of it in your pod…");
+      },
       // Hint for the stale-cleanup branch: scope discovery patches to the
       // audios that surfaced this entry in the first place.
       coveredFiles: entry && entry.coveredFiles,
     })
       .then((res) => {
-        rowEl.remove();
-        entryByUri.delete(mmUri);
-        selection.delete(mmUri);
-        _refreshBulkBtn();
-        if (defaultResults.children.length === 0) defaultAllLink.style.display = "none";
+        removeRow();
         if (res.stale) {
           // The MM was already gone from the pod; we only pruned stale
           // dataset references. Report that distinctly so the user knows
@@ -574,15 +591,19 @@ export function openLoadModal(opts = {}) {
           return;
         }
         const failedCount = res.failedUris.length;
+        const skippedCount = (res.skippedUris || []).length;
         _setStatus(
           footerStatus,
           failedCount > 0
             ? "Deleted with " + failedCount + " failure(s) — see console."
-            : "✓ Deleted " + res.deletedUris.length + " resource(s).",
+            : skippedCount > 0
+              ? "✓ Removed from your list. Deleted " + res.deletedUris.length +
+                " resource(s); " + skippedCount + " outside your pod were left alone."
+              : "✓ Deleted " + res.deletedUris.length + " resource(s).",
         );
       })
       .catch((err) => {
-        rowEl.classList.remove("is-busy");
+        _setRowBusy(rowEl, false);
         _setStatus(footerStatus, "Couldn't delete: " + (err.message || err));
       });
   }
@@ -771,6 +792,29 @@ function _resultRow(entry, onToggle, onDelete, checked) {
   });
   row.appendChild(trashBtn);
   return row;
+}
+
+/**
+ * Show a load-list row as being deleted, or not: greyed, its checkbox and
+ * trash disabled, and a spinner where the trash was.
+ */
+function _setRowBusy(row, busy) {
+  row.classList.toggle("is-busy", busy);
+  row.setAttribute("aria-busy", busy ? "true" : "false");
+  const check = row.querySelector(".lh-v6-load-check");
+  if (check) {
+    check.disabled = busy;
+    if (busy) check.checked = false;
+  }
+  const trash = row.querySelector(".lh-v6-load-trash");
+  if (trash) {
+    trash.disabled = busy;
+    trash.replaceChildren(
+      busy ? el("span", { class: "lh-v6-trash-spinner", "aria-hidden": "true" }) : "🗑",
+    );
+    trash.title = busy ? "Deleting…" : "Delete from pod";
+    trash.setAttribute("aria-label", trash.title);
+  }
 }
 
 // Thin wrapper around setStatusText so existing call sites keep their name

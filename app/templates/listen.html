@@ -9,6 +9,7 @@
       var params = new URL(window.location.toLocaleString()).searchParams;
       var alignmentData = {{ data | tojson }};
       var alignMode = {{ mode | tojson }};
+      var indexUrl = {{ url_for('index') | tojson }};
       var workId = alignmentData === "local" ? "local" : alignmentData;
       var versionString = {{ version | tojson }};
       var versionDate = {{ version_date | tojson }};

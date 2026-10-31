@@ -40,11 +40,15 @@
 import * as state from "./state.js";
 import * as adapter from "./mao-adapter.js";
 import { nsp } from "../linked-data.js";
+import { folderIdOf } from "./solid-layout.js";
+import { matchNewFolderAccess } from "./solid-access.js";
 import {
   createResourceAtUri,
+  discoveryUriFor,
   establishContainers,
-  establishDiscoveryResource,
   getSolidStorage,
+  newDiscoveryDocument,
+  notInOwnStorage,
   safelyPatchResource,
   selectionContainer,
   extractContainer,
@@ -56,13 +60,14 @@ import { getAudioLinkedDataUri, loadedAlignmentJSON } from "../listen.js";
 import { commitAnnotationsToAlignment } from "./index.js";
 
 // ---------------------------------------------------------------------------
-// Session-scoped existence cache. We don't HEAD containers / discovery
-// resources twice per session — once verified, we trust them. Both caches
-// are invalidated lazily on 404 (see _safePostResource).
+// Session-scoped existence cache. We don't HEAD the containers twice per
+// session — once verified, we trust them; the cache is invalidated lazily on
+// 404 (see _safePutResource). Per-recording discovery resources need no such
+// check: their URIs are derived (discoveryUriFor), and the patch that writes
+// to one creates it when it is missing.
 // ---------------------------------------------------------------------------
 
 let _containersEstablished = false;
-const _discoveryCache = new Map(); // audioUri → discoveryResourceUri
 
 async function _ensureContainers() {
   if (_containersEstablished) return;
@@ -72,46 +77,24 @@ async function _ensureContainers() {
 
 function _invalidateContainersCache() {
   _containersEstablished = false;
-  _discoveryCache.clear();
-}
-
-async function _ensureDiscoveryFor(audioUri) {
-  if (_discoveryCache.has(audioUri)) return _discoveryCache.get(audioUri);
-  const r = await establishDiscoveryResource(audioUri);
-  if (!r || !r.url) {
-    throw new Error("Couldn't establish discovery resource for " + audioUri);
-  }
-  _discoveryCache.set(audioUri, r.url);
-  return r.url;
-}
-
-function _invalidateDiscoveryFor(audioUri) {
-  _discoveryCache.delete(audioUri);
 }
 
 /**
- * Fire-and-forget container + per-audio discovery establishment, called
- * after login so the first user-triggered post doesn't pay for the
- * ~3 round trips that `_ensureContainers` + `_ensureDiscoveryFor` would
- * otherwise add to its critical path. Safe to call repeatedly: cached
- * results short-circuit on the second call.
+ * Fire-and-forget container establishment, called after login so the first
+ * user-triggered post doesn't pay for it. Safe to call repeatedly: a cached
+ * result short-circuits on the second call.
  *
- * If we don't know the audio URIs yet (e.g. alignment hasn't loaded),
- * we just warm the containers and let discovery establish on demand.
+ * Per-audio discovery resources are deliberately NOT warmed here: one HEAD
+ * (and, for a new one, PUT) per loaded recording right after login overran
+ * solidcommunity.net's request limit. A post or update creates the ones it
+ * writes to, when it patches them.
  */
-export async function prewarmCaches(audioUris) {
+export async function prewarmCaches() {
   try {
     await _ensureContainers();
   } catch (err) {
     console.warn("[annotation/v6] prewarm: container establish failed", err);
   }
-  if (!Array.isArray(audioUris) || audioUris.length === 0) return;
-  await Promise.all(
-    audioUris.map(async (u) => {
-      try { await _ensureDiscoveryFor(u); }
-      catch (err) { console.warn("[annotation/v6] prewarm: discovery establish failed for", u, err); }
-    }),
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -159,8 +142,13 @@ function _mintSlug() {
  * Container paths come from the existing solid.js constants and are
  * appended to the user's storage root, which we resolve once. Caller is
  * responsible for ensuring containers exist (see _ensureContainers).
+ *
+ * `folderId` puts every resource in its annotation's own folder inside the
+ * type container (see solid-layout.js), which the server creates with the
+ * first resource. Null keeps the older flat layout, for updating an
+ * annotation that was posted that way.
  */
-async function _mintUrisFor(templates) {
+async function _mintUrisFor(templates, folderId = null) {
   const storage = await getSolidStorage();
   if (!storage) throw new Error("Couldn't resolve Solid storage root.");
   const containers = {
@@ -173,7 +161,8 @@ async function _mintUrisFor(templates) {
   for (const t of templates) {
     const root = containers[t.kind];
     if (!root) throw new Error("Unknown resource kind: " + t.kind);
-    localToUri[t.localKey] = root + _mintSlug();
+    localToUri[t.localKey] =
+      root + (folderId ? folderId + "/" : "") + _mintSlug();
   }
   return localToUri;
 }
@@ -331,10 +320,12 @@ export async function postAnnotationToSolid(annId, opts = {}) {
   const fileToAudioUri = _resolveAudioUris(ann);
 
   await _ensureContainers();
+  // Only the URIs: each discovery resource is created, if it is missing, when
+  // it is patched at the end (a GET that answers 404 becomes the creating PUT).
   const uniqueAudioUris = [...new Set(Object.values(fileToAudioUri))];
   const discoveryByAudio = {};
   for (const audioUri of uniqueAudioUris) {
-    discoveryByAudio[audioUri] = await _ensureDiscoveryFor(audioUri);
+    discoveryByAudio[audioUri] = await discoveryUriFor(audioUri);
   }
 
   const { templates } = adapter.serialize(ann, {
@@ -348,7 +339,7 @@ export async function postAnnotationToSolid(annId, opts = {}) {
   // Mint every resource URI up front. From here on we don't need to wait
   // on Location headers or do post-POST @id-fixup PUTs: every body can be
   // substituted with the final URIs before any I/O fires.
-  const localToUri = await _mintUrisFor(templates);
+  const localToUri = await _mintUrisFor(templates, _mintSlug());
 
   const total = templates.length + Object.keys(discoveryByAudio).length;
   let step = 0;
@@ -542,10 +533,7 @@ async function _patchDiscoveryResources(
     }
   }
 
-  const datasetPath =
-    "/" +
-    nsp.SCHEMA.replaceAll("~", "~0").replaceAll("/", "~1") +
-    "dataset/-";
+  const datasetPath = _DATASET_POINTER + "/-";
 
   const allAudios = new Set([
     ...Object.keys(audioToSelUris),
@@ -559,14 +547,25 @@ async function _patchDiscoveryResources(
       if (!discoveryUri) return;
       const selUris = audioToSelUris[audioUri] || [];
       const oaUris = audioToOaUris[audioUri] || [];
-      const ops = [
-        _datasetOp(datasetPath, mmUri, nsp.MAO + "MusicalMaterial", mmMeta),
-        _datasetOp(datasetPath, extractUri, nsp.MAO + "Extract"),
-        ...selUris.map((s) => _datasetOp(datasetPath, s, nsp.MAO + "Selection")),
-        ...oaUris.map((o) => _datasetOp(datasetPath, o, nsp.OA + "Annotation")),
+      const entries = [
+        [mmUri, nsp.MAO + "MusicalMaterial", mmMeta],
+        [extractUri, nsp.MAO + "Extract"],
+        ...selUris.map((s) => [s, nsp.MAO + "Selection"]),
+        ...oaUris.map((o) => [o, nsp.OA + "Annotation"]),
       ];
+      // Only the entries the document doesn't list yet, worked out from each
+      // fetch, so a patch that already landed (its reply lost) adds nothing
+      // twice when it is repeated.
+      const ops = (doc) => {
+        const listed = new Set(_datasetOf(doc).map(_entryUrl));
+        return entries
+          .filter(([url]) => !listed.has(url))
+          .map(([url, type, meta]) => _datasetOp(datasetPath, url, type, meta));
+      };
       try {
-        await safelyPatchResource(discoveryUri, ops);
+        await safelyPatchResource(discoveryUri, ops, 5, {
+          createIfMissing: () => newDiscoveryDocument(discoveryUri, audioUri),
+        });
       } catch (err) {
         // Discovery is for findability, not correctness — log but don't abort
         // the whole post over a patch failure.
@@ -574,9 +573,6 @@ async function _patchDiscoveryResources(
           "[annotation/v6] discovery patch failed for " + discoveryUri,
           err,
         );
-        // Soft-invalidate so the next run re-establishes (in case the resource
-        // disappeared between sessions).
-        _invalidateDiscoveryFor(audioUri);
       }
       if (typeof onAudioPatched === "function") onAudioPatched();
     }),
@@ -607,6 +603,22 @@ function _discoveryEntryValue(url, additionalTypeIri, meta) {
 
 function _datasetOp(path, url, additionalTypeIri, meta) {
   return { op: "add", path, value: _discoveryEntryValue(url, additionalTypeIri, meta) };
+}
+
+/** The JSON Pointer to a discovery document's schema:dataset. */
+const _DATASET_POINTER =
+  "/" + (nsp.SCHEMA + "dataset").replaceAll("~", "~0").replaceAll("/", "~1");
+
+/** A discovery document's schema:dataset entries, as an array. */
+function _datasetOf(doc) {
+  const d = doc && doc[nsp.SCHEMA + "dataset"];
+  return d === undefined ? [] : Array.isArray(d) ? d : [d];
+}
+
+/** The URL a discovery dataset entry points at. */
+function _entryUrl(e) {
+  const url = e && e[nsp.SCHEMA + "url"];
+  return url && (Array.isArray(url) ? url[0] : url)["@id"];
 }
 
 /** Read a JSON-LD literal that may be a bare string, a value object, or an
@@ -654,28 +666,36 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
   if (ann.targets.length === 0) {
     throw new Error("Select at least one recording before updating.");
   }
+  // An annotation loaded from someone else's pod (a ?loadMM= link) is not
+  // updated: every write would carry the user's credentials to the addresses
+  // it names, and its folder names and access state are someone else's.
+  const foreign = (await notInOwnStorage(Object.values(ann.lastPostedUris)))
+    .filter((u) => /^https?:/i.test(u));
+  if (foreign.length > 0) {
+    throw new Error(
+      "This annotation isn't in your pod (" + _hostOf(foreign[0]) +
+        "), so it can't be updated from here.",
+    );
+  }
 
   const fileToAudioUri = _resolveAudioUris(ann);
   const oldHashes = ann.lastPostedHashes || {};
+  const previousUris = { ...ann.lastPostedUris };
 
   await _ensureContainers();
   const uniqueAudioUris = [...new Set(Object.values(fileToAudioUri))];
   const discoveryByAudio = {};
+  // Only the URIs, as in the post: the reconcile creates a missing discovery
+  // resource when it has something to add to it.
   for (const audioUri of uniqueAudioUris) {
-    try {
-      discoveryByAudio[audioUri] = await _ensureDiscoveryFor(audioUri);
-    } catch (err) {
-      console.warn("[annotation/v6] discovery establish failed; skipping", audioUri, err);
-    }
+    discoveryByAudio[audioUri] = await discoveryUriFor(audioUri);
   }
   // Audios that were involved before but aren't anymore (detached files)
   // — we still need to touch their discovery resource to remove stale entries.
   const oldFileToAudioUri = _oldFileToAudioUri(ann.lastPostedUris);
   for (const oldAudio of Object.values(oldFileToAudioUri)) {
     if (!discoveryByAudio[oldAudio]) {
-      try {
-        discoveryByAudio[oldAudio] = await _ensureDiscoveryFor(oldAudio);
-      } catch (_) { /* leave gap; reconcile will skip */ }
+      discoveryByAudio[oldAudio] = await discoveryUriFor(oldAudio);
     }
   }
 
@@ -701,8 +721,11 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
   // Mint URIs for templates that don't yet have one. The minted URIs are
   // also what we'll consider "created" for discovery reconciliation.
   const freshTemplates = templates.filter((t) => !oldKeys.has(t.localKey));
+  // New resources join the annotation's existing folder (so they inherit its
+  // access); an annotation posted in the older flat layout stays flat.
+  const folderId = folderIdOf(Object.values(ann.lastPostedUris));
   if (freshTemplates.length > 0) {
-    const fresh = await _mintUrisFor(freshTemplates);
+    const fresh = await _mintUrisFor(freshTemplates, folderId);
     for (const k of Object.keys(fresh)) localToUri[k] = fresh[k];
   }
   const localToHash = {};
@@ -718,6 +741,10 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
   // doesn't go stale.
   let mmCreatedAt = null;
   let mmReplacedInPlace = false;
+  let mmKeptCreated = null; // the MM's dct:created, when replacing it read it
+  // Recordings this update adds to the annotation: their discovery resources
+  // list none of it yet.
+  const addedAudios = _addedAudios(previousUris, fileToAudioUri);
   onProgress(step, total, null);
 
   for (const level of levels) {
@@ -733,8 +760,8 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
             return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: true };
           }
           try {
-            await _safelyReplaceResource(localToUri[t.localKey], body);
-            return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: false, createdAt: null };
+            const kept = await _safelyReplaceResource(localToUri[t.localKey], body);
+            return { template: t, uri: localToUri[t.localKey], hash: newHash, skipped: false, createdAt: null, keptCreated: kept.created };
           } catch (err) {
             // If the resource disappeared from the pod, fall back to a
             // fresh PUT-to-URI under a newly-minted URI (so creator /
@@ -743,7 +770,7 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
               console.warn(
                 "[annotation/v6] " + t.localKey + " missing on pod; re-creating at a fresh URI.",
               );
-              const replacementUri = (await _mintUrisFor([t]))[t.localKey];
+              const replacementUri = (await _mintUrisFor([t], folderId))[t.localKey];
               await _safePutResource(replacementUri, body, t.localKey);
               return { template: t, uri: replacementUri, hash: newHash, skipped: false, created: true, createdAt: body[nsp.DCT + "created"] || null };
             }
@@ -763,6 +790,7 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
       if (r.template.localKey === "mm") {
         mmCreatedAt = r.createdAt || null;
         mmReplacedInPlace = !r.created && !r.skipped;
+        mmKeptCreated = r.keptCreated || null;
       }
       onProgress(++step, total, _labelForKind(r.template.kind));
     }
@@ -788,8 +816,18 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
     }),
   );
 
-  // Reconcile each audio's discovery: add entries for newly-created URIs,
-  // remove entries pointing at deleted ones.
+  // The MM's discovery entry carries its creation date (the loader's sign of a
+  // denormalised entry). An added recording needs that entry even though the
+  // MM wasn't created now: take the date from the MM, as read while replacing
+  // it, or else read it.
+  let mmDateCreated = mmCreatedAt || mmKeptCreated;
+  if (!mmDateCreated && addedAudios.size > 0) {
+    mmDateCreated = await _readCreated(localToUri["mm"]);
+  }
+
+  // Reconcile each audio's discovery: add entries for newly-created URIs (and,
+  // for an added recording, everything a post would have listed), remove
+  // entries pointing at deleted ones.
   await _reconcileDiscoveryResources(
     templates,
     byKey,
@@ -802,10 +840,11 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
     {
       uri: localToUri["mm"],
       name: ann.label,
-      createdAt: mmCreatedAt,
+      createdAt: mmDateCreated,
       refreshName: mmReplacedInPlace,
     },
     () => onProgress(++step, total, "Discovery"),
+    addedAudios,
   );
 
   if (skipped > 0) {
@@ -816,7 +855,27 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
 
   state.markPosted(annId, localToUri, localToHash);
   if (loadedAlignmentJSON) commitAnnotationsToAlignment(loadedAlignmentJSON);
+
+  // A resource of a type the annotation had none of (its first text, say)
+  // sits in a new folder, which must get the annotation's access.
+  try {
+    await matchNewFolderAccess(previousUris, localToUri);
+  } catch (err) {
+    throw new Error(
+      "The update was saved, but its new part may not have the annotation's public/private setting: " +
+        (err && err.message ? err.message : err) +
+        " Make it private and public again (or the reverse) to repair it.",
+    );
+  }
   return localToUri;
+}
+
+function _hostOf(uri) {
+  try {
+    return new URL(uri).host;
+  } catch (_) {
+    return uri;
+  }
 }
 
 function _isMissingResourceError(err) {
@@ -844,11 +903,44 @@ function _oldFileToAudioUri(oldUris) {
 }
 
 /**
+ * The audios of the recordings an update adds: targeted now, with no
+ * Selection posted before, and not shared with a recording that had one.
+ */
+function _addedAudios(previousUris, fileToAudioUri) {
+  const before = new Set();
+  const now = new Set();
+  for (const [file, audio] of Object.entries(fileToAudioUri)) {
+    if (!audio) continue;
+    (previousUris["sel/" + file] ? before : now).add(audio);
+  }
+  for (const audio of before) now.delete(audio);
+  return now;
+}
+
+/** A resource's dct:created, read from the pod; null if it can't be. */
+async function _readCreated(uri) {
+  try {
+    const resp = await solid.fetch(uri, {
+      headers: { Accept: "application/ld+json" },
+    });
+    if (!resp.ok) return null;
+    const doc = await resp.json();
+    const nodes = Array.isArray(doc) ? doc : doc["@graph"] || [doc];
+    const node = nodes.find((n) => n && n["@id"] === uri) || nodes[0];
+    return _litValue(node && node[nsp.DCT + "created"]) || null;
+  } catch (err) {
+    console.warn("[annotation/v6] couldn't read dct:created of", uri, err);
+    return null;
+  }
+}
+
+/**
  * PUT a new body to an existing Solid resource, preserving its
  * dct:creator / dct:created / dct:provenance fields and adding a fresh
  * dct:modified. Retries on 412 (ETag conflict) up to MAX_RETRIES times,
  * each retry refetching the current body + ETag so the merge is against
- * the latest server state.
+ * the latest server state. Returns the PUT's response and the resource's
+ * dct:created as it was read (or null).
  */
 async function _safelyReplaceResource(uri, newContentBody) {
   const MAX_RETRIES = 5;
@@ -885,7 +977,9 @@ async function _safelyReplaceResource(uri, newContentBody) {
       },
       body: JSON.stringify(merged),
     });
-    if (putResp.ok) return putResp;
+    if (putResp.ok) {
+      return { resp: putResp, created: _litValue(current[nsp.DCT + "created"]) || null };
+    }
     if (putResp.status === 412) {
       // ETag conflict — wait briefly then refetch and retry.
       await new Promise((r) => setTimeout(r, 200));
@@ -901,8 +995,12 @@ async function _safelyReplaceResource(uri, newContentBody) {
 /**
  * Reconcile each audio's discovery resource. Adds dataset entries for newly
  * created URIs (associated with this audio, or for the shared MM/Extract);
- * removes entries pointing at any URI we just DELETEd. Best-effort: a
- * failure logs a warning but doesn't abort the overall update.
+ * removes entries pointing at any URI we just DELETEd. A recording in
+ * `addedAudios` (new to the annotation) gets every entry a post would have
+ * given it — MM, Extract, its Selections, and the OAs covering it — since
+ * the MM and Extract were not created now, and the loader lists annotations
+ * by their MM entries. Best-effort: a failure logs a warning but doesn't
+ * abort the overall update.
  */
 async function _reconcileDiscoveryResources(
   templates,
@@ -915,6 +1013,7 @@ async function _reconcileDiscoveryResources(
   deletedUris,
   mmInfo,
   onAudioReconciled,
+  addedAudios = new Set(),
 ) {
   const audioCount = Object.keys(discoveryByAudio).length;
   if (audioCount === 0) return;
@@ -922,7 +1021,12 @@ async function _reconcileDiscoveryResources(
   // created/deleted sets — but the denormalised schema:name on its discovery
   // entries must still be refreshed, so don't short-circuit in that case.
   const needNameRefresh = !!(mmInfo && mmInfo.refreshName && mmInfo.uri);
-  if (createdUris.length === 0 && deletedUris.length === 0 && !needNameRefresh) {
+  if (
+    createdUris.length === 0 &&
+    deletedUris.length === 0 &&
+    !needNameRefresh &&
+    addedAudios.size === 0
+  ) {
     // Still report progress for the audios we'd have reconciled, to keep
     // the caller's step counter consistent.
     if (typeof onAudioReconciled === "function") {
@@ -931,7 +1035,7 @@ async function _reconcileDiscoveryResources(
     return;
   }
 
-  // Map created Selection URIs to their audio (one-to-one).
+  // Map every current Selection URI to its audio (one-to-one).
   const selUriToAudio = {};
   for (const [key, uri] of Object.entries(newUris)) {
     if (key.startsWith("sel/")) {
@@ -940,7 +1044,7 @@ async function _reconcileDiscoveryResources(
       if (audio) selUriToAudio[uri] = audio;
     }
   }
-  // Map created OA URIs to the set of audios they cover (potentially many).
+  // Map every current OA URI to the set of audios it covers (potentially many).
   const oaUriToAudios = new Map();
   for (const t of templates) {
     if (t.kind !== "oa:Annotation") continue;
@@ -958,17 +1062,21 @@ async function _reconcileDiscoveryResources(
   await Promise.all(
     Object.entries(discoveryByAudio).map(async ([audioUri, discoveryUri]) => {
       const adds = [];
-      if (createdSet.has(newUris["mm"])) {
+      const added = addedAudios.has(audioUri);
+      if (added || createdSet.has(newUris["mm"])) {
         adds.push({
           uri: newUris["mm"],
           type: nsp.MAO + "MusicalMaterial",
           meta: { name: mmInfo && mmInfo.name, dateCreated: mmInfo && mmInfo.createdAt },
         });
       }
-      if (createdSet.has(newUris["extract"])) {
+      if (added || createdSet.has(newUris["extract"])) {
         adds.push({ uri: newUris["extract"], type: nsp.MAO + "Extract" });
       }
-      for (const uri of createdUris) {
+      const candidates = added
+        ? [...Object.keys(selUriToAudio), ...oaUriToAudios.keys()]
+        : createdUris;
+      for (const uri of candidates) {
         if (selUriToAudio[uri] === audioUri) {
           adds.push({ uri, type: nsp.MAO + "Selection" });
         } else if (oaUriToAudios.has(uri) && oaUriToAudios.get(uri).has(audioUri)) {
@@ -986,42 +1094,47 @@ async function _reconcileDiscoveryResources(
         return;
       }
       try {
-        await _patchDiscoveryReconcile(discoveryUri, adds, deletedSet, mmNameRefresh);
+        await _patchDiscoveryReconcile(discoveryUri, audioUri, adds, deletedSet, mmNameRefresh);
       } catch (err) {
         console.warn(
           "[annotation/v6] discovery reconcile failed for " + discoveryUri,
           err,
         );
-        _invalidateDiscoveryFor(audioUri);
       }
       if (typeof onAudioReconciled === "function") onAudioReconciled();
     }),
   );
 }
 
-async function _patchDiscoveryReconcile(discoveryUri, adds, removeUriSet, mmNameRefresh) {
-  const getResp = await solid.fetch(discoveryUri, {
-    headers: { Accept: "application/ld+json" },
-  });
-  if (!getResp.ok) return;
-  const etag = getResp.headers.get("ETag");
-  const body = await getResp.json();
-  const datasetKey = nsp.SCHEMA + "dataset";
-  let dataset = body[datasetKey] || [];
-  if (!Array.isArray(dataset)) dataset = [dataset];
-  const entryUrl = (e) => {
-    const url = e && e[nsp.SCHEMA + "url"];
-    return url && (Array.isArray(url) ? url[0] : url)["@id"];
-  };
+/**
+ * Bring one recording's discovery resource up to date: drop the entries for
+ * deleted resources, add the created ones it doesn't list, refresh the MM's
+ * denormalised name. Through safelyPatchResource, so the change is worked out
+ * afresh from each fetch: a 412 (the resource changed meanwhile) is retried
+ * rather than lost, and a missing resource is created when there is something
+ * to add to it (and left missing when there isn't).
+ */
+async function _patchDiscoveryReconcile(discoveryUri, audioUri, adds, removeUriSet, mmNameRefresh) {
+  await safelyPatchResource(
+    discoveryUri,
+    (doc) => _reconcileOps(doc, adds, removeUriSet, mmNameRefresh),
+    5,
+    { createIfMissing: () => newDiscoveryDocument(discoveryUri, audioUri) },
+  );
+}
+
+/** The patch (one replacement of the dataset, or none) that reconciles `doc`. */
+function _reconcileOps(doc, adds, removeUriSet, mmNameRefresh) {
+  let dataset = _datasetOf(doc).map((e) => ({ ...e }));
   let changed = false;
 
   if (removeUriSet.size > 0) {
     const before = dataset.length;
-    dataset = dataset.filter((entry) => !removeUriSet.has(entryUrl(entry)));
+    dataset = dataset.filter((entry) => !removeUriSet.has(_entryUrl(entry)));
     if (dataset.length !== before) changed = true;
   }
   for (const { uri, type, meta } of adds) {
-    const exists = dataset.some((e) => entryUrl(e) === uri);
+    const exists = dataset.some((e) => _entryUrl(e) === uri);
     if (!exists) {
       dataset.push(_discoveryEntryValue(uri, type, meta));
       changed = true;
@@ -1033,7 +1146,7 @@ async function _patchDiscoveryReconcile(discoveryUri, adds, removeUriSet, mmName
   // updated) MM, so they reflect the new title without our help.
   if (mmNameRefresh && mmNameRefresh.uri) {
     for (const e of dataset) {
-      if (entryUrl(e) !== mmNameRefresh.uri) continue;
+      if (_entryUrl(e) !== mmNameRefresh.uri) continue;
       if (e[nsp.SCHEMA + "dateCreated"] === undefined) continue;
       const desired = mmNameRefresh.name || undefined;
       if (desired === undefined) {
@@ -1047,15 +1160,5 @@ async function _patchDiscoveryReconcile(discoveryUri, adds, removeUriSet, mmName
       }
     }
   }
-  if (!changed) return;
-  body[datasetKey] = dataset;
-
-  await solid.fetch(discoveryUri, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/ld+json",
-      ...(etag ? { "If-Match": etag } : {}),
-    },
-    body: JSON.stringify(body),
-  });
+  return changed ? [{ op: "add", path: _DATASET_POINTER, value: dataset }] : [];
 }

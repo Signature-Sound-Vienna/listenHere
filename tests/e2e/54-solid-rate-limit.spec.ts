@@ -1,0 +1,1016 @@
+import { test, expect } from '../support/fixtures';
+import type { Page } from '@playwright/test';
+
+// ---------------------------------------------------------------------------
+// Section 54 — Staying within a pod host's request limit
+// ---------------------------------------------------------------------------
+// solidcommunity.net answers over-limit requests with 429 and NO CORS header,
+// so the browser reports them as a bare TypeError. app/static/js/solid-fetch.js
+// keeps the limit in advance (per host, sliding window) and retries what
+// failed after a cool-down; the post prewarm no longer fires a request per
+// recording after login.
+//
+// 54.1–54.8 drive the limiter directly in the page with a fake clock and a
+// fake `sleep` that advances it, so a 10 s window costs no wall-clock time.
+// 54.9 checks the prewarm against a mocked pod, and 54.10–54.11 count the
+// requests of a post to one. None needs a real pod.
+
+const LIMITED = 'https://listenhere.solidcommunity.net/at.ac.mdw.mei-friend/';
+const FREE = 'https://pod.example/';
+
+/** Run `body` in the page with { createLimitedFetch, clock, ... } in scope. */
+async function inPage<T>(page: Page, body: string, arg?: unknown): Promise<T> {
+  return page.evaluate(
+    async ({ body, arg }) => {
+      const mod = await import('/static/js/solid-fetch.js');
+      let t = 0;
+      const clock = {
+        now: () => t,
+        sleep: async (ms: number) => { t += ms; },
+        advance: (ms: number) => { t += ms; },
+      };
+      const calls: { url: string; method: string; t: number }[] = [];
+      const ok = (status = 200, headers: Record<string, string> = {}) =>
+        new Response('', { status, headers });
+      // eslint-disable-next-line no-new-func
+      const fn = new Function('mod', 'clock', 'calls', 'ok', 'arg', `return (async () => { ${body} })();`);
+      return fn(mod, clock, calls, ok, arg);
+    },
+    { body, arg },
+  ) as Promise<T>;
+}
+
+test.describe('54. Request limit for pod hosts', () => {
+
+  test('54.1 a host without a limit passes straight through', async ({ loadedPage: page }) => {
+    const r = await inPage<{ calls: number; slept: number }>(page, `
+      let slept = 0;
+      const f = mod.createLimitedFetch(async (u) => { calls.push({ url: u, t: clock.now() }); return ok(); },
+        { now: clock.now, sleep: async (ms) => { slept += ms; await clock.sleep(ms); } });
+      await Promise.all(Array.from({ length: 30 }, (_, i) => f('${FREE}x' + i, { method: 'HEAD' })));
+      return { calls: calls.length, slept };
+    `);
+    expect(r).toEqual({ calls: 30, slept: 0 });
+  });
+
+  test('54.2 a limited host gets at most 8 requests in any 10 s, and all 20 are answered', async ({ loadedPage: page }) => {
+    const r = await inPage<{ n: number; maxInWindow: number; ts: number[] }>(page, `
+      const f = mod.createLimitedFetch(async (u, o) => { calls.push({ url: u, t: clock.now() }); return ok(); },
+        { now: clock.now, sleep: clock.sleep });
+      const res = await Promise.all(Array.from({ length: 20 }, (_, i) => f('${LIMITED}d' + i, { method: 'HEAD' })));
+      const ts = calls.map((c) => c.t);
+      let maxInWindow = 0;
+      for (const t0 of ts) maxInWindow = Math.max(maxInWindow, ts.filter((t) => t >= t0 && t < t0 + 10000).length);
+      return { n: res.filter((x) => x.ok).length, maxInWindow, ts };
+    `);
+    expect(r.n).toBe(20);
+    expect(r.maxInWindow).toBeLessThanOrEqual(8);
+    // 20 requests at 8 per 10 s need two full windows: the last waits for the third.
+    expect(Math.max(...r.ts)).toBeGreaterThanOrEqual(20000);
+  });
+
+  test('54.3 a readable 429 waits for Retry-After and tries again', async ({ loadedPage: page }) => {
+    const r = await inPage<{ status: number; ts: number[] }>(page, `
+      let first = true;
+      const f = mod.createLimitedFetch(async (u) => {
+        calls.push({ url: u, t: clock.now() });
+        if (first) { first = false; return ok(429, { 'Retry-After': '3' }); }
+        return ok();
+      }, { now: clock.now, sleep: clock.sleep });
+      const resp = await f('${LIMITED}a', { method: 'HEAD' });
+      return { status: resp.status, ts: calls.map((c) => c.t) };
+    `);
+    expect(r.status).toBe(200);
+    expect(r.ts).toHaveLength(2);
+    expect(r.ts[1] - r.ts[0]).toBeGreaterThanOrEqual(3000);
+  });
+
+  test('54.4 a bare TypeError (a CORS-hidden 429) is retried after the window, then succeeds', async ({ loadedPage: page }) => {
+    const r = await inPage<{ status: number; ts: number[] }>(page, `
+      let n = 0;
+      const f = mod.createLimitedFetch(async (u) => {
+        calls.push({ url: u, t: clock.now() });
+        if (n++ < 1) throw new TypeError('NetworkError when attempting to fetch resource.');
+        return ok();
+      }, { now: clock.now, sleep: clock.sleep });
+      const resp = await f('${LIMITED}a', { method: 'PUT', body: '{}' });
+      return { status: resp.status, ts: calls.map((c) => c.t) };
+    `);
+    expect(r.status).toBe(200);
+    expect(r.ts).toHaveLength(2);
+    expect(r.ts[1] - r.ts[0]).toBeGreaterThanOrEqual(10000);
+  });
+
+  test('54.5 a persistent TypeError is rethrown after 3 attempts', async ({ loadedPage: page }) => {
+    const r = await inPage<{ name: string; attempts: number }>(page, `
+      const f = mod.createLimitedFetch(async (u) => { calls.push({ url: u, t: clock.now() }); throw new TypeError('down'); },
+        { now: clock.now, sleep: clock.sleep });
+      try { await f('${LIMITED}a', { method: 'HEAD' }); } catch (e) { return { name: e.name, attempts: calls.length }; }
+      return { name: 'none', attempts: calls.length };
+    `);
+    expect(r).toEqual({ name: 'TypeError', attempts: 3 });
+  });
+
+  test('54.6 a POST is never repeated', async ({ loadedPage: page }) => {
+    const r = await inPage<{ name: string; attempts: number }>(page, `
+      const f = mod.createLimitedFetch(async (u) => { calls.push({ url: u, t: clock.now() }); throw new TypeError('down'); },
+        { now: clock.now, sleep: clock.sleep });
+      try { await f('${LIMITED}a', { method: 'POST', body: '{}' }); } catch (e) { return { name: e.name, attempts: calls.length }; }
+      return { name: 'none', attempts: calls.length };
+    `);
+    expect(r).toEqual({ name: 'TypeError', attempts: 1 });
+  });
+
+  test('54.7 something that is not a URL is left to the real fetch', async ({ loadedPage: page }) => {
+    const r = await inPage<{ msg: string }>(page, `
+      const f = mod.createLimitedFetch(async (u) => { throw new Error('base saw ' + u); },
+        { now: clock.now, sleep: clock.sleep });
+      try { await f('undefinedhttps%3A%2F%2Fexample', { method: 'HEAD' }); } catch (e) { return { msg: e.message }; }
+      return { msg: 'none' };
+    `);
+    expect(r.msg).toBe('base saw undefinedhttps%3A%2F%2Fexample');
+  });
+
+  test('54.8 withLimitedFetch limits fetch only; the rest of the library passes through', async ({ loadedPage: page }) => {
+    const r = await inPage<{ sameSession: boolean; fetchLimited: boolean }>(page, `
+      const lib = { fetch: async (u) => { calls.push({ url: u, t: clock.now() }); return ok(); }, getDefaultSession: () => 'S' };
+      const w = mod.withLimitedFetch(lib, { now: clock.now, sleep: clock.sleep });
+      await Promise.all(Array.from({ length: 9 }, (_, i) => w.fetch('${LIMITED}x' + i, { method: 'HEAD' })));
+      return { sameSession: w.getDefaultSession() === 'S', fetchLimited: calls[8].t >= 10000 };
+    `);
+    expect(r).toEqual({ sameSession: true, fetchLimited: true });
+  });
+
+  // 54.9 Signing in prewarms the containers, and no discovery resource per recording.
+  test('54.9 the post prewarm after login asks for the containers only', async ({ loadedPage: page }) => {
+    const POD = 'https://pod.example/';
+    const WEBID_DOC = POD + 'profile/card';
+    const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
+    const seen: string[] = [];
+    await page.route(POD + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
+      seen.push(req.method() + ' ' + req.url());
+      if (req.url() === WEBID_DOC) {
+        return route.fulfill({
+          status: 200, contentType: 'application/ld+json', headers: CORS,
+          body: JSON.stringify([{ '@id': POD + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': POD }] }]),
+        });
+      }
+      return route.fulfill({ status: 200, headers: CORS, body: '' });
+    });
+
+    // The old prewarm asked for one discovery resource per http(s) recording.
+    const recordings = await page.evaluate(async () => {
+      const m = await import('/static/js/listen.js');
+      const audio = (m.loadedAlignmentJSON as any)?.body?.audio ?? {};
+      return Object.keys(audio).filter((f) => /^https?:\/\//i.test(m.getAudioLinkedDataUri(f) || '')).length;
+    });
+    expect(recordings, 'the fixture has recordings with web URIs, so this test can tell').toBeGreaterThan(1);
+
+    await page.evaluate(() => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://pod.example/profile/card#me';
+      document.dispatchEvent(new CustomEvent('solid-auth-changed'));
+    });
+    await expect.poll(() => seen.filter((s) => s.startsWith('HEAD ')).length, { timeout: 10_000 }).toBeGreaterThan(0);
+    await page.waitForTimeout(500);
+
+    const heads = seen.filter((s) => s.startsWith('HEAD '));
+    expect(heads.filter((s) => s.includes('/discovery/') && !s.endsWith('/discovery/'))).toEqual([]);
+  });
+
+  // 54.12–54.13 A request that waits for its turn must not be timed out, or kept
+  // in the queue, as if it were being sent: a long queue made the loader's 15 s
+  // timeout abort requests that had never left it, so a listing of 20 sources
+  // failed for all of them.
+  test('54.12 a queued request whose signal aborts leaves the queue without sending or taking a slot', async ({ loadedPage: page }) => {
+    const r = await page.evaluate(async (limited) => {
+      const mod = await import('/static/js/solid-fetch.js');
+      const sent: string[] = [];
+      const pending: (() => void)[] = [];
+      let t = 0;
+      const f = mod.createLimitedFetch(async (u: string) => { sent.push(u); return new Response('', { status: 200 }); },
+        { now: () => t, sleep: () => new Promise<void>((res) => pending.push(res)) });
+      const first = Array.from({ length: 8 }, (_, i) => f(limited + 'a' + i, { method: 'HEAD' }));
+      await Promise.all(first);
+      const ctrl = new AbortController();
+      const queued = f(limited + 'aborted', { method: 'HEAD', signal: ctrl.signal }).then(() => 'sent', (e: any) => e.name);
+      await new Promise((r) => setTimeout(r, 20));
+      ctrl.abort();
+      const outcome = await queued; // settles at once, without the window opening
+      t += 10000;
+      pending.splice(0).forEach((res) => res());
+      await f(limited + 'next', { method: 'HEAD' });
+      return { outcome, sent: sent.length, abortedSent: sent.includes(limited + 'aborted') };
+    }, LIMITED);
+    expect(r).toEqual({ outcome: 'AbortError', sent: 9, abortedSent: false });
+  });
+
+  test('54.13 timeoutMs counts from the send: a request still waiting is not timed out, one that was sent is', async ({ loadedPage: page }) => {
+    const r = await page.evaluate(async (limited) => {
+      const mod = await import('/static/js/solid-fetch.js');
+      const pending: (() => void)[] = [];
+      let t = 0;
+      let sentAt = 0;
+      const base = (u: string, init: any) => new Promise<Response>((res, rej) => {
+        if (u.endsWith('slow')) {
+          sentAt = Date.now();
+          init.signal.addEventListener('abort', () => rej(init.signal.reason));
+          return; // never answers
+        }
+        res(new Response('', { status: 200 }));
+      });
+      const f = mod.createLimitedFetch(base as any,
+        { now: () => t, sleep: () => new Promise<void>((res) => pending.push(res)) });
+      await Promise.all(Array.from({ length: 8 }, (_, i) => f(limited + 'a' + i, { method: 'HEAD' })));
+      const slow = f(limited + 'slow', { method: 'GET', timeoutMs: 80 }).then(() => 'answered', (e: any) => e.name);
+      let settledEarly = false;
+      slow.then(() => { settledEarly = true; });
+      await new Promise((res) => setTimeout(res, 250)); // three times the timeout, still in the queue
+      const whileQueued = settledEarly;
+      t += 10000;
+      pending.splice(0).forEach((res) => res());
+      const outcome = await slow;
+      return { whileQueued, outcome, afterSend: Date.now() - sentAt };
+    }, LIMITED);
+    expect(r.whileQueued, 'not timed out while queued').toBe(false);
+    expect(r.outcome).toBe('TimeoutError');
+    expect(r.afterSend).toBeGreaterThanOrEqual(70);
+  });
+
+  test('54.14 a host without a limit also gets its timeoutMs', async ({ loadedPage: page }) => {
+    const outcome = await page.evaluate(async (free) => {
+      const mod = await import('/static/js/solid-fetch.js');
+      const f = mod.createLimitedFetch(((u: string, init: any) => new Promise((_, rej) => {
+        init.signal.addEventListener('abort', () => rej(init.signal.reason));
+      })) as any);
+      return f(free + 'x', { timeoutMs: 50 }).then(() => 'answered', (e: any) => e.name);
+    }, FREE);
+    expect(outcome).toBe('TimeoutError');
+  });
+
+  // 54.15 A listing fans out one call per recording, each needing the profile.
+  test('54.15 twenty concurrent callers share one fetch of the profile card', async ({ loadedPage: page }) => {
+    const POD = 'https://pod.example/';
+    const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
+    const cards: string[] = [];
+    await page.route(POD + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
+      if (req.url() === POD + 'profile/card') {
+        cards.push(req.method());
+        await new Promise((r) => setTimeout(r, 100)); // slow enough that all callers arrive first
+        return route.fulfill({ status: 200, contentType: 'application/ld+json', headers: CORS, body: JSON.stringify([
+          { '@id': POD + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': POD }] },
+        ]) });
+      }
+      return route.fulfill({ status: 404, headers: CORS, body: '' });
+    });
+    const storages = await page.evaluate(async () => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://pod.example/profile/card#me';
+      const m = await import('/static/js/solid.js');
+      return Promise.all(Array.from({ length: 20 }, () => m.getSolidStorage()));
+    });
+    expect(storages.every((s: string) => s === POD)).toBe(true);
+    expect(cards, 'one GET of the card').toEqual(['GET']);
+  });
+
+  // 54.16 / 54.17 Listing asks the pod which discovery resources exist (one
+  // request) instead of GETting one per recording to learn that most are 404.
+  const LPOD = 'https://pod.example/';
+  const LDISC = LPOD + 'at.ac.mdw.mei-friend/discovery/';
+  const LDP_CONTAINS = 'http://www.w3.org/ns/ldp#contains';
+
+  async function listingPod(page: Page, listing: 'ok' | 'error' | 'unrelated', existsFor: string[]) {
+    const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
+    const log: string[] = [];
+    const MM = LPOD + 'at.ac.mdw.mei-friend/mao/musicalMaterial/ann1/mm1';
+    await page.route(LPOD + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
+      const url = req.url();
+      log.push(req.method() + ' ' + url);
+      const json = (body: unknown, status = 200) =>
+        route.fulfill({ status, contentType: 'application/ld+json', headers: CORS, body: JSON.stringify(body) });
+      if (url === LPOD + 'profile/card') {
+        return json([{ '@id': LPOD + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': LPOD }] }]);
+      }
+      if (url === LDISC) {
+        if (listing === 'error') return route.fulfill({ status: 500, headers: CORS, body: '' });
+        // As Community Solid Server writes it: the container is TWO nodes with one @id (its types, and
+        // its ldp:contains), and a child is named in another percent-encoding from the one it was PUT
+        // under (`https%3A` is listed as `https%253A`), though the server resolves either.
+        const named = listing === 'unrelated' ? ['https://example.org/unrelated.wav'] : existsFor;
+        return json([
+          { '@id': LDISC, '@type': ['http://www.w3.org/ns/ldp#Container', 'http://www.w3.org/ns/ldp#BasicContainer'] },
+          { '@id': LDISC, [LDP_CONTAINS]: named.map((u) => ({ '@id': LDISC + encodeURIComponent(u).replace(/%3A/g, '%253A') })) },
+        ]);
+      }
+      const hit = existsFor.find((u) => url === LDISC + encodeURIComponent(u));
+      if (hit) {
+        return json([{
+          '@id': url,
+          'https://schema.org/dataset': [{
+            '@type': ['https://schema.org/Dataset'],
+            'https://schema.org/additionalType': [{ '@id': 'https://domestic-beethoven.eu/ontology/1.0/music-annotation-ontology.ttl#MusicalMaterial' }],
+            'https://schema.org/url': [{ '@id': MM }],
+            'https://schema.org/name': 'listed annotation',
+            'https://schema.org/dateCreated': '2026-10-30T10:00:00.000Z',
+          }],
+        }]);
+      }
+      return route.fulfill({ status: 404, headers: CORS, body: '' });
+    });
+    return { log, MM };
+  }
+
+  async function sourcesOf(page: Page): Promise<string[]> {
+    return page.evaluate(async () => {
+      const m = (await import('/static/js/listen.js')) as any;
+      return Object.keys(m.loadedAlignmentJSON.body.audio).map((f: string) => m.getAudioLinkedDataUri(f)).filter(Boolean);
+    });
+  }
+
+  async function listAll(page: Page) {
+    return page.evaluate(async () => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://pod.example/profile/card#me';
+      return (window as any).__annotationV6.listAnnotationsForLoadedAudios();
+    });
+  }
+
+  test('54.16 listing reads the discovery container once and fetches only the discovery resources it names', async ({ loadedPage: page }) => {
+    const sources = await sourcesOf(page);
+    expect(sources.length).toBeGreaterThan(2);
+    const { log, MM } = await listingPod(page, 'ok', [sources[0]]);
+    const r = await listAll(page);
+
+    expect(r.errors).toEqual([]);
+    expect(r.entries.map((e: any) => e.mmUri)).toEqual([MM]);
+    const gets = log.filter((l) => l.startsWith('GET '));
+    expect(gets.filter((l) => l === 'GET ' + LDISC), 'the container, once').toHaveLength(1);
+    expect(gets.filter((l) => l.startsWith('GET ' + LDISC + 'http')), 'only the one it lists').toHaveLength(1);
+  });
+
+  test('54.19 a non-empty listing that names none of the sources is not believed: every source is read', async ({ loadedPage: page }) => {
+    const sources = await sourcesOf(page);
+    const { log, MM } = await listingPod(page, 'unrelated', [sources[0]]);
+    const r = await listAll(page);
+
+    // The listing could be a naming mismatch as easily as a pod with nothing for these, so each is asked for.
+    expect(r.errors).toEqual([]);
+    expect(r.entries.map((e: any) => e.mmUri)).toEqual([MM]);
+    const perSource = log.filter((l) => l.startsWith('GET ' + LDISC + 'http'));
+    expect(perSource.length).toBeGreaterThanOrEqual(sources.length);
+  });
+
+  test('54.17 if the container cannot be listed, listing falls back to one request per recording', async ({ loadedPage: page }) => {
+    const sources = await sourcesOf(page);
+    const { log, MM } = await listingPod(page, 'error', [sources[0]]);
+    const r = await listAll(page);
+
+    expect(r.errors).toEqual([]);
+    expect(r.entries.map((e: any) => e.mmUri)).toEqual([MM]);
+    const perSource = log.filter((l) => l.startsWith('GET ' + LDISC + 'http'));
+    expect(perSource.length).toBeGreaterThanOrEqual(sources.length);
+  });
+
+  // 54.18 The failure as it was seen: 30 reads queue behind the limiter for far
+  // longer than the loader's 15 s read timeout, and all must still be answered.
+  // The clock is faked, so a minute of waiting takes a couple of seconds.
+  test('54.18 reads queued behind the limiter for longer than the loader\'s read timeout all complete', async ({ loadedPage: page }) => {
+    const HOST = 'https://listenhere.solidcommunity.net/';
+    const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': '*', 'Access-Control-Allow-Methods': '*' };
+    let gets = 0;
+    await page.route(HOST + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
+      if (req.url() === HOST + 'profile/card') {
+        return route.fulfill({ status: 200, contentType: 'application/ld+json', headers: CORS, body: JSON.stringify([
+          { '@id': HOST + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': HOST }] },
+        ]) });
+      }
+      gets++;
+      return route.fulfill({ status: 404, headers: CORS, body: '' });
+    });
+    await page.clock.install();
+    const done = page.evaluate(async () => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://listenhere.solidcommunity.net/profile/card#me';
+      const m = await import('/static/js/annotation/solid-load.js');
+      const results = await Promise.allSettled(
+        Array.from({ length: 30 }, (_, i) => m.listAnnotationsForAudio('https://example.org/recording-' + i + '.wav')),
+      );
+      return results.map((r) => (r.status === 'fulfilled' ? 'ok' : String((r as any).reason?.name || r.reason)));
+    });
+    let finished = false;
+    done.then(() => { finished = true; });
+    for (let i = 0; i < 400 && !finished; i++) {
+      await page.clock.runFor(1000);
+      await page.waitForTimeout(25);
+    }
+    const outcomes = await done;
+    expect(outcomes.filter((o) => o !== 'ok'), 'every source answered').toEqual([]);
+    expect(gets, 'one GET per recording').toBe(30);
+  });
+
+  // 54.10 / 54.11 Posting costs no HEAD per recording: a discovery resource's
+  // URI is derived, and the GET that patches it creates it when it is missing.
+  const POD2 = 'https://pod.example/';
+  const DISC = POD2 + 'at.ac.mdw.mei-friend/discovery/';
+
+  /** A mocked pod that records requests and keeps what is PUT. */
+  async function podWithDiscovery(page: Page, existingDiscovery: boolean) {
+    const CORS = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': '*',
+      'Access-Control-Allow-Methods': '*',
+      'Access-Control-Expose-Headers': 'ETag',
+    };
+    const log: string[] = [];
+    const store = new Map<string, any>();
+    await page.route(POD2 + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS });
+      const url = req.url();
+      log.push(req.method() + ' ' + url);
+      const json = (body: unknown, status = 200) =>
+        route.fulfill({ status, contentType: 'application/ld+json', headers: { ...CORS, ETag: '"1"' }, body: JSON.stringify(body) });
+      if (url === POD2 + 'profile/card') {
+        return json([{ '@id': POD2 + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': POD2 }] }]);
+      }
+      const isDiscoveryResource = url.startsWith(DISC) && url !== DISC;
+      if (req.method() === 'PUT') {
+        store.set(url, JSON.parse(req.postData() || '{}'));
+        return route.fulfill({ status: 201, headers: CORS, body: '' });
+      }
+      if (req.method() === 'GET' && isDiscoveryResource) {
+        if (store.has(url)) return json(store.get(url));
+        if (existingDiscovery) {
+          return json({ '@id': url, '@type': 'https://schema.org/DataCatalog', 'https://schema.org/dataset': [] });
+        }
+        return route.fulfill({ status: 404, headers: CORS, body: '' });
+      }
+      if (req.method() === 'HEAD' && isDiscoveryResource && !existingDiscovery && !store.has(url)) {
+        return route.fulfill({ status: 404, headers: CORS, body: '' });
+      }
+      return route.fulfill({ status: 200, headers: CORS, body: '' });
+    });
+    return { log, store };
+  }
+
+  async function postToTwoRecordings(page: Page) {
+    return page.evaluate(async () => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://pod.example/profile/card#me';
+      const v6 = (window as any).__annotationV6;
+      const files = Object.keys(((await import('/static/js/listen.js')) as any).loadedAlignmentJSON.body.audio).slice(0, 2);
+      const id = v6.state.createAnnotation({ label: 'rate test' });
+      v6.state.addRegion(id, files[0], 1, 2);
+      v6.state.addTarget(id, files[1]);
+      await v6.postAnnotationToSolid(id);
+      return files.length;
+    });
+  }
+
+  test('54.10 a post to two recordings whose discovery resources are new: no HEAD per recording; each is created by one GET and one PUT', async ({ loadedPage: page }) => {
+    const { log, store } = await podWithDiscovery(page, false);
+    expect(await postToTwoRecordings(page)).toBe(2);
+
+    const perRecording = log.filter((r) => r.includes(DISC + 'https'));
+    expect(perRecording.filter((r) => r.startsWith('HEAD '))).toEqual([]);
+    expect(perRecording.filter((r) => r.startsWith('GET ')), 'one GET per recording').toHaveLength(2);
+    expect(perRecording.filter((r) => r.startsWith('PUT ')), 'one creating PUT per recording').toHaveLength(2);
+    // The discovery container is checked once (with the other containers), not once per recording.
+    expect(log.filter((r) => r === 'HEAD ' + DISC)).toHaveLength(1);
+    // What was created is a discovery catalogue that lists the new annotation.
+    const created = [...store.entries()].filter(([u]) => u.startsWith(DISC + 'https'));
+    expect(created).toHaveLength(2);
+    for (const [, doc] of created) {
+      expect(doc['@type']).toBe('https://schema.org/DataCatalog');
+      expect(JSON.stringify(doc['https://schema.org/dataset'])).toContain('MusicalMaterial');
+    }
+  });
+
+  test('54.11 a post to two recordings whose discovery resources exist: one GET and one PUT each, and no HEAD', async ({ loadedPage: page }) => {
+    const { log, store } = await podWithDiscovery(page, true);
+    expect(await postToTwoRecordings(page)).toBe(2);
+
+    const perRecording = log.filter((r) => r.includes(DISC + 'https'));
+    expect(perRecording.filter((r) => r.startsWith('HEAD '))).toEqual([]);
+    expect(perRecording.filter((r) => r.startsWith('GET '))).toHaveLength(2);
+    expect(perRecording.filter((r) => r.startsWith('PUT '))).toHaveLength(2);
+    const patched = [...store.entries()].filter(([u]) => u.startsWith(DISC + 'https'));
+    expect(patched).toHaveLength(2);
+    for (const [, doc] of patched) {
+      expect(JSON.stringify(doc['https://schema.org/dataset'])).toContain('MusicalMaterial');
+    }
+  });
+
+  // 54.20 / 54.21 Writes that may meet a resource that already changed. The pod
+  // here keeps ETags, honours If-Match and If-None-Match, and answers an
+  // unconditional PUT by overwriting, as a real server does.
+  const OTHER_MM = 'https://elsewhere.example/someone-elses-musical-material';
+  const CORS_ALL = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': '*',
+    'Access-Control-Allow-Methods': '*',
+    'Access-Control-Expose-Headers': 'ETag',
+  };
+  const urlsListed = (doc: any): string[] =>
+    [].concat(doc['https://schema.org/dataset'] || []).map((e: any) => e['https://schema.org/url']['@id']);
+
+  /**
+   * `raceCreate`: the first PUT to a missing discovery resource finds that another
+   * writer has just created it (listing OTHER_MM).
+   * `loseFirstReply`: the first PUT to each resource lands, but its reply is lost
+   * (the request fails as a network error), so solid.fetch repeats it.
+   */
+  async function conditionalPod(page: Page, opts: { raceCreate?: boolean; loseFirstReply?: boolean; existingDiscovery?: boolean }) {
+    const log: string[] = [];
+    const store = new Map<string, { doc: any; v: number }>();
+    const raced = new Set<string>();
+    const lost = new Set<string>();
+    // Set `interfere` and the next conditional PUT to a discovery resource
+    // finds that another writer has just added OTHER_MM to it (so it meets 412).
+    const ctl = { interfere: false };
+    await page.route(POD2 + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS_ALL });
+      const url = req.url();
+      const h = req.headers();
+      log.push(req.method() + ' ' + url + (h['if-none-match'] ? ' [If-None-Match ' + h['if-none-match'] + ']' : ''));
+      const etagOf = (v: number) => '"' + v + '"';
+      if (url === POD2 + 'profile/card') {
+        return route.fulfill({ status: 200, contentType: 'application/ld+json', headers: CORS_ALL,
+          body: JSON.stringify([{ '@id': POD2 + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': POD2 }] }]) });
+      }
+      const isDiscoveryResource = url.startsWith(DISC) && url !== DISC;
+      if (opts.existingDiscovery && isDiscoveryResource && !store.has(url)) {
+        store.set(url, { doc: { '@id': url, '@type': 'https://schema.org/DataCatalog', 'https://schema.org/dataset': [] }, v: 1 });
+      }
+      if (req.method() === 'PUT' && !url.endsWith('/')) {
+        if (opts.raceCreate && isDiscoveryResource && !store.has(url) && !raced.has(url)) {
+          raced.add(url);
+          store.set(url, { doc: { '@id': url, '@type': 'https://schema.org/DataCatalog',
+            'https://schema.org/dataset': [{ '@type': 'https://schema.org/Dataset', 'https://schema.org/url': { '@id': OTHER_MM } }] }, v: 1 });
+        }
+        const cur = store.get(url);
+        if (ctl.interfere && h['if-match'] && isDiscoveryResource && cur) {
+          ctl.interfere = false;
+          cur.doc['https://schema.org/dataset'] = [].concat(cur.doc['https://schema.org/dataset'] || [],
+            [{ '@type': 'https://schema.org/Dataset', 'https://schema.org/url': { '@id': OTHER_MM } }] as any);
+          cur.v++;
+        }
+        if (h['if-none-match'] === '*' && cur) return route.fulfill({ status: 412, headers: CORS_ALL, body: '' });
+        if (h['if-match'] && (!cur || h['if-match'] !== etagOf(cur.v))) return route.fulfill({ status: 412, headers: CORS_ALL, body: '' });
+        store.set(url, { doc: JSON.parse(req.postData() || '{}'), v: (cur ? cur.v : 0) + 1 });
+        if (opts.loseFirstReply && !lost.has(url)) {
+          lost.add(url);
+          return route.abort('failed');
+        }
+        return route.fulfill({ status: 201, headers: CORS_ALL, body: '' });
+      }
+      if (req.method() === 'GET' && !url.endsWith('/')) {
+        const cur = store.get(url);
+        if (!cur) return route.fulfill({ status: 404, headers: CORS_ALL, body: '' });
+        return route.fulfill({ status: 200, contentType: 'application/ld+json',
+          headers: { ...CORS_ALL, ETag: etagOf(cur.v) }, body: JSON.stringify(cur.doc) });
+      }
+      if (req.method() === 'HEAD' && isDiscoveryResource && !store.has(url)) {
+        return route.fulfill({ status: 404, headers: CORS_ALL, body: '' });
+      }
+      if (req.method() === 'DELETE') {
+        store.delete(url);
+        return route.fulfill({ status: 204, headers: CORS_ALL, body: '' });
+      }
+      return route.fulfill({ status: 200, headers: CORS_ALL, body: '' });
+    });
+    return { log, store, lost, ctl };
+  }
+
+  /**
+   * Post an annotation on two recordings (signed in, faked) for a test to update; three files are returned.
+   * `description` adds the annotation-level text, an oa:Annotation that covers every recording.
+   */
+  async function postForUpdate(page: Page, { description = '' }: { description?: string } = {}): Promise<{ id: string; files: string[] }> {
+    return page.evaluate(async (description) => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://pod.example/profile/card#me';
+      const v6 = (window as any).__annotationV6;
+      const files = Object.keys(((await import('/static/js/listen.js')) as any).loadedAlignmentJSON.body.audio).slice(0, 3);
+      const id = v6.state.createAnnotation({ label: 'update test' });
+      v6.state.addRegion(id, files[0], 1, 2);
+      v6.state.addTarget(id, files[1]);
+      if (description) v6.state.updateAnnotationField(id, 'description', description);
+      await v6.postAnnotationToSolid(id);
+      return { id, files };
+    }, description);
+  }
+
+  /** The discovery resource URI for a loaded file, as the app derives it. */
+  async function discoveryOf(page: Page, file: string): Promise<string> {
+    return page.evaluate(async (file) => {
+      const listen = (await import('/static/js/listen.js')) as any;
+      const m = await import('/static/js/solid.js');
+      return m.discoveryUriFor(listen.getAudioLinkedDataUri(file));
+    }, file);
+  }
+
+  test('54.20 a discovery resource another writer creates first is patched, not overwritten', async ({ loadedPage: page }) => {
+    const { log, store } = await conditionalPod(page, { raceCreate: true });
+    expect(await postToTwoRecordings(page)).toBe(2);
+
+    const creates = log.filter((r) => r.startsWith('PUT ' + DISC + 'https') && r.includes('[If-None-Match *]'));
+    expect(creates, 'each creating PUT is conditional').toHaveLength(2);
+    const docs = [...store.entries()].filter(([u]) => u.startsWith(DISC + 'https'));
+    expect(docs).toHaveLength(2);
+    for (const [, { doc }] of docs) {
+      const urls = urlsListed(doc);
+      expect(urls, 'the other writer\'s entry survives').toContain(OTHER_MM);
+      expect(JSON.stringify(doc['https://schema.org/dataset'])).toContain('MusicalMaterial');
+    }
+  });
+
+  test('54.21 writes whose replies are lost and that solid.fetch repeats: the post succeeds and lists nothing twice', async ({ loadedPage: page }) => {
+    const { store, lost } = await conditionalPod(page, { loseFirstReply: true, existingDiscovery: true });
+    // Limit the mocked pod's host too, with a short window, so its failed
+    // requests are retried as solidcommunity.net's are.
+    await page.evaluate(async () => {
+      const m = await import('/static/js/solid-fetch.js');
+      m.hostLimits.push({ hostSuffix: 'pod.example', max: 1000, windowMs: 20 });
+    });
+    expect(await postToTwoRecordings(page)).toBe(2);
+
+    const resources = [...lost].filter((u) => !u.startsWith(DISC));
+    expect(resources.length, 'replies to the resource PUTs were lost').toBeGreaterThan(0);
+    expect([...lost].filter((u) => u.startsWith(DISC)), 'and to both discovery PUTs').toHaveLength(2);
+    for (const u of resources) expect(store.has(u)).toBe(true);
+    const docs = [...store.entries()].filter(([u]) => u.startsWith(DISC + 'https'));
+    expect(docs).toHaveLength(2);
+    for (const [, { doc }] of docs) {
+      const urls = urlsListed(doc);
+      expect(urls.length).toBeGreaterThan(0);
+      expect(new Set(urls).size, 'no entry listed twice').toBe(urls.length);
+    }
+  });
+
+  test('54.22 a create that meets someone else\'s resource at its URI still fails', async ({ loadedPage: page }) => {
+    await conditionalPod(page, {});
+    const r = await page.evaluate(async (pod) => {
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = pod + 'profile/card#me';
+      const m = await import('/static/js/solid.js');
+      const uri = pod + 'at.ac.mdw.mei-friend/mao/extract/x/taken';
+      await m.createResourceAtUri(uri, { note: 'someone else' });
+      await new Promise((r) => setTimeout(r, 5)); // a different dct:created stamp
+      try {
+        await m.createResourceAtUri(uri, { note: 'mine' });
+        return 'resolved';
+      } catch (e: any) {
+        return e.message;
+      }
+    }, POD2);
+    expect(r).toMatch(/PUT failed .* 412/);
+  });
+
+  // 54.23–54.25 The update's discovery reconcile goes through
+  // safelyPatchResource, as the post's patch does.
+  test('54.23 an update makes no HEAD per recording; a recording it adds gets its discovery resource from one GET and one conditional PUT', async ({ loadedPage: page }) => {
+    const { log, store } = await conditionalPod(page, {});
+    const { id, files } = await postForUpdate(page);
+    log.length = 0;
+    await page.evaluate(async ({ id, third }) => {
+      const v6 = (window as any).__annotationV6;
+      v6.state.addTarget(id, third);
+      await v6.updateAnnotationOnSolid(id);
+    }, { id, third: files[2] });
+
+    const perRecording = log.filter((r) => r.includes(DISC + 'https'));
+    expect(perRecording.filter((r) => r.startsWith('HEAD ')), 'no HEAD per recording').toEqual([]);
+    const third = await discoveryOf(page, files[2]);
+    expect(perRecording.filter((r) => r.startsWith('GET ' + third))).toHaveLength(1);
+    expect(perRecording.filter((r) => r.startsWith('PUT ')), 'one creating PUT, for the added recording')
+      .toEqual(['PUT ' + third + ' [If-None-Match *]']);
+    expect(JSON.stringify(store.get(third)!.doc)).toContain('Selection');  });
+
+  test('54.24 a discovery resource changed by someone else during an update is reconciled again, not lost', async ({ loadedPage: page }) => {
+    const { store, ctl } = await conditionalPod(page, {});
+    const { id, files } = await postForUpdate(page);
+    ctl.interfere = true;
+    const oaUri = await page.evaluate(async ({ id, file }) => {
+      const v6 = (window as any).__annotationV6;
+      v6.state.updateTargetNote(id, file, 'a note added in the update');
+      await v6.updateAnnotationOnSolid(id);
+      return v6.state.getById(id).lastPostedUris['oa/track/' + file];
+    }, { id, file: files[0] });
+
+    expect(oaUri).toBeTruthy();
+    expect(ctl.interfere, 'the interference happened').toBe(false);
+    const urls = urlsListed(store.get(await discoveryOf(page, files[0]))!.doc);
+    expect(urls, 'the other writer\'s entry').toContain(OTHER_MM);
+    expect(urls, 'the update\'s entry').toContain(oaUri);
+  });
+
+  test('54.25 detaching a recording whose discovery resource is gone does not create one just to remove from it', async ({ loadedPage: page }) => {
+    const { log, store } = await conditionalPod(page, {});
+    const { id, files } = await postForUpdate(page);
+    const second = await discoveryOf(page, files[1]);
+    expect(store.has(second)).toBe(true);
+    store.delete(second);
+    log.length = 0;
+    await page.evaluate(async ({ id, file }) => {
+      const v6 = (window as any).__annotationV6;
+      v6.state.removeTarget(id, file);
+      await v6.updateAnnotationOnSolid(id);
+    }, { id, file: files[1] });
+
+    expect(log.filter((r) => r.startsWith('PUT ' + second))).toEqual([]);
+    expect(store.has(second)).toBe(false);
+  });
+
+  test('54.29 a recording an update adds lists the whole annotation, so the annotation is found from it', async ({ loadedPage: page }) => {
+    const { store } = await conditionalPod(page, {});
+    const { id, files } = await postForUpdate(page, { description: 'about the whole annotation' });
+    const { uris, rows } = await page.evaluate(async ({ id, third }) => {
+      const v6 = (window as any).__annotationV6;
+      v6.state.addTarget(id, third);
+      await v6.updateAnnotationOnSolid(id);
+      const listen = (await import('/static/js/listen.js')) as any;
+      const rows = await v6.listAnnotationsForAudio(listen.getAudioLinkedDataUri(third));
+      return { uris: v6.state.getById(id).lastPostedUris, rows };
+    }, { id, third: files[2] });
+
+    expect(uris['oa/top'], 'the annotation-level text').toBeTruthy();
+    const doc = store.get(await discoveryOf(page, files[2]))!.doc;
+    expect(urlsListed(doc).sort()).toEqual(
+      [uris.mm, uris.extract, uris['sel/' + files[2]], uris['oa/top']].sort(),
+    );
+    const mmEntry = [].concat(doc['https://schema.org/dataset']).find(
+      (e: any) => e['https://schema.org/url']['@id'] === uris.mm,
+    ) as any;
+    expect(mmEntry['https://schema.org/dateCreated'], 'the MM\'s own creation date')
+      .toBe(store.get(uris.mm)!.doc['http://purl.org/dc/terms/created']);
+    expect(rows.map((r: any) => r.mmUri), 'listed from the added recording').toEqual([uris.mm]);
+  });
+
+  test('54.30 deleting from the load list: the row goes once the MusicalMaterial is deleted, before the tidy-up behind the limit', async ({ loadedPage: page }) => {
+    test.setTimeout(60_000);
+    const { log } = await conditionalPod(page, {});
+    const at: [string, number][] = []; // every request, with when it was sent
+    page.on('request', (req) => {
+      if (req.method() !== 'OPTIONS') at.push([req.method() + ' ' + req.url(), Date.now()]);
+    });
+    await postForUpdate(page);
+    // A short window, so the tidy-up spreads over several of them (as 8 per
+    // 10 s does on solidcommunity.net) without making the test slow.
+    await page.evaluate(async () => {
+      const lim = await import('/static/js/solid-fetch.js');
+      lim.hostLimits.push({ hostSuffix: 'pod.example', max: 8, windowMs: 1500 });
+      const ribbon = await import('/static/js/annotation/ui-ribbon.js');
+      ribbon.openLoadModal();
+    });
+    const row = page.locator('.lh-v6-load-row-result', { hasText: 'update test' });
+    await row.waitFor();
+    // The tidy-up (discovery writes, folder removal) is held at the pod until
+    // the row has gone, so the order is fixed whatever the limiter's windows do.
+    let holding = false;
+    let release!: () => void;
+    const released = new Promise<void>((r) => { release = r; });
+    await page.route(POD2 + '**', async (route) => {
+      const req = route.request();
+      const tidyUp = (req.method() === 'PUT' && req.url().startsWith(DISC))
+        || (req.method() === 'DELETE' && req.url().endsWith('/'));
+      if (holding && tidyUp) await released;
+      return route.fallback();
+    });
+    log.length = 0;
+    await row.locator('.lh-v6-load-trash').click();
+    const clickedAt = Date.now();
+    holding = true;
+    await page.locator('.lh-v6-confirm-dialog .lh-v6-confirm-delete').click();
+    await row.waitFor({ state: 'detached', timeout: 15_000 }).finally(() => release());
+    const rowGoneAt = Date.now();
+    const statusWhenGone = await page.locator('.lh-v6-load-footer').innerText();
+    await expect(page.locator('.lh-v6-load-footer')).toContainText(/✓ Deleted \d+ resource\(s\)\./, { timeout: 30_000 });
+
+    const firstAfter = (pred: (k: string) => boolean) =>
+      Math.min(...at.filter(([k, t]) => t >= clickedAt && pred(k)).map(([, t]) => t));
+    const mmDelete = firstAfter((k) => k.startsWith('DELETE ') && k.includes('/mao/musicalMaterial/') && !k.endsWith('/'));
+    const folderDelete = firstAfter((k) => k.startsWith('DELETE ') && k.endsWith('/'));
+    const discoveryPut = firstAfter((k) => k.startsWith('PUT ' + DISC));
+    for (const [what, t] of [['MusicalMaterial DELETE', mmDelete], ['discovery PUT', discoveryPut], ['folder DELETE', folderDelete]] as const) {
+      expect(t, what + ' was seen').toBeLessThan(Infinity);
+    }
+    expect(rowGoneAt, 'the row goes after the MusicalMaterial\'s DELETE').toBeGreaterThanOrEqual(mmDelete);
+    expect(statusWhenGone, 'the footer says the rest is still being cleared').toContain('Tidying up');
+  });
+
+  /**
+   * On a conditionalPod: `hold` keeps the MusicalMaterial's DELETE waiting at
+   * the pod until `release()`; `fail` answers the MusicalMaterial's GET with
+   * 500, so the delete throws before anything is deleted.
+   */
+  async function mmDeleteControl(page: Page) {
+    const ctl = { hold: false, fail: false, release: () => {} };
+    const released = new Promise<void>((r) => { ctl.release = r; });
+    await page.route(POD2 + '**', async (route) => {
+      const req = route.request();
+      const isMm = req.url().includes('/mao/musicalMaterial/') && !req.url().endsWith('/');
+      if (isMm && ctl.fail && req.method() === 'GET') return route.fulfill({ status: 500, headers: CORS_ALL, body: '' });
+      if (isMm && ctl.hold && req.method() === 'DELETE') await released;
+      return route.fallback();
+    });
+    return ctl;
+  }
+
+  test('54.31 deleting from the load list: the row shows a spinner and is disabled until it goes, and comes back if the delete fails', async ({ loadedPage: page }) => {
+    await conditionalPod(page, {});
+    const mm = await mmDeleteControl(page);
+    await postForUpdate(page);
+    await page.evaluate(async () => {
+      const ribbon = await import('/static/js/annotation/ui-ribbon.js');
+      ribbon.openLoadModal();
+    });
+    const row = page.locator('.lh-v6-load-row-result', { hasText: 'update test' });
+    const check = row.locator('.lh-v6-load-check');
+    const trash = row.locator('.lh-v6-load-trash');
+    const bulk = page.locator('.lh-v6-load-bulk');
+    const confirmDelete = async () => {
+      await trash.click();
+      await page.locator('.lh-v6-confirm-dialog .lh-v6-confirm-delete').click();
+    };
+    await check.check();
+    await expect(bulk).toHaveText('Load selected (1)');
+
+    // A delete that fails: the row is as it was, and the footer says why.
+    mm.fail = true;
+    await confirmDelete();
+    await expect(page.locator('.lh-v6-load-footer')).toContainText("Couldn't delete");
+    await expect(row).not.toHaveClass(/is-busy/);
+    await expect(row).toHaveAttribute('aria-busy', 'false');
+    await expect(check).toBeEnabled();
+    await expect(trash).toBeEnabled();
+    await expect(trash).toHaveText('🗑');
+    mm.fail = false;
+
+    // While the MusicalMaterial's DELETE is pending.
+    await check.check();
+    mm.hold = true;
+    await confirmDelete();
+    await expect(row.locator('.lh-v6-trash-spinner')).toBeVisible();
+    await expect(row).toHaveClass(/is-busy/);
+    await expect(row).toHaveAttribute('aria-busy', 'true');
+    await expect(check).toBeDisabled();
+    await expect(check).not.toBeChecked();
+    await expect(trash).toBeDisabled();
+    await expect(bulk, 'no longer among the selected').toHaveText('Load selected (0)');
+    expect(await row.locator('.lh-v6-load-meta').evaluate((e) => Number(getComputedStyle(e).opacity)), 'greyed out')
+      .toBeLessThan(1);
+
+    mm.release();
+    await row.waitFor({ state: 'detached' });
+  });
+
+  test('54.32 deleting from the drawer: the annotation shows a spinner and is greyed out and inert until it goes, and comes back if the delete fails', async ({ loadedPage: page }) => {
+    await conditionalPod(page, {});
+    const mm = await mmDeleteControl(page);
+    const { id } = await postForUpdate(page);
+    const otherId = await page.evaluate((id) => {
+      const v6 = (window as any).__annotationV6;
+      const other = v6.state.createAnnotation({ label: 'another one' });
+      v6.state.setActiveAnnotation(id);
+      v6.uiState.setDrawerOpen(true);
+      return other;
+    }, id);
+    const drawer = page.locator('.lh-v6-drawer');
+    const trash = drawer.locator('.lh-v6-drawer-trash');
+    const title = drawer.locator('.lh-v6-drawer-title');
+    const inert = () => drawer.evaluate((d) =>
+      ['.lh-v6-drawer-toolbar', '.lh-v6-drawer-body', '.lh-v6-publish-bar'].map((s) => (d.querySelector(s) as any).inert));
+    const confirmDelete = async () => {
+      await trash.click();
+      await page.locator('.lh-v6-confirm-dialog .lh-v6-confirm-delete').click();
+    };
+    await expect(title).toHaveText('update test');
+
+    // A delete that fails: an alert says why, and the drawer is as it was.
+    mm.fail = true;
+    const alerted = page.waitForEvent('dialog').then(async (d) => { const m = d.message(); await d.accept(); return m; });
+    await confirmDelete();
+    expect(await alerted).toContain("Couldn't delete");
+    await expect(drawer).not.toHaveClass(/is-deleting/);
+    await expect(trash).toBeEnabled();
+    await expect(trash).toHaveText('🗑');
+    await expect(title).toHaveText('update test');
+    expect(await inert()).toEqual([false, false, false]);
+    mm.fail = false;
+
+    // While the MusicalMaterial's DELETE is pending.
+    mm.hold = true;
+    await confirmDelete();
+    await expect(trash.locator('.lh-v6-trash-spinner')).toBeVisible();
+    await expect(drawer).toHaveClass(/is-deleting/);
+    await expect(drawer).toHaveAttribute('aria-busy', 'true');
+    await expect(title).toHaveText('update test — deleting…');
+    await expect(trash).toBeDisabled();
+    await expect(drawer.locator('.lh-v6-drawer-unload')).toBeDisabled();
+    for (const b of await drawer.locator('.lh-v6-mode-btn').all()) await expect(b).toBeDisabled();
+    expect(await inert(), 'toolbar, body, and publish bar').toEqual([true, true, true]);
+
+    // The pending state belongs to the annotation being deleted, not the drawer.
+    await page.evaluate((otherId) => (window as any).__annotationV6.state.setActiveAnnotation(otherId), otherId);
+    await expect(title).toHaveText('another one');
+    await expect(drawer).not.toHaveClass(/is-deleting/);
+    expect(await inert()).toEqual([false, false, false]);
+    await page.evaluate((id) => (window as any).__annotationV6.state.setActiveAnnotation(id), id);
+    await expect(drawer).toHaveClass(/is-deleting/);
+
+    mm.release();
+    await expect.poll(() => page.evaluate((id) => !!(window as any).__annotationV6.state.getById(id), id)).toBe(false);
+    await expect(drawer).not.toHaveClass(/is-deleting/);
+    expect(await inert()).toEqual([false, false, false]);
+  });
+
+  // 54.26–54.28 Every request to a limited host is counted, and retried once over.
+  test('54.26 two limited fetches given the same states share one budget per host', async ({ loadedPage: page }) => {
+    const r = await inPage<{ maxInWindow: number; n: number }>(page, `
+      const states = new Map();
+      const base = async (u) => { calls.push({ url: u, t: clock.now() }); return ok(); };
+      const a = mod.createLimitedFetch(base, { now: clock.now, sleep: clock.sleep, states });
+      const b = mod.createLimitedFetch(base, { now: clock.now, sleep: clock.sleep, states });
+      await Promise.all(Array.from({ length: 20 }, (_, i) => (i % 2 ? a : b)('${LIMITED}d' + i, { method: 'HEAD' })));
+      const ts = calls.map((c) => c.t);
+      let maxInWindow = 0;
+      for (const t0 of ts) maxInWindow = Math.max(maxInWindow, ts.filter((t) => t >= t0 && t < t0 + 10000).length);
+      return { maxInWindow, n: calls.length };
+    `);
+    expect(r.n).toBe(20);
+    expect(r.maxInWindow).toBeLessThanOrEqual(8);
+  });
+
+  test('54.27 the signed-in fetch and the plain one (publicFetch) count against the same host limit', async ({ loadedPage: page }) => {
+    await conditionalPod(page, {});
+    const at = await page.evaluate(async (pod) => {
+      const lim = await import('/static/js/solid-fetch.js');
+      lim.hostLimits.push({ hostSuffix: 'pod.example', max: 2, windowMs: 600 });
+      const m = await import('/static/js/solid.js');
+      const t0 = performance.now();
+      const when = async (p: Promise<Response>) => { await p; return performance.now() - t0; };
+      return Promise.all([
+        when(m.solid.fetch(pod + 'a', { method: 'HEAD' })),
+        when(m.solid.fetch(pod + 'b', { method: 'HEAD' })),
+        when(m.publicFetch(pod + 'c', { method: 'HEAD' })),
+      ]);
+    }, POD2);
+    expect(Math.max(at[0], at[1]), 'the first two go at once').toBeLessThan(500);
+    expect(at[2], 'the plain one waits for the window').toBeGreaterThanOrEqual(550);
+  });
+
+  test('54.28 a read on a limited host that keeps failing is sent 3 times, not 3 × 3', async ({ loadedPage: page }) => {
+    const MM = POD2 + 'at.ac.mdw.mei-friend/mao/musicalMaterial/x/unreachable';
+    let attempts = 0;
+    await page.route(POD2 + '**', async (route) => {
+      const req = route.request();
+      if (req.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: CORS_ALL });
+      if (req.url() === POD2 + 'profile/card') {
+        return route.fulfill({ status: 200, contentType: 'application/ld+json', headers: CORS_ALL,
+          body: JSON.stringify([{ '@id': POD2 + 'profile/card#me', 'http://www.w3.org/ns/pim/space#storage': [{ '@id': POD2 }] }]) });
+      }
+      if (req.url() === MM) { attempts++; return route.abort('failed'); }
+      return route.fulfill({ status: 200, headers: CORS_ALL, body: '' });
+    });
+    const err = await page.evaluate(async (mm) => {
+      const lim = await import('/static/js/solid-fetch.js');
+      lim.hostLimits.push({ hostSuffix: 'pod.example', max: 1000, windowMs: 20 });
+      const sca = (window as any).solidClientAuthentication;
+      const s = (sca.default || sca).getDefaultSession();
+      s.info.isLoggedIn = true;
+      s.info.webId = 'https://pod.example/profile/card#me';
+      try {
+        await (window as any).__annotationV6.loadAnnotationFromMM(mm);
+        return 'resolved';
+      } catch (e: any) {
+        return e.name + ': ' + e.message;
+      }
+    }, MM);
+    expect(err).not.toBe('resolved');
+    expect(attempts).toBe(3);
+  });
+});

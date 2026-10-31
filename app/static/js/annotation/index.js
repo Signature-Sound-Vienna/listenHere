@@ -21,6 +21,7 @@ import {
   prewarmCaches,
   updateAnnotationOnSolid,
 } from "./solid-post.js";
+import { getAnnotationAccess, setAnnotationAccess } from "./solid-access.js";
 import {
   deleteAnnotationFromPod,
   loadAnnotationFromMM,
@@ -28,12 +29,11 @@ import {
   listAnnotationsForLoadedAudios,
 } from "./solid-load.js";
 import { openLoadModal, consumeLoadIntent } from "./ui-ribbon.js";
+import { confirmLoadFromLink } from "./ui-common.js";
 import { solid } from "../solid.js";
 import {
   setAnnoChangesPending,
   waveformViews,
-  getAudioLinkedDataUri,
-  loadedAlignmentJSON,
 } from "../listen.js";
 
 /**
@@ -168,6 +168,8 @@ export function initAnnotationV6() {
     loadAnnotationsFromAlignment,
     postAnnotationToSolid,
     updateAnnotationOnSolid,
+    getAnnotationAccess,
+    setAnnotationAccess,
     loadAnnotationFromMM,
     listAnnotationsForAudio,
     listAnnotationsForLoadedAudios,
@@ -195,19 +197,25 @@ export function initAnnotationV6() {
     const sess = solid.getDefaultSession && solid.getDefaultSession();
     const isLoggedIn = !!(sess && sess.info && sess.info.isLoggedIn);
     if (!isLoggedIn) return;
-    // Pre-warm the post-orchestrator's container + discovery caches in
-    // the background. Saves ≈3 round trips off the first user-triggered
-    // post — they pay the establish cost during login latency instead.
-    // Audio URIs come from the alignment header; if alignment hasn't
-    // loaded yet we warm containers only and discovery falls back to
-    // on-demand establish.
-    const audioUris = _audioUrisForPrewarm();
-    prewarmCaches(audioUris);
+    // Pre-warm the post-orchestrator's container cache in the background,
+    // so the first post doesn't pay for it. Per-recording discovery
+    // resources are NOT warmed: one HEAD (and PUT) per recording after
+    // login overran solidcommunity.net's request limit (429); they are
+    // established on demand, for the recordings a post targets.
+    prewarmCaches();
     if (!_autoloadConsumed && _pendingMm) {
       _autoloadConsumed = true;
       // The presetMm path bypasses the resumed banner — the user landed
-      // here via a shared link, not an in-session intent.
-      openLoadModal({ presetMm: _pendingMm });
+      // here via a shared link, not an in-session intent. A link can name
+      // any address, so nothing is fetched until the user agrees.
+      const mm = _pendingMm;
+      if (!/^https?:\/\//i.test(mm)) {
+        console.warn("[annotation/v6] ignoring a loadMM that isn't an http(s) address:", mm);
+        return;
+      }
+      confirmLoadFromLink(mm).then((ok) => {
+        if (ok) openLoadModal({ presetMm: mm });
+      });
       return;
     }
     const intent = consumeLoadIntent();
@@ -216,21 +224,6 @@ export function initAnnotationV6() {
     }
   }
 
-  /**
-   * Snapshot the currently-loaded recordings' Linked Data URIs for
-   * prewarming the per-audio discovery cache. Empty when alignment
-   * hasn't loaded yet — prewarm degrades to containers-only in that case.
-   */
-  function _audioUrisForPrewarm() {
-    const audioMap = loadedAlignmentJSON && loadedAlignmentJSON.body && loadedAlignmentJSON.body.audio;
-    if (!audioMap) return [];
-    const out = [];
-    for (const file of Object.keys(audioMap)) {
-      const uri = getAudioLinkedDataUri(file);
-      if (uri && /^https?:\/\//i.test(uri)) out.push(uri);
-    }
-    return out;
-  }
   document.addEventListener("solid-auth-changed", _onAuthChanged);
   // Fire once at init in case the session is already authenticated
   // (e.g. page reload mid-session).

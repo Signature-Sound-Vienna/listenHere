@@ -6,7 +6,14 @@
 
 import * as state from "./state.js";
 import * as uiState from "./ui-state.js";
-import { el, clearChildren, bouncingDots, confirmDeleteFromPod } from "./ui-common.js";
+import {
+  el,
+  clearChildren,
+  bouncingDots,
+  confirmDeleteFromPod,
+  confirmMakePublic,
+} from "./ui-common.js";
+import { getAnnotationAccess, setAnnotationAccess } from "./solid-access.js";
 import { renderEditor } from "./ui-editor.js";
 import { renderViewer } from "./ui-viewer.js";
 import {
@@ -74,6 +81,10 @@ export function mountDrawer(parent) {
   drawer.append(header, drawModeToolbar, body, publishBar, solidFooter);
   parent.appendChild(drawer);
 
+  // The annotation being deleted from the pod, if any: shown greyed out and
+  // inert, with a spinner in the bin, until its MusicalMaterial is gone.
+  let deletingId = null;
+
   function _onUnloadClick() {
     const ann = state.getById(state.getActiveId());
     if (!ann) return;
@@ -100,14 +111,24 @@ export function mountDrawer(parent) {
     }
     const ok = await confirmDeleteFromPod(ann.label || mmUri);
     if (!ok) return;
+    const done = () => {
+      if (deletingId !== ann.id) return;
+      deletingId = null;
+      render();
+    };
+    deletingId = ann.id;
+    render();
     try {
-      await deleteAnnotationFromPod(mmUri);
-      // deleteAnnotationFromPod already removes the matching local copy.
+      // deleteAnnotationFromPod removes the matching local copy once the
+      // MusicalMaterial is deleted; the rest is tidied up behind it.
+      await deleteAnnotationFromPod(mmUri, { onGone: done });
     } catch (err) {
+      done();
       window.alert(
         "Couldn't delete: " + ((err && err.message) || err),
       );
     }
+    done();
   }
 
   function render() {
@@ -119,16 +140,28 @@ export function mountDrawer(parent) {
     drawModeToolbar.style.display =
       uiState.getMode() === "edit" && ann ? "" : "none";
     drawModeCheckbox.checked = uiState.getDrawMode();
+    const deleting = !!ann && ann.id === deletingId;
+    drawer.classList.toggle("is-deleting", deleting);
+    drawer.setAttribute("aria-busy", deleting ? "true" : "false");
+    for (const part of [drawModeToolbar, body, publishBar]) part.inert = deleting;
     modeToggle.querySelectorAll("button").forEach((b) => {
       b.classList.toggle("active", b.dataset.mode === uiState.getMode());
-      b.disabled = !ann;
+      b.disabled = !ann || deleting;
     });
     titleSpan.textContent = ann
-      ? ann.label || "Untitled annotation"
+      ? (ann.label || "Untitled annotation") + (deleting ? " — deleting…" : "")
       : "Annotations";
     // Header buttons are only meaningful when an annotation is active.
     unloadBtn.style.display = ann ? "" : "none";
     trashBtn.style.display = ann ? "" : "none";
+    unloadBtn.disabled = deleting;
+    trashBtn.disabled = deleting;
+    trashBtn.replaceChildren(
+      deleting ? el("span", { class: "lh-v6-trash-spinner", "aria-hidden": "true" }) : "🗑",
+    );
+    trashBtn.title = deleting
+      ? "Deleting from your pod…"
+      : "Delete this annotation from your Solid pod";
 
     // Always re-render the body. Chain-enforced sections (group notes,
     // comparisons) depend on text content of upstream sections, so we can't
@@ -327,7 +360,114 @@ function _renderPublishBar(bar, ann) {
         text: "↗ pod",
       }),
     );
+    if (isLoggedIn) _renderAccessControl(bar, ann);
+    else _accessUi.delete(ann.id); // a new sign-in re-reads it
   }
+}
+
+// Per-annotation public/private state, read from the pod when the card first
+// shows it (one HEAD) and kept here. { mm, state, reason?, busy?, step?, total? };
+// state: loading | public | private | legacy | unsupported | error.
+const _accessUi = new Map();
+
+function _renderAccessControl(bar, ann) {
+  const mm = ann.lastPostedUris["mm"];
+  let st = _accessUi.get(ann.id);
+  if (!st || st.mm !== mm) {
+    st = { mm, state: "loading" };
+    _accessUi.set(ann.id, st);
+    getAnnotationAccess(ann.lastPostedUris)
+      .then((r) => {
+        st.state = r.state;
+        st.reason = r.reason;
+      })
+      .catch((err) => {
+        st.state = "error";
+        st.reason = err && err.message ? err.message : String(err);
+      })
+      .finally(() => {
+        if (_rerenderPublishBar) _rerenderPublishBar();
+      });
+  }
+
+  if (st.state === "loading") {
+    bar.appendChild(
+      el("span", { class: "lh-v6-access-status", text: "checking access…" }),
+    );
+    return;
+  }
+  if (st.state === "foreign") {
+    bar.appendChild(
+      el("span", { class: "lh-v6-access-status", text: "Not in your pod", title: st.reason }),
+    );
+    return;
+  }
+
+  const settable = st.state === "public" || st.state === "private";
+  const goingPublic = st.state !== "public";
+  let label;
+  if (st.busy) {
+    label = [goingPublic ? "Making public" : "Making private", bouncingDots()];
+    if (st.total > 0) label.push(" " + st.step + "/" + st.total);
+  } else {
+    label = [goingPublic ? "Make public" : "Make private"];
+  }
+  if (settable) {
+    bar.appendChild(
+      el("span", {
+        class: "lh-v6-access-status is-" + st.state,
+        text: st.state === "public" ? "Public" : "Private",
+        title:
+          st.state === "public"
+            ? "Anyone can read this annotation at its pod address."
+            : "Only you can read this annotation.",
+      }),
+    );
+  }
+  bar.appendChild(
+    el(
+      "button",
+      {
+        class: "lh-v6-access-btn" + (st.busy ? " is-busy" : ""),
+        type: "button",
+        disabled: st.busy || !settable,
+        title: settable
+          ? goingPublic
+            ? "Let anyone read this annotation."
+            : "Only you can read this annotation again."
+          : st.reason || "Access can't be changed for this annotation.",
+        onclick: async () => {
+          if (goingPublic && !(await confirmMakePublic(ann.label || "(untitled)"))) return;
+          st.busy = true;
+          st.step = 0;
+          st.total = 0;
+          if (_rerenderPublishBar) _rerenderPublishBar();
+          try {
+            const r = await setAnnotationAccess(ann.lastPostedUris, goingPublic, {
+              onProgress: (done, total) => {
+                st.step = done;
+                st.total = total;
+                if (_rerenderPublishBar) _rerenderPublishBar();
+              },
+            });
+            st.state = r.state;
+            st.busy = false;
+          } catch (err) {
+            console.error("[annotation/v6] changing access failed:", err);
+            // Part of it may have been applied: read the real state afresh.
+            _accessUi.delete(ann.id);
+            window.alert(
+              (goingPublic ? "Making public" : "Making private") +
+                " failed: " +
+                (err && err.message ? err.message : err),
+            );
+          }
+          if (_rerenderPublishBar) _rerenderPublishBar();
+        },
+      },
+      label,
+    ),
+  );
 }
 
 function _saveFocus(body) {

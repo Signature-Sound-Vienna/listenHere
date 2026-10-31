@@ -5895,9 +5895,39 @@ body.fix-mode-open .lh-v6-pull-tab {
   color: #dc2626;
 }
 
+/* Being deleted: the annotation greyed out, its controls disabled, and a
+   spinner in the trash's place until the row goes. */
 .lh-v6-load-row-result.is-busy {
-  opacity: 0.5;
-  pointer-events: none;
+  cursor: progress;
+  background: var(--color-hover-bg, rgba(0, 0, 0, 0.03));
+}
+.lh-v6-load-row-result.is-busy .lh-v6-load-meta,
+.lh-v6-load-row-result.is-busy .lh-v6-load-check {
+  opacity: 0.45;
+}
+.lh-v6-load-row-result.is-busy .lh-v6-load-check,
+.lh-v6-load-trash:disabled {
+  cursor: progress;
+}
+.lh-v6-load-trash:disabled:hover {
+  background: transparent;
+  border-color: transparent;
+}
+.lh-v6-trash-spinner {
+  display: inline-block;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  vertical-align: middle;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-text-muted);
+  border-radius: 50%;
+  animation: lh-v6-ribbon-load-spin 0.7s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lh-v6-trash-spinner {
+    animation: none;
+  }
 }
 
 .lh-v6-load-footer {
@@ -6037,6 +6067,13 @@ body.fix-mode-open .lh-v6-pull-tab {
   color: var(--color-text-secondary, var(--color-text-muted));
 }
 
+/* A full address shown in a confirmation: wraps anywhere rather than widening the dialog. */
+.lh-v6-confirm-url {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+}
+
 .lh-v6-confirm-warn {
   font-weight: 700;
   color: #b91c1c;
@@ -6083,6 +6120,57 @@ body.fix-mode-open .lh-v6-pull-tab {
 
 .lh-v6-confirm-delete:focus-visible {
   outline: 3px solid rgba(220, 38, 38, 0.4);
+  outline-offset: 2px;
+}
+
+/* Caution variant: an amber dialog for a deliberate act that is not
+   destructive (making an annotation public). Dark text on the amber header
+   and a deep amber button keep the contrast readable. */
+/* The backdrop behind it: a warm dark brown, not the red of the destructive dialogs. */
+.lh-v6-confirm-overlay-caution {
+  background: rgba(60, 36, 12, 0.5);
+}
+
+.lh-v6-confirm-caution {
+  border-color: #d97706;
+  box-shadow: 0 20px 60px rgba(120, 70, 0, 0.35);
+}
+
+.lh-v6-confirm-caution .lh-v6-confirm-header {
+  background: #fbbf24;
+  color: #422006;
+}
+
+.lh-v6-confirm-caution .lh-v6-confirm-target strong {
+  color: inherit;
+}
+
+/* The theme's own text colour, bold: readable on every theme, unlike a fixed amber. */
+.lh-v6-confirm-caution .lh-v6-confirm-warn {
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+/* !important, scoped to this one class: the blanket `[data-theme] button` rule
+   has ID specificity (see the note above it) and would turn this grey on the
+   dark themes. */
+.lh-v6-confirm-caution-ok {
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  border-radius: 4px;
+  border: 1px solid #92400e !important;
+  background: #b45309 !important;
+  color: #fff !important;
+  cursor: pointer;
+}
+
+.lh-v6-confirm-caution-ok:hover {
+  background: #92400e !important;
+}
+
+.lh-v6-confirm-caution-ok:focus-visible {
+  outline: 3px solid rgba(217, 119, 6, 0.4);
   outline-offset: 2px;
 }
 
@@ -6269,6 +6357,29 @@ body.fix-mode-open .lh-v6-pull-tab {
 .lh-v6-drawer-unload:hover {
   background: var(--color-hover-bg, rgba(0, 0, 0, 0.04));
   color: var(--color-text);
+}
+
+/* Being deleted from the pod: the annotation greyed out and inert, a
+   spinner in the bin, until it is gone (see .lh-v6-load-row-result.is-busy). */
+.lh-v6-drawer.is-deleting {
+  cursor: progress;
+}
+.lh-v6-drawer.is-deleting .lh-v6-drawer-toolbar,
+.lh-v6-drawer.is-deleting .lh-v6-drawer-body,
+.lh-v6-drawer.is-deleting .lh-v6-publish-bar {
+  opacity: 0.45;
+}
+.lh-v6-drawer-trash:disabled,
+.lh-v6-drawer-unload:disabled {
+  cursor: progress;
+}
+.lh-v6-drawer-unload:disabled {
+  opacity: 0.4;
+}
+.lh-v6-drawer-trash:disabled:hover,
+.lh-v6-drawer-unload:disabled:hover {
+  background: transparent;
+  border-color: transparent;
 }
 
 /* --- Sticky Solid auth footer at the drawer bottom ----------------- */
@@ -6541,6 +6652,43 @@ body.fix-mode-open .lh-v6-pull-tab {
 
 .lh-v6-publish-link:hover {
   text-decoration: underline;
+}
+
+/* Public / private control beside the publish button. */
+.lh-v6-access-status {
+  margin-left: 10px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.lh-v6-access-status.is-public {
+  color: var(--color-link);
+  font-weight: 600;
+}
+
+.lh-v6-access-btn {
+  margin-left: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.lh-v6-access-btn:hover:not(:disabled) {
+  border-color: var(--color-link);
+  color: var(--color-link);
+}
+
+.lh-v6-access-btn:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.lh-v6-access-btn.is-busy {
+  cursor: progress;
 }
 
 /* --- Pull tab (sits inside the existing .drawer-btns column) -------- */

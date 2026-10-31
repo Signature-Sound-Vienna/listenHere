@@ -1,7 +1,10 @@
 {
   "dependencies": {
-    "@inrupt/solid-client-authn-browser": "^1.16.0",
+    "@inrupt/solid-client-authn-browser": "^5.0.0",
     "jsonld": "^8.2.0",
     "wavesurfer.js": "^7.12.1"
+  },
+  "overrides": {
+    "undici": "^6.28.0"
   }
 }

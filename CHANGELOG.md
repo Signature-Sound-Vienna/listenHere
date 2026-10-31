@@ -1,5 +1,81 @@
 # Listen Here! CHANGELOG.md
 
+### 0.104.7 -- Deleting an annotation shows at once; the tidy-up follows
+
+* Deleting from the load list left the row in place for about 30 s on solidcommunity.net, though the annotation's resources were already gone: the row went only when the whole delete had finished, and its discovery clean-up and folder removal wait behind the pod's request limit (20 requests, about 20 s on a mocked pod at 8 per 10 s). Now the MusicalMaterial is deleted first, and the row goes, and any loaded copy is dropped, as soon as it is gone (`onGone` in `deleteAnnotationFromPod`). The footer says the rest is being tidied up, and reports the result, failures included, when it is done.
+* Until its MusicalMaterial is deleted, an annotation being deleted shows a spinner in place of the bin and is greyed out, with its controls disabled: a load-list row (also dropped from "Load selected"), and the drawer, whose bin had shown nothing until the delete finished (title "— deleting…", content inert, for that annotation only). Both come back if the delete fails.
+* Testing: 54.30–54.32; the functional suite passes (619, 2 skipped).
+
+### 0.104.6 -- The server no longer fetches ?align= URLs; the browser validates the alignment
+
+* Security: to validate an `?align=` alignment, the server downloaded the URL itself, whatever it was: `file:` URLs were read (`file:///etc/hosts`, in a test), internal hosts were reachable, and the error text told which files existed. It now serves the page without looking at the URL.
+* The browser fetches the alignment, as it always did, and validates it with `alignment-validate.js` (the server's checks and messages, ported). A failure — unreachable, refused cross-site, not found, not JSON, or invalid — goes back to the landing page with the reason. Before, an alignment the server could fetch but the browser couldn't left an empty pane.
+* Large alignments are downloaded once instead of twice (the server's copy was only for the check).
+* The landing page's error no longer shows escaped quotes (`&#39;`): the message was escaped twice.
+* Testing: 57.1–57.6; the functional suite passes (616, 2 skipped).
+
+### 0.104.5 -- Signed-in requests go only to the user's own pod; a link asks before it loads an annotation
+
+* Security: an annotation loaded from a link (`?loadMM=`) could name any address, and the auth library signs every request it is given. Loading one drew a signed HEAD to its server; updating it wrote to its server with the user's credentials and gave the user's reply, in their own pod, the access that server reported (public, in a test). Now `isInOwnStorage` (in `solid.js`) gates every signed write, delete, and access read:
+  * the card of an annotation outside the user's pod reads "Not in your pod" and makes no request;
+  * updating such an annotation is refused before any request;
+  * access is set, and a new folder's access copied, only for folders and annotations in the user's pod;
+  * deleting deletes only resources in the user's pod's `at.ac.mdw.mei-friend/` container, and removes the others' entries from the user's discovery resources, leaving the resources alone.
+* A `?loadMM=` link asks before loading, showing the address, and is ignored unless it is http(s).
+* An access rule refuses a folder address or WebID that isn't plain http(s) or holds characters that could end Turtle's `<…>` early.
+* Testing: 56.1–56.8; the functional suite passes (610, 2 skipped).
+
+### 0.104.4 -- An annotation is found from a recording an update adds to it
+
+* A recording added to a posted annotation by an update got only its own Selection (and new OAs) in its discovery resource, never the MusicalMaterial, which the loader lists annotations by: the annotation could not be found from that recording. The update now gives an added recording every entry a post would: MusicalMaterial (with its name and creation date), Extract, its Selections, and the OAs covering it.
+* The MusicalMaterial's creation date comes from the pod: as read while the update replaces the MusicalMaterial, or else from one GET, only when a recording was added.
+* Testing: 54.29; the functional suite passes (602, 2 skipped).
+
+### 0.104.3 -- Updates reconcile discovery as posts do; every request to a limited pod host is counted once
+
+* An update no longer sends a HEAD per recording before writing: discovery URIs are derived, and the reconcile goes through `safelyPatchResource`, so a discovery resource another writer changed meanwhile (412) is reconciled again instead of silently left out, a missing one is created by a conditional PUT when there is something to add, and one with nothing to add is not created.
+* `safelyPatchResource` throws on a failed GET (other than a 404 it may create from) instead of patching the error body.
+* Unauthenticated reads (`publicFetch`, for other people's pods) keep within the same per-host limit as signed-in ones, sharing one budget per host. The loader no longer retries a 429 or a network error that the limiter has already retried, so a failing read on a limited host is sent 3 times, not 9.
+* `solid-load.js` uses `discoveryUriFor` from `solid.js` instead of its own copy.
+* Spec 55: the post helper waits for the card's own access read, which could land in a request log a test had just cleared (seen once in 55.3).
+* Testing: 54.23–54.28; the functional suite passes (601, 2 skipped).
+
+### 0.104.2 -- A public annotation's later text is public too; Solid writes that may repeat or race
+
+* An update that adds an annotation's first resource of a type (its first text, so its first `oa:Annotation`) gives the new folder the annotation's public/private setting. Before, that folder kept its container's private default, so the card read Public while the new text was private; and a folder emptied by an earlier update kept its old ACL, which could make text re-added to a private annotation public.
+* A discovery resource is created with `If-None-Match: *`, so one that another writer created first is patched, not overwritten.
+* A write repeated by `solid.fetch` after its reply was lost no longer fails or doubles: `createResourceAtUri` recognises its own resource by its `dct:created` stamp when the repeat meets 412, and a post's discovery patch adds only the entries the resource does not list yet. `safelyPatchResource` takes the patch as a function of the current document for this.
+* Testing: 54.20–54.22, 55.12–55.14; the functional suite passes (595, 2 skipped).
+
+### 0.104.1 -- Loading annotations from Solid no longer fails behind the request limiter
+
+* Listing the annotations for many recordings failed for most of them ("Couldn't reach your pod for 20 sources") after minutes: the loader's 15 s read timeout ran while a request waited its turn at the pod's request limit (0.103.1), so queued reads were aborted before they were sent. A read's timeout now starts when the request is sent (`timeoutMs` in `solid-fetch.js`), and a request aborted while queued leaves the queue at once.
+* Listing asks the pod which discovery resources exist with one request for the discovery container, and fetches only those, instead of one request per recording and URI variant. The container's description is merged from all the nodes a server returns for it, and names are compared decoded (Community Solid Server lists a child as `https%253A…` that it was written as `https%3A…`). A listing that names none of the loaded recordings is not believed: each is then read, as before, as it is when the container can't be listed.
+* The profile card is fetched once however many reads need it at the same time (twenty at once made twenty fetches).
+* Testing: 54.12–54.19; 55.1–55.11 for 0.104.0; the functional suite passes (589, 2 skipped).
+
+### 0.104.0 -- Make an annotation public or private; one folder per annotation
+
+* A posted annotation's card (signed in) shows Public or Private and a Make public / Make private button. Making it public asks first, in an amber dialog (and a brown backdrop) rather than the red ones used for deleting.
+* Access is set with Web Access Control, once per folder: a HEAD and a PUT of each folder's `.acl` (at most four folders), then a read-back. The ACL gives the owner full control and, when public, everyone read access to the folder's members, not to listing it. It replaces the folder's earlier rules. A pod that uses Access Control Policies is recognised and refused.
+* New posts put each resource in its annotation's folder inside its type container, as `mao/selection/<annotation>/<slug>`, and likewise for `oa/`, `mao/extract/`, and `mao/musicalMaterial/`. An update adds resources to the same folder, so they inherit its access. Annotations posted before this keep their flat URIs and cannot be made public; post them again.
+* Deleting an annotation from the pod also removes its folders.
+* An annotation's access is read past the browser's HTTP cache: Firefox answered a HEAD from an older copy, so a change that had worked was read back as unchanged and reported as failed.
+* Testing: 55.1–55.11.
+
+### 0.103.1 -- Solid sign-in library 5.0.3; Dependabot alerts cleared; Solid requests stay within the pod's limit
+
+* `@inrupt/solid-client-authn-browser` 1.16.0 → 5.0.3. The vendored bundle shrinks from 424 KB to 104 KB; the old `oidc-client`, with its inlined `crypto-js` and `jsrsasign`, is gone.
+* `solid.js` and specs 23 and 24 read the API from `solidClientAuthentication.default` when present, else from the global itself (the 5.x bundle has no `.default`).
+* `app/static/npm`: `overrides` holds `undici` at `^6.28.0` (reached through `jsonld`, build-time only). `npm audit` reports 0 vulnerabilities.
+* `requirements.txt`: Flask 2.2.5 → 3.1.3, Werkzeug 3.0.6 → 3.1.6, Jinja2 3.1.2 → 3.1.6, itsdangerous 2.1.2 → 2.2.0, blinker 1.9.0 added. `Flask-CLI` is dropped (Flask has had its own CLI since 2.0), so only one `flask` script is installed.
+* `python-dotenv` stays at 1.0.0: 1.2.2 needs Python 3.10, and the code never calls `set_key`.
+* `solid.fetch` keeps within a pod host's request limit: at most 8 requests per 10 s to solidcommunity.net (`solid-fetch.js`; the figure is `hostLimits`), and a 429, or the bare network error a 429 without CORS headers becomes, is retried after a cool-down.
+* Signing in no longer establishes a discovery resource for every loaded recording (19 recordings drew 429s and a failed post); they are established when a post needs them.
+* Posting makes two requests fewer per recording: a discovery resource's URI is derived, not looked up, and the GET that patches it creates it when it is missing. A failure to create one is logged and skipped, as a patch failure already was, instead of stopping the post before anything is written.
+* `solid.js` defines the `log` it called (a ReferenceError hid every network error), and a missing discovery container fails with a clear message instead of a URL beginning `undefined`.
+* Testing: 54.1–54.11; 23 and 24 pass (9/9); the functional suite passes (570, 2 skipped).
+
 ### 0.103.0 -- Fix mode is standard; the active tick stands out
 
 * "Correct alignment…" shows for every alignment with a score, without `?fixMode`. A saved correction record is resumed on every load.

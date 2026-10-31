@@ -9,6 +9,7 @@
 //} from './main.js';
 
 import { nsp, politeness } from "./linked-data.js";
+import { createLimitedFetch, withLimitedFetch } from "./solid-fetch.js";
 
 import { storage, versionString } from "./listen.js";
 import { ensureRelativeURL } from "./utils.js";
@@ -23,11 +24,32 @@ import { ensureRelativeURL } from "./utils.js";
 // never running at all — which silently kills the entire listen UI (including
 // the local-file "Manage recordings" modal, which has no Solid dependency).
 // When unavailable, `solid` is null and Solid features degrade to no-ops.
-export const solid =
+// The 1.x bundle puts the API on `.default`; the 5.x bundle exports it directly.
+// `solid.fetch` keeps within the pod host's request limit (see solid-fetch.js).
+const solidLibrary =
   (typeof solidClientAuthentication !== "undefined" &&
     solidClientAuthentication &&
-    solidClientAuthentication.default) ||
+    (solidClientAuthentication.default || solidClientAuthentication)) ||
   null;
+// One budget per pod host, shared by the signed-in fetch and `publicFetch`:
+// whether the host counts requests per session or per client isn't known, so
+// they are counted together.
+const _hostStates = new Map();
+export const solid =
+  solidLibrary && withLimitedFetch(solidLibrary, { states: _hostStates });
+/**
+ * The plain (unauthenticated) fetch, kept within the same host limits, for
+ * reading other people's pods without sending the user's credentials there.
+ */
+export const publicFetch = createLimitedFetch(
+  (input, init) => fetch(input, init),
+  { states: _hostStates },
+);
+
+// Never ported from mei-friend's main.js, where it wrote to the log pane: the
+// error branches below called an undefined `log`, so a network error became a
+// ReferenceError.
+const log = (...args) => console.warn(...args);
 
 // mei-friend resource containers (internal path within Solid storage)
 export const friendContainer = "at.ac.mdw.mei-friend/";
@@ -142,10 +164,39 @@ export async function createResourceAtUri(uri, body) {
     },
     body: JSON.stringify(body),
   });
+  if (resp.status === 412) {
+    // Something is already at this (freshly minted) URI. If it is this very
+    // write, sent once with its reply lost and repeated by solid.fetch (see
+    // solid-fetch.js), the resource was created after all.
+    const existing = await _ownWriteAt(uri, body[nsp.DCT + "created"]);
+    if (existing) return existing;
+  }
   if (!resp.ok) {
     throw new Error("PUT failed for " + uri + ": " + resp.status + " " + resp.statusText);
   }
   return resp;
+}
+
+/**
+ * The GET response for `uri` if the resource there is the one this client
+ * wrote with the given dct:created stamp; otherwise null.
+ */
+async function _ownWriteAt(uri, createdStamp) {
+  try {
+    const resp = await solid.fetch(uri, {
+      headers: { Accept: "application/ld+json" },
+    });
+    if (!resp.ok) return null;
+    const doc = await resp.clone().json();
+    const nodes = Array.isArray(doc) ? doc : doc["@graph"] || [doc];
+    const node = nodes.find((n) => n && n["@id"] === uri);
+    let created = node && node[nsp.DCT + "created"];
+    if (Array.isArray(created)) created = created[0];
+    if (created && typeof created === "object") created = created["@value"];
+    return created === createdStamp ? resp : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 /**
@@ -158,17 +209,71 @@ export async function createResourceAtUri(uri, body) {
  * n.b. in the glorious future, this should be done using HTTP PATCH.
  * but while the implementation of this in Solid is still under discussion,
  * we do this instead.
+ *
+ * `patch` is a JSON Patch, or a function from the resource's current document
+ * to one. A function is asked afresh on every attempt, so a patch that may
+ * already have landed (a PUT whose reply was lost, repeated by solid.fetch;
+ * see solid-fetch.js) can return only what is still missing, and an empty
+ * patch writes nothing.
+ * `options.createIfMissing`: a function returning the initial document, used
+ * when the GET answers 404 and the patch has something to put in it.
+ * Any other failed GET throws.
  */
 
-export async function safelyPatchResource(uri, patch, _retries = 5) {
+export async function safelyPatchResource(
+  uri,
+  patch,
+  _retries = 5,
+  options = {},
+) {
+  const opsFor = (doc) => (typeof patch === "function" ? patch(doc) : patch);
   const resp = await solid.fetch(uri, {
     headers: {
       Accept: "application/ld+json",
     },
   });
+  if (resp.status === 404 && options.createIfMissing) {
+    // The resource doesn't exist yet: create it from the supplied initial
+    // document with the patch applied. One GET and one PUT, where establishing
+    // it first (HEAD, then PUT) would have added a request.
+    const initial = options.createIfMissing();
+    const initialOps = opsFor(initial);
+    if (initialOps.length === 0) return resp; // nothing to put in it: leave it missing
+    const created = jsonpatch.applyPatch(initial, initialOps).newDocument;
+    const createResp = await solid.fetch(uri, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/ld+json",
+        "If-None-Match": "*",
+      },
+      body: JSON.stringify(created),
+    });
+    if (createResp.status === 412) {
+      // It was created after our GET (by another writer, or by this PUT sent
+      // once already, its reply lost): patch what is there now.
+      if (_retries <= 0) {
+        console.error("safelyPatchResource: max retries exceeded for", uri);
+        return createResp;
+      }
+      return safelyPatchResource(uri, patch, _retries - 1, options);
+    }
+    if (createResp.status >= 400) {
+      console.warn("Couldn't create resource: ", createResp);
+    } else {
+      console.log("Created and patched: ", uri);
+    }
+    return createResp;
+  }
+  if (!resp.ok) {
+    // Not a document to patch (a missing resource without createIfMissing, a
+    // refusal, a server error): say so, rather than patching an error body.
+    throw new Error("GET " + uri + " failed: " + resp.status);
+  }
   const etag = resp.headers.get("ETag");
   const freshlyFetched = await resp.json();
-  const patched = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
+  const ops = opsFor(freshlyFetched);
+  if (ops.length === 0) return resp; // already as the patch would make it
+  const patched = jsonpatch.applyPatch(freshlyFetched, ops).newDocument;
   const putResp = await solid.fetch(uri, {
     method: "PUT",
     headers: {
@@ -186,7 +291,7 @@ export async function safelyPatchResource(uri, patch, _retries = 5) {
       "Precondition failed: resource changed while patching. Retrying...",
     );
     await new Promise((r) => setTimeout(r, politeness));
-    return safelyPatchResource(uri, patch, _retries - 1);
+    return safelyPatchResource(uri, patch, _retries - 1, options);
   } else if (putResp.status >= 400) {
     console.warn("Couldn't PUT patched resource: ", putResp);
   } else {
@@ -248,6 +353,41 @@ export async function establishResource(uri, resource) {
       }
     });
   return resp;
+}
+
+/**
+ * Whether `uri` is a resource in the signed-in user's own pod: an http(s) URI
+ * under their storage root (dot segments are resolved by the URL parser
+ * before the comparison). `within`, a path relative to the storage root
+ * (e.g. friendContainer), narrows it to that container.
+ *
+ * Signed requests that write, delete, or read access go only to such URIs.
+ * The auth library signs every request it is given, wherever it goes, and an
+ * annotation loaded from a link (`?loadMM=`) may name any address at all:
+ * someone else's server, or resources in the user's own pod.
+ */
+export async function isInOwnStorage(uri, within = "") {
+  let target, storage;
+  try {
+    target = new URL(uri);
+    storage = new URL(await getSolidStorage());
+  } catch (_) {
+    return false;
+  }
+  if (target.protocol !== "https:" && target.protocol !== "http:") return false;
+  if (target.username || target.password) return false;
+  if (target.origin !== storage.origin) return false;
+  const root = storage.pathname.endsWith("/")
+    ? storage.pathname
+    : storage.pathname + "/";
+  return target.pathname.startsWith(root + within);
+}
+
+/** The given URIs that are not in the user's own pod (see isInOwnStorage). */
+export async function notInOwnStorage(uris, within = "") {
+  const out = [];
+  for (const uri of uris) if (!(await isInOwnStorage(uri, within))) out.push(uri);
+  return out;
 }
 
 // Session-scoped cache for the resolved storage root, keyed by webId. The
@@ -330,19 +470,64 @@ export async function establishContainerResource(container) {
   });
 }
 
-export async function establishDiscoveryResource(currentFileUri) {
+/**
+ * The discovery resource's URI for a recording. Derived from the storage root
+ * and the recording's URI alone, so it costs no request once the storage root
+ * is known. Null when the storage root can't be found.
+ */
+export async function discoveryUriFor(currentFileUri) {
+  const storage = await getSolidStorage();
+  if (!storage) return null;
+  return (
+    storage +
+    friendContainer +
+    discoveryFragment +
+    encodeURIComponent(currentFileUri)
+  );
+}
+
+/** A new, empty discovery resource (a DataCatalog) for a recording. */
+export function newDiscoveryDocument(discoveryUri, currentFileUri) {
+  return {
+    "@id": discoveryUri,
+    "@type": nsp.SCHEMA + "DataCatalog",
+    [nsp.SCHEMA + "description"]:
+      "Collection of datasets about " + currentFileUri,
+    [nsp.SCHEMA + "about"]: { "@id": currentFileUri },
+    [nsp.SCHEMA + "dataset"]: [],
+  };
+}
+
+/**
+ * Establish a recording's discovery resource (HEAD; PUT if it is missing).
+ * `containerKnown`: the caller has already established the discovery
+ * container, so it is not checked again.
+ */
+export async function establishDiscoveryResource(
+  currentFileUri,
+  { containerKnown = false } = {},
+) {
+  if (containerKnown) {
+    const discoveryUri = await discoveryUriFor(currentFileUri);
+    return establishResource(
+      discoveryUri,
+      newDiscoveryDocument(discoveryUri, currentFileUri),
+    );
+  }
   return establishContainerResource(friendContainer + discoveryFragment).then(
     (discoveryContainer) => {
+      if (!discoveryContainer) {
+        throw new Error(
+          "Couldn't establish the discovery container in your Solid pod; try again in a moment.",
+        );
+      }
       // establish a discovery resource (if it doesn't already exist)
       const currentFileUriHash = encodeURIComponent(currentFileUri);
       const discoveryUri = discoveryContainer + currentFileUriHash;
-      return establishResource(discoveryUri, {
-        "@type": nsp.SCHEMA + "DataCatalog",
-        [nsp.SCHEMA + "description"]:
-          "Collection of datasets about " + currentFileUri,
-        [nsp.SCHEMA + "about"]: { "@id": currentFileUri },
-        [nsp.SCHEMA + "dataset"]: [],
-      });
+      return establishResource(
+        discoveryUri,
+        newDiscoveryDocument(discoveryUri, currentFileUri),
+      );
     },
   );
 }
@@ -693,12 +878,30 @@ export async function populateSolidDrawer() {
 
 // Session-scoped profile cache, keyed by webId (see getSolidStorage).
 let _profileCache = { webId: null, profile: null };
+// The fetch in progress, so callers that arrive before it ends (a listing
+// fans out one call per recording) share it instead of each fetching the card.
+let _profileInFlight = { webId: null, promise: null };
 
 export async function getProfile() {
   const webId = solid.getDefaultSession().info.webId;
   if (_profileCache.webId === webId && _profileCache.profile) {
     return _profileCache.profile;
   }
+  if (_profileInFlight.webId === webId && _profileInFlight.promise) {
+    return _profileInFlight.promise;
+  }
+  const promise = _fetchProfile(webId);
+  _profileInFlight = { webId, promise };
+  try {
+    return await promise;
+  } finally {
+    if (_profileInFlight.promise === promise) {
+      _profileInFlight = { webId: null, promise: null };
+    }
+  }
+}
+
+async function _fetchProfile(webId) {
   const resp = await solid.fetch(webId, {
     headers: { Accept: "application/ld+json" },
   });
@@ -984,5 +1187,6 @@ export async function solidLogout() {
 // clearing them on logout is the correct hygiene.
 function _clearSessionCaches() {
   _profileCache = { webId: null, profile: null };
+  _profileInFlight = { webId: null, promise: null };
   _storageCache = { webId: null, storage: null };
 }

@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.104.6 -- The server no longer fetches ?align= URLs; the browser validates the alignment
+
+* Security: to validate an `?align=` alignment, the server downloaded the URL itself, whatever it was: `file:` URLs were read (`file:///etc/hosts`, in a test), internal hosts were reachable, and the error text told which files existed. It now serves the page without looking at the URL.
+* The browser fetches the alignment, as it always did, and validates it with `alignment-validate.js` (the server's checks and messages, ported). A failure — unreachable, refused cross-site, not found, not JSON, or invalid — goes back to the landing page with the reason. Before, an alignment the server could fetch but the browser couldn't left an empty pane.
+* Large alignments are downloaded once instead of twice (the server's copy was only for the check).
+* The landing page's error no longer shows escaped quotes (`&#39;`): the message was escaped twice.
+* Testing: 57.1–57.6; the functional suite passes (616, 2 skipped).
+
 ### 0.104.5 -- Signed-in requests go only to the user's own pod; a link asks before it loads an annotation
 
 * Security: an annotation loaded from a link (`?loadMM=`) could name any address, and the auth library signs every request it is given. Loading one drew a signed HEAD to its server; updating it wrote to its server with the user's credentials and gave the user's reply, in their own pod, the access that server reported (public, in a test). Now `isInOwnStorage` (in `solid.js`) gates every signed write, delete, and access read:

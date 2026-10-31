@@ -3,6 +3,7 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { initSolidAuth } from "./solid.js";
+import { alignmentJsonProblem } from "./alignment-validate.js";
 import { confirmDialog, el } from "./annotation/ui-common.js";
 import * as v6UiState from "./annotation/ui-state.js";
 import * as v6State from "./annotation/state.js";
@@ -4767,15 +4768,36 @@ document.addEventListener("DOMContentLoaded", () => {
     // roughly fivefold — and this fetch happens before setGrids, so cover it
     // here too rather than leaving the pane blank until setGrids takes over.
     showWaveformsPaneLoading("Loading alignment\u2026");
+    // Only the browser fetches the alignment, and validates it here; the
+    // server no longer does (see alignment-validate.js). Anything that stops
+    // it loading goes back to the landing page with the reason, as the
+    // server's check used to.
     fetch(alignmentData)
-      .then((response) => response.json())
+      .catch(() => {
+        throw new Error(
+          "Could not fetch alignment data (the address may be wrong or unreachable, or its server may not let other sites read it)",
+        );
+      })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Could not fetch alignment data: the server answered " + response.status);
+        }
+        return response.json().catch(() => {
+          throw new Error("The URL did not return valid JSON");
+        });
+      })
       .then((contents) => {
+        const problem = alignmentJsonProblem(contents);
+        if (problem) throw new Error("Invalid alignment data: " + problem);
         setGrids(contents);
       })
       .catch((err) => {
         // No setGrids, so nothing downstream will ever clear the indicator.
         hideWaveformsPaneLoading();
         console.warn("Couldn't load alignment data: ", err);
+        window.location.replace(
+          indexUrl + "?error=" + encodeURIComponent(err && err.message ? err.message : String(err)),
+        );
       });
   }
 

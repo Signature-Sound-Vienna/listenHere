@@ -5702,7 +5702,14 @@ body.fix-mode-open .lh-v6-pull-tab {
   gap: 8px;
 }
 
-.lh-v6-load-reload {
+.lh-v6-load-section-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.lh-v6-load-reload,
+.lh-v6-load-tidy {
   flex-shrink: 0;
   background: transparent;
   border: 1px solid var(--color-border);
@@ -5713,12 +5720,14 @@ body.fix-mode-open .lh-v6-pull-tab {
   cursor: pointer;
 }
 
-.lh-v6-load-reload:hover:not(:disabled) {
+.lh-v6-load-reload:hover:not(:disabled),
+.lh-v6-load-tidy:hover:not(:disabled) {
   background: var(--color-hover-bg, rgba(0, 0, 0, 0.04));
   color: var(--color-text);
 }
 
-.lh-v6-load-reload:disabled {
+.lh-v6-load-reload:disabled,
+.lh-v6-load-tidy:disabled {
   opacity: 0.5;
   cursor: default;
 }

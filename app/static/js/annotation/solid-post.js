@@ -825,9 +825,14 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
     mmDateCreated = await _readCreated(localToUri["mm"]);
   }
 
+  // A recording the annotation no longer covers lists none of it any more.
+  const currentAudios = new Set(uniqueAudioUris);
+  const droppedAudios = new Set(Object.keys(discoveryByAudio).filter((a) => !currentAudios.has(a)));
+  const annotationUris = new Set([...Object.values(previousUris), ...Object.values(localToUri)]);
+
   // Reconcile each audio's discovery: add entries for newly-created URIs (and,
   // for an added recording, everything a post would have listed), remove
-  // entries pointing at deleted ones.
+  // entries pointing at deleted ones, and for a dropped recording all of them.
   await _reconcileDiscoveryResources(
     templates,
     byKey,
@@ -845,6 +850,8 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
     },
     () => onProgress(++step, total, "Discovery"),
     addedAudios,
+    droppedAudios,
+    annotationUris,
   );
 
   if (skipped > 0) {
@@ -999,8 +1006,10 @@ async function _safelyReplaceResource(uri, newContentBody) {
  * `addedAudios` (new to the annotation) gets every entry a post would have
  * given it — MM, Extract, its Selections, and the OAs covering it — since
  * the MM and Extract were not created now, and the loader lists annotations
- * by their MM entries. Best-effort: a failure logs a warning but doesn't
- * abort the overall update.
+ * by their MM entries. A recording in `droppedAudios` (no longer covered)
+ * loses every entry of the annotation (`annotationUris`), so the annotation
+ * isn't listed under it and a later delete leaves nothing there. Best-effort:
+ * a failure logs a warning but doesn't abort the overall update.
  */
 async function _reconcileDiscoveryResources(
   templates,
@@ -1014,6 +1023,8 @@ async function _reconcileDiscoveryResources(
   mmInfo,
   onAudioReconciled,
   addedAudios = new Set(),
+  droppedAudios = new Set(),
+  annotationUris = new Set(),
 ) {
   const audioCount = Object.keys(discoveryByAudio).length;
   if (audioCount === 0) return;
@@ -1025,7 +1036,8 @@ async function _reconcileDiscoveryResources(
     createdUris.length === 0 &&
     deletedUris.length === 0 &&
     !needNameRefresh &&
-    addedAudios.size === 0
+    addedAudios.size === 0 &&
+    droppedAudios.size === 0
   ) {
     // Still report progress for the audios we'd have reconciled, to keep
     // the caller's step counter consistent.
@@ -1061,6 +1073,15 @@ async function _reconcileDiscoveryResources(
   // Reconcile each audio in parallel.
   await Promise.all(
     Object.entries(discoveryByAudio).map(async ([audioUri, discoveryUri]) => {
+      if (droppedAudios.has(audioUri)) {
+        try {
+          await _patchDiscoveryReconcile(discoveryUri, audioUri, [], annotationUris, null);
+        } catch (err) {
+          console.warn("[annotation/v6] discovery reconcile failed for " + discoveryUri, err);
+        }
+        if (typeof onAudioReconciled === "function") onAudioReconciled();
+        return;
+      }
       const adds = [];
       const added = addedAudios.has(audioUri);
       if (added || createdSet.has(newUris["mm"])) {

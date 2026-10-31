@@ -1,5 +1,16 @@
 # Listen Here! CHANGELOG.md
 
+### 0.104.5 -- Signed-in requests go only to the user's own pod; a link asks before it loads an annotation
+
+* Security: an annotation loaded from a link (`?loadMM=`) could name any address, and the auth library signs every request it is given. Loading one drew a signed HEAD to its server; updating it wrote to its server with the user's credentials and gave the user's reply, in their own pod, the access that server reported (public, in a test). Now `isInOwnStorage` (in `solid.js`) gates every signed write, delete, and access read:
+  * the card of an annotation outside the user's pod reads "Not in your pod" and makes no request;
+  * updating such an annotation is refused before any request;
+  * access is set, and a new folder's access copied, only for folders and annotations in the user's pod;
+  * deleting deletes only resources in the user's pod's `at.ac.mdw.mei-friend/` container, and removes the others' entries from the user's discovery resources, leaving the resources alone.
+* A `?loadMM=` link asks before loading, showing the address, and is ignored unless it is http(s).
+* An access rule refuses a folder address or WebID that isn't plain http(s) or holds characters that could end Turtle's `<…>` early.
+* Testing: 56.1–56.8; the functional suite passes (610, 2 skipped).
+
 ### 0.104.4 -- An annotation is found from a recording an update adds to it
 
 * A recording added to a posted annotation by an update got only its own Selection (and new OAs) in its discovery resource, never the MusicalMaterial, which the loader lists annotations by: the annotation could not be found from that recording. The update now gives an added recording every entry a post would: MusicalMaterial (with its name and creation date), Extract, its Selections, and the OAs covering it.

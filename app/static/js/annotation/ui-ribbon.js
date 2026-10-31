@@ -574,11 +574,15 @@ export function openLoadModal(opts = {}) {
           return;
         }
         const failedCount = res.failedUris.length;
+        const skippedCount = (res.skippedUris || []).length;
         _setStatus(
           footerStatus,
           failedCount > 0
             ? "Deleted with " + failedCount + " failure(s) — see console."
-            : "✓ Deleted " + res.deletedUris.length + " resource(s).",
+            : skippedCount > 0
+              ? "✓ Removed from your list. Deleted " + res.deletedUris.length +
+                " resource(s); " + skippedCount + " outside your pod were left alone."
+              : "✓ Deleted " + res.deletedUris.length + " resource(s).",
         );
       })
       .catch((err) => {

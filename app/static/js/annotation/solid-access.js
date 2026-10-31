@@ -14,9 +14,14 @@
 // created by Listen Here for one annotation; sharing with named people is not
 // done here.
 //
+// Only folders and resources in the user's own pod are read or written here
+// (isInOwnStorage): an annotation loaded from a link may name any address,
+// and what someone else's server says about access must never decide the
+// access of the user's own resources.
+//
 // WAC vocabulary: https://solid.github.io/web-access-control-spec/
 
-import { solid } from "../solid.js";
+import { isInOwnStorage, notInOwnStorage, solid } from "../solid.js";
 import { annotationFoldersOf, parseAnnotationResourceUri } from "./solid-layout.js";
 
 /** Parse a Link header into [{ url, rel }], resolving each target against `base`. */
@@ -76,8 +81,28 @@ export async function discoverAccessControl(uri) {
   };
 }
 
+// Characters a Turtle IRIREF may not contain (and that would end one early).
+const _IRI_FORBIDDEN = /[\u0000- <>"{}|^`\\]/;
+
+/** `uri`, if it is an absolute http(s) IRI that can be written as <…> in Turtle; else throws. */
+function _turtleIri(uri, what) {
+  let ok = typeof uri === "string" && !_IRI_FORBIDDEN.test(uri);
+  if (ok) {
+    try {
+      const u = new URL(uri);
+      ok = u.protocol === "https:" || u.protocol === "http:";
+    } catch (_) {
+      ok = false;
+    }
+  }
+  if (!ok) throw new Error("Refusing to write an access rule for an unusual " + what + ": " + uri);
+  return uri;
+}
+
 /** The ACL document for a folder: the owner has everything; optionally anyone may read. */
 export function buildFolderAcl({ webId, folderUri, isPublic }) {
+  webId = _turtleIri(webId, "WebID");
+  folderUri = _turtleIri(folderUri, "folder address");
   const lines = [
     "@prefix acl: <http://www.w3.org/ns/auth/acl#>.",
     "@prefix foaf: <http://xmlns.com/foaf/0.1/>.",
@@ -106,6 +131,8 @@ const _UNSUPPORTED_ACP =
   "This pod controls access with Access Control Policies (ACP), which Listen Here can't set yet.";
 const _UNSUPPORTED_OTHER =
   "Couldn't find how this pod controls access (no Web Access Control information).";
+const _NOT_OWN =
+  "This annotation isn't in your pod, so Listen Here doesn't change its access";
 
 function _checkSupported(info) {
   if (info.acp) throw new Error(_UNSUPPORTED_ACP);
@@ -114,8 +141,12 @@ function _checkSupported(info) {
 
 /** Set one folder's ACL (HEAD to find it, then PUT). */
 export async function setFolderAccess(folderUri, isPublic, webId) {
+  if (!(await isInOwnStorage(folderUri))) throw new Error(_NOT_OWN + " (" + folderUri + ")");
   const info = await discoverAccessControl(folderUri);
   _checkSupported(info);
+  if (!(await isInOwnStorage(info.aclUri))) {
+    throw new Error("The pod named an access document outside your pod: " + info.aclUri);
+  }
   const resp = await solid.fetch(info.aclUri, {
     method: "PUT",
     headers: { "Content-Type": "text/turtle" },
@@ -136,6 +167,9 @@ export async function setFolderAccess(folderUri, isPublic, webId) {
 export async function getAnnotationAccess(lastPostedUris) {
   const mm = lastPostedUris && lastPostedUris.mm;
   if (!mm) return { state: "unsupported", reason: "Not posted yet." };
+  // Someone else's annotation (loaded from a link): no request at all, since
+  // a signed HEAD would carry the user's credentials to that server.
+  if (!(await isInOwnStorage(mm))) return { state: "foreign", reason: _NOT_OWN + "." };
   if (!parseAnnotationResourceUri(mm)) {
     return {
       state: "legacy",
@@ -170,6 +204,9 @@ export async function setAnnotationAccess(lastPostedUris, isPublic, opts = {}) {
   if (!webId || !session.info.isLoggedIn) {
     throw new Error("Sign in to your Solid pod first.");
   }
+  // Every resource, not just the folders: one outside the user's pod means
+  // the annotation isn't (only) theirs.
+  if ((await notInOwnStorage(uris)).length > 0) throw new Error(_NOT_OWN + ".");
   const mmFolder = (parseAnnotationResourceUri(lastPostedUris.mm) || {}).folder;
   const ordered = [...folders].sort((a, b) =>
     (a === mmFolder ? 1 : 0) - (b === mmFolder ? 1 : 0),
@@ -218,6 +255,9 @@ export async function matchNewFolderAccess(beforeUris, afterUris) {
     Object.values(afterUris || {}).filter(Boolean),
   ).filter((f) => !before.has(f));
   if (fresh.length === 0) return [];
+  // The state is read from the MusicalMaterial, so it must be the user's own
+  // (getAnnotationAccess answers "foreign" otherwise), and so must the folders.
+  if ((await notInOwnStorage(fresh)).length > 0) return [];
   const access = await getAnnotationAccess(afterUris);
   if (access.state !== "public" && access.state !== "private") return [];
   const webId = solid.getDefaultSession().info.webId;
@@ -235,6 +275,7 @@ export async function matchNewFolderAccess(beforeUris, afterUris) {
 export async function removeEmptiedAnnotationFolders(deletedUris) {
   const removed = [];
   for (const folder of annotationFoldersOf(deletedUris)) {
+    if (!(await isInOwnStorage(folder))) continue;
     try {
       const resp = await solid.fetch(folder, { method: "DELETE" });
       if (resp.ok || resp.status === 404) removed.push(folder);

@@ -370,6 +370,12 @@ function _renderAccessControl(bar, ann) {
     );
     return;
   }
+  if (st.state === "foreign") {
+    bar.appendChild(
+      el("span", { class: "lh-v6-access-status", text: "Not in your pod", title: st.reason }),
+    );
+    return;
+  }
 
   const settable = st.state === "public" || st.state === "private";
   const goingPublic = st.state !== "public";

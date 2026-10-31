@@ -6037,6 +6037,13 @@ body.fix-mode-open .lh-v6-pull-tab {
   color: var(--color-text-secondary, var(--color-text-muted));
 }
 
+/* A full address shown in a confirmation: wraps anywhere rather than widening the dialog. */
+.lh-v6-confirm-url {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+}
+
 .lh-v6-confirm-warn {
   font-weight: 700;
   color: #b91c1c;

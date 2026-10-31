@@ -29,6 +29,7 @@ import {
   listAnnotationsForLoadedAudios,
 } from "./solid-load.js";
 import { openLoadModal, consumeLoadIntent } from "./ui-ribbon.js";
+import { confirmLoadFromLink } from "./ui-common.js";
 import { solid } from "../solid.js";
 import {
   setAnnoChangesPending,
@@ -205,8 +206,16 @@ export function initAnnotationV6() {
     if (!_autoloadConsumed && _pendingMm) {
       _autoloadConsumed = true;
       // The presetMm path bypasses the resumed banner — the user landed
-      // here via a shared link, not an in-session intent.
-      openLoadModal({ presetMm: _pendingMm });
+      // here via a shared link, not an in-session intent. A link can name
+      // any address, so nothing is fetched until the user agrees.
+      const mm = _pendingMm;
+      if (!/^https?:\/\//i.test(mm)) {
+        console.warn("[annotation/v6] ignoring a loadMM that isn't an http(s) address:", mm);
+        return;
+      }
+      confirmLoadFromLink(mm).then((ok) => {
+        if (ok) openLoadModal({ presetMm: mm });
+      });
       return;
     }
     const intent = consumeLoadIntent();

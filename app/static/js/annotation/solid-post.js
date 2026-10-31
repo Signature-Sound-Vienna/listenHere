@@ -48,6 +48,7 @@ import {
   establishContainers,
   getSolidStorage,
   newDiscoveryDocument,
+  notInOwnStorage,
   safelyPatchResource,
   selectionContainer,
   extractContainer,
@@ -665,6 +666,17 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
   if (ann.targets.length === 0) {
     throw new Error("Select at least one recording before updating.");
   }
+  // An annotation loaded from someone else's pod (a ?loadMM= link) is not
+  // updated: every write would carry the user's credentials to the addresses
+  // it names, and its folder names and access state are someone else's.
+  const foreign = (await notInOwnStorage(Object.values(ann.lastPostedUris)))
+    .filter((u) => /^https?:/i.test(u));
+  if (foreign.length > 0) {
+    throw new Error(
+      "This annotation isn't in your pod (" + _hostOf(foreign[0]) +
+        "), so it can't be updated from here.",
+    );
+  }
 
   const fileToAudioUri = _resolveAudioUris(ann);
   const oldHashes = ann.lastPostedHashes || {};
@@ -856,6 +868,14 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
     );
   }
   return localToUri;
+}
+
+function _hostOf(uri) {
+  try {
+    return new URL(uri).host;
+  } catch (_) {
+    return uri;
+  }
 }
 
 function _isMissingResourceError(err) {

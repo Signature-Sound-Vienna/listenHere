@@ -355,6 +355,41 @@ export async function establishResource(uri, resource) {
   return resp;
 }
 
+/**
+ * Whether `uri` is a resource in the signed-in user's own pod: an http(s) URI
+ * under their storage root (dot segments are resolved by the URL parser
+ * before the comparison). `within`, a path relative to the storage root
+ * (e.g. friendContainer), narrows it to that container.
+ *
+ * Signed requests that write, delete, or read access go only to such URIs.
+ * The auth library signs every request it is given, wherever it goes, and an
+ * annotation loaded from a link (`?loadMM=`) may name any address at all:
+ * someone else's server, or resources in the user's own pod.
+ */
+export async function isInOwnStorage(uri, within = "") {
+  let target, storage;
+  try {
+    target = new URL(uri);
+    storage = new URL(await getSolidStorage());
+  } catch (_) {
+    return false;
+  }
+  if (target.protocol !== "https:" && target.protocol !== "http:") return false;
+  if (target.username || target.password) return false;
+  if (target.origin !== storage.origin) return false;
+  const root = storage.pathname.endsWith("/")
+    ? storage.pathname
+    : storage.pathname + "/";
+  return target.pathname.startsWith(root + within);
+}
+
+/** The given URIs that are not in the user's own pod (see isInOwnStorage). */
+export async function notInOwnStorage(uris, within = "") {
+  const out = [];
+  for (const uri of uris) if (!(await isInOwnStorage(uri, within))) out.push(uri);
+  return out;
+}
+
 // Session-scoped cache for the resolved storage root, keyed by webId. The
 // pod's storage root is constant for a logged-in session, but discovery used
 // to re-derive it (profile fetch + jsonld.expand) once per audio AND per URI

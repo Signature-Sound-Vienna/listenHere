@@ -20,6 +20,7 @@ import { nsp } from "../linked-data.js";
 import { isLimited } from "../solid-fetch.js";
 import {
   solid,
+  notInOwnStorage,
   publicFetch,
   discoveryUriFor,
   friendContainer,
@@ -373,7 +374,14 @@ export async function deleteAnnotationFromPod(mmUri, opts = {}) {
   if (!ann || !ann.lastPostedUris) {
     throw new Error("Couldn't reconstruct chain from " + mmUri);
   }
-  const urisToDelete = [...new Set(Object.values(ann.lastPostedUris))].filter(Boolean);
+  const chainUris = [...new Set(Object.values(ann.lastPostedUris))].filter(Boolean);
+  // Only what lives in the user's own pod, inside the containers Listen Here
+  // and mei-friend write to, is deleted: a chain loaded from a link may name
+  // any address, and a signed DELETE carries the user's credentials. The rest
+  // is left alone, though its entries are still removed from the user's
+  // discovery resources below, so it drops out of their list.
+  const skippedUris = await notInOwnStorage(chainUris, friendContainer);
+  const urisToDelete = chainUris.filter((u) => !skippedUris.includes(u));
 
   onProgress("Deleting " + urisToDelete.length + " resource(s)");
   const deletedUris = [];
@@ -396,10 +404,10 @@ export async function deleteAnnotationFromPod(mmUri, opts = {}) {
   );
 
   // Reconcile each audio's discovery: drop dataset entries pointing at any
-  // URI we deleted. Best-effort.
-  if (deletedUris.length > 0 && uniqueAudios.length > 0) {
+  // URI we deleted, or left alone as not the user's. Best-effort.
+  if (deletedUris.length + skippedUris.length > 0 && uniqueAudios.length > 0) {
     onProgress("Cleaning discovery resources");
-    const deletedSet = new Set(deletedUris);
+    const deletedSet = new Set([...deletedUris, ...skippedUris]);
     await Promise.all(
       uniqueAudios.map(async (audioUri) => {
         try {
@@ -424,7 +432,7 @@ export async function deleteAnnotationFromPod(mmUri, opts = {}) {
   const local = state.getAll().find((a) => a.lastPostedUris && a.lastPostedUris.mm === mmUri);
   if (local) state.removeAnnotation(local.id);
 
-  return { deletedUris, failedUris };
+  return { deletedUris, failedUris, skippedUris };
 }
 
 /**

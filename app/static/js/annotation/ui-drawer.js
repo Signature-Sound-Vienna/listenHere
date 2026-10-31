@@ -81,6 +81,10 @@ export function mountDrawer(parent) {
   drawer.append(header, drawModeToolbar, body, publishBar, solidFooter);
   parent.appendChild(drawer);
 
+  // The annotation being deleted from the pod, if any: shown greyed out and
+  // inert, with a spinner in the bin, until its MusicalMaterial is gone.
+  let deletingId = null;
+
   function _onUnloadClick() {
     const ann = state.getById(state.getActiveId());
     if (!ann) return;
@@ -107,14 +111,24 @@ export function mountDrawer(parent) {
     }
     const ok = await confirmDeleteFromPod(ann.label || mmUri);
     if (!ok) return;
+    const done = () => {
+      if (deletingId !== ann.id) return;
+      deletingId = null;
+      render();
+    };
+    deletingId = ann.id;
+    render();
     try {
-      await deleteAnnotationFromPod(mmUri);
-      // deleteAnnotationFromPod already removes the matching local copy.
+      // deleteAnnotationFromPod removes the matching local copy once the
+      // MusicalMaterial is deleted; the rest is tidied up behind it.
+      await deleteAnnotationFromPod(mmUri, { onGone: done });
     } catch (err) {
+      done();
       window.alert(
         "Couldn't delete: " + ((err && err.message) || err),
       );
     }
+    done();
   }
 
   function render() {
@@ -126,16 +140,28 @@ export function mountDrawer(parent) {
     drawModeToolbar.style.display =
       uiState.getMode() === "edit" && ann ? "" : "none";
     drawModeCheckbox.checked = uiState.getDrawMode();
+    const deleting = !!ann && ann.id === deletingId;
+    drawer.classList.toggle("is-deleting", deleting);
+    drawer.setAttribute("aria-busy", deleting ? "true" : "false");
+    for (const part of [drawModeToolbar, body, publishBar]) part.inert = deleting;
     modeToggle.querySelectorAll("button").forEach((b) => {
       b.classList.toggle("active", b.dataset.mode === uiState.getMode());
-      b.disabled = !ann;
+      b.disabled = !ann || deleting;
     });
     titleSpan.textContent = ann
-      ? ann.label || "Untitled annotation"
+      ? (ann.label || "Untitled annotation") + (deleting ? " — deleting…" : "")
       : "Annotations";
     // Header buttons are only meaningful when an annotation is active.
     unloadBtn.style.display = ann ? "" : "none";
     trashBtn.style.display = ann ? "" : "none";
+    unloadBtn.disabled = deleting;
+    trashBtn.disabled = deleting;
+    trashBtn.replaceChildren(
+      deleting ? el("span", { class: "lh-v6-trash-spinner", "aria-hidden": "true" }) : "🗑",
+    );
+    trashBtn.title = deleting
+      ? "Deleting from your pod…"
+      : "Delete this annotation from your Solid pod";
 
     // Always re-render the body. Chain-enforced sections (group notes,
     // comparisons) depend on text content of upstream sections, so we can't

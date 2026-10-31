@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.104.7 -- Deleting an annotation shows at once; the tidy-up follows
+
+* Deleting from the load list left the row in place for about 30 s on solidcommunity.net, though the annotation's resources were already gone: the row went only when the whole delete had finished, and its discovery clean-up and folder removal wait behind the pod's request limit (20 requests, about 20 s on a mocked pod at 8 per 10 s). Now the MusicalMaterial is deleted first, and the row goes, and any loaded copy is dropped, as soon as it is gone (`onGone` in `deleteAnnotationFromPod`). The footer says the rest is being tidied up, and reports the result, failures included, when it is done.
+* Until its MusicalMaterial is deleted, an annotation being deleted shows a spinner in place of the bin and is greyed out, with its controls disabled: a load-list row (also dropped from "Load selected"), and the drawer, whose bin had shown nothing until the delete finished (title "— deleting…", content inert, for that annotation only). Both come back if the delete fails.
+* Testing: 54.30–54.32; the functional suite passes (619, 2 skipped).
+
 ### 0.104.6 -- The server no longer fetches ?align= URLs; the browser validates the alignment
 
 * Security: to validate an `?align=` alignment, the server downloaded the URL itself, whatever it was: `file:` URLs were read (`file:///etc/hosts`, in a test), internal hosts were reachable, and the error text told which files existed. It now serves the page without looking at the URL.

@@ -770,6 +770,184 @@ test.describe('54. Request limit for pod hosts', () => {
     expect(rows.map((r: any) => r.mmUri), 'listed from the added recording').toEqual([uris.mm]);
   });
 
+  test('54.30 deleting from the load list: the row goes once the MusicalMaterial is deleted, before the tidy-up behind the limit', async ({ loadedPage: page }) => {
+    test.setTimeout(60_000);
+    const { log } = await conditionalPod(page, {});
+    const at: [string, number][] = []; // every request, with when it was sent
+    page.on('request', (req) => {
+      if (req.method() !== 'OPTIONS') at.push([req.method() + ' ' + req.url(), Date.now()]);
+    });
+    await postForUpdate(page);
+    // A short window, so the tidy-up spreads over several of them (as 8 per
+    // 10 s does on solidcommunity.net) without making the test slow.
+    await page.evaluate(async () => {
+      const lim = await import('/static/js/solid-fetch.js');
+      lim.hostLimits.push({ hostSuffix: 'pod.example', max: 8, windowMs: 1500 });
+      const ribbon = await import('/static/js/annotation/ui-ribbon.js');
+      ribbon.openLoadModal();
+    });
+    const row = page.locator('.lh-v6-load-row-result', { hasText: 'update test' });
+    await row.waitFor();
+    // The tidy-up (discovery writes, folder removal) is held at the pod until
+    // the row has gone, so the order is fixed whatever the limiter's windows do.
+    let holding = false;
+    let release!: () => void;
+    const released = new Promise<void>((r) => { release = r; });
+    await page.route(POD2 + '**', async (route) => {
+      const req = route.request();
+      const tidyUp = (req.method() === 'PUT' && req.url().startsWith(DISC))
+        || (req.method() === 'DELETE' && req.url().endsWith('/'));
+      if (holding && tidyUp) await released;
+      return route.fallback();
+    });
+    log.length = 0;
+    await row.locator('.lh-v6-load-trash').click();
+    const clickedAt = Date.now();
+    holding = true;
+    await page.locator('.lh-v6-confirm-dialog .lh-v6-confirm-delete').click();
+    await row.waitFor({ state: 'detached', timeout: 15_000 }).finally(() => release());
+    const rowGoneAt = Date.now();
+    const statusWhenGone = await page.locator('.lh-v6-load-footer').innerText();
+    await expect(page.locator('.lh-v6-load-footer')).toContainText(/✓ Deleted \d+ resource\(s\)\./, { timeout: 30_000 });
+
+    const firstAfter = (pred: (k: string) => boolean) =>
+      Math.min(...at.filter(([k, t]) => t >= clickedAt && pred(k)).map(([, t]) => t));
+    const mmDelete = firstAfter((k) => k.startsWith('DELETE ') && k.includes('/mao/musicalMaterial/') && !k.endsWith('/'));
+    const folderDelete = firstAfter((k) => k.startsWith('DELETE ') && k.endsWith('/'));
+    const discoveryPut = firstAfter((k) => k.startsWith('PUT ' + DISC));
+    for (const [what, t] of [['MusicalMaterial DELETE', mmDelete], ['discovery PUT', discoveryPut], ['folder DELETE', folderDelete]] as const) {
+      expect(t, what + ' was seen').toBeLessThan(Infinity);
+    }
+    expect(rowGoneAt, 'the row goes after the MusicalMaterial\'s DELETE').toBeGreaterThanOrEqual(mmDelete);
+    expect(statusWhenGone, 'the footer says the rest is still being cleared').toContain('Tidying up');
+  });
+
+  /**
+   * On a conditionalPod: `hold` keeps the MusicalMaterial's DELETE waiting at
+   * the pod until `release()`; `fail` answers the MusicalMaterial's GET with
+   * 500, so the delete throws before anything is deleted.
+   */
+  async function mmDeleteControl(page: Page) {
+    const ctl = { hold: false, fail: false, release: () => {} };
+    const released = new Promise<void>((r) => { ctl.release = r; });
+    await page.route(POD2 + '**', async (route) => {
+      const req = route.request();
+      const isMm = req.url().includes('/mao/musicalMaterial/') && !req.url().endsWith('/');
+      if (isMm && ctl.fail && req.method() === 'GET') return route.fulfill({ status: 500, headers: CORS_ALL, body: '' });
+      if (isMm && ctl.hold && req.method() === 'DELETE') await released;
+      return route.fallback();
+    });
+    return ctl;
+  }
+
+  test('54.31 deleting from the load list: the row shows a spinner and is disabled until it goes, and comes back if the delete fails', async ({ loadedPage: page }) => {
+    await conditionalPod(page, {});
+    const mm = await mmDeleteControl(page);
+    await postForUpdate(page);
+    await page.evaluate(async () => {
+      const ribbon = await import('/static/js/annotation/ui-ribbon.js');
+      ribbon.openLoadModal();
+    });
+    const row = page.locator('.lh-v6-load-row-result', { hasText: 'update test' });
+    const check = row.locator('.lh-v6-load-check');
+    const trash = row.locator('.lh-v6-load-trash');
+    const bulk = page.locator('.lh-v6-load-bulk');
+    const confirmDelete = async () => {
+      await trash.click();
+      await page.locator('.lh-v6-confirm-dialog .lh-v6-confirm-delete').click();
+    };
+    await check.check();
+    await expect(bulk).toHaveText('Load selected (1)');
+
+    // A delete that fails: the row is as it was, and the footer says why.
+    mm.fail = true;
+    await confirmDelete();
+    await expect(page.locator('.lh-v6-load-footer')).toContainText("Couldn't delete");
+    await expect(row).not.toHaveClass(/is-busy/);
+    await expect(row).toHaveAttribute('aria-busy', 'false');
+    await expect(check).toBeEnabled();
+    await expect(trash).toBeEnabled();
+    await expect(trash).toHaveText('🗑');
+    mm.fail = false;
+
+    // While the MusicalMaterial's DELETE is pending.
+    await check.check();
+    mm.hold = true;
+    await confirmDelete();
+    await expect(row.locator('.lh-v6-trash-spinner')).toBeVisible();
+    await expect(row).toHaveClass(/is-busy/);
+    await expect(row).toHaveAttribute('aria-busy', 'true');
+    await expect(check).toBeDisabled();
+    await expect(check).not.toBeChecked();
+    await expect(trash).toBeDisabled();
+    await expect(bulk, 'no longer among the selected').toHaveText('Load selected (0)');
+    expect(await row.locator('.lh-v6-load-meta').evaluate((e) => Number(getComputedStyle(e).opacity)), 'greyed out')
+      .toBeLessThan(1);
+
+    mm.release();
+    await row.waitFor({ state: 'detached' });
+  });
+
+  test('54.32 deleting from the drawer: the annotation shows a spinner and is greyed out and inert until it goes, and comes back if the delete fails', async ({ loadedPage: page }) => {
+    await conditionalPod(page, {});
+    const mm = await mmDeleteControl(page);
+    const { id } = await postForUpdate(page);
+    const otherId = await page.evaluate((id) => {
+      const v6 = (window as any).__annotationV6;
+      const other = v6.state.createAnnotation({ label: 'another one' });
+      v6.state.setActiveAnnotation(id);
+      v6.uiState.setDrawerOpen(true);
+      return other;
+    }, id);
+    const drawer = page.locator('.lh-v6-drawer');
+    const trash = drawer.locator('.lh-v6-drawer-trash');
+    const title = drawer.locator('.lh-v6-drawer-title');
+    const inert = () => drawer.evaluate((d) =>
+      ['.lh-v6-drawer-toolbar', '.lh-v6-drawer-body', '.lh-v6-publish-bar'].map((s) => (d.querySelector(s) as any).inert));
+    const confirmDelete = async () => {
+      await trash.click();
+      await page.locator('.lh-v6-confirm-dialog .lh-v6-confirm-delete').click();
+    };
+    await expect(title).toHaveText('update test');
+
+    // A delete that fails: an alert says why, and the drawer is as it was.
+    mm.fail = true;
+    const alerted = page.waitForEvent('dialog').then(async (d) => { const m = d.message(); await d.accept(); return m; });
+    await confirmDelete();
+    expect(await alerted).toContain("Couldn't delete");
+    await expect(drawer).not.toHaveClass(/is-deleting/);
+    await expect(trash).toBeEnabled();
+    await expect(trash).toHaveText('🗑');
+    await expect(title).toHaveText('update test');
+    expect(await inert()).toEqual([false, false, false]);
+    mm.fail = false;
+
+    // While the MusicalMaterial's DELETE is pending.
+    mm.hold = true;
+    await confirmDelete();
+    await expect(trash.locator('.lh-v6-trash-spinner')).toBeVisible();
+    await expect(drawer).toHaveClass(/is-deleting/);
+    await expect(drawer).toHaveAttribute('aria-busy', 'true');
+    await expect(title).toHaveText('update test — deleting…');
+    await expect(trash).toBeDisabled();
+    await expect(drawer.locator('.lh-v6-drawer-unload')).toBeDisabled();
+    for (const b of await drawer.locator('.lh-v6-mode-btn').all()) await expect(b).toBeDisabled();
+    expect(await inert(), 'toolbar, body, and publish bar').toEqual([true, true, true]);
+
+    // The pending state belongs to the annotation being deleted, not the drawer.
+    await page.evaluate((otherId) => (window as any).__annotationV6.state.setActiveAnnotation(otherId), otherId);
+    await expect(title).toHaveText('another one');
+    await expect(drawer).not.toHaveClass(/is-deleting/);
+    expect(await inert()).toEqual([false, false, false]);
+    await page.evaluate((id) => (window as any).__annotationV6.state.setActiveAnnotation(id), id);
+    await expect(drawer).toHaveClass(/is-deleting/);
+
+    mm.release();
+    await expect.poll(() => page.evaluate((id) => !!(window as any).__annotationV6.state.getById(id), id)).toBe(false);
+    await expect(drawer).not.toHaveClass(/is-deleting/);
+    expect(await inert()).toEqual([false, false, false]);
+  });
+
   // 54.26–54.28 Every request to a limited host is counted, and retried once over.
   test('54.26 two limited fetches given the same states share one budget per host', async ({ loadedPage: page }) => {
     const r = await inPage<{ maxInWindow: number; n: number }>(page, `

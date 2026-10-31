@@ -343,6 +343,8 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
  *   listed this annotation (from the load modal's per-row metadata). When the
  *   chain is reachable, this hint is unused; when it isn't (stale case), it
  *   scopes the cleanup pass to just those audios.
+ * @param {() => void} [opts.onGone] — called as soon as the MusicalMaterial is
+ *   deleted, before the rest is cleared; the promise resolves when all of it is.
  * @returns {Promise<{ deletedUris: string[], failedUris: string[], stale?: boolean, cleanedAudios?: number }>}
  */
 export async function deleteAnnotationFromPod(mmUri, opts = {}) {
@@ -386,22 +388,34 @@ export async function deleteAnnotationFromPod(mmUri, opts = {}) {
   onProgress("Deleting " + urisToDelete.length + " resource(s)");
   const deletedUris = [];
   const failedUris = [];
-  await Promise.all(
-    urisToDelete.map(async (uri) => {
-      try {
-        const resp = await solid.fetch(uri, { method: "DELETE" });
-        if (resp.ok || resp.status === 404) {
-          deletedUris.push(uri);
-        } else {
-          failedUris.push(uri);
-          console.warn("[annotation/v6] DELETE failed for", uri, resp.status);
-        }
-      } catch (err) {
+  const deleteOne = async (uri) => {
+    try {
+      const resp = await solid.fetch(uri, { method: "DELETE" });
+      if (resp.ok || resp.status === 404) {
+        deletedUris.push(uri);
+      } else {
         failedUris.push(uri);
-        console.warn("[annotation/v6] DELETE threw for", uri, err);
+        console.warn("[annotation/v6] DELETE failed for", uri, resp.status);
       }
-    }),
-  );
+    } catch (err) {
+      failedUris.push(uri);
+      console.warn("[annotation/v6] DELETE threw for", uri, err);
+    }
+  };
+  // The MusicalMaterial first, on its own: once it is gone the annotation
+  // can't be loaded any more, so the caller can show it as deleted at once
+  // (`onGone`). The rest (its other resources, its discovery entries, its
+  // folders) follows behind the pod's request limit, which on
+  // solidcommunity.net took about 20 s more for a two-recording annotation
+  // (measured on a mocked pod), with nothing to see until the end.
+  if (urisToDelete.includes(mmUri)) {
+    await deleteOne(mmUri);
+    if (deletedUris.includes(mmUri)) {
+      _dropLocalCopy(mmUri);
+      if (typeof opts.onGone === "function") opts.onGone();
+    }
+  }
+  await Promise.all(urisToDelete.filter((u) => u !== mmUri).map(deleteOne));
 
   // Reconcile each audio's discovery: drop dataset entries pointing at any
   // URI we deleted, or left alone as not the user's. Best-effort.
@@ -428,11 +442,14 @@ export async function deleteAnnotationFromPod(mmUri, opts = {}) {
     await removeEmptiedAnnotationFolders(deletedUris);
   }
 
-  // Drop matching local state if present — the user's pod-side copy is gone.
+  _dropLocalCopy(mmUri);
+  return { deletedUris, failedUris, skippedUris };
+}
+
+/** Drop the local copy of the annotation with this MM, if loaded: its pod copy is gone. */
+function _dropLocalCopy(mmUri) {
   const local = state.getAll().find((a) => a.lastPostedUris && a.lastPostedUris.mm === mmUri);
   if (local) state.removeAnnotation(local.id);
-
-  return { deletedUris, failedUris, skippedUris };
 }
 
 /**

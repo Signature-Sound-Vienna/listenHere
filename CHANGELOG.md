@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.104.8 -- A deleted annotation no longer reappears in Load from Solid
+
+* Since 0.104.7 a deleted annotation came back in the Load list if it was reopened within about 20 s: the row went once the MusicalMaterial was deleted, but its discovery entries were removed only after its other resources, behind the pod's request limit. Now the discovery entries go straight after the MusicalMaterial, and until a delete has finished, listings in the page leave its annotation out.
+* Leaving the page while a delete is still tidying up asks first (a tidy-up cut short leaves entries that list a deleted annotation).
+* The discovery clean-up goes through `safelyPatchResource`: a write that meets a changed resource (412) is redone, and one the pod refuses is reported with the delete's failures, not counted as done. Its read, and every `safelyPatchResource` read, bypasses the browser's HTTP cache.
+* Deleting an annotation that was already deleted (its discovery entries left over) also cleans the recordings the Load list couldn't read, not only those it found it under, and its row goes at once.
+* Testing: 54.33–54.38; the functional suite passes (625, 2 skipped).
+
 ### 0.104.7 -- Deleting an annotation shows at once; the tidy-up follows
 
 * Deleting from the load list left the row in place for about 30 s on solidcommunity.net, though the annotation's resources were already gone: the row went only when the whole delete had finished, and its discovery clean-up and folder removal wait behind the pod's request limit (20 requests, about 20 s on a mocked pod at 8 per 10 s). Now the MusicalMaterial is deleted first, and the row goes, and any loaded copy is dropped, as soon as it is gone (`onGone` in `deleteAnnotationFromPod`). The footer says the rest is being tidied up, and reports the result, failures included, when it is done.

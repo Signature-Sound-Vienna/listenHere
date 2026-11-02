@@ -4208,6 +4208,9 @@ function _onTickMouseDown(e) {
   };
   window.addEventListener("mousemove", f.drag.onMove);
   window.addEventListener("mouseup", f.drag.onUp);
+  // Select on the press, so the score shows the grabbed onset's notes while
+  // it is dragged; the seek waits for a plain click's release.
+  _select(hit, { seek: false });
 }
 
 function _onTickMouseMove(e) {
@@ -5148,6 +5151,12 @@ function _followPlayback() {
   ) {
     _audPause();
     _audSeek(Math.max(0, _groupStripTime(f.groups[ix]) - 0.01));
+    return;
+  }
+  // A pressed tick owns the selection until it is released: following here
+  // would take the grabbed onset's highlight away mid-drag.
+  if (f.drag && !f.drag.keyboard && ix !== f.selGroupIx) {
+    _setSounding(false);
     return;
   }
   if (ix !== f.selGroupIx) _select(ix, { seek: false });

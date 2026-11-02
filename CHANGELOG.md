@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.106.0 -- The audible waveform glows; a pressed tick highlights its notes at once
+
+* The active waveform in the listening view gets an accent ring and a soft glow (the exhibit's `?activeStrip=glow`), in every theme, on top of its background tint.
+* Correct alignment: pressing a tick selects its onset and highlights its notes straight away, so they show while it is dragged; before, only on release. A plain click still seeks on release. While a tick is held, playback no longer moves the selection.
+* Testing: 42 passes (33); the functional suite passes (638, 2 skipped).
+
 ### 0.105.1 -- Nothing of a deleted annotation is left in the pod
 
 * Deleting an already-deleted annotation, or tidying it up, removed only its MusicalMaterial's discovery entry. Now every entry of the annotation goes (its Extract, Selections, and oa:Annotations, matched by its folder in the per-annotation layout), and those resources, if still there, and their folders are deleted too. Annotations from before the folder layout (0.104.0) have nothing to match by: only their MusicalMaterial's entry goes.

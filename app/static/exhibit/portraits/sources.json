@@ -1,0 +1,208 @@
+{
+  "_README": [
+    "AUTHORED. Which freely-licensed photograph stands for each conductor, and",
+    "which square of it the medallion cuts. tools/fetch_conductor_portraits.py",
+    "reads this and nothing else when it builds; `survey` only ever proposes.",
+    "",
+    "WHY THE CHOICE IS AUTHORED: ranking a conductor's Commons category by licence",
+    "and resolution returns a street sign for Karajan, a GRAVE for Boskovsky, a",
+    "letter for Mehta, a portrait of Renee Fleming for Thielemann, and — because",
+    "'pretre' is French for priest — two sixteenth-century MAPS for Georges Pretre.",
+    "A person has to look. See WHY SELECTION IS NOT AUTOMATED in the tool.",
+    "",
+    "FIELDS",
+    "  name      as concerts.json spells it — this is the key the exhibit joins on",
+    "  wikidata  the sitter's Q-id, used to find candidates and to pin identity",
+    "  file      the Commons File: title, or null for a placeholder medallion",
+    "  crop      [cx, cy, size]: centre as a fraction of width and of height, edge",
+    "            as a fraction of the SHORTER side. Authored by eye off the survey",
+    "            sheet, so it survives Commons serving a different thumbnail width.",
+    "  year      the photograph's date. NOT the concert's — the exhibit shows the",
+    "            year the picture was made, which is the honest reading now that a",
+    "            portrait is per conductor rather than per recording.",
+    "  _why      why this file and not another, where that needed a decision.",
+    "",
+    "LICENCE POLICY: prefer public domain or CC0, then CC BY, and take CC BY-SA",
+    "only where nothing freer exists, or where the freer picture is one the author",
+    "rejected on sight (Jansons and Barenboim, 2026-09-18 — a portrait nobody wants",
+    "to look at is not a cheaper portrait). Nine of the eighteen need a credit. Every",
+    "file that is not free of attribution puts a line in credits.json and therefore",
+    "at the foot of the explorers, which is the only surface the no-labels band",
+    "leaves for it (plan 6.3).",
+    "",
+    "PERSONALITY RIGHTS are NOT settled by the licence. Commons flags several of",
+    "the living sitters with its `personality` restriction, and Austrian 78 UrhG",
+    "(Bildnisschutz) is separate from copyright. Editorial museum use is the normal",
+    "case, but the institution signs that off, not this file."
+  ],
+  "conductors": {
+    "krauss": {
+      "name": "Clemens Krauss",
+      "wikidata": "Q78918",
+      "file": "Clemens Krauss.jpg",
+      "crop": [0.5, 0.3, 0.78],
+      "year": 1930,
+      "_why": "The only photographic portrait of him on Commons; the other two free files are a Lino Salini caricature and his star on the Mexico City walk of fame."
+    },
+    "krips": {
+      "name": "Josef Krips",
+      "wikidata": "Q93751",
+      "file": "DamenKrips1951 (cropped).jpg",
+      "crop": [0.44, 0.22, 0.55],
+      "year": 1951,
+      "_why": "CC0 Anefo, and already cropped to him alone — the uncropped frames of the same 1951 session have a second man in them."
+    },
+    "boskovsky": {
+      "name": "Willi Boskovsky",
+      "wikidata": "Q78708",
+      "file": "Wiener Oktett - En pied - Willi Boskovsky, violoniste et chef d'orchestre autrichien - btv1b10219511c.jpg",
+      "crop": [0.245, 0.43, 0.26],
+      "year": null,
+      "_why": "The seated violinist at bottom left, side-on — identified by the author (2026-09-18); the BnF catalogues the plate as a portrait OF Boskovsky but does not say which of the eight men he is, and his signature runs down the top-left corner beside him. He matters more than anyone here (25 of the 88 concerts) and Commons holds only three Boskovsky files: this, his grave, and a 1962 Octet photograph that is actually about his brother Alfred. YEAR LEFT NULL DELIBERATELY: the BnF gives 1936, but it also dates the Wiener Oktett itself from 1948, so the date contradicts itself and the exhibit prints none."
+    },
+    "maazel": {
+      "name": "Lorin Maazel",
+      "wikidata": "Q117710",
+      "file": "Lorin Maazel (2016).jpg",
+      "crop": [0.5, 0.42, 0.95],
+      "year": 2016,
+      "_why": "Replaces the 1958 Barindelli studio portrait, which the author read as menacing (2026-09-18) — it is lit hard from one side with the sitter staring down the lens. This one is benign, frontal, and much closer in age to his 1980-2005 concerts. The costs: share-alike, and only 360x480, which is the smallest source in the set."
+    },
+    "karajan": {
+      "name": "Herbert von Karajan",
+      "wikidata": "Q154895",
+      "file": "20210331225648!Herbert von Karajan 1963 retusche.jpg",
+      "crop": [0.5, 0.42, 1.18],
+      "year": 1963,
+      "_why": "CC0 Anefo, and the image most people picture when they hear the name. The archived-revision prefix in the title is the file's real name on Commons, not a mistake: 'Herbert von Karajan 1963 retusche.jpg' does not exist."
+    },
+    "abbado": {
+      "name": "Claudio Abbado",
+      "wikidata": "Q151608",
+      "file": "Claudio Abbado (dirigent) krijgt AVROs publieksprijs Klassiek 81 Claudio Abbad, Bestanddeelnr 932-2754.jpg",
+      "crop": [0.58, 0.25, 0.62],
+      "year": 1982,
+      "_why": "CC0 Anefo, 1982 — chosen over a far finer public-domain studio portrait from the 1950s because that one shows him at about twenty and he conducted the concert in 1988 and 1991."
+    },
+    "kleiber": {
+      "name": "Carlos Kleiber",
+      "wikidata": "Q160706",
+      "file": "Schallplatteneinspielung der Staatskapelle Dresden unter Carlos Kleiber.jpg",
+      "crop": [0.55, 0.46, 0.3],
+      "year": 1973,
+      "_why": "The only photograph of him on Commons at all: the other three files in his category are his grave, a wayside crucifix beside it, and the house next to the churchyard. Share-alike is therefore forced here."
+    },
+    "mehta": {
+      "name": "Zubin Mehta",
+      "wikidata": "Q157635",
+      "file": "Zubin Mehta, 1985 - collezione Tino Barindelli.tif",
+      "crop": [0.5, 0.45, 0.95],
+      "year": 1985,
+      "_why": "Public domain, very large, and close in time to his first concert here (1990)."
+    },
+    "muti": {
+      "name": "Riccardo Muti",
+      "wikidata": "Q276038",
+      "file": "Embajador Wayne asiste a la clase magistral impartida por el Maestro Riccardo Muti (cropped).jpg",
+      "crop": [0.45, 0.28, 0.72],
+      "year": 2012,
+      "_why": "CC0 and already cropped to him alone; the uncropped original has the US ambassador standing beside him. Framed tight on the head after the author found the wider version unflattering (2026-09-18) — the folded arms and the downward gaze were doing that, not the face. Nothing in his category beats it: the alternatives are a full-body shot mid-gesture, a 500 px frame with Putin in it, and rehearsal photographs where he is one of thirty."
+    },
+    "harnoncourt": {
+      "name": "Nikolaus Harnoncourt",
+      "wikidata": "Q78526",
+      "file": "Nikolaus Harnoncourt (1980).jpg",
+      "crop": [0.5, 0.32, 0.85],
+      "year": 1980,
+      "_why": "Share-alike, and taken anyway: the two CC0 files of him are both wide group shots in which his face is a few dozen pixels."
+    },
+    "ozawa": {
+      "name": "Seiji Ozawa",
+      "wikidata": "Q313649",
+      "file": "Seiji Ozawa 20151205.jpg",
+      "crop": [0.5, 0.35, 0.9],
+      "year": 2015,
+      "_why": "Public domain (US State Department) and close in age to his 2002 concert. The other public-domain option is a fine 1963 studio portrait of him at 28."
+    },
+    "jansons": {
+      "name": "Mariss Jansons",
+      "wikidata": "Q158340",
+      "file": "2015 Jansons Mariss-0242 (18794705869) (2) (cropped).jpg",
+      "crop": [0.42, 0.38, 0.8],
+      "year": 2015,
+      "_why": "Replaces a public-domain conducting shot the author found unflattering (2026-09-18). Share-alike is the cost: everything in his category except that one frame is CC BY-SA 2.0 from a single 2015 reception, and this is the one where he faces the camera."
+    },
+    "pretre": {
+      "name": "Georges Prêtre",
+      "wikidata": "Q342381",
+      "file": "Georges Pretre 1989 Garmisch-19890625-RM-113345.jpg",
+      "crop": [0.42, 0.32, 0.55],
+      "year": 1989,
+      "_why": "The only photograph of him in the category, so share-alike is forced. Large and well lit."
+    },
+    "barenboim": {
+      "name": "Daniel Barenboim",
+      "wikidata": "Q152768",
+      "file": "Verleihung Konrad-Adenauer-Preis der Stadt Köln 2019 an Daniel Barenboim-9447.jpg",
+      "crop": [0.51, 0.25, 0.62],
+      "year": 2019,
+      "_why": "Replaces a CC BY full-length shot the author found unflattering (2026-09-18), and then a frame from the same 2019 award that caught him mid-word. This is the one Wikidata itself picks as his portrait. Share-alike is the cost, and it is unavoidable: his freely-licensed files are a wide orchestra shot, a 1953 stage photograph, him at fifteen at the piano, and a set from a 1967 wedding, and the one good CC BY portrait is 204x204."
+    },
+    "welser-moest": {
+      "name": "Franz Welser-Möst",
+      "wikidata": "Q93820",
+      "file": "Franz Welser-Most conducting the New York Philharmonic - 49616007592.jpg",
+      "crop": [0.44, 0.3, 0.56],
+      "year": 2020,
+      "_why": "Every one of the thirteen files in his category is CC BY 2.0 by Steven Pisano; this is the one where he faces the camera."
+    },
+    "dudamel": {
+      "name": "Gustavo Dudamel",
+      "wikidata": "Q160390",
+      "file": "Gustavo Dudamel (6664704273).jpg",
+      "crop": [0.57, 0.36, 0.62],
+      "year": 2012,
+      "_why": "CC BY rather than share-alike, and his face fills more of the frame than in any of the concert shots — which is what decides legibility at 72 px in the band."
+    },
+    "thielemann": {
+      "name": "Christian Thielemann",
+      "wikidata": "Q60813",
+      "file": "Christian Thielemann Staatsoper Berlin.jpg",
+      "crop": [0.6, 0.22, 0.36],
+      "year": 2024,
+      "_why": "Share-alike throughout his category. Chosen for resolution: the two conducting photographs are finer images but under 1300 px, which leaves his head smaller than the medallion's disc."
+    },
+    "nelsons": {
+      "name": "Andris Nelsons",
+      "wikidata": "Q511817",
+      "file": "Andris Nelsons.JPG",
+      "crop": [0.5, 0.52, 1.35],
+      "year": 2015,
+      "_why": "The only photograph of him that names him; the rest of his category is a Gewandhaus concert series whose filenames do not."
+    },
+    "kendlinger": {
+      "name": "Matthias Georg Kendlinger",
+      "wikidata": "Q30097211",
+      "file": null,
+      "crop": [0.5, 0.35, 0.62],
+      "year": null,
+      "_why": "No files on Commons at all, and no Commons category. He appears only in the recordings payload, not in the concert series."
+    },
+    "bauer-theussl": {
+      "name": "Franz Bauer-Theussl",
+      "wikidata": "Q113646",
+      "file": null,
+      "crop": [0.5, 0.35, 0.62],
+      "year": null,
+      "_why": "No files on Commons at all. He appears only in the recordings payload, not in the concert series."
+    },
+    "schmid": {
+      "name": "Kurt Schmid",
+      "wikidata": null,
+      "file": null,
+      "crop": [0.5, 0.35, 0.62],
+      "year": null,
+      "_why": "IDENTITY UNRESOLVED, so nothing is searched for. The only conductor called Kurt Schmid on Wikidata (Q692485) died in 2000, and the recording carrying this name is dated 2003, so they are probably not the same person."
+    }
+  }
+}

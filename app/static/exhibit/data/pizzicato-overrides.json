@@ -1,0 +1,16 @@
+{
+  "_README": [
+    "Hand-placed region times for the Pizzicato-Polka. AUTHORITY: this file wins over anything the",
+    "re-derive computes, and tools/prep_exhibit_data.py applies it LAST and never rewrites it.",
+    "tools/exhibit_annots_on_hq.py overlays it onto the on-hq sets the same way.",
+    "Shape: { annotationId: { regionId: { 'recording.wav': {start, end} } } }",
+    "An override moves ONE recording; to move a region on all of them, change its index pair",
+    "(PIECES['pizzicato']['pairs'], or reanchor_fixed for an endpoint placed by ear)."
+  ],
+  "ann_mv6e0f89_1": {
+    "_note": "Adults / Extra notes. Harnoncourt's start moved to 70 ms before the onset at 39.37 s (the user, 2026-10-20: the region missed one onset just before it; starting exactly on the onset clipped its attack after a marker switch, so a short lead-in); the end is the derived 44.35 s, frozen here.",
+    "rgn_mv6e4h6f_2": {
+      "mixed, Nikolaus Harnoncourt (Johann Strauss II).wav": {"start": 39.3, "end": 44.35127085795231}
+    }
+  }
+}

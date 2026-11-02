@@ -55,7 +55,7 @@ If you don't have an alignment JSON file yet, you can create one directly in the
    `https://listen-here.mdw.ac.at/?mode=align`
 3. A step-by-step wizard guides you through the process:
 
-   **Step 1 — Files:** Select or drag-and-drop the audio files you want to align. You need at least two. The longest file is automatically chosen as the reference, but you can change this using the radio buttons in the file table.
+   **Step 1 — Files:** Select or drag-and-drop the audio files you want to align. You need at least two. By default the reference is chosen automatically once the files are read: the recording the others agree with best (cycle consistency over coarse alignments between every pair; with only two files, the longer one). To choose it yourself, use the radio buttons in the file table's Ref column.
 
    **Step 2 — Quality:** Choose an alignment quality preset:
    - **Fast** — good quality, quickest results. Best for previewing or working with many files.
@@ -304,6 +304,7 @@ When **peaks** are included (the default), each audio entry becomes an object in
 | `createdBy`           | no                  | Tool name and version that generated the file. Added automatically by Listen Here!                                                                                                      |
 | `createdAt`           | no                  | ISO 8601 timestamp of when the alignment was created.                                                                                                                                   |
 | `alignmentParams`     | no                  | The DTW parameter values used to produce the alignment (see [Alignment parameters](#alignment-parameters)). Included when the "Include alignment settings in output" option is enabled. |
+| `referenceChoice`     | no                  | How the wizard chose `ref`: `{"mode": "manual"}`, or `mode` `"automatic"` with `method` (`"cycle"`, or `"longest"` for two files), and for `"cycle"` the `rateHz` compared at, each candidate's `scores` (lower is better), and the candidates `excluded` because too many targets would fail the span guard. |
 | `groupingTabs`        | no                  | Array of grouping tab objects, each with `name`, `fileGroups` (array of `{name, files, pattern?, color?}`), and `groupOrder`. Supports multiple independent file groupings.             |
 | `activeTab`           | no                  | Name of the currently selected grouping tab.                                                                                                                                            |
 

@@ -1,0 +1,396 @@
+// exhibit/strings.js
+//
+// Every visitor-visible string goes through here. No inline literals anywhere in
+// the exhibit, from week 1 — because German plus English is release-blocking for
+// December and retrofitting i18n across every view is the expensive way to do it
+// (plan §6.6, §7.7).
+//
+// Two separate jobs, deliberately not conflated:
+//
+//   * `t(key, lang)` — UI CHROME. Short, ours, translated in-house, and keyed.
+//   * `resolveText(value, {language})` — AUTHORED ANNOTATION CONTENT. Arrives from
+//     the merged payload as a language-tagged object, not from this catalogue.
+//     `audience` selects WHICH annotations are shown, and is a filter applied
+//     before this point; language selects which text of the one that survived.
+//
+// Both take the language EXPLICITLY rather than reading a global, because audience
+// and language are resolved PER VIEWPORT — the two halves of the table can differ
+// at the same time, so there is no single "current language" to read (plan §5.3).
+//
+// No Latin-only layout assumptions: if Japanese or Chinese follow, they need
+// different fonts, different line-breaking, and roughly 40% more width — worst in
+// the narrow, two-sided middle band. Hence the middle band carries no labels at
+// all (plan §6.3), which is why this catalogue is as small as it is.
+//
+// ZERO imports, by rule (see ENGINE-WANTS.md).
+
+export const LANGUAGES = ["en", "de"];
+export const FALLBACK_LANGUAGE = "en";
+
+/**
+ * The UI catalogue. Keys are dotted and stable; values are per language.
+ *
+ * German is deliberately absent for now rather than machine-guessed: translation
+ * is in-house editorial work already under way, and a placeholder that looks like
+ * a translation is worse than a visible gap. `t()` falls back to English and, in
+ * debug mode, says which key was missing.
+ */
+const CATALOGUE = {
+  "app.title": { en: "Same Procedure…?" },
+  // The attract band (attract.js): the first SHARED surface allowed to carry
+  // text — it exists only while nobody is at the table, so the two-readers
+  // tension of the middle band (plan §6.3) does not arise; each copy shows every
+  // language the string has, German first. The title stays English by design
+  // (user, 2026-09-07). German for intro and tap line: in-house translation.
+  "attract.eyebrow": { de: "Die Wiener Neujahrskonzerte", en: "Vienna's New Year's Concerts" },
+  "attract.title": { en: "Same Procedure as Every Year?" },
+  "attract.intro": {
+    de: "Jedes Jahr am Neujahrstag spielen die Wiener Philharmoniker Stücke aus dem Strauss-Repertoire für ein Millionenpublikum in aller Welt – und nie zweimal gleich. Hören Sie sich an dieser Station durch die Aufnahmen, Note für Note aneinander ausgerichtet. Wechseln Sie mitten in der Phrase zwischen ihnen und entdecken Sie die Unterschiede!",
+    en: "Every New Year's Day the Wiener Philharmoniker perform pieces from the Strauss repertoire to an audience of millions around the world, and never the same way twice. Use this exhibit to listen your way through the recordings, lined up note-for-note. Switch between them mid-phrase to explore the differences!",
+  },
+  // The room is already listening — the loop plays — so the tap BEGINS, it does not
+  // start the listening (user, 2026-09-08).
+  // Not "a recording": under the strap the intended tap is a medallion, and the
+  // band itself takes the first tap anyway — any tap begins (user, 2026-09-08).
+  "attract.tap": { de: "Tippen Sie, um loszulegen", en: "Tap to get started" },
+  "attract.fwf": {
+    de: "Dieses Wissenschaftskommunikationsprojekt wurde durch den Wissenschaftsfond FWF finanziert: https://doi.org/10.55776/SCP1556025",
+    en: "A science communication project funded by the Austrian Science Fund (FWF): https://doi.org/10.55776/SCP1556025",
+  },
+  "listen.nowPlaying": { en: "Now playing" },
+  "listen.tapToListen": { en: "Tap a recording to hear it" },
+  // PROVISIONAL wording, to be settled by the user testing in Oct/Nov 2026.
+  //
+  // The KEYS track the internal audience ids, which come from the authored source
+  // filenames (Alignment_Fledermaus_{Kids,Adults,Expert}.json) and are stamped on
+  // every annotation in the payload — so `audience.expert` displays as "Scholars"
+  // while staying keyed on `expert`. Do not "fix" that mismatch by renaming the
+  // key: the lookup is t("audience." + <the payload's audience value>).
+  "audience.kids": { en: "Kids" },
+  "audience.adults": { en: "Adults" },
+  "audience.expert": { en: "Scholars" },
+  // The ?audienceAll=1 union mode (config.js) — a UI pseudo-audience, so it is
+  // catalogue chrome here rather than a payload id like the three above.
+  "audience.all": { en: "All" },
+  // aria-labels only: the buttons themselves show +/− glyphs, which need no
+  // translation on a two-language surface (same rule as the middle band).
+  "zoom.in": { en: "Zoom in" },
+  "zoom.out": { en: "Zoom out" },
+  "transport.play": { en: "Play" },
+  "transport.pause": { en: "Pause" },
+  // aria-label only: the side panel's close control shows an × glyph
+  // (main.js, ?sideSlot=…) — nothing to translate on the glass itself.
+  "panel.close": { en: "Close the side panel" },
+  // The pin-expiry warning (config.pinExpiry, main.js): shown near the
+  // deadline; tapping re-arms the reading time.
+  "panel.keepReading": { en: "Keep reading…" },
+  // The detail header's jump control (config.detailJump, main.js): make a
+  // recording this annotation targets audible at its first region — reading
+  // without jumping stays possible, jumping is one tap. PROVISIONAL wording,
+  // to be settled by the Oct/Nov user testing.
+  "panel.jumpToAnnotation": { en: "Jump to annotation" },
+  // The detail header's MARK control, beside the jump (?marker=glass only):
+  // puts this reader's own marker on the annotation's first region. Deliberately
+  // a labelled button rather than a bare glass glyph — a magnifying glass with
+  // no chrome invites a visitor to try to DRAG it, and the draggable one is the
+  // object on the hook. PROVISIONAL wording, like the jump beside it.
+  "panel.markAnnotation": { en: "Mark" },
+  "panel.markAnnotationLong": {
+    en: "Place my marker at the start of this annotation",
+  },
+  // Turn-taking (plan §4.3; ?turnPolicy=…, turns.js). These render on the
+  // viewports' own surfaces, so unlike the middle band they MAY carry language
+  // — each half shows its own reader's copy. PROVISIONAL wording, to be
+  // settled by the Oct/Nov user testing like the audience labels above.
+  "turn.prompt": { en: "The other side wants to choose the music." },
+  "turn.grant": { en: "Go ahead" },
+  "turn.deny": { en: "Not yet" },
+  "turn.waiting": { en: "Waiting for the other side…" },
+  "turn.denied": { en: "The other side is still listening." },
+  "turn.taken": { en: "The other side changed the recording." },
+  "state.loading": { en: "Loading…" },
+  "strap.prev": { en: "Previous recording" },
+  "strap.next": { en: "Next recording" },
+  // The listening marker (?marker=glass): aria only — the glass is a physical
+  // object and deliberately carries no words on screen.
+  "marker.glass": { en: "Listening marker" },
+  "marker.ghost": { en: "The other visitor’s marker" },
+  "state.nothingForAudience": { en: "Nothing here for this view — try another." },
+  // A kiosk that fails must say so on the glass, not only in a console nobody can
+  // open. The message names no cause on purpose: the visitor cannot act on one and
+  // the technician has the console.
+  "state.dataError": { en: "This exhibit is temporarily unavailable." },
+  // The per-viewport VIEW SWITCH (?viewSwitch=1, ?views=…; main.js): the
+  // listening interface, or the by-year explorer of the whole New Year's
+  // Concert series (plan §11). These render on the viewport's own toolbar, so
+  // like the turn notices they may carry language. PROVISIONAL wording, to be
+  // settled by the Oct/Nov user testing.
+  "view.listen": { en: "Listen" },
+  "view.years": { en: "Year by year" },
+  "view.conductors": { en: "Conductors" },
+  // The way out of an explorer, back into the listening view — since the band is
+  // the way IN (plan §11(f)) and the toolbar switch only the fallback entry.
+  //
+  // TWO STRINGS FOR ONE CONTROL, since 2026-09-19: the short word is what the
+  // button SHOWS, where it shares a strip with the audience switch and a title;
+  // the sentence is its aria-label, for a reader who cannot see what is behind
+  // the overlay. The short one is a substring of the long one on purpose — a
+  // visible label that is not part of the accessible name is a trap for anyone
+  // driving the glass by voice.
+  //
+  // It was an × until 2026-09-19 (user): an × says "dismiss", and this goes
+  // somewhere.
+  "view.back": { en: "Back" },
+  "view.close": { en: "Back to listening" },
+  // aria-labels only, for the band's tappable facts (?bandTap, mirrored
+  // band): the facts themselves are a proper name and a year, so the glass
+  // stays wordless per the band's no-labels rule.
+  "band.openYear": { en: "Open the New Year's Concert of {year}" },
+  "band.openConductor": { en: "Open {name}" },
+  // The by-year explorer (years-view.js). The concert facts themselves —
+  // titles, composers, conductors — arrive from the concerts sidecar as data
+  // (German, as the archives wrote them; composers carry a language map), so
+  // only the chrome is here.
+  "years.heading": { en: "The New Year's Concerts of the Wiener Philharmoniker" },
+  "years.founding": { en: "The founding concert, on New Year's Eve" },
+  "years.noConcert": { en: "No concert was given this year." },
+  "years.afterArchives": { en: "This concert is not yet in our archives." },
+  "years.missing": { en: "This concert is missing from our archives." },
+  "years.programme": { en: "Programme" },
+  // The author's own caveat (2026-09-02): the archives list the printed
+  // programme, and the encores — the Blue Danube, the Radetzky March — were
+  // often not written down.
+  "years.programmeCaveat": {
+    en: "As listed in the concert archives. Encores were often not recorded.",
+  },
+  "years.programmeUnknown": { en: "The programme is not in our archives." },
+  "years.with": { en: "With" },
+  "years.inLibrary": { en: "On disc in the project's collection" },
+  // The direct route from a concert to its music: switches the transport to
+  // the recording of this piece from that concert (the aligned switch, like a
+  // strip tap) and returns to the listening view. `{piece}` is the payload's
+  // piece title, resolved per language.
+  "years.listen": { en: "Listen to {piece} from this concert" },
+  "years.onProgramme": { en: "{piece} was on the programme." },
+  "years.unavailable": { en: "The concert history is temporarily unavailable." },
+  "years.chooseYear": { en: "Choose a year" },
+  // The by-conductor explorer (conductors-view.js). Names, years, and the
+  // archives' role literals are data from the sidecar; only the chrome is here.
+  "conductors.heading": { en: "The conductors of the New Year's Concerts" },
+  "conductors.chooseConductor": { en: "Choose a conductor" },
+  "conductors.summary": { en: "{n} New Year's Concerts, {first} to {last}" },
+  // The roster row's years. A conductor with three or fewer is listed by year —
+  // you can count three. Beyond that it is a span, and the count rides WITH it
+  // rather than in a badge of its own (user, 2026-09-18): one fact, one phrase.
+  // The whole phrase is the string, punctuation included, so a translation can
+  // reorder it rather than having brackets hardcoded around a number.
+  "conductors.yearsSpan": { en: "{first}–{last} ({n} concerts)" },
+  "conductors.summaryOne": { en: "One New Year's Concert, in {year}" },
+  // The direct route from a conductor to their music: one button per recording
+  // of the current piece the exhibit holds from their concerts.
+  "conductors.listen": { en: "Listen to {piece} from {year}" },
+  // THE WAY ACROSS to the other explorer (user, 2026-09-18, reversing §11(f)).
+  // Neither string is ever DRAWN — the cells carry numerals and the card carries
+  // a name, and §6.3's wordless rule holds on both. They are the aria-labels,
+  // which is the one place the exhibit may say in words what a tap does: a
+  // screen reader hearing "2010" alone learns nothing about where it leads.
+  "conductors.openYear": { en: "See the New Year's Concert of {year}" },
+  "years.openConductor": { en: "See every New Year's Concert of {conductor}" },
+  // THE ONE PLAIN SENTENCE the portraits need (plan §5.5, §11(d)) — this view is
+  // the first surface allowed to carry text. It used to explain the AI mark; since
+  // 0.68.0 the portraits are photographs and it carries their credit instead.
+  // "Did you know?" (dyk.js) — the museum's authored text about six concerts
+  // and six conductors, in the reader's own register. Only the chrome is here;
+  // the text itself, and each year's hook, are Chanda's, and arrive as content
+  // from data/dyk.json (content/dyk/). German for the heading now, because the
+  // heading is OURS — her text is English until the in-house translation lands,
+  // and falls back like the attract band's title.
+  "dyk.heading": { de: "Wussten Sie schon?", en: "Did you know?" },
+  // Inside the placeholder frame that stands in for a picture the exhibit may
+  // not yet show (licence unresolved — content/dyk/README.md).
+  "dyk.imagePending": { en: "Picture to come" },
+  // The plan's §5.5 disclosure for the illustrations we made with AI: the spark
+  // burned into each picture, said in words ONCE, with the spark itself drawn in
+  // the sentence at {sigil} (dyk.js aiDisclosure). On the explorer's foot while
+  // such a picture is shown, and in its lightbox (user, 2026-10-20 — it replaced
+  // a "made with AI" line under every caption).
+  "dyk.aiImages": {
+    en: "Images showing {sigil} were generated using AI (Google Gemini).",
+    de: "Bilder mit {sigil} wurden mit KI erzeugt (Google Gemini).",
+  },
+  // A real picture in the story opens big on a tap (dyk.js openLightbox).
+  "dyk.enlarge": { de: "Bild vergrößern", en: "Show the picture bigger" },
+  "dyk.closeImage": { de: "Bild schließen", en: "Close the picture" },
+  // THE PORTRAIT CREDIT (0.68.0). The Gen-AI portraits are gone — image models
+  // will no longer render living public figures — and freely-licensed photographs
+  // replaced them. That swapped one obligation for another: the AI batch had to be
+  // DISCLOSED, and a CC BY / CC BY-SA photograph has to be ATTRIBUTED, which is a
+  // licence condition rather than a courtesy.
+  //
+  // The band carries no labels (plan §6.3), so the credit lives here, at the foot
+  // of the explorers, where the AI sentence used to. It names the photographer of
+  // the picture CURRENTLY on the glass rather than listing all eighteen: eighteen
+  // lines do not fit a kiosk that must not scroll, and a credit beside its own
+  // image is the stronger reading of the licence anyway.
+  "about.portraitsPhoto": {
+    en: "The conductor portraits are photographs from Wikimedia Commons.",
+    de: "Die Dirigentenporträts sind Fotografien von Wikimedia Commons.",
+  },
+  "about.portraitCredit": {
+    en: "Photo: {artist} ({licence}).",
+    de: "Foto: {artist} ({licence}).",
+  },
+  // THE TOUR (roadmap 27; tour-steps.js, ../js/tour/tour.js). English only for
+  // now, like every other new string: German is Chanda's. A `.kids` twin is
+  // picked automatically where the reader's audience is "kids" (main.js's
+  // resolver, via hasString) — kid-hood is declared once, at the audience
+  // switch, and taken over everywhere (user, 2026-09-23). WORDING RULE (user):
+  // never imply that the annotated passages are worth more than the rest —
+  // our visitors are Strauss enthusiasts; say straight what a thing is.
+  // The intro's wording is a first draft, NOT final (user, 2026-09-23).
+  "tour.intro.title": { en: "Same procedure every year?" },
+  "tour.intro": {
+    en: "At this station you travel through the history of the New Year's Concert by its recordings. Listen, switch between performances while the music plays, and compare them note for note: how the Philharmonic's playing has changed across the years and under different conductors, and how other orchestras play the same music.",
+  },
+  "tour.intro.kids": {
+    en: "Here you can hear the same piece played by different orchestras and conductors, jump between them while the music plays, and listen for what changes.",
+  },
+  // {name} in the two "stripes" texts is one of the four phrases below, filled
+  // from the recording's metadata (main.js recordingLabel).
+  "tour.who": { en: "{conductor}, {year}, with the {ensemble}" },
+  "tour.who.noEnsemble": { en: "{conductor}, {year}" },
+  "tour.who.noConductor": { en: "the {ensemble}, {year}" },
+  "tour.who.unidentified": { en: "an unidentified orchestra, {year}" },
+  "tour.stripes": { en: "You are hearing {name}. Each stripe is one recording of the same piece, lined up note for note with the others." },
+  "tour.stripes.kids": { en: "You are hearing {name}. Every stripe is one recording of the same piece, and they all line up note for note." },
+  "tour.switch": { en: "Tap another stripe to switch to that recording. The music carries on from the same place in the piece." },
+  "tour.switch.kids": { en: "Tap a different stripe and the music jumps to that recording, right where it is now." },
+  "tour.switch.requested": { en: "You have asked the other listener for the turn. It comes to you in a moment, unless they decline." },
+  "tour.switch.denied": { en: "The other listener kept the turn for now. Try again in a moment." },
+  "tour.marker": {
+    en: "The glass is your own marker. Drag it from its hook onto a stripe to mark that moment in every recording; your switches then land there. Pull it off the stripes to put it away.",
+  },
+  "tour.marker.kids": {
+    en: "The magnifying glass is your bookmark. Drag it onto a stripe to mark a moment, and the music starts from your mark whenever you switch. Drag it back off to put it away.",
+  },
+  "tour.strap": { en: "The medallions switch recordings too, keeping your place in the music." },
+  "tour.zoom": { en: "Zoom in to see the waveforms in detail, and out again." },
+  "tour.audience": { en: "Choose how much to read: written for children, for everyone, or for experts." },
+  "tour.audience.kids": { en: "Choose who the notes are written for: children, everyone, or experts." },
+  "tour.chips": { en: "These chips mark passages that an expert musicologist has annotated. Tap one and the music goes there." },
+  "tour.chips.kids": { en: "These chips are notes from a music expert about moments in the piece. Tap one to jump there." },
+  "tour.explore": { en: "The band names who is conducting and when. Tap the name or the year to explore every New Year's Concert since 1939." },
+  "tour.done": { en: "Tap ? at any time to see these hints again." },
+  "tour.done.kids": { en: "Tap ? whenever you want to see these hints again." },
+  "tour.explorer": { en: "Every New Year's Concert since 1939: tap a year for its programme and conductor, or a conductor for their years." },
+  "tour.back": { en: "Back returns you to the recordings." },
+  "tour.next": { en: "Next" },
+  "tour.close": { en: "Close" },
+  "tour.skip": { en: "Skip tour" },
+  "tour.help": { en: "Show me how this works" },
+};
+
+let _debug = false;
+/** Turn missing-key reporting on; the exhibit passes config.debug straight in. */
+export function setDebug(on) {
+  _debug = !!on;
+}
+
+const _warned = new Set();
+function _warnOnce(what) {
+  if (!_debug || _warned.has(what)) return;
+  _warned.add(what);
+  console.warn("strings: " + what);
+}
+
+/**
+ * A UI string in `lang`, falling back to English, then to the key itself.
+ *
+ * Returning the key rather than an empty string is deliberate: a missing string
+ * should be visible in testing, not silently blank on a museum wall.
+ *
+ * @param {string} key   a CATALOGUE key
+ * @param {string} lang  BCP-47-ish short code, e.g. "de"
+ */
+export function t(key, lang = FALLBACK_LANGUAGE) {
+  const entry = CATALOGUE[key];
+  if (!entry) {
+    _warnOnce(`no such key "${key}"`);
+    return key;
+  }
+  if (entry[lang] != null) return entry[lang];
+  _warnOnce(`key "${key}" has no "${lang}" translation`);
+  return entry[FALLBACK_LANGUAGE] ?? key;
+}
+
+/** Whether the catalogue has `key` at all — for optional variants (the tour's `.kids` twins). */
+export function hasString(key) {
+  return Object.prototype.hasOwnProperty.call(CATALOGUE, key);
+}
+
+/**
+ * The portraits line for an explorer's foot: the standing sentence, plus the
+ * photographer and licence of the portrait CURRENTLY shown when there is one.
+ *
+ * One line rather than a credits list, for two reasons. The kiosk must not scroll
+ * (plan §6.3), and eighteen credits do not fit under a card; and a credit next to
+ * the picture it belongs to is a better discharge of CC BY / CC BY-SA than a
+ * roll-call somewhere else on the screen.
+ *
+ * EVERY picture we can name is credited, including the public-domain ones the
+ * licence does not compel a credit for (user, 2026-09-18) — the entry's
+ * `attribution` flag records which were obligatory, and is not what decides what
+ * is shown. What does decide it is whether anyone is NAMED: some archive scans
+ * record no photographer at all, and "Photo: unknown" is worse than silence. A
+ * placeholder medallion depicts nobody, so it is credited to nobody.
+ *
+ * @param {string} language
+ * @param {{artist?: string, licence?: string, attribution?: boolean,
+ *          placeholder?: boolean}|null} credit
+ */
+export function portraitAbout(language, credit = null) {
+  const general = t("about.portraitsPhoto", language);
+  if (!credit || credit.placeholder) return general;
+  if (!credit.artist || !credit.licence) return general;
+  const line = t("about.portraitCredit", language)
+    .replace("{artist}", credit.artist)
+    .replace("{licence}", credit.licence);
+  return `${general} ${line}`;
+}
+
+/**
+ * Resolve one AUTHORED text value, which arrives language-tagged from the merged
+ * annotation payload rather than from the catalogue above.
+ *
+ * Accepts either a plain string (untranslated authored content, which is what the
+ * current sets hold) or an object keyed by language. That tolerance is the point:
+ * the prep script can start emitting `{en, de}` for translated entries without the
+ * exhibit needing to change, and untranslated entries keep working meanwhile.
+ *
+ * @param {string|Record<string,string>|null|undefined} value
+ * @param {{language?: string}} [opts]
+ * @returns {string} "" when there is genuinely nothing to show
+ */
+export function resolveText(value, { language = FALLBACK_LANGUAGE } = {}) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value !== "object") return String(value);
+  if (value[language] != null) return value[language];
+  if (value[FALLBACK_LANGUAGE] != null) {
+    _warnOnce(`authored text has no "${language}" version`);
+    return value[FALLBACK_LANGUAGE];
+  }
+  // Any language beats nothing on a wall in a museum.
+  const first = Object.values(value).find((v) => typeof v === "string" && v);
+  return first ?? "";
+}
+
+/** Every key in the catalogue — used by a completeness check once German lands. */
+export function catalogueKeys() {
+  return Object.keys(CATALOGUE);
+}
+
+/** Keys with no translation for `lang`. The i18n to-do list, computed not guessed. */
+export function missingFor(lang) {
+  return Object.keys(CATALOGUE).filter((k) => CATALOGUE[k][lang] == null);
+}

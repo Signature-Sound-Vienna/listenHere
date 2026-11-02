@@ -1,0 +1,1298 @@
+// 41. Alignment-correction increment 1 (plan §14) — the pure correction
+// model (engine/correction-model.js) and the worker's anchored segment
+// realign (fix_begin / fix_realign_segment in align-worker.js's Python).
+//
+// Model tests use the spec-40 no-app-boot module-page pattern. Worker tests
+// run the worker's own PYTHON_CODE verbatim under system python3 + numpy +
+// scipy (the 39.3 mechanism, extended: the whole blob executes with a
+// stubbed `js` module), against a synthetic scenario whose ground truth is
+// analytic — the same 16 chromatic notes synthesised under two tempo maps,
+// so every true onset time is computable in closed form. The JS message
+// plumbing (fix_begin/fix_realign/fix_dispose handlers) is thin and is
+// exercised by the fix-mode UI specs (increment 2+).
+import { test, expect } from '../support/fixtures';
+import { execFileSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { pathToFileURL } from 'url';
+
+const MODULE_URL = '/static/js/engine/correction-model.js';
+
+/* ------------------------------------------------------------------ */
+/* The synthetic scenario                                              */
+/* ------------------------------------------------------------------ */
+
+// MIDI A (the "score"): TPQ 120, tempo 500000 µs/beat (120 BPM), sixteen
+// chromatic quarter notes 60..75 back to back. Chromatic pitches give every
+// event a distinct chroma column, so segment DTW has real discrimination.
+const TPQ = 120;
+const N_NOTES = 16;
+function buildMidiA(): Buffer {
+  const track: number[] = [];
+  track.push(0x00, 0xff, 0x51, 0x03, 0x07, 0xa1, 0x20); // Δ0 tempo 500000
+  for (let k = 0; k < N_NOTES; k++) {
+    const p = 60 + k;
+    track.push(0x00, 0x90, p, 64); // Δ0 note-on
+    track.push(0x78, 0x80, p, 0); // Δ120 (one quarter) note-off
+  }
+  track.push(0x00, 0xff, 0x2f, 0x00); // end of track
+  const header = [
+    0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, 0, 0, 1, (TPQ >> 8) & 0xff, TPQ & 0xff,
+    0x4d, 0x54, 0x72, 0x6b,
+    (track.length >> 24) & 0xff, (track.length >> 16) & 0xff,
+    (track.length >> 8) & 0xff, track.length & 0xff,
+  ];
+  return Buffer.from([...header, ...track]);
+}
+
+// MIDI B: the same chromatic ladder one quarter apart, but every note is HELD
+// 2.5 quarters, so off[k] > on[k+2] — the sustained-overlap shape that ties,
+// pedal notes, and any polyphony produce. Measured against the next DISTINCT
+// onset (comparing against on[i+1] only counts chord siblings): 41.9% of this
+// repo's own 725-event fixture sustains past it and 33.5% of the Fledermaus HQ
+// corpus; over the events an anchor is laid on, 24.2% of the fixture's onset
+// groups and 8.3% of the corpus's, and at distance 2 — where the worker rather
+// than the linear fill answers — 6.5% and 0.7%.
+const HOLD_TICKS = 300;
+function vlq(n: number): number[] {
+  const out = [n & 0x7f];
+  n >>= 7;
+  while (n > 0) {
+    out.unshift((n & 0x7f) | 0x80);
+    n >>= 7;
+  }
+  return out;
+}
+function buildMidiOverlap(): Buffer {
+  const evs: Array<{ tick: number; order: number; data: number[] }> = [];
+  for (let k = 0; k < N_NOTES; k++) {
+    const p = 60 + k;
+    evs.push({ tick: TPQ * k, order: 1, data: [0x90, p, 64] });
+    evs.push({ tick: TPQ * k + HOLD_TICKS, order: 0, data: [0x80, p, 0] });
+  }
+  evs.sort((a, b) => a.tick - b.tick || a.order - b.order);
+  const track: number[] = [0x00, 0xff, 0x51, 0x03, 0x07, 0xa1, 0x20];
+  let prev = 0;
+  for (const e of evs) {
+    track.push(...vlq(e.tick - prev), ...e.data);
+    prev = e.tick;
+  }
+  track.push(0x00, 0xff, 0x2f, 0x00);
+  const header = [
+    0x4d, 0x54, 0x68, 0x64, 0, 0, 0, 6, 0, 0, 0, 1, (TPQ >> 8) & 0xff, TPQ & 0xff,
+    0x4d, 0x54, 0x72, 0x6b,
+    (track.length >> 24) & 0xff, (track.length >> 16) & 0xff,
+    (track.length >> 8) & 0xff, track.length & 0xff,
+  ];
+  return Buffer.from([...header, ...track]);
+}
+
+// The "reference performance" tempo map: 120 BPM for the first 8 quarters,
+// 160 BPM (375000 µs/beat) from tick 960. True onset of event k:
+//   k ≤ 8: 0.5·k   —   k > 8: 4.0 + 0.375·(k − 8)
+function trueOnset(k: number): number {
+  return k <= 8 ? 0.5 * k : 4.0 + 0.375 * (k - 8);
+}
+
+const HARNESS = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi_a = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi_a)
+
+tcs_b = [(0, 500000), (960, 375000)]
+dur_b = _tick_to_sec(max(n[1] for n in notes), tpq, tcs_b) + 0.5
+ref_audio = synth_midi_audio(notes, tpq, tcs_b, dur_b)
+
+ev = fix_begin(ref_audio, midi_a)
+n = ev['n_events']
+ref_dur = ev['ref_duration']
+true_on = [_tick_to_sec(int(round(q * tpq)), tpq, tcs_b) for q in ev['score_onset']]
+naive = [s * ref_dur / ev['midi_duration'] for s in ev['synth_onset']]
+
+out = {'events': ev, 'trueOn': true_on}
+
+# S1: corner-to-corner refill guided by the deliberately naive linear prior.
+out['s1'] = fix_realign_segment(-1, 0.0, n, ref_dur, naive, 4.0, None)
+
+# S2: event 8 anchored WRONG on purpose (+0.4 s); refill both flanks.
+t8w = true_on[8] + 0.4
+out['t8w'] = t8w
+out['s2l'] = fix_realign_segment(-1, 0.0, 8, t8w, naive[0:8], 4.0, None)
+out['s2r'] = fix_realign_segment(8, t8w, n, ref_dur, naive[9:n], 4.0, None)
+
+# S3: consecutive anchors — no interior events, no DTW.
+out['s3'] = fix_realign_segment(7, true_on[7], 8, true_on[8], [], None, None)
+
+# S5: the frame cap drives the hop up for long segments.
+out['s5'] = fix_realign_segment(-1, 0.0, n, ref_dur, naive, 4.0, 200)
+
+# S6: a DISCONTINUOUS true map — one 16.7 s quarter (the MIDI tempo field's
+# ceiling) between events 8 and 9 makes the reference jump far more per
+# score frame than the band slack at a coarse hop. Before the band floors
+# were bridged to the previous ceiling, the rows went DISJOINT there: the
+# DP was severed, every downstream cell was inf, and the backtrack walked
+# out of band — the 2026-08-31 corpus break (a first-onset fix mapped the
+# whole opening ~55 s late). Prior = truth; the refill must stay glued.
+tcs_c = [(0, 500000), (960, 16777215), (1080, 375000)]
+dur_c = _tick_to_sec(max(n2[1] for n2 in notes), tpq, tcs_c) + 0.5
+ref_c = synth_midi_audio(notes, tpq, tcs_c, dur_c)
+fix_begin(ref_c, midi_a)  # replaces the session for S6 and the error paths
+true_c = [_tick_to_sec(int(round(q * tpq)), tpq, tcs_c) for q in ev['score_onset']]
+ref_dur_c = len(ref_c) / SR
+out['s6'] = fix_realign_segment(-1, 0.0, n, ref_dur_c, true_c, 0.5, 200)
+out['trueC'] = true_c
+
+def _raises(fn):
+    try:
+        fn()
+        return False
+    except Exception:
+        return True
+
+out['s4'] = {
+    'badIndices': _raises(lambda: fix_realign_segment(8, 1.0, 3, 2.0, [], None, None)),
+    'reversedTimes': _raises(lambda: fix_realign_segment(-1, 5.0, n, 1.0, naive, None, None)),
+    'priorLen': _raises(lambda: fix_realign_segment(-1, 0.0, n, ref_dur, naive[0:3], None, None)),
+}
+fix_dispose()
+out['s4']['afterDispose'] = _raises(lambda: fix_realign_segment(-1, 0.0, n, ref_dur, naive, None, None))
+
+print(json.dumps(out))
+`;
+
+// The overlap scenario: two segments off the same held-note ladder — one
+// whose left anchor sustains PAST the right anchor's onset (no image under
+// this segment's warp) and one control whose offset lies inside the span.
+const HARNESS_OVERLAP = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+
+tcs_b = [(0, 500000), (480, 375000)]
+dur_b = _tick_to_sec(max(n[1] for n in notes), tpq, tcs_b) + 0.5
+ref_audio = synth_midi_audio(notes, tpq, tcs_b, dur_b)
+
+ev = fix_begin(ref_audio, midi)
+s_on = list(ev['synth_onset']); s_off = list(ev['synth_offset'])
+ref_dur = ev['ref_duration']; midi_dur = ev['midi_duration']
+
+def true_on(k):
+    return _tick_to_sec(int(round(ev['score_onset'][k] * tpq)), tpq, tcs_b)
+
+def run(i_a, i_b):
+    t_a = true_on(i_a); t_b = true_on(i_b)
+    prior = [s_on[k] * ref_dur / midi_dur for k in range(i_a + 1, i_b)]
+    res = fix_realign_segment(i_a, t_a, i_b, t_b, prior)
+    res['t_a'] = t_a; res['t_b'] = t_b
+    res['s_a'] = s_on[i_a]; res['s_b'] = s_on[i_b]
+    res['s_off_a'] = s_off[i_a]
+    res['s_off_interior'] = [s_off[k] for k in range(i_a + 1, i_b)]
+    return res
+
+print(json.dumps({'events': ev, 'over': run(2, 4), 'ctrl': run(2, 7)}))
+`;
+
+// The v2 lanes (plan §14 Layout Q2): fix_lanes computes a mel spectrogram, a
+// fine-hop onset-strength curve, and picks its peaks — the snap targets — from
+// the SAME resident reference audio fix_begin keeps. Same ladder, same tempo
+// map as HARNESS, so every true onset is known in closed form.
+const HARNESS_LANES = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+tcs_b = [(0, 500000), (960, 375000)]
+dur_b = _tick_to_sec(max(n[1] for n in notes), tpq, tcs_b) + 0.5
+# Half a second of silence first: spectral flux needs a predecessor frame, so
+# an onset at the very first sample is undetectable BY CONSTRUCTION (the
+# ladder's first note sits at tick 0). Real recordings begin in silence.
+LEAD = 0.5
+ref_audio = np.concatenate([
+    np.zeros(int(LEAD * SR), dtype=np.float32),
+    synth_midi_audio(notes, tpq, tcs_b, dur_b),
+])
+
+try:
+    fix_lanes(512, 64); before_begin = False
+except RuntimeError:
+    before_begin = True
+
+ev = fix_begin(ref_audio, midi)
+lanes = fix_lanes(512, 64)
+mel = lanes['mel']; onset = lanes['onset']
+
+def true_on(k):
+    return LEAD + _tick_to_sec(int(round(ev['score_onset'][k] * tpq)), tpq, tcs_b)
+
+span = int(0.4 * SR / 512)
+lead_f = int(LEAD * SR / 512)
+fix_dispose()
+try:
+    fix_lanes(512, 64); after_dispose = False
+except RuntimeError:
+    after_dispose = True
+
+print(json.dumps({
+    'hop': lanes['onset_hop'], 'sr': lanes['sr'], 'n_mels': lanes['n_mels'],
+    'n_frames': lanes['mel_frames'], 'mel_t0': lanes['mel_t0'], 'onset_t0': lanes['onset_t0'],
+    'mel_hop': lanes['mel_hop'], 'onset_hop': lanes['onset_hop'], 'mel_window': lanes['window'],
+    'onset_frames': lanes['onset_frames'],
+    'pat': lanes['pat'],
+    'mel_shape': list(mel.shape), 'mel_dtype': str(mel.dtype), 'mel_max': int(mel.max()),
+    'mel_lead_mean': float(mel[:, :lead_f - 2].mean()),
+    'mel_tail_mean': float(mel[:, -span:].mean()),
+    'mel_note_mean': float(mel[:, lead_f:lead_f + span].mean()),
+    'onset_len': int(len(onset)), 'onset_dtype': str(onset.dtype),
+    'onset_max': float(onset.max()),
+    'peaks': lanes['peaks'],
+    'true_on': [true_on(k) for k in range(len(ev['score_onset']))],
+    'ref_duration': ev['ref_duration'],
+    'before_begin': before_begin, 'after_dispose': after_dispose,
+}))
+`;
+
+// Feedback round 1: perceived attack times, and the scipy-free interpolation
+// that replaced interp1d (checked against scipy itself, which the dev machine
+// has and the worker no longer loads).
+const HARNESS_PAT = `
+import json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+# Six tones with SLOW attacks: a 200 ms CONCAVE amplitude ramp (sqrt — energy
+# appears quickly, then grows slowly, the shape of a soft string entry), 400 ms
+# of sustain, a 20 ms release, starting every second from t = 0.5. The
+# perceived attack sits where the amplitude reaches half its maximum (-6 dB):
+# a quarter of the way in, 50 ms after the physical start. A linear ramp would
+# give the flux detector a flat plateau and two peaks per tone; this one peaks
+# once, early.
+RAMP = 0.2; SUS = 0.4; REL = 0.02
+starts = [0.5 + k for k in range(6)]
+n = int((starts[-1] + 1.5) * SR)
+audio = np.zeros(n, dtype=np.float32)
+t = np.arange(n) / SR
+for k, s in enumerate(starts):
+    f0 = 220.0 * 2 ** (k / 12.0)
+    i0 = int(s * SR); i1 = int((s + RAMP + SUS + REL) * SR)
+    seg = np.zeros(i1 - i0)
+    for h in range(1, 5):
+        seg += np.sin(2 * np.pi * f0 * h * t[i0:i1]) / h
+    env = np.ones(i1 - i0)
+    nr = int(RAMP * SR); env[:nr] = np.sqrt(np.linspace(0, 1, nr))
+    nrel = int(REL * SR); env[-nrel:] = np.linspace(1, 0, nrel)
+    audio[i0:i1] += (seg * env * 0.3).astype(np.float32)
+onset = compute_onset_strength(audio, hop=512)
+peaks = pick_onset_peaks(onset, 512)
+pat = perceptual_attack_times(audio, peaks, 512)
+
+# interp_linear_extrap vs scipy's interp1d(kind='linear', fill_value='extrapolate')
+from scipy.interpolate import interp1d
+rng = np.random.default_rng(7)
+x = np.cumsum(rng.uniform(0.05, 1.0, 60)); y = np.cumsum(rng.uniform(-1, 2, 60))
+xq = np.concatenate([rng.uniform(x[0] - 5, x[-1] + 5, 400), x, [x[0] - 20, x[-1] + 20]])
+ref = interp1d(x, y, kind='linear', fill_value='extrapolate')(xq)
+mine = interp_linear_extrap(x, y, xq)
+scalar = float(interp_linear_extrap(x, y, float(xq[3])))
+print(json.dumps({
+    'starts': starts, 'peaks': peaks, 'pat': pat,
+    'interp_max_diff': float(np.max(np.abs(ref - mine))),
+    'scalar_ok': abs(scalar - float(ref[3])) < 1e-9,
+    'scalar_type_ok': isinstance(interp_linear_extrap(x, y, 1.0), float),
+}))
+`;
+
+// Feedback round 2: the spectrogram's frequency scale (mel / log / linear).
+const HARNESS_SCALES = `
+import json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+import base64
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+tcs_b = [(0, 500000), (960, 375000)]
+dur_b = _tick_to_sec(max(n[1] for n in notes), tpq, tcs_b) + 0.5
+ref_audio = np.concatenate([np.zeros(int(0.5 * SR), dtype=np.float32),
+                            synth_midi_audio(notes, tpq, tcs_b, dur_b)])
+ev = fix_begin(ref_audio, midi)
+out = {}
+for scale in ('mel', 'log', 'linear'):
+    fb = _band_filterbank(scale, 2048, 16, 30.0, SR / 2.0)
+    centres = _band_centres(scale, 16, 30.0, SR / 2.0)
+    lanes = fix_lanes(512, 16, 2048, 'hann', 512, 'mel', scale)
+    out[scale] = {
+        'fb_shape': list(fb.shape), 'row_sums_min': float(fb.sum(axis=1).min()),
+        'centres': [float(c) for c in centres],
+        'lanes_scale': lanes['scale'], 'band_hz': lanes['band_hz'],
+        'mel_shape': list(lanes['mel'].shape), 'mel_max': int(lanes['mel'].max()),
+        'onset_none': lanes['onset'] is None,
+    }
+print(json.dumps(out))
+`;
+
+// Increment 5: the audio-to-audio refill. The same ladder under two tempo
+// maps is the "reference" and the "target"; both maps change tempo at quarter
+// 8, an event onset, so the TRUE reference→target map is piecewise-linear
+// between event onsets and known in closed form. Anchors at events 2 and 14
+// (true values), a deliberately naive LINEAR prior between them (wrong by
+// ~0.57 s at quarter 8), and the refill must recover the truth at the onsets.
+const HARNESS_TARGET = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+end_tick = max(n[1] for n in notes)
+
+# Reference: 120 BPM, then 160 from quarter 8. Target: 90 BPM, then 180 —
+# 33% slower, then 11% faster, so a linear prior is far off in the middle.
+tcs_b = [(0, 500000), (960, 375000)]
+tcs_c = [(0, 666667), (960, 333333)]
+ref = synth_midi_audio(notes, tpq, tcs_b, _tick_to_sec(end_tick, tpq, tcs_b) + 0.5)
+tgt = synth_midi_audio(notes, tpq, tcs_c, _tick_to_sec(end_tick, tpq, tcs_c) + 0.5)
+
+ev = fix_begin(ref, midi)
+def _raises(fn):
+    try:
+        fn()
+        return False
+    except Exception:
+        return True
+before_begin = _raises(lambda: fix_target_realign(0.5, 0.5, 2.0, 2.0, [1.0], [1.0]))
+lanes_before = _raises(lambda: fix_lanes(512, 16, which='target'))
+info = fix_target_begin('target.wav', tgt)
+
+# The true map at every quarter 0..16 (16 = the ladder's end).
+kb = [_tick_to_sec(q * tpq, tpq, tcs_b) for q in range(17)]
+kc = [_tick_to_sec(q * tpq, tpq, tcs_c) for q in range(17)]
+def true_t(r):
+    return float(np.interp(r, kb, kc))
+
+raster = np.arange(0, len(ref) / SR, ANNOTATION_STEP)
+ref_a, t_a, ref_b, t_b = kb[2], kc[2], kb[14], kc[14]
+ks = [float(r) for r in raster if ref_a < r < ref_b]
+prior = [t_a + (r - ref_a) * (t_b - t_a) / (ref_b - ref_a) for r in ks]
+res = fix_target_realign(ref_a, t_a, ref_b, t_b, ks, prior, 4.0, None)
+truth = [true_t(r) for r in ks]
+
+def nearest_ix(r):
+    return int(np.argmin(np.abs(np.asarray(ks) - r)))
+at_onsets = []
+for k in range(3, 14):
+    ix = nearest_ix(kb[k])
+    at_onsets.append({'k': k, 'refT': ks[ix], 'true': truth[ix], 'got': res['times'][ix], 'prior': prior[ix]})
+
+errors = {
+    'emptyRaster': fix_target_realign(kb[7], kc[7], kb[7] + 0.01, kc[7] + 0.01, [], []),
+    'reversed': _raises(lambda: fix_target_realign(ref_b, t_b, ref_a, t_a, ks, prior)),
+    'priorLen': _raises(lambda: fix_target_realign(ref_a, t_a, ref_b, t_b, ks, prior[:-1])),
+    'outside': _raises(lambda: fix_target_realign(ref_a, t_a, ref_b, t_b, ks + [ref_b + 1.0], prior + [t_b + 1.0])),
+    'tooShort': _raises(lambda: fix_target_realign(kb[7], kc[7], kb[7] + 0.03, kc[7] + 0.03, [kb[7] + 0.02], [kc[7] + 0.02])),
+}
+
+lanes_t = fix_lanes(512, 16, which='target')
+lanes_r = fix_lanes(512, 16)
+fix_target_dispose()
+after_dispose = _raises(lambda: fix_target_realign(ref_a, t_a, ref_b, t_b, ks, prior))
+lanes_after = _raises(lambda: fix_lanes(512, 16, which='target'))
+ref_still = fix_lanes(512, 16)['which']
+fix_dispose()
+
+print(json.dumps({
+    'info': info, 'beforeBegin': before_begin, 'lanesBefore': lanes_before,
+    'afterDispose': after_dispose, 'lanesAfter': lanes_after, 'refStill': ref_still,
+    'hop': res['hop'], 'n': len(ks), 'times': res['times'], 'truth': truth, 'prior': prior,
+    'tA': t_a, 'tB': t_b, 'atOnsets': at_onsets, 'errors': errors,
+    'targetPeaks': lanes_t['peaks'], 'targetWhich': lanes_t['which'], 'refWhich': lanes_r['which'],
+    'kc': kc, 'targetDur': len(tgt) / SR,
+    'melFramesTarget': lanes_t['mel_frames'], 'melFramesRef': lanes_r['mel_frames'],
+}))
+`;
+
+/** Run one python harness over align-worker.js's own PYTHON_CODE blob. */
+function execPython(harness: string, midiB64: string): any {
+  const workerSrc = fs.readFileSync(
+    path.resolve(__dirname, '../../app/static/js/align-worker.js'),
+    'utf8',
+  );
+  const tpl = workerSrc.match(/const PYTHON_CODE = `([\s\S]*?)`;/);
+  expect(tpl, 'PYTHON_CODE template literal not found in align-worker.js').toBeTruthy();
+  // Evaluate as a template literal so JS escape sequences reach Python
+  // exactly as Pyodide sees them (the 39.3 mechanism).
+  // eslint-disable-next-line no-eval
+  const python: string = eval('`' + tpl![1] + '`');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-fix-spec-'));
+  try {
+    const blobPath = path.join(dir, 'align-worker-python.py');
+    fs.writeFileSync(blobPath, python);
+    const stdout = execFileSync('python3', ['-c', harness, midiB64, blobPath], {
+      encoding: 'utf8',
+      timeout: 110_000,
+    });
+    return JSON.parse(stdout.trim());
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+let workerOut: any = null;
+function runWorkerScenario(): any {
+  if (!workerOut) workerOut = execPython(HARNESS, buildMidiA().toString('base64'));
+  return workerOut;
+}
+
+let overlapOut: any = null;
+function runOverlapScenario(): any {
+  if (!overlapOut) {
+    overlapOut = execPython(HARNESS_OVERLAP, buildMidiOverlap().toString('base64'));
+  }
+  return overlapOut;
+}
+
+let lanesOut: any = null;
+function runLanesScenario(): any {
+  if (!lanesOut) lanesOut = execPython(HARNESS_LANES, buildMidiA().toString('base64'));
+  return lanesOut;
+}
+
+let patOut: any = null;
+function runPatScenario(): any {
+  if (!patOut) patOut = execPython(HARNESS_PAT, buildMidiA().toString('base64'));
+  return patOut;
+}
+
+let scalesOut: any = null;
+function runScalesScenario(): any {
+  if (!scalesOut) scalesOut = execPython(HARNESS_SCALES, buildMidiA().toString('base64'));
+  return scalesOut;
+}
+
+let targetOut: any = null;
+function runTargetScenario(): any {
+  if (!targetOut) targetOut = execPython(HARNESS_TARGET, buildMidiA().toString('base64'));
+  return targetOut;
+}
+
+/** The worker's Python, exactly as Pyodide sees it. */
+function workerPython(): string {
+  const workerSrc = fs.readFileSync(
+    path.resolve(__dirname, '../../app/static/js/align-worker.js'),
+    'utf8',
+  );
+  const tpl = workerSrc.match(/const PYTHON_CODE = `([\s\S]*?)`;/);
+  // eslint-disable-next-line no-eval
+  return eval('`' + tpl![1] + '`');
+}
+
+function expectMonotonic(values: number[]) {
+  for (let k = 1; k < values.length; k++) {
+    expect(values[k], `index ${k} of ${JSON.stringify(values)}`).toBeGreaterThanOrEqual(
+      values[k - 1],
+    );
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* The pure correction model                                           */
+/* ------------------------------------------------------------------ */
+
+test.describe('41. alignment correction — model', () => {
+  test('41.1 the first anchor splits the piece into two corner segments, anchors stay sorted', async ({ page }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const ctx = { nEvents: 10, refDuration: 100 };
+      const st = m.createCorrections();
+      const first = m.setAnchor(st, { i: 4, q: 4, t: 40, kind: 'drag', ts: 1 }, ctx);
+      m.setAnchor(st, { i: 7, q: 7, t: 70, kind: 'approve', ts: 2 }, ctx);
+      m.setAnchor(st, { i: 2, q: 2, t: 20, kind: 'approve', ts: 3 }, ctx);
+      return { first, order: st.anchors.map((a: any) => a.i) };
+    });
+    expect(r.first.segments[0]).toEqual({ iA: -1, tA: 0, iB: 4, tB: 40, interiorCount: 4 });
+    expect(r.first.segments[1]).toEqual({ iA: 4, tA: 40, iB: 10, tB: 100, interiorCount: 5 });
+    expect(r.order).toEqual([2, 4, 7]);
+  });
+
+  test('41.2 anchor validation: neighbour bounds, index range, kind; re-anchor replaces', async ({ page }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const ctx = { nEvents: 10, refDuration: 100 };
+      const st = m.createCorrections();
+      m.setAnchor(st, { i: 4, q: 4, t: 40, kind: 'drag', ts: 1 }, ctx);
+      const threw = (fn: () => void) => {
+        try {
+          fn();
+          return false;
+        } catch {
+          return true;
+        }
+      };
+      const beyondNext = threw(() =>
+        m.setAnchor(st, { i: 2, q: 2, t: 50, kind: 'drag', ts: 2 }, ctx),
+      );
+      const badIndex = threw(() =>
+        m.setAnchor(st, { i: 10, q: 10, t: 90, kind: 'drag', ts: 2 }, ctx),
+      );
+      const badKind = threw(() =>
+        m.setAnchor(st, { i: 3, q: 3, t: 30, kind: 'nudge', ts: 2 }, ctx),
+      );
+      const rePin = m.setAnchor(st, { i: 4, q: 4, t: 45, kind: 'drag', ts: 9 }, ctx);
+      return {
+        beyondNext,
+        badIndex,
+        badKind,
+        count: st.anchors.length,
+        t: st.anchors[0].t,
+        segments: rePin.segments,
+      };
+    });
+    expect(r.beyondNext).toBe(true);
+    expect(r.badIndex).toBe(true);
+    expect(r.badKind).toBe(true);
+    expect(r.count).toBe(1);
+    expect(r.t).toBe(45);
+    expect(r.segments[1].tA).toBe(45);
+  });
+
+  test('41.3 removeAnchor merges; gaps own their anchors and dissolve on re-pin', async ({ page }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const ctx = { nEvents: 10, refDuration: 100 };
+      const st = m.createCorrections();
+      m.setAnchor(st, { i: 2, q: 2, t: 20, kind: 'approve', ts: 1 }, ctx);
+      m.setAnchor(st, { i: 4, q: 4, t: 40, kind: 'drag', ts: 1 }, ctx);
+      m.setAnchor(st, { i: 7, q: 7, t: 70, kind: 'approve', ts: 1 }, ctx);
+      const merged = m.removeAnchor(st, 4, ctx).segment;
+      const gapRes = m.setGap(st, { i: 4, tEnd: 42, tResume: 58, ts: 2 }, ctx);
+      const gapAnchors = st.anchors
+        .filter((a: any) => a.kind === 'gap')
+        .map((a: any) => [a.i, a.t]);
+      const threw = (fn: () => void) => {
+        try {
+          fn();
+          return false;
+        } catch {
+          return true;
+        }
+      };
+      const gapAnchorProtected = threw(() => m.removeAnchor(st, 4, ctx));
+      const afterRemove = m.removeGap(st, 4, ctx).segment;
+      const noGapAnchorsLeft = st.anchors.every((a: any) => a.kind !== 'gap');
+      // Re-pin one endpoint of a fresh gap as a plain drag → the label dissolves.
+      m.setGap(st, { i: 4, tEnd: 42, tResume: 58, ts: 3 }, ctx);
+      m.setAnchor(st, { i: 4, q: 4, t: 41, kind: 'drag', ts: 4 }, ctx);
+      return {
+        merged,
+        gapSegments: gapRes.segments,
+        gapAnchors,
+        gapAnchorProtected,
+        afterRemove,
+        noGapAnchorsLeft,
+        gapsAfterRePin: st.gaps.length,
+      };
+    });
+    expect(r.merged).toEqual({ iA: 2, tA: 20, iB: 7, tB: 70, interiorCount: 4 });
+    expect(r.gapAnchors).toEqual([
+      [4, 42],
+      [5, 58],
+    ]);
+    expect(r.gapSegments[0]).toEqual({ iA: 2, tA: 20, iB: 4, tB: 42, interiorCount: 1 });
+    expect(r.gapSegments[1]).toEqual({ iA: 5, tA: 58, iB: 7, tB: 70, interiorCount: 1 });
+    expect(r.gapAnchorProtected).toBe(true);
+    expect(r.afterRemove).toEqual({ iA: 2, tA: 20, iB: 7, tB: 70, interiorCount: 4 });
+    expect(r.noGapAnchorsLeft).toBe(true);
+    expect(r.gapsAfterRePin).toBe(0);
+  });
+
+  test('41.4 applySegment touches interior only and its before-values undo exactly', async ({ page }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const ctx = { nEvents: 10, refDuration: 100 };
+      const st = m.createCorrections();
+      const seg = m.setAnchor(st, { i: 4, q: 4, t: 40, kind: 'drag', ts: 1 }, ctx)
+        .segments[0]; // events 0..3
+      const refOn = Array.from({ length: 10 }, (_, k) => k * 10);
+      const refOff = Array.from({ length: 10 }, (_, k) => k * 10 + 5);
+      const onBefore = refOn.slice();
+      const offBefore = refOff.slice();
+      const undoEntry = m.applySegment(refOn, refOff, seg, [1, 2, 3, 4], [1.5, 2.5, 3.5, 4.5]);
+      const mutated = refOn.slice();
+      const outsideUntouched =
+        refOn.slice(4).join() === onBefore.slice(4).join() &&
+        refOff.slice(4).join() === offBefore.slice(4).join();
+      // Undo: splice the before-values back.
+      m.applySegment(refOn, refOff, seg, undoEntry.beforeOn, undoEntry.beforeOff);
+      const restored =
+        refOn.join() === onBefore.join() && refOff.join() === offBefore.join();
+      const threw = (fn: () => void) => {
+        try {
+          fn();
+          return false;
+        } catch {
+          return true;
+        }
+      };
+      const lengthGuard = threw(() => m.applySegment(refOn, refOff, seg, [1, 2], [1, 2]));
+      const anchorBefore = m.applyAnchorValue(refOn, 4, 44.5);
+      return { mutated, outsideUntouched, restored, lengthGuard, anchorBefore, anchorNow: refOn[4] };
+    });
+    expect(r.mutated.slice(0, 4)).toEqual([1, 2, 3, 4]);
+    expect(r.outsideUntouched).toBe(true);
+    expect(r.restored).toBe(true);
+    expect(r.lengthGuard).toBe(true);
+    expect(r.anchorBefore).toBe(40);
+    expect(r.anchorNow).toBe(44.5);
+  });
+
+  test('41.5 serialization round-trips; verifyQuarters is the item-T entry guard', async ({ page }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const ctx = { nEvents: 10, refDuration: 100 };
+      const st = m.createCorrections();
+      m.setAnchor(st, { i: 4, q: 4.5, t: 40, kind: 'drag', ts: 111 }, ctx);
+      m.setGap(st, { i: 6, tEnd: 62, tResume: 68, ts: 222 }, ctx);
+      const base = { verovioVersion: '6.3.0', verovioOptions: { expand: 'none' } };
+      const rec = m.serialize(st, base);
+      const back = m.deserialize(rec);
+      const threw = (fn: () => void) => {
+        try {
+          fn();
+          return false;
+        } catch {
+          return true;
+        }
+      };
+      const versionGuard = threw(() => m.deserialize({ version: 0, anchors: [], gaps: [] }));
+      return {
+        rec,
+        backAnchors: back.state.anchors,
+        backGaps: back.state.gaps,
+        backBase: back.base,
+        versionGuard,
+        okSame: m.verifyQuarters([0, 1.5, 2], [0, 1.5, 2]),
+        valueMismatch: m.verifyQuarters([0, 1.5, 2], [0, 1.75, 2]),
+        lengthMismatch: m.verifyQuarters([0, 1.5], [0, 1.5, 2]),
+      };
+    });
+    expect(r.rec.version).toBe(1);
+    expect(r.backBase).toEqual({ verovioVersion: '6.3.0', verovioOptions: { expand: 'none' } });
+    expect(r.backAnchors).toEqual(r.rec.anchors);
+    expect(r.backGaps).toEqual(r.rec.gaps);
+    expect(r.versionGuard).toBe(true);
+    expect(r.okSame.ok).toBe(true);
+    expect(r.valueMismatch.ok).toBe(false);
+    expect(r.valueMismatch.firstMismatch).toEqual({ index: 1, stored: 1.5, fresh: 1.75 });
+    expect(r.lengthMismatch.ok).toBe(false);
+    expect(r.lengthMismatch.lengthMismatch).toBe(true);
+  });
+
+  test('41.16 audio-to-audio anchors: keyed by reference time, segments on the raster, an on-sample anchor owns its sample, in-place grid splices, additive serialisation', async ({ page }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const step = 0.02;
+      const refGrid = Array.from({ length: 501 }, (_, k) => k * step); // 0 … 10 s
+      const grid = refGrid.map((t) => 1 + t * 1.1); // the target starts 1 s late, runs 10% slow
+      const gridRef = grid; // identity of the array must survive every splice
+      const ctx = {
+        refGrid,
+        tLo: grid[0],
+        tHi: grid[grid.length - 1],
+        base: { gridLength: grid.length, duration: 12.5 },
+      };
+      const threw = (fn: () => void) => {
+        try {
+          fn();
+          return false;
+        } catch {
+          return true;
+        }
+      };
+      const st = m.createCorrections();
+      const first = m.setTargetAnchor(
+        st,
+        'b.wav',
+        { refT: 4.01, t: 5.5, kind: 'drag', ts: 1, i: 7, q: 7 },
+        ctx,
+      );
+      m.setTargetAnchor(st, 'b.wav', { refT: 7.0, t: 8.7, kind: 'approve', ts: 2 }, ctx);
+      m.setTargetAnchor(st, 'b.wav', { refT: 2.0, t: 3.2, kind: 'drag', ts: 3 }, ctx);
+      const order = m.targetAnchors(st, 'b.wav').map((a: any) => a.refT);
+      const guards = {
+        tAtNext: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 5, t: 8.7, kind: 'drag', ts: 4 }, ctx)),
+        tAtPrev: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 5, t: 5.5, kind: 'drag', ts: 4 }, ctx)),
+        refAtCorner: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 0, t: 1, kind: 'drag', ts: 4 }, ctx)),
+        refPastEnd: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 10, t: 12, kind: 'drag', ts: 4 }, ctx)),
+        gapKind: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 5, t: 6.5, kind: 'gap', ts: 4 }, ctx)),
+        badCtx: threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 5, t: 6.5, kind: 'drag', ts: 4 }, { refGrid, tLo: 3, tHi: 2 })),
+        ok: !threw(() => m.setTargetAnchor(st, 'b.wav', { refT: 5, t: 6.5, kind: 'drag', ts: 4 }, ctx)),
+      };
+      m.removeTargetAnchor(st, 'b.wav', 5, ctx);
+      // Re-pinning within the eps replaces in place and keeps the hints.
+      const rep = m.setTargetAnchor(st, 'b.wav', { refT: 4.01 + 1e-9, t: 5.6, kind: 'approve', ts: 5 }, ctx);
+      const middle = { ...m.findTargetAnchor(st, 'b.wav', 4.01) };
+      const count = m.targetAnchors(st, 'b.wav').length;
+      // An anchor ON a raster sample owns that sample; one between samples does not.
+      const own = m.applyTargetAnchorValue(grid, refGrid, 7.0, 8.7);
+      const between = m.applyTargetAnchorValue(grid, refGrid, 4.01, 5.6);
+      grid[own.k] = own.before; // the undo of an on-sample anchor is its before-value
+      // In-place splice of the segment between 2.0 and 4.01, then exact restore.
+      const seg = rep.segments[0];
+      const values = Array.from({ length: seg.interiorCount }, () => 4);
+      const applied = m.applyGridSegment(grid, seg, values);
+      const spliced = grid.slice(seg.kLo, seg.kHi + 1).every((v: number) => v === 4);
+      const untouchedBefore = grid[seg.kLo - 1];
+      const untouchedAfter = grid[seg.kHi + 1];
+      for (let k = 0; k < applied.before.length; k++) grid[applied.kLo + k] = applied.before[k];
+      const restored = grid.every((v: number, k: number) => v === 1 + refGrid[k] * 1.1);
+      const lengthGuard = threw(() => m.applyGridSegment(grid, seg, [1, 2]));
+      const merged = m.removeTargetAnchor(st, 'b.wav', 4.01, ctx);
+      // Serialisation: additive, per-target base, round-trip; absent when empty.
+      const rec = m.serialize(st, { verovioVersion: '6.3.0' });
+      const back = m.deserialize(rec);
+      const emptyRec = m.serialize(m.createCorrections(), null);
+      const legacy = m.deserialize({ version: 1, base: null, anchors: [], gaps: [] });
+      const malformed = threw(() =>
+        m.deserialize({ version: 1, anchors: [], gaps: [], audio: { 'b.wav': { anchors: [{ refT: 1 }] } } }),
+      );
+      return {
+        first,
+        order,
+        guards,
+        rep,
+        middle,
+        count,
+        own,
+        between,
+        applied: { kLo: applied.kLo, kHi: applied.kHi, beforeLen: applied.before.length, before0: applied.before[0] },
+        spliced,
+        untouchedBefore,
+        untouchedAfter,
+        restored,
+        sameArray: grid === gridRef,
+        lengthGuard,
+        merged,
+        rec,
+        backAudio: back.state.audio,
+        hasBefore: m.hasTargetAnchors(st),
+        emptyHasAudio: 'audio' in emptyRec,
+        legacyAudio: legacy.state.audio,
+        malformed,
+      };
+    });
+    // Segments on the raster: strictly between the anchors, corners frozen.
+    expect(r.first.segments[0]).toEqual({ refA: 0, tA: 1, refB: 4.01, tB: 5.5, kLo: 1, kHi: 200, interiorCount: 200 });
+    expect(r.first.segments[1]).toMatchObject({ refA: 4.01, tA: 5.5, kLo: 201, kHi: 499, interiorCount: 299 });
+    expect(r.first.segments[1].refB).toBeCloseTo(10, 9);
+    expect(r.order).toEqual([2, 4.01, 7]);
+    expect(r.guards).toEqual({ tAtNext: true, tAtPrev: true, refAtCorner: true, refPastEnd: true, gapKind: true, badCtx: true, ok: true });
+    expect(r.count).toBe(3);
+    expect(r.middle).toEqual({ refT: 4.01, t: 5.6, kind: 'approve', ts: 5, i: 7, q: 7 });
+    // The segment between 2.0 (ON sample 100, excluded) and 4.01 (between samples).
+    expect(r.rep.segments[0]).toEqual({ refA: 2, tA: 3.2, refB: 4.01, tB: 5.6, kLo: 101, kHi: 200, interiorCount: 100 });
+    expect(r.own).toEqual({ k: 350, before: 1 + 7 * 1.1 });
+    expect(r.between).toBeNull();
+    expect(r.applied).toEqual({ kLo: 101, kHi: 200, beforeLen: 100, before0: 1 + 101 * 0.02 * 1.1 });
+    expect(r.spliced).toBe(true);
+    expect(r.untouchedBefore).toBeCloseTo(1 + 100 * 0.02 * 1.1, 12);
+    expect(r.untouchedAfter).toBeCloseTo(1 + 201 * 0.02 * 1.1, 12);
+    expect(r.restored).toBe(true);
+    expect(r.sameArray).toBe(true);
+    expect(r.lengthGuard).toBe(true);
+    expect(r.merged.segment).toEqual({ refA: 2, tA: 3.2, refB: 7, tB: 8.7, kLo: 101, kHi: 349, interiorCount: 249 });
+    // Serialisation.
+    expect(r.rec.version).toBe(1);
+    expect(r.rec.base).toEqual({ verovioVersion: '6.3.0' });
+    expect(r.rec.audio['b.wav'].base).toEqual({ gridLength: 501, duration: 12.5 });
+    expect(r.rec.audio['b.wav'].anchors.map((a: any) => a.refT)).toEqual([2, 7]);
+    expect(r.backAudio).toEqual(r.rec.audio);
+    expect(r.hasBefore).toBe(true);
+    expect(r.emptyHasAudio).toBe(false);
+    expect(r.legacyAudio).toEqual({});
+    expect(r.malformed).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* The worker's anchored segment realign                               */
+/* ------------------------------------------------------------------ */
+
+test.describe('41. alignment correction — worker segment realign', () => {
+  test('41.6 fix_begin builds the score_align event table; corner refill recovers a known tempo map', async () => {
+    test.setTimeout(120_000);
+    const out = runWorkerScenario();
+    expect(out.events.n_events).toBe(N_NOTES);
+    for (let k = 0; k < N_NOTES; k++) {
+      expect(out.events.score_onset[k]).toBeCloseTo(k, 9);
+      expect(out.events.synth_onset[k]).toBeCloseTo(0.5 * k, 9);
+      expect(out.trueOn[k]).toBeCloseTo(trueOnset(k), 9);
+    }
+    // Corner-to-corner refill (all 16 events interior), guided only by the
+    // naive linear prior, must land near the analytic truth.
+    expect(out.s1.hop).toBe(512);
+    expect(out.s1.ref_onset.length).toBe(N_NOTES);
+    expectMonotonic(out.s1.ref_onset);
+    for (let k = 0; k < N_NOTES; k++) {
+      expect(
+        Math.abs(out.s1.ref_onset[k] - trueOnset(k)),
+        `event ${k}: got ${out.s1.ref_onset[k]}, true ${trueOnset(k)}`,
+      ).toBeLessThan(0.2);
+    }
+    expectMonotonic(out.s1.ref_offset);
+  });
+
+  test('41.7 a wrong anchor bends its flanks locally: bounds, monotonicity, far ends stay true', async () => {
+    const out = runWorkerScenario();
+    const t8w = out.t8w;
+    // Left flank: events 0..7 stay within [0, t8w] and monotonic.
+    expect(out.s2l.ref_onset.length).toBe(8);
+    expectMonotonic(out.s2l.ref_onset);
+    for (const v of out.s2l.ref_onset) {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(t8w);
+    }
+    // Far from the anchor the band snaps back to the truth.
+    for (let k = 0; k <= 4; k++) {
+      expect(Math.abs(out.s2l.ref_onset[k] - trueOnset(k))).toBeLessThan(0.25);
+    }
+    // Right flank: events 9..15 within [t8w, ref_dur], monotonic, tail true.
+    expect(out.s2r.ref_onset.length).toBe(7);
+    expectMonotonic(out.s2r.ref_onset);
+    for (const v of out.s2r.ref_onset) {
+      expect(v).toBeGreaterThanOrEqual(t8w);
+      expect(v).toBeLessThanOrEqual(out.events.ref_duration);
+    }
+    for (let k = 13; k <= 15; k++) {
+      expect(Math.abs(out.s2r.ref_onset[k - 9] - trueOnset(k))).toBeLessThan(0.25);
+    }
+    // The whole corrected sequence is monotonic across the join.
+    expectMonotonic([...out.s2l.ref_onset, t8w, ...out.s2r.ref_onset]);
+  });
+
+  test('41.8 empty interiors, error paths, and the adaptive hop cap', async () => {
+    const out = runWorkerScenario();
+    // Consecutive anchors: nothing to refill, no DTW run.
+    expect(out.s3).toEqual({ ref_onset: [], ref_offset: [], anchor_a_offset: null, hop: 0 });
+    // Bad calls raise instead of returning silently wrong data.
+    expect(out.s4.badIndices).toBe(true);
+    expect(out.s4.reversedTimes).toBe(true);
+    expect(out.s4.priorLen).toBe(true);
+    expect(out.s4.afterDispose).toBe(true);
+    // maxFrames 200 on the full piece drives the hop to the cap's value.
+    const expectedHop = Math.max(
+      512,
+      Math.ceil((out.events.midi_duration * 22050) / 200),
+    );
+    expect(out.s5.hop).toBe(expectedHop);
+    expectMonotonic(out.s5.ref_onset);
+  });
+
+  test('41.9 a discontinuous map cannot sever the banded refill (bridged band floors)', async () => {
+    const out = runWorkerScenario();
+    const trueC: number[] = out.trueC;
+    // The reference genuinely jumps ~16.7 s between events 8 and 9 — steeper
+    // per score frame than the band slack at this hop. Pre-bridge, the band
+    // rows went disjoint there and the decoded path corrupted WHOLESALE
+    // (events far from the jump displaced by tens of seconds — the corpus
+    // break). With connective floors the refill stays glued to the truth on
+    // BOTH sides of the jump.
+    expect(out.s6.ref_onset.length).toBe(N_NOTES);
+    expectMonotonic(out.s6.ref_onset);
+    for (let k = 0; k < N_NOTES; k++) {
+      // Events 7–9 straddle the jump itself, where placement within the
+      // giant sustain is genuinely ambiguous at this coarse hop (~120 ms
+      // frames); everywhere else the refill must be tight. Pre-bridge, the
+      // OPENING sat ~15.6 s off — either bound catches that wholesale.
+      const tol = k >= 7 && k <= 9 ? 2.5 : 0.35;
+      expect(
+        Math.abs(out.s6.ref_onset[k] - trueC[k]),
+        `event ${k}: got ${out.s6.ref_onset[k]}, true ${trueC[k]}`,
+      ).toBeLessThan(tol);
+    }
+    expectMonotonic(out.s6.ref_offset);
+  });
+
+  test('41.10 an offset sustaining past the segment continues at its rate — never clipped, never null', async () => {
+    const out = runOverlapScenario();
+    const o = out.over;
+    const rate = (o.t_b - o.t_a) / (o.s_b - o.s_a);
+    // Precondition: the left anchor's note genuinely outlasts the segment.
+    expect(o.s_off_a).toBeGreaterThan(o.s_b);
+    expect(o.ref_onset.length).toBeGreaterThan(0);
+    // It used to come back null, and the caller then left ref_offset[i_a]
+    // STALE — a rightward drag could put it at or before the new onset, which
+    // the synth floors at 20 ms and the ear hears as a dropped note. Now it
+    // continues at the segment's own average rate.
+    expect(o.anchor_a_offset).not.toBeNull();
+    expect(o.anchor_a_offset).toBeGreaterThan(o.t_b);
+    expect(o.anchor_a_offset).toBeCloseTo(o.t_b + (o.s_off_a - o.s_b) * rate, 6);
+    // Interior offsets that overrun are no longer pinned to the segment edge
+    // (they used to come back as an exact run of t_b, truncating the notes).
+    o.s_off_interior.forEach((s: number, k: number) => {
+      if (s > o.s_b) {
+        expect(o.ref_offset[k]).toBeGreaterThan(o.t_b);
+        expect(o.ref_offset[k]).toBeCloseTo(o.t_b + (s - o.s_b) * rate, 6);
+      }
+      // Whatever the case, a note never ends at or before it starts.
+      expect(o.ref_offset[k]).toBeGreaterThan(o.ref_onset[k]);
+    });
+    // Onsets still clip INTO the segment: only offsets may reach past it.
+    o.ref_onset.forEach((v: number) => {
+      expect(v).toBeGreaterThanOrEqual(o.t_a);
+      expect(v).toBeLessThanOrEqual(o.t_b);
+    });
+    // The extension is capped by the recording.
+    expect(o.anchor_a_offset).toBeLessThanOrEqual(out.events.ref_duration);
+    // Control: an offset inside the span is mapped by the warp exactly as
+    // before — the new rule touches nothing that already worked.
+    const c = out.ctrl;
+    expect(c.s_off_a).toBeLessThan(c.s_b);
+    expect(c.anchor_a_offset).toBeGreaterThan(c.t_a);
+    expect(c.anchor_a_offset).toBeLessThan(c.t_b);
+  });
+
+  test('41.11 fix_lanes: a uint8 mel spectrogram, the fine-hop onset curve, and one picked peak per true onset', async () => {
+    test.setTimeout(120_000);
+    const out = runLanesScenario();
+    // Session-bound like the realign: nothing before fix_begin, nothing after dispose.
+    expect(out.before_begin).toBe(true);
+    expect(out.after_dispose).toBe(true);
+    // Geometry: 64 mel bins × one frame per 512 samples; each lane reports its
+    // own frame count (their windows differ, so the tails differ by a frame or two).
+    expect(out).toMatchObject({ hop: 512, sr: 22050, n_mels: 64 });
+    expect(out.mel_shape).toEqual([64, out.n_frames]);
+    expect(Math.abs(out.n_frames - (out.ref_duration * 22050) / 512)).toBeLessThan(5);
+    expect(out.onset_len).toBe(out.onset_frames);
+    expect(Math.abs(out.onset_len - out.n_frames)).toBeLessThan(4);
+    expect(out.mel_dtype).toBe('uint8');
+    expect(out.onset_dtype).toBe('float32');
+    // Frame times are window CENTRES: each lane says where its frame 0 sits.
+    expect(out.mel_t0).toBeCloseTo(2048 / 2 / 22050, 9);
+    expect(out.onset_t0).toBeCloseTo(1024 / 2 / 22050, 9);
+    // The mel is scaled to the loudest frame; the silences either side are dark
+    // and the first note is not.
+    expect(out.mel_max).toBe(255);
+    expect(out.mel_lead_mean).toBeLessThan(out.mel_note_mean);
+    expect(out.mel_tail_mean).toBeLessThan(out.mel_note_mean);
+    expect(out.mel_lead_mean).toBeLessThan(60);
+    expect(out.mel_tail_mean).toBeLessThan(60);
+    // The onset curve keeps compute_onset_strength's unit peak.
+    expect(out.onset_max).toBeCloseTo(1, 3);
+    // Peak-picking: exactly one peak per note, each within ONE frame (23 ms) of
+    // the analytic onset — measured at ≤ 9 ms, so the window-centre time
+    // convention is the right one — in order, and no spurious peaks in the
+    // sustains or the releases (energy only ever DROPS there).
+    expect(out.peaks).toHaveLength(N_NOTES);
+    expectMonotonic(out.peaks);
+    const TOL = 512 / 22050;
+    out.peaks.forEach((p: number, k: number) => {
+      expect(
+        Math.abs(p - out.true_on[k]),
+        `peak ${k}: got ${p}, true ${out.true_on[k]}`,
+      ).toBeLessThan(TOL);
+    });
+    // A perceived attack per peak; the ladder's 10 ms attacks put it on the
+    // physical onset (within one frame).
+    expect(out.pat).toHaveLength(N_NOTES);
+    out.pat.forEach((p: number, k: number) => {
+      expect(Math.abs(p - out.true_on[k]), `pat ${k}`).toBeLessThan(TOL + 0.01);
+    });
+    expect(out.mel_window).toBe('hann');
+    expect(out.onset_hop).toBe(512);
+    expect(out.mel_hop).toBe(512);
+  });
+
+  test('41.12 perceived attack times lag slow attacks by half the ramp; interp_linear_extrap matches interp1d; the worker no longer loads scipy', async () => {
+    test.setTimeout(120_000);
+    // The worker's Python must not import scipy anywhere (the ~2 s of runtime
+    // load and import it cost was the largest single arming item).
+    expect(workerPython()).not.toMatch(/^\s*(from|import)\s+scipy/m);
+    const workerJs = fs.readFileSync(
+      path.resolve(__dirname, '../../app/static/js/align-worker.js'),
+      'utf8',
+    );
+    expect(workerJs).toMatch(/loadPackage\(\["numpy"\]\)/);
+    const out = runPatScenario();
+    // One flux peak per tone, early in the ramp; the perceived attack ~50 ms
+    // after each physical start (a sqrt ramp reaches half amplitude a quarter
+    // of the way in), i.e. later than the flux peak.
+    expect(out.peaks).toHaveLength(6);
+    expect(out.pat).toHaveLength(6);
+    out.starts.forEach((s: number, k: number) => {
+      expect(out.peaks[k], `peak ${k}`).toBeGreaterThan(s - 0.03);
+      expect(out.peaks[k], `peak ${k}`).toBeLessThan(s + 0.1);
+      expect(Math.abs(out.pat[k] - (s + 0.05)), `pat ${k}: ${out.pat[k]} vs ${s + 0.05}`).toBeLessThan(0.02);
+      expect(out.pat[k], `pat ${k} after peak`).toBeGreaterThan(out.peaks[k] - 0.01);
+    });
+    // Scipy-free interpolation: identical to interp1d inside AND outside the
+    // range (linear extrapolation from the end segments), scalars included.
+    expect(out.interp_max_diff).toBeLessThan(1e-9);
+    expect(out.scalar_ok).toBe(true);
+    expect(out.scalar_type_ok).toBe(true);
+  });
+
+  test('41.13 the spectrogram\'s frequency scale: mel, log (equal ratios), linear (equal steps) filterbanks, band centres reported', async () => {
+    test.setTimeout(120_000);
+    const out = runScalesScenario();
+    for (const scale of ['mel', 'log', 'linear']) {
+      const o = out[scale];
+      expect(o.fb_shape, scale).toEqual([16, 1025]);
+      expect(o.row_sums_min, scale).toBeGreaterThan(0);
+      expect(o.centres, scale).toHaveLength(16);
+      expectMonotonic(o.centres);
+      expect(o.lanes_scale).toBe(scale);
+      expect(o.band_hz).toEqual(o.centres);
+      expect(o.mel_shape[0]).toBe(16);
+      expect(o.mel_max).toBe(255);
+      expect(o.onset_none).toBe(true); // what: 'mel' recomputes the spectrogram alone
+    }
+    // Linear: equal steps. Log: equal ratios. Mel: neither (denser low down).
+    const steps = (c: number[]) => c.slice(1).map((v, k) => v - c[k]);
+    const ratios = (c: number[]) => c.slice(1).map((v, k) => v / c[k]);
+    const spread = (a: number[]) => Math.max(...a) / Math.min(...a);
+    expect(spread(steps(out.linear.centres))).toBeLessThan(1.001);
+    expect(spread(ratios(out.log.centres))).toBeLessThan(1.001);
+    expect(spread(steps(out.mel.centres))).toBeGreaterThan(3);
+    expect(spread(ratios(out.mel.centres))).toBeGreaterThan(1.5);
+  });
+
+  // --- Increment 4 (2026-09-03): gaps keep their label under an endpoint drag ---
+
+  test('41.14 a gap endpoint re-pinned AS gap moves that boundary and keeps the label; re-pinned as a plain anchor it dissolves; syncGapTimes follows spliced anchors', async ({ page }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const ctx = { nEvents: 10, refDuration: 100 };
+      const st = m.createCorrections();
+      m.setGap(st, { i: 4, tEnd: 42, tResume: 58, ts: 1 }, ctx);
+      const moveLeft = m.setAnchor(st, { i: 4, q: null, t: 40, kind: 'gap', ts: 2 }, ctx);
+      const afterLeft = { ...st.gaps[0] };
+      m.setAnchor(st, { i: 5, q: null, t: 60, kind: 'gap', ts: 3 }, ctx);
+      const afterRight = { ...st.gaps[0] };
+      const kinds = st.anchors.map((a: any) => a.kind);
+      // A direct splice — what snapshot undo/redo does — followed by the sync.
+      st.anchors.find((a: any) => a.i === 4).t = 41;
+      m.syncGapTimes(st);
+      const afterSync = { ...st.gaps[0] };
+      // Re-pinned as a plain drag anchor, the label dissolves (the model's
+      // rule is unchanged; fix-mode never takes this path on an endpoint).
+      m.setAnchor(st, { i: 4, q: 4, t: 39, kind: 'drag', ts: 4 }, ctx);
+      return {
+        moveLeft: moveLeft.segments,
+        afterLeft,
+        afterRight,
+        kinds,
+        afterSync,
+        gapsAfterDrag: st.gaps.length,
+      };
+    });
+    expect(r.afterLeft).toMatchObject({ i: 4, tEnd: 40, tResume: 58 });
+    expect(r.afterRight).toMatchObject({ i: 4, tEnd: 40, tResume: 60 });
+    expect(r.kinds).toEqual(['gap', 'gap']);
+    // The gap span itself: zero interior, bounded by the two endpoints.
+    expect(r.moveLeft[1]).toEqual({ iA: 4, tA: 40, iB: 5, tB: 58, interiorCount: 0 });
+    expect(r.afterSync).toMatchObject({ tEnd: 41, tResume: 60 });
+    expect(r.gapsAfterDrag).toBe(0);
+  });
+
+  test('41.15 the stand-in tool renders a labelled gap as inserted silence at the local tempo — the span no longer one stretched quarter — and holds the shifted file to the same ideal times; unlabelled, it stretches as before', async () => {
+    test.setTimeout(180_000);
+    const root = path.resolve(__dirname, '..', '..');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lh-standins-'));
+    const fixturePath = path.join(root, 'tests/fixtures/alignment.json');
+    const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
+    const mei = path.join(root, 'tests/fixtures/Schumann-Clara_Romanze-ohne-Opuszahl_a-Moll.mei');
+    const run = (alignPath: string, out: string) =>
+      execFileSync(
+        'node',
+        ['tools/make_standins.mjs', '--alignment', alignPath, '--mei', mei, '--out', out, '--recordings', 'audio-b', '--no-dynamics'],
+        { cwd: root, encoding: 'utf8', timeout: 120_000 },
+      );
+    // The engine's own MIDI reader, run under node (the specs are CJS-transpiled).
+    const parseWithEngine = (file: string) =>
+      JSON.parse(
+        execFileSync(
+          'node',
+          [
+            '--input-type=module',
+            '-e',
+            `import fs from 'node:fs';
+             import { parseMidi, tickToSec } from '${pathToFileURL(path.join(root, 'app/static/js/engine/mei-synth.js')).href}';
+             const m = parseMidi(new Uint8Array(fs.readFileSync(process.argv[process.argv.length - 1])));
+             const notes = m.notes.map((n) => ({ s: n.s, e: n.e, t: tickToSec(n.s, m.tpq, m.tempoChanges) }));
+             console.log(JSON.stringify({ tpq: m.tpq, tempoChanges: m.tempoChanges, notes }));`,
+            '--',
+            file,
+          ],
+          { cwd: root, encoding: 'utf8' },
+        ),
+      );
+    const tempoAt = (m: any, tick: number) => {
+      let t = m.tempoChanges[0]?.tempo ?? 500000;
+      for (const c of m.tempoChanges) if (c.tick <= tick) t = c.tempo;
+      return t / 1e6; // seconds per quarter
+    };
+    const s = fixture.body.score;
+    // Control: the fixture as it is. The aligner left 5.6 s on the half-quarter
+    // between events 2 and 3 (q 1 → 1.5); the tool can only stretch it — one
+    // ~11 s-per-quarter tempo knot, under the ceiling, so not even clamped.
+    const ctlOut = path.join(tmp, 'ctl');
+    run(fixturePath, ctlOut);
+    const ctlMan = JSON.parse(fs.readFileSync(path.join(ctlOut, 'standins-manifest.json'), 'utf8'));
+    expect(ctlMan.gaps).toBe(0);
+    const ctl = ctlMan.recordings['audio-b.mp3'];
+    expect(ctl.gaps).toBeUndefined();
+    const ctlMidi = parseWithEngine(path.join(ctlOut, 'audio-b.mp3.standin.mid'));
+    const tpq = ctlMidi.tpq;
+    const tickA = Math.round(s.score_onset[2] * tpq);
+    const tickB = Math.round(s.score_onset[3] * tpq);
+    expect(tempoAt(ctlMidi, tickA)).toBeGreaterThan(8);
+    // Labelled: the same alignment carrying the gap in header.corrections.
+    const gapAnchor = (i: number) => ({ i, q: s.score_onset[i], t: s.ref_onset[i], kind: 'gap', ts: 1 });
+    fixture.header.corrections = {
+      version: 1,
+      base: null,
+      anchors: [gapAnchor(2), gapAnchor(3)],
+      gaps: [{ i: 2, tEnd: s.ref_onset[2], tResume: s.ref_onset[3], ts: 1 }],
+    };
+    const gapAlign = path.join(tmp, 'alignment-gap.json');
+    fs.writeFileSync(gapAlign, JSON.stringify(fixture));
+    const gapOut = path.join(tmp, 'gap');
+    const log = run(gapAlign, gapOut);
+    expect(log).toMatch(/1 unscored-audio gap\(s\) → rendered as silence/);
+    const man = JSON.parse(fs.readFileSync(path.join(gapOut, 'standins-manifest.json'), 'utf8'));
+    expect(man.gaps).toBe(1);
+    const rec = man.recordings['audio-b.mp3'];
+    expect(rec.gaps).toHaveLength(1);
+    const g = rec.gaps[0];
+    expect(g.eventIx).toBe(2);
+    expect(g.spanS).toBeCloseTo(s.ref_onset[3] - s.ref_onset[2], 3);
+    expect(g.silenceTicks).toBeGreaterThan(0);
+    expect(g.localSecondsPerQuarter).toBeLessThan(3); // the neighbours run at ~0.75–1.2 s/q
+    expect(Math.abs(g.spanSecondsPerQuarter - g.localSecondsPerQuarter)).toBeLessThan(g.localSecondsPerQuarter * 0.1);
+    expect(rec.silenceTicks).toBe(g.silenceTicks);
+    expect(rec.clampedSegments).toBe(0);
+    expect(rec.maxOnsetErrorMs).toBeLessThan(1); // verification ran on the shifted file, and passed
+    // The written file: the span runs at the local tempo; nothing before the
+    // gap moved; the resume onset sits `silenceTicks` later and still lands at
+    // its ideal time; no note rings through the silence.
+    const gapMidi = parseWithEngine(path.join(gapOut, 'audio-b.mp3.standin.mid'));
+    expect(tempoAt(gapMidi, tickA)).toBeLessThan(3);
+    expect(gapMidi.notes.length).toBe(ctlMidi.notes.length);
+    const before = (m: any) => m.notes.filter((n: any) => n.s < tickB).map((n: any) => n.s).sort((a: number, b: number) => a - b);
+    expect(before(gapMidi)).toEqual(before(ctlMidi));
+    const firstAfter = (m: any) => Math.min(...m.notes.filter((n: any) => n.s >= tickB).map((n: any) => n.s));
+    expect(firstAfter(ctlMidi)).toBe(tickB);
+    expect(firstAfter(gapMidi)).toBe(tickB + g.silenceTicks);
+    const timeOfFirstAfter = (m: any) => m.notes.find((n: any) => n.s === firstAfter(m)).t;
+    expect(timeOfFirstAfter(ctlMidi)).toBeCloseTo(s.ref_onset[3], 2);
+    expect(timeOfFirstAfter(gapMidi)).toBeCloseTo(s.ref_onset[3], 2);
+    expect(gapMidi.notes.filter((n: any) => n.s < tickB && n.e > tickB)).toEqual([]);
+    // --no-gap-silence restores the stretch for comparison.
+    const offOut = path.join(tmp, 'off');
+    execFileSync(
+      'node',
+      ['tools/make_standins.mjs', '--alignment', gapAlign, '--mei', mei, '--out', offOut, '--recordings', 'audio-b', '--no-dynamics', '--no-gap-silence'],
+      { cwd: root, encoding: 'utf8', timeout: 120_000 },
+    );
+    const offMidi = parseWithEngine(path.join(offOut, 'audio-b.mp3.standin.mid'));
+    expect(firstAfter(offMidi)).toBe(tickB);
+    expect(tempoAt(offMidi, tickA)).toBeGreaterThan(8);
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test('41.17 audio-to-audio refill: a target resident beside the reference, the grid between two anchors recovered from a naive prior, lanes on the target, error paths, dispose', async () => {
+    test.setTimeout(120_000);
+    const out = runTargetScenario();
+    // Lifecycle: nothing before begin, nothing after dispose, the reference session untouched.
+    expect(out.beforeBegin).toBe(true);
+    expect(out.lanesBefore).toBe(true);
+    expect(out.info.name).toBe('target.wav');
+    expect(out.info.duration).toBeCloseTo(out.targetDur, 6);
+    expect(out.afterDispose).toBe(true);
+    expect(out.lanesAfter).toBe(true);
+    expect(out.refStill).toBe('ref');
+    // The refill: every raster point between the anchors, non-decreasing,
+    // inside [tA, tB], at the fine hop.
+    expect(out.hop).toBe(512);
+    expect(out.times.length).toBe(out.n);
+    expectMonotonic(out.times);
+    for (const v of out.times) {
+      expect(v).toBeGreaterThanOrEqual(out.tA);
+      expect(v).toBeLessThanOrEqual(out.tB);
+    }
+    // The naive linear prior is ~0.57 s off at quarter 8; the refill is
+    // within a few frames of the truth at every interior onset and closer
+    // than the prior everywhere it mattered.
+    const priorWorst = Math.max(...out.atOnsets.map((o: any) => Math.abs(o.prior - o.true)));
+    expect(priorWorst).toBeGreaterThan(0.4);
+    for (const o of out.atOnsets) {
+      expect(Math.abs(o.got - o.true), `event ${o.k}: got ${o.got}, true ${o.true}`).toBeLessThan(0.1);
+    }
+    // Inside a sustained pure tone the cost is flat and the path is decided
+    // by tie-breaks, so mid-note errors up to the note-length difference are
+    // expected on THIS corpus (real audio never ties); bound them loosely.
+    const worst = Math.max(...out.times.map((v: number, k: number) => Math.abs(v - out.truth[k])));
+    expect(worst).toBeLessThan(0.25);
+    // Error paths.
+    expect(out.errors.emptyRaster).toEqual({ times: [], hop: 0 });
+    expect(out.errors.reversed).toBe(true);
+    expect(out.errors.priorLen).toBe(true);
+    expect(out.errors.outside).toBe(true);
+    expect(out.errors.tooShort).toBe(true);
+    // Lanes on the TARGET: its own frame count and a picked peak within two
+    // frames of every target onset after the first (t = 0 is undetectable by
+    // construction, as in 41.11).
+    expect(out.targetWhich).toBe('target');
+    expect(out.refWhich).toBe('ref');
+    expect(out.melFramesTarget).not.toBe(out.melFramesRef);
+    for (let k = 1; k < 16; k++) {
+      const nearest = Math.min(...out.targetPeaks.map((p: number) => Math.abs(p - out.kc[k])));
+      expect(nearest, `target onset ${k} at ${out.kc[k]}`).toBeLessThan(0.05);
+    }
+  });
+});

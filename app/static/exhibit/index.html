@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <!-- Kiosk: fixed scale, no pinch, no double-tap zoom, and the safe-area inset
+       honoured so a rotated half is not clipped by the device's rounded corners. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <!-- Title is set from the string catalogue by main.js; this is the pre-script
+       fallback only, and the one place a literal is unavoidable. -->
+  <title>Same Procedure…?</title>
+  <link rel="stylesheet" href="./exhibit.css" />
+</head>
+<body>
+  <!-- One screen: N viewports with the middle band between them. Every dimension
+       comes from exhibit/config.js, so the laptop, the iPad, and the table are
+       three URLs rather than three builds. -->
+  <main id="screen"></main>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

@@ -8,18 +8,48 @@
 //  version
 //} from './main.js';
 
-import {
-  attemptFetchExternalResource,
-  markSelection,
-  registerExtract,
-  registerMusicalMaterial,
-} from "./annotation.js";
 import { nsp, politeness } from "./linked-data.js";
+import { createLimitedFetch, withLimitedFetch } from "./solid-fetch.js";
 
 import { storage, versionString } from "./listen.js";
 import { ensureRelativeURL } from "./utils.js";
 
-export const solid = solidClientAuthentication.default;
+// The Solid auth bundle (vendor/solid-client-authn.bundle.js) is a classic
+// script that sets this global synchronously, before this module evaluates.
+// If it fails to initialise — e.g. an older browser choking inside the bundle
+// (observed on aging Chrome as an uncaught error in the bundle plus an "unload
+// is not allowed" permissions-policy warning) — the global is left undefined.
+// Guard the deref so THIS module still evaluates: otherwise a top-level throw
+// here cascades, via listen.js's static import of this module, into listen.js
+// never running at all — which silently kills the entire listen UI (including
+// the local-file "Manage recordings" modal, which has no Solid dependency).
+// When unavailable, `solid` is null and Solid features degrade to no-ops.
+// The 1.x bundle puts the API on `.default`; the 5.x bundle exports it directly.
+// `solid.fetch` keeps within the pod host's request limit (see solid-fetch.js).
+const solidLibrary =
+  (typeof solidClientAuthentication !== "undefined" &&
+    solidClientAuthentication &&
+    (solidClientAuthentication.default || solidClientAuthentication)) ||
+  null;
+// One budget per pod host, shared by the signed-in fetch and `publicFetch`:
+// whether the host counts requests per session or per client isn't known, so
+// they are counted together.
+const _hostStates = new Map();
+export const solid =
+  solidLibrary && withLimitedFetch(solidLibrary, { states: _hostStates });
+/**
+ * The plain (unauthenticated) fetch, kept within the same host limits, for
+ * reading other people's pods without sending the user's credentials there.
+ */
+export const publicFetch = createLimitedFetch(
+  (input, init) => fetch(input, init),
+  { states: _hostStates },
+);
+
+// Never ported from mei-friend's main.js, where it wrote to the log pane: the
+// error branches below called an undefined `log`, so a network error became a
+// ReferenceError.
+const log = (...args) => console.warn(...args);
 
 // mei-friend resource containers (internal path within Solid storage)
 export const friendContainer = "at.ac.mdw.mei-friend/";
@@ -105,6 +135,71 @@ export async function postResource(containerUri, resource) {
 }
 
 /**
+ * PUT a resource at a caller-chosen URI. Eliminates two round trips per
+ * resource vs `postResource`: no container-existence HEAD (the
+ * orchestrator's session-level cache is trusted) and no follow-up
+ * "@id-fixup" GET+PUT (we know the URI up front and bake it in).
+ *
+ * Sets dct:creator / dct:created / dct:provenance and the @id, then PUTs
+ * with `If-None-Match: *` so an accidental URI collision fails fast
+ * rather than overwriting someone else's resource. Throws on non-2xx so
+ * callers can surface failure to the user.
+ *
+ * @param {string} uri — fully-qualified target URI (orchestrator-minted).
+ * @param {object} body — JSON-LD body. Mutated in place to add metadata.
+ * @returns {Promise<Response>} the PUT response.
+ */
+export async function createResourceAtUri(uri, body) {
+  const webId = solid.getDefaultSession().info.webId;
+  body["@id"] = uri;
+  body[nsp.DCT + "creator"] = { "@id": webId };
+  body[nsp.DCT + "created"] = new Date().toISOString();
+  body[nsp.DCT + "provenance"] =
+    `Generated using Listen Here v.${versionString}: https://iwk.mdw.ac.at/signature-sound-vienna`;
+  const resp = await solid.fetch(uri, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/ld+json",
+      "If-None-Match": "*",
+    },
+    body: JSON.stringify(body),
+  });
+  if (resp.status === 412) {
+    // Something is already at this (freshly minted) URI. If it is this very
+    // write, sent once with its reply lost and repeated by solid.fetch (see
+    // solid-fetch.js), the resource was created after all.
+    const existing = await _ownWriteAt(uri, body[nsp.DCT + "created"]);
+    if (existing) return existing;
+  }
+  if (!resp.ok) {
+    throw new Error("PUT failed for " + uri + ": " + resp.status + " " + resp.statusText);
+  }
+  return resp;
+}
+
+/**
+ * The GET response for `uri` if the resource there is the one this client
+ * wrote with the given dct:created stamp; otherwise null.
+ */
+async function _ownWriteAt(uri, createdStamp) {
+  try {
+    const resp = await solid.fetch(uri, {
+      headers: { Accept: "application/ld+json" },
+    });
+    if (!resp.ok) return null;
+    const doc = await resp.clone().json();
+    const nodes = Array.isArray(doc) ? doc : doc["@graph"] || [doc];
+    const node = nodes.find((n) => n && n["@id"] === uri);
+    let created = node && node[nsp.DCT + "created"];
+    if (Array.isArray(created)) created = created[0];
+    if (created && typeof created === "object") created = created["@value"];
+    return created === createdStamp ? resp : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
  * Safely append to the specified resource:
  * 1. Get fresh copy of resource from URI, noting its etag
  * 2. Apply patch to the obtained resource copy
@@ -114,17 +209,73 @@ export async function postResource(containerUri, resource) {
  * n.b. in the glorious future, this should be done using HTTP PATCH.
  * but while the implementation of this in Solid is still under discussion,
  * we do this instead.
+ *
+ * `patch` is a JSON Patch, or a function from the resource's current document
+ * to one. A function is asked afresh on every attempt, so a patch that may
+ * already have landed (a PUT whose reply was lost, repeated by solid.fetch;
+ * see solid-fetch.js) can return only what is still missing, and an empty
+ * patch writes nothing.
+ * `options.createIfMissing`: a function returning the initial document, used
+ * when the GET answers 404 and the patch has something to put in it.
+ * Any other failed GET throws.
  */
 
-export async function safelyPatchResource(uri, patch, _retries = 5) {
+export async function safelyPatchResource(
+  uri,
+  patch,
+  _retries = 5,
+  options = {},
+) {
+  const opsFor = (doc) => (typeof patch === "function" ? patch(doc) : patch);
+  // Never from the browser's HTTP cache: the ETag read here guards the write.
   const resp = await solid.fetch(uri, {
+    cache: "no-store",
     headers: {
       Accept: "application/ld+json",
     },
   });
+  if (resp.status === 404 && options.createIfMissing) {
+    // The resource doesn't exist yet: create it from the supplied initial
+    // document with the patch applied. One GET and one PUT, where establishing
+    // it first (HEAD, then PUT) would have added a request.
+    const initial = options.createIfMissing();
+    const initialOps = opsFor(initial);
+    if (initialOps.length === 0) return resp; // nothing to put in it: leave it missing
+    const created = jsonpatch.applyPatch(initial, initialOps).newDocument;
+    const createResp = await solid.fetch(uri, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/ld+json",
+        "If-None-Match": "*",
+      },
+      body: JSON.stringify(created),
+    });
+    if (createResp.status === 412) {
+      // It was created after our GET (by another writer, or by this PUT sent
+      // once already, its reply lost): patch what is there now.
+      if (_retries <= 0) {
+        console.error("safelyPatchResource: max retries exceeded for", uri);
+        return createResp;
+      }
+      return safelyPatchResource(uri, patch, _retries - 1, options);
+    }
+    if (createResp.status >= 400) {
+      console.warn("Couldn't create resource: ", createResp);
+    } else {
+      console.log("Created and patched: ", uri);
+    }
+    return createResp;
+  }
+  if (!resp.ok) {
+    // Not a document to patch (a missing resource without createIfMissing, a
+    // refusal, a server error): say so, rather than patching an error body.
+    throw new Error("GET " + uri + " failed: " + resp.status);
+  }
   const etag = resp.headers.get("ETag");
   const freshlyFetched = await resp.json();
-  const patched = jsonpatch.applyPatch(freshlyFetched, patch).newDocument;
+  const ops = opsFor(freshlyFetched);
+  if (ops.length === 0) return resp; // already as the patch would make it
+  const patched = jsonpatch.applyPatch(freshlyFetched, ops).newDocument;
   const putResp = await solid.fetch(uri, {
     method: "PUT",
     headers: {
@@ -142,7 +293,7 @@ export async function safelyPatchResource(uri, patch, _retries = 5) {
       "Precondition failed: resource changed while patching. Retrying...",
     );
     await new Promise((r) => setTimeout(r, politeness));
-    return safelyPatchResource(uri, patch, _retries - 1);
+    return safelyPatchResource(uri, patch, _retries - 1, options);
   } else if (putResp.status >= 400) {
     console.warn("Couldn't PUT patched resource: ", putResp);
   } else {
@@ -206,31 +357,88 @@ export async function establishResource(uri, resource) {
   return resp;
 }
 
+/**
+ * Whether `uri` is a resource in the signed-in user's own pod: an http(s) URI
+ * under their storage root (dot segments are resolved by the URL parser
+ * before the comparison). `within`, a path relative to the storage root
+ * (e.g. friendContainer), narrows it to that container.
+ *
+ * Signed requests that write, delete, or read access go only to such URIs.
+ * The auth library signs every request it is given, wherever it goes, and an
+ * annotation loaded from a link (`?loadMM=`) may name any address at all:
+ * someone else's server, or resources in the user's own pod.
+ */
+export async function isInOwnStorage(uri, within = "") {
+  let target, storage;
+  try {
+    target = new URL(uri);
+    storage = new URL(await getSolidStorage());
+  } catch (_) {
+    return false;
+  }
+  if (target.protocol !== "https:" && target.protocol !== "http:") return false;
+  if (target.username || target.password) return false;
+  if (target.origin !== storage.origin) return false;
+  const root = storage.pathname.endsWith("/")
+    ? storage.pathname
+    : storage.pathname + "/";
+  return target.pathname.startsWith(root + within);
+}
+
+/** The given URIs that are not in the user's own pod (see isInOwnStorage). */
+export async function notInOwnStorage(uris, within = "") {
+  const out = [];
+  for (const uri of uris) if (!(await isInOwnStorage(uri, within))) out.push(uri);
+  return out;
+}
+
+// Session-scoped cache for the resolved storage root, keyed by webId. The
+// pod's storage root is constant for a logged-in session, but discovery used
+// to re-derive it (profile fetch + jsonld.expand) once per audio AND per URI
+// variant. Keyed by webId so an in-page account switch invalidates naturally.
+let _storageCache = { webId: null, storage: null };
+
 export async function getSolidStorage() {
-  return getProfile().then(async (profile) => {
-    if (nsp.PIM + "storage" in profile) {
-      let storage = Array.isArray(profile[nsp.PIM + "storage"])
-        ? profile[nsp.PIM + "storage"][0] // TODO what if more than one storage?
-        : profile[nsp.PIM + "storage"];
-      if (typeof storage === "object") {
-        if ("@id" in storage) {
-          storage = storage["@id"];
-        } else {
-          console.warn(
-            "Unexpected pim:storage object in your Solid Pod profile: ",
-            profile,
-          );
-        }
-      }
-      return storage;
-    } else {
-      log(
-        "Sorry, couldn't establish storage location from your Solid Pod's profile ",
-        profile,
-      );
-      throw Error(profile);
-    }
-  });
+  const webId = solid.getDefaultSession().info.webId;
+  if (_storageCache.webId === webId && _storageCache.storage) {
+    return _storageCache.storage;
+  }
+  const profile = await getProfile();
+  if (!profile) {
+    throw new Error(
+      "Couldn't read your Solid pod profile to determine its storage location.",
+    );
+  }
+  // Collect EVERY pim:storage value across the (merged) profile, normalise to
+  // string URIs, and de-dupe. Legacy NSS / solidcommunity.net cards describe
+  // the WebID across several nodes; the storage triple may sit on a node other
+  // than the first — taking `[0]` blindly (the old behaviour) could miss it
+  // entirely and leave every pod URI 404ing.
+  const raw = profile[nsp.PIM + "storage"];
+  const storages = [
+    ...new Set(
+      (Array.isArray(raw) ? raw : raw == null ? [] : [raw])
+        .map((s) => (s && typeof s === "object" ? s["@id"] : s))
+        .filter((s) => typeof s === "string" && s.length > 0),
+    ),
+  ];
+  if (storages.length === 0) {
+    log(
+      "Sorry, couldn't establish storage location from your Solid Pod's profile ",
+      profile,
+    );
+    throw new Error(
+      "Couldn't determine your Solid pod's storage location: no pim:storage in your WebID profile.",
+    );
+  }
+  if (storages.length > 1) {
+    console.warn(
+      "WebID profile lists multiple pim:storage values; using the first:",
+      storages,
+    );
+  }
+  _storageCache = { webId, storage: storages[0] };
+  return storages[0];
 }
 
 export async function establishContainerResource(container) {
@@ -264,19 +472,64 @@ export async function establishContainerResource(container) {
   });
 }
 
-export async function establishDiscoveryResource(currentFileUri) {
+/**
+ * The discovery resource's URI for a recording. Derived from the storage root
+ * and the recording's URI alone, so it costs no request once the storage root
+ * is known. Null when the storage root can't be found.
+ */
+export async function discoveryUriFor(currentFileUri) {
+  const storage = await getSolidStorage();
+  if (!storage) return null;
+  return (
+    storage +
+    friendContainer +
+    discoveryFragment +
+    encodeURIComponent(currentFileUri)
+  );
+}
+
+/** A new, empty discovery resource (a DataCatalog) for a recording. */
+export function newDiscoveryDocument(discoveryUri, currentFileUri) {
+  return {
+    "@id": discoveryUri,
+    "@type": nsp.SCHEMA + "DataCatalog",
+    [nsp.SCHEMA + "description"]:
+      "Collection of datasets about " + currentFileUri,
+    [nsp.SCHEMA + "about"]: { "@id": currentFileUri },
+    [nsp.SCHEMA + "dataset"]: [],
+  };
+}
+
+/**
+ * Establish a recording's discovery resource (HEAD; PUT if it is missing).
+ * `containerKnown`: the caller has already established the discovery
+ * container, so it is not checked again.
+ */
+export async function establishDiscoveryResource(
+  currentFileUri,
+  { containerKnown = false } = {},
+) {
+  if (containerKnown) {
+    const discoveryUri = await discoveryUriFor(currentFileUri);
+    return establishResource(
+      discoveryUri,
+      newDiscoveryDocument(discoveryUri, currentFileUri),
+    );
+  }
   return establishContainerResource(friendContainer + discoveryFragment).then(
     (discoveryContainer) => {
+      if (!discoveryContainer) {
+        throw new Error(
+          "Couldn't establish the discovery container in your Solid pod; try again in a moment.",
+        );
+      }
       // establish a discovery resource (if it doesn't already exist)
       const currentFileUriHash = encodeURIComponent(currentFileUri);
       const discoveryUri = discoveryContainer + currentFileUriHash;
-      return establishResource(discoveryUri, {
-        "@type": nsp.SCHEMA + "DataCatalog",
-        [nsp.SCHEMA + "description"]:
-          "Collection of datasets about " + currentFileUri,
-        [nsp.SCHEMA + "about"]: { "@id": currentFileUri },
-        [nsp.SCHEMA + "dataset"]: [],
-      });
+      return establishResource(
+        discoveryUri,
+        newDiscoveryDocument(discoveryUri, currentFileUri),
+      );
     },
   );
 }
@@ -608,236 +861,95 @@ export async function postWebAnnotation(targetUri, bodyText) {
   return postResource(annotationContainer, resource);
 }
 
+/**
+ * As of the Phase F + drawer-redesign iteration, this function no longer
+ * paints a separate Solid drawer — the V6 annotation drawer subscribes to
+ * `solid-auth-changed` and renders its own footer. We just dispatch the
+ * event with the current login status and clear the "pending" flag so
+ * cancelled-login state doesn't get stuck.
+ */
 export async function populateSolidDrawer() {
-  const solidTab = document.getElementById("solidTab");
   const isLoggedIn = solid.getDefaultSession().info.isLoggedIn;
-
-  // Notify other modules of auth state change
+  if (isLoggedIn) {
+    try { localStorage.removeItem("solidLoginPending"); } catch (_) {}
+  }
   document.dispatchEvent(
     new CustomEvent("solid-auth-changed", { detail: { isLoggedIn } }),
   );
-
-  if (isLoggedIn) {
-    const profile = await getProfile();
-    const webId = solid.getDefaultSession().info.webId;
-    // JSON-LD expanded: foaf:name → [{"@value": "Name"}]
-    const foafName = profile && profile[nsp.FOAF + "name"];
-    const extractedName =
-      Array.isArray(foafName) && foafName.length > 0
-        ? foafName[0]["@value"]
-        : typeof foafName === "string"
-          ? foafName
-          : null;
-    // Fall back to the WebID hostname (e.g. "username.solidcommunity.net")
-    const name = extractedName || (webId ? new URL(webId).hostname : "Unknown");
-
-    solidTab.innerHTML = `
-      <div id="authStatus" style="margin-bottom: 1.5em; color: #1e293b;">
-        Logged in as <strong>${name}</strong>
-        <div style="margin-top: 0.5em;">
-          <a id="solidLogout" style="color: #64748b; font-size: 0.9em; cursor: pointer; text-decoration: underline;">Log out</a>
-        </div>
-      </div>
-      <div class="annotation-loader" style="padding-top: 1.5em; border-top: 1px solid #e2e8f0;">
-        <label for="annotationUrlInput" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Load external annotations (URL)</label>
-        <input type="text" id="annotationUrlInput" placeholder="https://" style="width: 100%; padding: 0.6em; margin-bottom: 0.8em; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;" />
-        <button id="fetchExternalBtn" style="width: 100%; padding: 0.6em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Load</button>
-      </div>
-    `;
-
-    document
-      .getElementById("solidLogout")
-      .addEventListener("click", solidLogout);
-  } else {
-    const wasCancelled = localStorage.getItem("solidLoginPending") !== null;
-    if (wasCancelled) {
-      localStorage.removeItem("solidLoginPending");
-    }
-
-    const storedProvider = localStorage.getItem("solidProvider");
-    const hasStoredSession =
-      localStorage.getItem("solidClientAuthn:currentSession") !== null;
-
-    const annotationLoaderHTML = `
-      <div class="annotation-loader" style="margin-bottom: 2em; padding-bottom: 2em; border-bottom: 1px solid #e2e8f0;">
-        <label for="annotationUrlInput" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Load public annotations (URL)</label>
-        <input type="text" id="annotationUrlInput" placeholder="https://" style="width: 100%; padding: 0.6em; margin-bottom: 0.8em; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;" />
-        <button id="fetchExternalBtn" style="width: 100%; padding: 0.6em; background: #e2e8f0; color: #1e293b; border: 1px solid #cbd5e1; border-radius: 4px; cursor: pointer; font-weight: 500;">Load</button>
-      </div>`;
-
-    if (storedProvider && hasStoredSession && !wasCancelled) {
-      // Reconnect UI — user has a previous Solid session
-      const providerLabel = storedProvider
-        .replace(/^https?:\/\//, "")
-        .replace(/\/$/, "");
-      solidTab.innerHTML =
-        annotationLoaderHTML +
-        `<div id="authStatus">
-          <p style="font-size: 0.9em; color: #475569; margin-bottom: 1em;">
-            Previously connected via <strong>${providerLabel}</strong>
-          </p>
-          <button id="solidReconnectBtn" style="width: 100%; padding: 0.6em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Reconnect to Solid</button>
-          <div style="text-align: center; margin-top: 0.6em;">
-            <a id="solidDifferentBtn" style="color: #64748b; font-size: 0.85em; cursor: pointer; text-decoration: underline;">Use a different account</a>
-          </div>
-        </div>`;
-      document
-        .getElementById("solidReconnectBtn")
-        .addEventListener("click", () => loginAndFetch(storedProvider));
-      document
-        .getElementById("solidDifferentBtn")
-        .addEventListener("click", () => {
-          localStorage.removeItem("solidProvider");
-          localStorage.removeItem("solidClientAuthn:currentSession");
-          populateSolidDrawer();
-        });
-    } else {
-      // Full login UI
-      solidTab.innerHTML =
-        annotationLoaderHTML +
-        `<div id="authStatus">
-          <label for="providerSelect" style="display: block; margin-bottom: 0.5em; font-weight: 600; font-size: 0.9em;">Solid Provider</label>
-          <select name="provider" id="providerSelect" style="width: 100%; padding: 0.6em; margin-bottom: 0.5em; border: 1px solid #cbd5e1; border-radius: 4px;">
-            <option value="https://solidcommunity.net">SolidCommunity.net</option>
-            <option value="https://login.inrupt.com">Inrupt PodSpaces</option>
-            <option value="_other">Other…</option>
-          </select>
-          <div id="customProviderWrap" style="display:none; margin-bottom: 0.5em;">
-            <input type="url" id="customProviderInput" placeholder="https://your-provider.example" style="width: 100%; padding: 0.6em; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;" />
-          </div>
-          ${wasCancelled ? '<div style="color: #ef4444; font-size: 0.85em; margin-bottom: 0.8em;">Login cancelled. Try again?</div>' : ""}
-          <button id="solidLoginBtn" style="width: 100%; padding: 0.6em; margin-top: 0.5em; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 500;">Connect to Solid Pod</button>
-        </div>`;
-      const providerSelect = document.getElementById("providerSelect");
-      const customWrap = document.getElementById("customProviderWrap");
-      providerSelect.addEventListener("change", () => {
-        customWrap.style.display =
-          providerSelect.value === "_other" ? "" : "none";
-      });
-      document.getElementById("solidLoginBtn").addEventListener("click", () => {
-        if (providerSelect.value === "_other") {
-          const custom = document
-            .getElementById("customProviderInput")
-            .value.trim();
-          if (!custom) return;
-          loginAndFetch(
-            custom.startsWith("http") ? custom : "https://" + custom,
-          );
-        } else {
-          loginAndFetch();
-        }
-      });
-    }
-  }
-
-  // Set up annotation loading regardless of auth state
-  document.getElementById("fetchExternalBtn").addEventListener("click", () => {
-    let urlstr = document.getElementById("annotationUrlInput").value.trim();
-    if (urlstr) {
-      if (!(urlstr.startsWith("http://") || urlstr.startsWith("https://"))) {
-        urlstr = "https://" + urlstr;
-      }
-      loadExternalAnnotations(urlstr);
-    }
-  });
 }
+
+// Session-scoped profile cache, keyed by webId (see getSolidStorage).
+let _profileCache = { webId: null, profile: null };
+// The fetch in progress, so callers that arrive before it ends (a listing
+// fans out one call per recording) share it instead of each fetching the card.
+let _profileInFlight = { webId: null, promise: null };
 
 export async function getProfile() {
   const webId = solid.getDefaultSession().info.webId;
-  const profile = await solid
-    .fetch(webId, {
-      headers: {
-        Accept: "application/ld+json",
-      },
-    })
-    .then((resp) => resp.json())
-    .then((json) => jsonld.expand(json))
-    .then((profile) => {
-      let me = Array.from(profile).filter(
-        (e) => "@id" in e && e["@id"] === webId,
-      );
-      if (me.length) {
-        if (me.length > 1) {
-          console.warn(
-            "User profile contains multiple entries for webId: ",
-            me,
-          );
-        }
-        return me[0];
-      } else {
-        // TODO proper error handling
-        console.warn(
-          "User profile contains no entry matching their webId: ",
-          profile,
-          webId,
-        );
-      }
-    });
+  if (_profileCache.webId === webId && _profileCache.profile) {
+    return _profileCache.profile;
+  }
+  if (_profileInFlight.webId === webId && _profileInFlight.promise) {
+    return _profileInFlight.promise;
+  }
+  const promise = _fetchProfile(webId);
+  _profileInFlight = { webId, promise };
+  try {
+    return await promise;
+  } finally {
+    if (_profileInFlight.promise === promise) {
+      _profileInFlight = { webId: null, promise: null };
+    }
+  }
+}
+
+async function _fetchProfile(webId) {
+  const resp = await solid.fetch(webId, {
+    headers: { Accept: "application/ld+json" },
+  });
+  const json = await resp.json();
+  const expanded = await jsonld.expand(json);
+  // A WebID document can describe its subject across MORE THAN ONE node
+  // (public card + extended profile, owl:sameAs, multiple @context blocks —
+  // common on legacy NSS / solidcommunity.net, which is why those accounts
+  // logged the "multiple entries for webId" warning). Picking the first match
+  // silently drops triples (e.g. pim:storage) asserted on a sibling node, so
+  // merge every node whose @id is the webId into one, accumulating each
+  // predicate's values.
+  const mine = Array.from(expanded).filter(
+    (e) => "@id" in e && e["@id"] === webId,
+  );
+  if (mine.length === 0) {
+    // TODO proper error handling
+    console.warn(
+      "User profile contains no entry matching their webId: ",
+      expanded,
+      webId,
+    );
+    return null;
+  }
+  const profile = _mergeNodes(mine);
+  _profileCache = { webId, profile };
   return profile;
 }
 
-function loadExternalAnnotations(urlstr) {
-  const url = new URL(urlstr);
-  const isLoggedIn = solid.getDefaultSession().info.isLoggedIn;
-
-  // Smart fetch strategy
-  let fetchMethod = fetch; // default to plain public fetch
-  const hostname = url.hostname.toLowerCase();
-
-  // Rule 1: Always plain fetch for known public CDNs/repos to prevent credential leakage
-  if (hostname === "raw.githubusercontent.com" || hostname === "github.com") {
-    fetchMethod = fetch;
-  }
-  // Rule 2: Use solid.fetch for known Solid pods if logged in
-  else if (
-    isLoggedIn &&
-    (hostname.includes("solidcommunity.net") ||
-      hostname.includes("inrupt.net") ||
-      hostname.includes("upf.edu"))
-  ) {
-    fetchMethod = solid.fetch;
-  }
-
-  // Ensure we have a wrapper method that falls back securely
-  const smartFetch = async (reqUrl, options) => {
-    let res = await fetchMethod(reqUrl, options);
-    // Fallback: if we tried plain fetch, got 401/403, and are logged in, retry with solid.fetch
-    if (
-      (res.status === 401 || res.status === 403) &&
-      fetchMethod === fetch &&
-      isLoggedIn
-    ) {
-      console.log("Plain fetch denied; retrying with Solid authentication");
-      res = await solid.fetch(reqUrl, options);
+// Merge expanded JSON-LD nodes (all sharing one @id) into a single node,
+// concatenating each predicate's values. Expanded values are already arrays,
+// so the result keeps the standard expanded shape downstream code expects.
+function _mergeNodes(nodes) {
+  const merged = { "@id": nodes[0]["@id"] };
+  for (const node of nodes) {
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "@id") continue;
+      const acc = merged[k]
+        ? Array.isArray(merged[k])
+          ? merged[k]
+          : [merged[k]]
+        : [];
+      merged[k] = acc.concat(v);
     }
-    return res;
-  };
-
-  try {
-    attemptFetchExternalResource(
-      url, // traversal start
-      [
-        new URL(nsp.MAO + "Selection"),
-        new URL(nsp.MAO + "Extract"),
-        new URL(nsp.MAO + "MusicalMaterial"),
-      ], // target types
-      {
-        typeToHandlerMap: {
-          [nsp.MAO + "Selection"]: { func: markSelection },
-          [nsp.MAO + "Extract"]: { func: registerExtract },
-          [nsp.MAO + "MusicalMaterial"]: { func: registerMusicalMaterial },
-        },
-        followList: [
-          new URL(nsp.LDP + "contains"),
-          new URL(nsp.MAO + "setting"),
-          new URL(nsp.FRBR + "embodiment"),
-        ],
-        fetchMethod: smartFetch,
-      },
-    );
-  } catch (e) {
-    console.warn("Could not load external resource:", e);
   }
+  return merged;
 }
 
 /**
@@ -859,6 +971,37 @@ function getCleanRedirectUrl() {
 
 /** Reference to the login popup window (if open). */
 let _loginPopup = null;
+/** Interval id polling for a popup the user closed without finishing login. */
+let _loginPopupPoll = null;
+
+/**
+ * Poll for the login popup being closed before it posts a result. The
+ * success and IdP-error paths both null out `_loginPopup` as their message
+ * arrives, so a still-set reference whose window has `closed === true` can
+ * only mean the user dismissed the popup. Treat that as a cancelled login:
+ * clear the pending flag and dispatch the usual not-logged-in auth change.
+ */
+function _watchPopupClose() {
+  if (_loginPopupPoll) {
+    clearInterval(_loginPopupPoll);
+    _loginPopupPoll = null;
+  }
+  _loginPopupPoll = setInterval(() => {
+    if (!_loginPopup) {
+      clearInterval(_loginPopupPoll);
+      _loginPopupPoll = null;
+      return;
+    }
+    if (_loginPopup.closed) {
+      clearInterval(_loginPopupPoll);
+      _loginPopupPoll = null;
+      _loginPopup = null;
+      console.log("Solid login popup closed before completing login");
+      try { localStorage.removeItem("solidLoginPending"); } catch (_) {}
+      populateSolidDrawer();
+    }
+  }, 500);
+}
 
 /**
  * Listen for postMessage from the login popup.
@@ -918,6 +1061,14 @@ function _setupPopupMessageListener() {
  * future login attempts.
  */
 export async function initSolidAuth() {
+  if (!solid) {
+    console.warn(
+      "Solid authentication unavailable (auth library failed to initialise); " +
+        "Solid features are disabled for this session. Local-file listening is unaffected.",
+    );
+    return;
+  }
+
   // Set up the listener for popup-based logins
   _setupPopupMessageListener();
 
@@ -954,6 +1105,10 @@ export async function initSolidAuth() {
  * @param {string} [provider] – OIDC issuer URL; if omitted, reads from #providerSelect
  */
 export async function loginAndFetch(provider) {
+  if (!solid) {
+    console.warn("Solid login unavailable: auth library failed to initialise.");
+    return;
+  }
   if (!provider) {
     const providerEl = document.getElementById("providerSelect");
     if (!providerEl) {
@@ -964,6 +1119,12 @@ export async function loginAndFetch(provider) {
   }
 
   localStorage.setItem("solidProvider", provider);
+
+  // Signal that a login attempt is now underway (covers both the popup and
+  // redirect-fallback paths below). Listeners use this to switch from a
+  // "your move — sign in" affordance to an "in progress" one, since the app
+  // is genuinely waiting on the OAuth exchange from here on.
+  document.dispatchEvent(new CustomEvent("solid-login-started"));
 
   // The callback URL that the IdP will redirect the popup to.
   // The popup callback page captures this URL and posts it back.
@@ -992,6 +1153,12 @@ export async function loginAndFetch(provider) {
     return;
   }
 
+  // Watch for the user dismissing the popup without completing login: in
+  // that case the popup posts no message (only IdP success/error do), so
+  // we'd otherwise never learn the attempt ended. Surfaces a normal
+  // "not logged in" auth change when it happens.
+  _watchPopupClose();
+
   // Call solid.login() with handleRedirect — the library prepares the
   // OIDC auth request (stores code_verifier etc. in localStorage) and
   // then calls our callback with the full IdP authorization URL instead
@@ -1011,6 +1178,17 @@ export async function solidLogout() {
   return solid.logout().then(() => {
     localStorage.removeItem("solidProvider");
     storage.removeItem("restoreSolidSession"); // legacy cleanup
+    _clearSessionCaches();
     populateSolidDrawer();
   });
+}
+
+// Drop the per-session profile/storage caches. Called on logout so a
+// subsequent login (or anonymous browsing) never reads another session's
+// resolved storage root. The cached values aren't secret (a storage URI), but
+// clearing them on logout is the correct hygiene.
+function _clearSessionCaches() {
+  _profileCache = { webId: null, profile: null };
+  _profileInFlight = { webId: null, promise: null };
+  _storageCache = { webId: null, storage: null };
 }

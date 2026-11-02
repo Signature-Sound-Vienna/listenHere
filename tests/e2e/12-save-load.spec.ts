@@ -40,10 +40,17 @@ test.describe('12. Save & Load', () => {
     expect(json.header.markers.length).toBe(2);
     expect(typeof json.header.markers[0]).toBe('number');
 
-    // Alignment grids are arrays
+    // Alignment grids preserve their inline {times, peaks, duration} envelope
+    // when the source had one (Save Data must not be destructive — peaks and
+    // duration in the input survive a load → save round-trip).
     const audioKeys = Object.keys(json.body.audio);
     expect(audioKeys.length).toBeGreaterThan(0);
-    expect(Array.isArray(json.body.audio[audioKeys[0]])).toBe(true);
+    const entry = json.body.audio[audioKeys[0]];
+    expect(typeof entry).toBe('object');
+    expect(Array.isArray(entry)).toBe(false);
+    expect(Array.isArray(entry.times)).toBe(true);
+    expect(Array.isArray(entry.peaks)).toBe(true);
+    expect(typeof entry.duration).toBe('number');
   });
 
   // 12.3 Dirty state indicator

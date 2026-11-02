@@ -9,6 +9,7 @@
       var params = new URL(window.location.toLocaleString()).searchParams;
       var alignmentData = {{ data | tojson }};
       var alignMode = {{ mode | tojson }};
+      var indexUrl = {{ url_for('index') | tojson }};
       var workId = alignmentData === "local" ? "local" : alignmentData;
       var versionString = {{ version | tojson }};
       var versionDate = {{ version_date | tojson }};
@@ -118,9 +119,32 @@
           <div id="align-file-list-container" style="display:none">
             <h3>Selected files</h3>
             <table id="align-file-table">
-              <thead><tr><th>File</th><th style="text-align:right;">Duration</th><th>Ref</th></tr></thead>
+              <thead><tr><th>File</th><th style="text-align:right;">Duration</th><th>Ref</th>
+                <th title="Ignore audio at the start or end of this recording that has no counterpart in the reference. Follows the setting below until you change it here.">Trim ends</th></tr></thead>
               <tbody></tbody>
             </table>
+            <div id="align-ref-auto-row">
+              <label>
+                <input type="radio" name="ref" value="" id="align-ref-auto" checked />
+                Choose the reference automatically
+                <span class="preset-badge">recommended</span>
+              </label>
+              <p id="align-ref-auto-hint">
+                The recording the others agree with best, found once the files
+                are read. To choose one yourself, use the <em>Ref</em> column.
+              </p>
+            </div>
+            <div id="align-open-ends-row">
+              <label>
+                <input type="checkbox" id="align-open-ends-checkbox" checked />
+                Ignore audio at the start or end that isn’t in the reference —
+                applause, announcements, or tuning
+              </label>
+              <p id="align-open-ends-hint">
+                Set a single recording differently in the <em>Trim ends</em>
+                column above.
+              </p>
+            </div>
           </div>
         </div>
 
@@ -187,19 +211,8 @@
                   </select>
                   <span class="align-param-help">Downsampling factor for score alignment. 1 = full resolution, slower but more accurate.</span>
                 </div>
-                <div class="align-param-row align-score-param">
-                  <label for="align-param-onset-weight">Onset emphasis</label>
-                  <input type="number" id="align-param-onset-weight" min="0" max="5" step="0.5" />
-                  <span class="align-param-help">How strongly note attacks are emphasised. Higher = alignment anchors more firmly to clear onsets.</span>
-                </div>
               </div>
             </details>
-          </div>
-          <div id="align-output-settings-row">
-            <label>
-              <input type="checkbox" id="align-include-params" checked />
-              Include alignment settings in output
-            </label>
           </div>
         </div>
 
@@ -250,6 +263,13 @@
           </div>
           <div id="align-results" style="display:none">
             <h3>Alignment complete!</h3>
+            <p id="align-ref-choice-report" hidden></p>
+            <div id="align-open-ends-report"></div>
+            <label id="align-label-row" title="Names the saved file, and helps find unsaved work again">
+              <span>Name this session</span>
+              <input type="text" id="align-label-input" maxlength="120" autocomplete="off"
+                     placeholder="e.g. Fledermaus overture, five recordings" />
+            </label>
             <button id="align-download-btn">Save data</button>
             <button id="align-open-btn">Listen!</button>
           </div>
@@ -275,6 +295,7 @@
         <div id="fp-tabs">
           <button class="fp-tab active" data-tab="fp-tab-files">Load Files</button>
           <button class="fp-tab" data-tab="fp-tab-uris">Linked Data URIs</button>
+          <button class="fp-tab disabled" data-tab="fp-tab-add">Add Recordings</button>
         </div>
 
         <!-- Tab 1: Load Files -->
@@ -293,6 +314,12 @@
           </div>
           <p class="file-picker-drop-hint">or drag &amp; drop files anywhere on this panel</p>
           <div id="file-picker-json-status"></div>
+          <label id="file-picker-label-row" hidden>
+            <span>Name this session <span class="fp-label-hint">(helps find it again)</span></span>
+            <input type="text" id="file-picker-label" maxlength="120" autocomplete="off"
+                   placeholder="e.g. Fledermaus, expert set, files in Desktop/Fledermaus" />
+          </label>
+          <div id="file-picker-recovery" class="recovery-ui" hidden></div>
           <div id="file-picker-status">
             <div id="file-picker-progress"></div>
             <ul id="file-picker-list"></ul>
@@ -329,6 +356,66 @@
           </p>
         </div>
 
+        <!-- Tab 3: Add recordings to the loaded alignment -->
+        <div id="fp-tab-add" class="fp-tab-pane">
+          <p class="file-picker-hint">
+            Each recording you add is aligned to the reference,
+            <strong id="add-rec-ref"></strong>. The recordings already aligned
+            stay as they are.
+          </p>
+          <div id="add-rec-actions">
+            <button type="button" id="add-rec-files-btn">Choose Audio Files</button>
+            <input type="file" id="add-rec-input" multiple accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac,.opus" style="position:absolute;opacity:0;width:0;height:0;overflow:hidden;pointer-events:none;" />
+          </div>
+          <p class="file-picker-drop-hint">or drag &amp; drop audio files anywhere on this panel</p>
+          <p id="add-rec-ref-needed" class="add-rec-warning" hidden>
+            The reference recording, <strong id="add-rec-ref-needed-name"></strong>,
+            isn’t loaded in this session. Choose it as well: the new recordings
+            are aligned against it.
+          </p>
+          <table id="add-rec-table" hidden>
+            <thead><tr><th>File</th>
+              <th title="Ignore audio at the start or end of this recording that has no counterpart in the reference.">Trim ends</th>
+              <th></th></tr></thead>
+            <tbody id="add-rec-tbody"></tbody>
+          </table>
+          <details id="add-rec-params">
+            <summary>Alignment settings</summary>
+            <p id="add-rec-params-note"></p>
+            <button type="button" id="add-rec-params-restore" hidden>Restore original alignment settings</button>
+            <div id="add-rec-presets">
+              <label><input type="radio" name="add-rec-quality" value="fast" /> Fast</label>
+              <label><input type="radio" name="add-rec-quality" value="balanced" /> Balanced</label>
+              <label><input type="radio" name="add-rec-quality" value="hq" /> High quality</label>
+            </div>
+            <div id="add-rec-param-fields">
+              <label>Coarse factor
+                <select id="add-rec-coarse">
+                  <option value="1">1 (finest)</option>
+                  <option value="2">2</option>
+                  <option value="4">4 (coarsest)</option>
+                </select></label>
+              <label>Band slack <input type="number" id="add-rec-slack" min="40" max="240" step="10" /></label>
+              <label>Feature rate
+                <select id="add-rec-feature-rate">
+                  <option value="10">10 Hz</option>
+                  <option value="20">20 Hz</option>
+                </select></label>
+            </div>
+          </details>
+          <div id="add-rec-run-row">
+            <button type="button" id="add-rec-start" disabled>Align and Add</button>
+          </div>
+          <div id="add-rec-progress" hidden>
+            <div id="add-rec-progress-bar-container"><div id="add-rec-progress-bar"></div></div>
+            <p id="add-rec-progress-text"></p>
+          </div>
+          <p id="add-rec-result" role="status"></p>
+          <div id="add-rec-save-row" hidden>
+            <button type="button" id="add-rec-save">Save data</button>
+          </div>
+        </div>
+
         <button type="button" id="file-picker-continue" style="display:none;">Continue</button>
       </div>
     </div>
@@ -341,7 +428,8 @@
             </a>
             <div id="transport">
               <button id="skip-back" class="transport-btn" title="Skip to start">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+                <svg class="icon-listen-mode" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg>
+                <svg class="icon-fix-mode" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 5v14H9l-5-7 5-7z"/><path d="M15 9l-3 3 3 3"/></svg>
               </button>
               <button id="seek-back" class="transport-btn" title="Rewind 10s (Shift: 5s, Shift+Alt: 1s)">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6 8.5 6V6l-8.5 6z"/></svg>
@@ -354,7 +442,8 @@
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
               </button>
               <button id="skip-end" class="transport-btn" title="Skip to end">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6z"/></svg>
+                <svg class="icon-listen-mode" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6z"/></svg>
+                <svg class="icon-fix-mode" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5v14h11l5-7-5-7z"/><path d="M9 9l3 3-3 3"/></svg>
               </button>
               <button id="mark" class="transport-btn" data-mode="place" title="Place a marker at the current playback position (M)">
                 <svg class="icon-mark" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 0 1 0-5 2.5 2.5 0 0 1 0 5z"/></svg>
@@ -392,9 +481,15 @@
                     <label for="normalize" title="Normalize audio levels (boosts quiet recordings)">Normalize audio</label>
                   </span>
                   <span>
-                    <input type="checkbox" id="visalign" title="Show alignment sync-lines (matched to reference)"/>
-                    <label for="visalign" title="Show alignment sync-lines (matched to reference)">Visualise alignments</label>
+                    <input type="checkbox" id="visalign" title="Show alignment sync-lines"/>
+                    <label for="visalign" title="Show alignment sync-lines">Visualise alignments</label>
                   </span>
+                  <div id="visalign-options" style="display:none">
+                    <input type="radio" name="visalign-mode" id="visalign-mode-next" value="next" checked/>
+                    <label for="visalign-mode-next" title="Each line runs on to the same alignment point in the waveform below">To next</label>
+                    <input type="radio" name="visalign-mode" id="visalign-mode-reference" value="reference"/>
+                    <label for="visalign-mode-reference" title="Each line slants to its position on the reference timeline">To reference</label>
+                  </div>
                   <span>
                     <input type="checkbox" id="visrelalign" title="Show corresponding playback positions"/>
                     <label for="visrelalign" title="Show corresponding playback positions">Show relative position</label>
@@ -440,8 +535,8 @@
                 </span>
                 <div class="fieldset-body">
                   <hr class="tools-divider"/>
-                  <button id="manage-files-btn" title="Load files and configure Linked Data URIs">Manage files</button>
-                  <button id="group-files-btn" title="Specify grouping of waveforms">Group files</button>
+                  <button id="manage-files-btn" title="Load files and configure Linked Data URIs">Manage recordings</button>
+                  <button id="group-files-btn" title="Specify grouping of recordings">Group recordings</button>
                 </div>
               </fieldset>
 
@@ -463,39 +558,13 @@
                         <input type="checkbox" id="drag-markers-cb" title="Enable marker dragging"/>
                         <label for="drag-markers-cb" title="Enable marker dragging">Enable dragging</label>
                       </span>
-                      <div class="tools-row">
-                        <span>
-                          <input type="radio" name="drag-mode" id="drag-mode-move" value="move" checked title="Drag marker to reposition it in time"/>
-                          <label for="drag-mode-move" title="Drag marker to reposition it in time">Move marker</label>
-                        </span>
-                        <span>
-                          <input type="radio" name="drag-mode" id="drag-mode-fix" value="fix" title="Drag marker to adjust the alignment grid"/>
-                          <label for="drag-mode-fix" title="Drag marker to adjust the alignment grid">Fix alignment</label>
-                        </span>
-                      </div>
-                      <fieldset id="radius-fieldset" disabled>
-                        <legend title="Controls the width of the affected area of alignment grid edits (radius of Gaussian kernel)">Fix alignment: Range</legend>
-                        <div class="tools-row">
-                          <span>
-                            <input type="radio" name="radius" id="radius-narrow" value="50" title="Adjustment influence: 50ms (Narrow radius)"/>
-                            <label for="radius-narrow" title="Adjustment influence: 50ms (Narrow radius)">Narrow</label>
-                          </span>
-                          <span>
-                            <input type="radio" name="radius" id="radius-medium" value="100" checked title="Adjustment influence: 100ms (Medium radius)"/>
-                            <label for="radius-medium" title="Adjustment influence: 100ms (Medium radius)">Medium</label>
-                          </span>
-                          <span>
-                            <input type="radio" name="radius" id="radius-wide" value="200" title="Adjustment influence: 200ms (Wide radius)"/>
-                            <label for="radius-wide" title="Adjustment influence: 200ms (Wide radius)">Wide</label>
-                          </span>
-                        </div>
-                      </fieldset>
                     </div>
                   </fieldset>
                   <hr class="tools-divider"/>
                   <button id="undo-btn" disabled title="Undo last action (Ctrl+Z)">Undo</button>
                   <button id="redo-btn" disabled title="Redo last action (Ctrl+Shift+Z)">Redo</button>
                   <button id="revert-all-btn" disabled title="Revert all manual edits to the original alignment">Revert alignment edits</button>
+                  <button id="fix-chooser-open" hidden title="Correct the alignment (experimental): the score against the reference recording first, then each recording against the reference">Correct alignment…</button>
                 </div>
               </fieldset>
             </div>
@@ -521,7 +590,6 @@
         <div id="content">
           <div id="waveforms"></div>
         </div>
-        <div id="maoExtracts"></div>
       </div>
     </div>
     
@@ -533,58 +601,7 @@
       </div>
       <div id="settings-drawer-content">
 
-        <!-- Theme -->
-        <section class="settings-section">
-          <h3 class="settings-section-title">Theme</h3>
-          <div class="settings-theme-options">
-            <div class="theme-row">
-              <span class="theme-row-label">Light</span>
-              <label class="settings-theme-option">
-                <input type="radio" name="app-theme" value="light" checked/>
-                <span class="settings-theme-swatch theme-swatch-light" title="Light"></span>
-                <span>Light</span>
-              </label>
-              <label class="settings-theme-option">
-                <input type="radio" name="app-theme" value="solarized"/>
-                <span class="settings-theme-swatch theme-swatch-solarized" title="Solarized"></span>
-                <span>Solarized</span>
-              </label>
-              <label class="settings-theme-option">
-                <input type="radio" name="app-theme" value="sepia"/>
-                <span class="settings-theme-swatch theme-swatch-sepia" title="Sepia"></span>
-                <span>Sepia</span>
-              </label>
-              <label class="settings-theme-option">
-                <input type="radio" name="app-theme" value="peach"/>
-                <span class="settings-theme-swatch theme-swatch-peach" title="Peach"></span>
-                <span>Peach</span>
-              </label>
-            </div>
-            <div class="theme-row">
-              <span class="theme-row-label">Dark</span>
-              <label class="settings-theme-option">
-                <input type="radio" name="app-theme" value="dark"/>
-                <span class="settings-theme-swatch theme-swatch-dark" title="Dark"></span>
-                <span>Dark</span>
-              </label>
-              <label class="settings-theme-option">
-                <input type="radio" name="app-theme" value="dracula"/>
-                <span class="settings-theme-swatch theme-swatch-dracula" title="Dracula"></span>
-                <span>Dracula</span>
-              </label>
-              <label class="settings-theme-option">
-                <input type="radio" name="app-theme" value="forest"/>
-                <span class="settings-theme-swatch theme-swatch-forest" title="Forest"></span>
-                <span>Forest</span>
-              </label>
-              <label class="settings-theme-option">
-                <input type="radio" name="app-theme" value="nord"/>
-                <span class="settings-theme-swatch theme-swatch-nord" title="Nord"></span>
-                <span>Nord</span>
-              </label>
-            </div>
-          </div>
-        </section>
+        <!-- Theme: injected here by theme-setup.js, which owns the setting -->
 
         <!-- Language -->
         <section class="settings-section">
@@ -599,30 +616,13 @@
       </div>
     </div>
 
-    <!-- Solid / Linked Data Drawer -->
-    <div id="solid-drawer" class="closed">
-      <div class="drawer-header">
-        <h2>Linked Data Annotations</h2>
-        <button id="close-solid-drawer">✕</button>
-      </div>
-      <div id="solidTab">
-        <div id="solidLogin">
-          Please <a id="solidLoginBtn">Click here to log in!</a>
-        </div>
-      </div>
-    </div>
-
-    <!-- Floating drawer-pull buttons (Settings above RDF) -->
+    <!-- Floating drawer-pull buttons (Settings + V6 annotation pencil tab) -->
     <div class="drawer-btns">
       <button id="settings-drawer-btn" title="Settings">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <circle cx="12" cy="12" r="3"/>
           <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
         </svg>
-      </button>
-      <button id="solid-drawer-btn" title="Linked Data & Annotations">
-        <img src="{{ url_for('static', filename='svg/RDF-logo.svg') }}" width="20" height="20" alt="RDF" />
-        <span class="solid-status-dot"></span>
       </button>
     </div>
   </body>

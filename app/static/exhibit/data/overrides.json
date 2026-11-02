@@ -1,0 +1,20 @@
+{
+  "_README": [
+    "Hand-placed region times. AUTHORITY: this file wins over anything the",
+    "re-derive computes, and tools/prep_exhibit_data.py applies it LAST and",
+    "never rewrites it. Keep it in the repository even though the payload is",
+    "generated — it is authored data, not a build product.",
+    "Shape: { annotationId: { regionId: { 'recording.wav': {start, end} } } }"
+  ],
+  "_pending": {
+    "ann_msvorn7q_1?": [
+      "Expert / 'D or E?' region (a), rgn_msvors30_2, index 705-711.",
+      "6 indices / 0.12 s wide, against up to 2.53 s of alignment disagreement",
+      "at that point - 21x the region width - so no alignment preset can place",
+      "it. Chanda hand-places it on the eight curated recordings AFTER the",
+      "re-derive; the tool supports per-recording edge-drag. Once those times",
+      "land here they are overrides forever: no future re-alignment may",
+      "recompute them. See plan 5.2d."
+    ]
+  }
+}

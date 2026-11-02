@@ -1,0 +1,223 @@
+// A fetch that keeps within a pod host's request limit.
+//
+// solidcommunity.net throttles to about 20 requests per 10 seconds, and every
+// authenticated request is preceded by a CORS preflight, so about 10 requests
+// per 10 seconds get through. Over the limit the server answers 429 WITHOUT an
+// Access-Control-Allow-Origin header: the browser then hides the status and
+// Retry-After and the page sees only a bare TypeError. So the limit is kept
+// in advance, per host, and a TypeError from a limited host is retried after a
+// cool-down as if it had been a 429.
+// The figure is a colleague's report (Oct 2026), not measured here: tune it in
+// `hostLimits`.
+//
+// A request may have to wait its turn for many seconds when many are queued, so
+// two things must not run during that wait:
+//  - the caller's `signal` is honoured while queued: an aborted request leaves
+//    the queue at once and neither sends nor holds a slot;
+//  - `init.timeoutMs` (this wrapper's own option, not fetch's) is a timeout on
+//    the request itself, started when it is sent. A timeout set by the caller
+//    before calling would also count the wait and abort requests that never
+//    left the queue.
+
+export const hostLimits = [
+  { hostSuffix: "solidcommunity.net", max: 8, windowMs: 10000 },
+];
+
+// Safe to send twice: a request that reached the server but whose response was
+// lost does no harm. A repeated PUT whose first attempt did land meets 412 if
+// it is conditional, and the callers expect that: createResourceAtUri
+// recognises its own write by its dct:created stamp, and safelyPatchResource
+// works the patch out afresh from what is there, so nothing is added twice.
+const REPEATABLE = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS"]);
+
+const MAX_RETRY_AFTER_MS = 60000;
+
+/** Whether requests to `url` go through a host limit (and so are retried by it). */
+export function isLimited(url, limits = hostLimits) {
+  return limitFor(url, limits) !== null;
+}
+
+function limitFor(url, limits) {
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch (_) {
+    return null; // not a URL: let the real fetch report it
+  }
+  return (
+    limits.find(
+      (l) => host === l.hostSuffix || host.endsWith("." + l.hostSuffix),
+    ) || null
+  );
+}
+
+function retryAfterMs(resp, fallbackMs) {
+  const seconds = Number(resp.headers && resp.headers.get("Retry-After"));
+  return Number.isFinite(seconds) && seconds > 0
+    ? Math.min(seconds * 1000, MAX_RETRY_AFTER_MS)
+    : fallbackMs;
+}
+
+function abortReason(signal) {
+  return signal.reason !== undefined
+    ? signal.reason
+    : new DOMException("The operation was aborted.", "AbortError");
+}
+
+/** `promise`, rejected as soon as `signal` aborts. */
+function abortable(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(abortReason(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (v) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(v);
+      },
+      (e) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(e);
+      },
+    );
+  });
+}
+
+/** `init` with `timeoutMs` turned into an abort signal (joined to any caller's), and a cleanup. */
+function applyTimeout(init, timeoutMs) {
+  const { timeoutMs: _drop, ...rest } = init || {};
+  if (!timeoutMs) return { init: rest, done: () => {} };
+  const ctrl = new AbortController();
+  const timer = setTimeout(
+    () => ctrl.abort(new DOMException("The request timed out.", "TimeoutError")),
+    timeoutMs,
+  );
+  const outer = rest.signal;
+  let onOuterAbort = null;
+  if (outer) {
+    if (outer.aborted) ctrl.abort(abortReason(outer));
+    else {
+      onOuterAbort = () => ctrl.abort(abortReason(outer));
+      outer.addEventListener("abort", onOuterAbort, { once: true });
+    }
+  }
+  return {
+    init: { ...rest, signal: ctrl.signal },
+    done: () => {
+      clearTimeout(timer);
+      if (outer && onOuterAbort) outer.removeEventListener("abort", onOuterAbort);
+    },
+  };
+}
+
+/**
+ * @param {(input, init?) => Promise<Response>} baseFetch
+ * @param {object} [opts]
+ * @param {Array} [opts.limits] host limits, as `hostLimits`
+ * @param {number} [opts.retries] extra attempts after a 429 or a TypeError
+ * @param {() => number} [opts.now] clock in ms (for tests)
+ * @param {(ms: number) => Promise<void>} [opts.sleep] wait (for tests)
+ * @param {Map} [opts.states] the per-host windows and queues; pass the same
+ *   Map to several limited fetches to make them share one budget per host
+ */
+export function createLimitedFetch(baseFetch, opts = {}) {
+  const {
+    limits = hostLimits,
+    retries = 2,
+    now = () => Date.now(),
+    sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+    states = new Map(), // limit → { stamps, cooldownUntil, tail }
+  } = opts;
+
+  function stateFor(limit) {
+    if (!states.has(limit)) {
+      states.set(limit, {
+        stamps: [],
+        cooldownUntil: 0,
+        tail: Promise.resolve(),
+      });
+    }
+    return states.get(limit);
+  }
+
+  // Requests are admitted one at a time, in arrival order, so a burst queues
+  // behind the window instead of all finding it free at once. A request whose
+  // signal aborts while it waits is dropped without taking a slot.
+  function admit(state, limit, signal) {
+    const run = state.tail.then(async () => {
+      for (;;) {
+        if (signal && signal.aborted) throw abortReason(signal);
+        const t = now();
+        while (
+          state.stamps.length &&
+          t - state.stamps[0] >= limit.windowMs
+        ) {
+          state.stamps.shift();
+        }
+        if (t < state.cooldownUntil) {
+          await abortable(sleep(state.cooldownUntil - t), signal);
+        } else if (state.stamps.length >= limit.max) {
+          await abortable(sleep(state.stamps[0] + limit.windowMs - t), signal);
+        } else {
+          state.stamps.push(t);
+          return;
+        }
+      }
+    });
+    state.tail = run.catch(() => {});
+    return abortable(run, signal);
+  }
+
+  return async function limitedFetch(input, init) {
+    const url = typeof input === "string" ? input : input && input.url;
+    const limit = url ? limitFor(url, limits) : null;
+    const timeoutMs = init && init.timeoutMs;
+    if (!limit) {
+      const t = applyTimeout(init, timeoutMs);
+      try {
+        return await baseFetch(input, t.init);
+      } finally {
+        t.done();
+      }
+    }
+    const state = stateFor(limit);
+    const method = (
+      (init && init.method) ||
+      (typeof input !== "string" && input.method) ||
+      "GET"
+    ).toUpperCase();
+    const repeatable = REPEATABLE.has(method);
+    const callerSignal = init && init.signal;
+    for (let attempt = 0; ; attempt++) {
+      await admit(state, limit, callerSignal);
+      // The clock for `timeoutMs` starts here, at the send.
+      const t = applyTimeout(init, timeoutMs);
+      let resp;
+      try {
+        resp = await baseFetch(input, t.init);
+      } catch (err) {
+        if (!(err instanceof TypeError) || !repeatable || attempt >= retries) {
+          throw err;
+        }
+        state.cooldownUntil = now() + limit.windowMs;
+        continue;
+      } finally {
+        t.done();
+      }
+      if (resp.status === 429 && repeatable && attempt < retries) {
+        state.cooldownUntil = now() + retryAfterMs(resp, limit.windowMs);
+        continue;
+      }
+      return resp;
+    }
+  };
+}
+
+/** The auth library, with `fetch` replaced by a limited one; the rest passes through. */
+export function withLimitedFetch(lib, opts) {
+  const limited = createLimitedFetch((input, init) => lib.fetch(input, init), opts);
+  return new Proxy(lib, {
+    get: (target, prop) => (prop === "fetch" ? limited : Reflect.get(target, prop)),
+  });
+}

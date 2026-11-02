@@ -6672,6 +6672,12 @@ body.fix-mode-open .lh-v6-pull-tab {
   text-decoration: underline;
 }
 
+.lh-v6-primal-link.is-unavailable {
+  color: var(--color-text-muted);
+  cursor: help;
+  text-decoration: none;
+}
+
 /* Public / private control beside the publish button. */
 .lh-v6-access-status {
   margin-left: 10px;

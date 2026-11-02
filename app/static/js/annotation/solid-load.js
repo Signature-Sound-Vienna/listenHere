@@ -272,6 +272,7 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
     !!normalisedMeiUri &&
     uniqueAudios.length > 0 &&
     uniqueAudios.every((u) => u === normalisedMeiUri);
+  let scoreElementIds = null;
 
   if (isScoreAnnotation) {
     // Score annotations from mei-friend reference MEI element IDs in
@@ -279,7 +280,7 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
     // via Verovio's timemap + the alignment grids, and synthesize an
     // audio-shaped chain in memory so adapter.deserialize stays simple.
     onProgress("Projecting score regions onto loaded recordings");
-    _rewriteScoreChainAsAudio(graph, selUris, localUriToFile);
+    scoreElementIds = _rewriteScoreChainAsAudio(graph, selUris, localUriToFile);
   } else {
     // Mixed (score + audio) or audio-only annotation: refuse to load if
     // any audio Selection's URI isn't locally loaded. Selections whose
@@ -341,6 +342,12 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
   }
 
   state.addAnnotation(annotation);
+  // The projection made ONE region from every element: its source is the
+  // score, so an alignment correction can project it again.
+  const added = state.getById(annotation.id);
+  if (scoreElementIds && added && added.regions.length === 1) {
+    state.setRegionSourceScore(annotation.id, added.regions[0].id, scoreElementIds);
+  }
   state.setActiveAnnotation(annotation.id);
   return annotation.id;
 }
@@ -693,13 +700,7 @@ function _rewriteScoreChainAsAudio(graph, scoreSelUris, audioUriToFile) {
   // graph but don't collide with anything else; they're never used as
   // identifiers on the pod (this rewrite is purely in-memory).
   const newSelUris = [];
-  // Prefer the corrected synth tables (derived from the MIDI Verovio actually
-  // rendered): Verovio's tstampOn values are matched against these, and the
-  // stored synth_onset/synth_offset may carry the pre-fix tempo skew.
-  const onsetTimes =
-    correctedSynthOnsets || scoreAlignment.synth_onset || scoreAlignment.score_onset;
-  const offsetTimes =
-    correctedSynthOffsets || scoreAlignment.synth_offset || scoreAlignment.score_offset;
+  const { onsetTimes, offsetTimes } = _scoreTimeTables();
   if (!Array.isArray(onsetTimes) || !Array.isArray(offsetTimes)) {
     throw new Error("Score alignment doesn't expose synth_onset/synth_offset.");
   }
@@ -708,6 +709,18 @@ function _rewriteScoreChainAsAudio(graph, scoreSelUris, audioUriToFile) {
   const origScoreSels = scoreSelUris.map((u) => graph[u]).filter(Boolean);
   if (origScoreSels.length === 0) {
     throw new Error("No score Selections found in the fetched chain.");
+  }
+  // Every MEI element id in this annotation, in order, once each: each part
+  // is a URI like `${meiUri}#elementId`.
+  const elementIds = [];
+  for (const origSel of origScoreSels) {
+    for (const p of origSel[nsp.FRBR + "part"] || []) {
+      const partUri = p && p["@id"];
+      if (!partUri) continue;
+      const hashIx = partUri.lastIndexOf("#");
+      const elementId = hashIx >= 0 ? partUri.slice(hashIx + 1) : null;
+      if (elementId && !elementIds.includes(elementId)) elementIds.push(elementId);
+    }
   }
 
   // For each loaded recording, build a synthetic Selection with ONE
@@ -720,27 +733,10 @@ function _rewriteScoreChainAsAudio(graph, scoreSelUris, audioUriToFile) {
   // (whole-audio semantic, matching the V6 no-regions case).
   for (const [audioUri, file] of audios) {
     const synthUri = "local:score-projected/" + encodeURIComponent(file);
-    let minStart = Infinity;
-    let maxEnd = -Infinity;
-    for (const origSel of origScoreSels) {
-      const origParts = origSel[nsp.FRBR + "part"] || [];
-      for (const p of origParts) {
-        const partUri = p && p["@id"];
-        if (!partUri) continue;
-        const hashIx = partUri.lastIndexOf("#");
-        const elementId = hashIx >= 0 ? partUri.slice(hashIx + 1) : null;
-        const times = _projectMeiElementToTimes(
-          elementId, file, onsetTimes, offsetTimes,
-        );
-        if (!times) continue;
-        if (times.start < minStart) minStart = times.start;
-        if (times.end > maxEnd) maxEnd = times.end;
-      }
-    }
-    const parts =
-      Number.isFinite(minStart) && Number.isFinite(maxEnd) && maxEnd >= minStart
-        ? [{ "@id": audioUri + "#t=" + _fmtSec(minStart) + "," + _fmtSec(maxEnd) }]
-        : [];
+    const span = _projectElementsSpan(elementIds, file, onsetTimes, offsetTimes);
+    const parts = span
+      ? [{ "@id": audioUri + "#t=" + _fmtSec(span.start) + "," + _fmtSec(span.end) }]
+      : [];
     graph[synthUri] = {
       "@id": synthUri,
       "@type": [nsp.MAO + "Selection", nsp.SCHEMA + "Dataset"],
@@ -778,6 +774,54 @@ function _rewriteScoreChainAsAudio(graph, scoreSelUris, audioUriToFile) {
   // so V6's track-OA heuristic doesn't pick them up). The user can
   // still add new OAs in V6 that target the audio Selections; those
   // are pure additions to the chain when the user clicks Update.
+  return elementIds;
+}
+
+/** The score-time tables Verovio's element times are matched against. Prefer
+ *  the corrected synth tables (derived from the MIDI Verovio actually
+ *  rendered): the stored synth_onset/synth_offset may carry the pre-fix
+ *  tempo skew. */
+function _scoreTimeTables() {
+  return {
+    onsetTimes:
+      correctedSynthOnsets || scoreAlignment.synth_onset || scoreAlignment.score_onset,
+    offsetTimes:
+      correctedSynthOffsets || scoreAlignment.synth_offset || scoreAlignment.score_offset,
+  };
+}
+
+/** One span over every element's projection onto `file`: [min onset, max
+ *  offset], or null when none projects. */
+function _projectElementsSpan(elementIds, file, onsetTimes, offsetTimes) {
+  let minStart = Infinity;
+  let maxEnd = -Infinity;
+  for (const elementId of elementIds) {
+    const times = _projectMeiElementToTimes(elementId, file, onsetTimes, offsetTimes);
+    if (!times) continue;
+    if (times.start < minStart) minStart = times.start;
+    if (times.end > maxEnd) maxEnd = times.end;
+  }
+  return Number.isFinite(minStart) && Number.isFinite(maxEnd) && maxEnd >= minStart
+    ? { start: minStart, end: maxEnd }
+    : null;
+}
+
+/**
+ * A score-sourced region's times on every target, projected again from its
+ * cached MEI element ids through the current score alignment and grids (the
+ * load-time projection, rerun); null when the score side isn't ready.
+ */
+export function projectedTimesFromScore(ann, region) {
+  if (!region.sourceScore || !scoreAlignment || !getReferenceAudioIx()) return null;
+  if (!tk || typeof tk.getTimesForElement !== "function") return null;
+  const { onsetTimes, offsetTimes } = _scoreTimeTables();
+  if (!Array.isArray(onsetTimes) || !Array.isArray(offsetTimes)) return null;
+  const out = {};
+  for (const t of ann.targets) {
+    const span = _projectElementsSpan(region.sourceScore, t.file, onsetTimes, offsetTimes);
+    if (span) out[t.file] = span;
+  }
+  return out;
 }
 
 /**

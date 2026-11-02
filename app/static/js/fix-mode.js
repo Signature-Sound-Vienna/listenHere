@@ -81,6 +81,8 @@ import {
 import { parseMidi } from "./engine/mei-synth.js";
 import { updateTransportIcons } from "./engine/transport.js";
 import { confirmDialog } from "./annotation/ui-common.js";
+import { recastAnnotationsToAlignment } from "./annotation/index.js";
+import * as v6UiState from "./annotation/ui-state.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 
 // ---------------------------------------------------------------------------
@@ -745,8 +747,17 @@ export async function enterFixMode(entryFile) {
     return;
   }
 
+  // The annotation drawer stands down while correcting — it pads the body by
+  // 380 px, narrowing the score pane — and comes back as it was on the way
+  // out (its annotation's edits are state, so closing it loses nothing).
+  const drawerWasOpen = v6UiState.getDrawerOpen();
+  const drawerScroll = document.querySelector(".lh-v6-drawer-body")?.scrollTop ?? 0;
+  if (drawerWasOpen) v6UiState.setDrawerOpen(false);
+
   _fix = {
     mode: audioMode ? "audio" : "score-ref",
+    drawerWasOpen,
+    drawerScroll,
     entryFile,
     refFile,
     /** The recording being corrected (audio mode), or null. */
@@ -969,6 +980,14 @@ function _teardownFixDom(f) {
   document.body.classList.remove("fix-mode-open");
   const waveformsEl = document.getElementById("waveforms");
   if (waveformsEl) waveformsEl.style.display = "";
+  if (f.drawerWasOpen) {
+    v6UiState.setDrawerOpen(true);
+    // A frame later: the exit's annotation recast re-renders the body after this.
+    requestAnimationFrame(() => {
+      const body = document.querySelector(".lh-v6-drawer-body");
+      if (body) body.scrollTop = f.drawerScroll;
+    });
+  }
 }
 
 /**
@@ -1035,6 +1054,7 @@ export async function fixFlushPending() {
  * audio wholesale.
  */
 export function fixModeOnPieceReset() {
+  if (_fix) _fix.drawerWasOpen = false; // the outgoing piece's drawer stays shut
   exitFixMode({ discardPending: true });
   _closeChooser();
   _derived = null;
@@ -6913,6 +6933,13 @@ function _refreshMainView() {
     _dirtyGridFiles.clear();
   } catch (err) {
     console.error("fix mode: main-view recompute failed:", err);
+  }
+  // Annotations placed through the old alignment follow the corrected one.
+  try {
+    const n = recastAnnotationsToAlignment();
+    if (n) console.log(`fix mode: ${n} annotation(s) recast to the corrected alignment`);
+  } catch (err) {
+    console.error("fix mode: annotation recast failed:", err);
   }
 }
 

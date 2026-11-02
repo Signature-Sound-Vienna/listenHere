@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.107.0 -- Annotations follow corrected alignments
+
+* An annotation region now remembers where it was placed by hand: the recording it was drawn or dragged on (`sourceFile`), or, for a score annotation from mei-friend, the MEI element ids it was projected from at load (`sourceScore`). A Shift+drag on one recording marks that recording's times `local`. All three are saved in the alignment JSON (annotations `schemaVersion` 3).
+* After an alignment correction (closing the correction screen, an undo or redo from the listening view, Revert all), every sourced region's other recordings are mapped again from its source through the corrected alignment; score-sourced regions are projected again from their element ids. `local` times stay; changed annotations are marked unsaved.
+* Regions without a source, in every annotation saved before this version, are never readjusted. A region whose source recording is removed from its annotation loses its source.
+* An open annotation drawer closes when the correction screen opens and reopens as it was when it closes: the same annotation, mode, scroll position, and unsaved edits.
+* Testing: 58.1–58.3, 43.61–43.62, 42.34.
+
 ### 0.106.0 -- The audible waveform glows; a pressed tick highlights its notes at once
 
 * The active waveform in the listening view gets an accent ring and a soft glow (the exhibit's `?activeStrip=glow`), in every theme, on top of its background tint.

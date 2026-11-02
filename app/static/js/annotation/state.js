@@ -9,10 +9,13 @@
 //     hasUnsavedChanges, published,
 //     lastPostedUris,                         // populated by mao-adapter on post/update
 //     lastPostedHashes,                       // per-resource content hash, lets Update skip unchanged PUTs
-//     regions: [{ id, label }],               // GLOBAL, ordered; identity preserved
+//     regions: [{ id, label,                  // GLOBAL, ordered; identity preserved
+//                 sourceFile,                 // recording it was drawn/dragged on, or null
+//                 sourceScore }],             // MEI element ids it was projected from, or null
 //     targets: [{
 //       file, description,
-//       regionTimes: { [regionId]: {start, end} }  // entry for every region
+//       regionTimes: { [regionId]: {start, end, local?} }  // entry for every region;
+//                                                          // local = a Shift+drag override
 //     }],
 //     groupNotes:  { [groupId]: string },        // keyed by stable group id, not label
 //     comparisons: [{ id, leftGroupId, rightGroupId, text }],
@@ -29,6 +32,12 @@
 //
 // Invariant: every regions[].id has a regionTimes[regions[].id] entry on every target.
 // Collapsed regions use start === end. All mutating actions preserve this.
+//
+// Region source: the times on the source (a recording, or the score) are the
+// ones placed by hand; every other target's times were mapped from them
+// through the alignment, and recastRegionTimes maps them again after an
+// alignment correction. A region with neither source (annotations from before
+// sources were recorded) is never recast; nor is a target's `local` override.
 
 const V6_DEFAULT_COLORS = [
   "#22c55e", "#3b82f6", "#a855f7", "#f59e0b", "#ef4444",
@@ -120,6 +129,11 @@ function _normalise(a) {
   const regions = (a.regions || []).map((r) => ({
     id: r.id,
     label: r.label || "",
+    sourceFile: typeof r.sourceFile === "string" && r.sourceFile ? r.sourceFile : null,
+    sourceScore:
+      Array.isArray(r.sourceScore) && r.sourceScore.length
+        ? r.sourceScore.filter((id) => typeof id === "string" && id)
+        : null,
   }));
   const targets = (a.targets || []).map((t) => {
     const regionTimes = {};
@@ -128,6 +142,7 @@ function _normalise(a) {
       regionTimes[r.id] = src
         ? { start: src.start, end: src.end }
         : { start: 0, end: 0 };
+      if (src && src.local === true) regionTimes[r.id].local = true;
     });
     return {
       file: t.file,
@@ -317,6 +332,10 @@ export function removeTarget(annId, file) {
   if (!a) return;
   if (!a.targets.find((t) => t.file === file)) return;
   a.targets = a.targets.filter((t) => t.file !== file);
+  // A region whose source recording leaves has nothing to be recast from.
+  a.regions.forEach((r) => {
+    if (r.sourceFile === file) r.sourceFile = null;
+  });
   a.hasUnsavedChanges = true;
   _emit();
 }
@@ -337,7 +356,7 @@ export function addRegion(annId, file, start, end, timesByFile) {
   const a = _getMut(annId);
   if (!a) return null;
   const rid = _id("rgn");
-  a.regions.push({ id: rid, label: "" });
+  a.regions.push({ id: rid, label: "", sourceFile: file, sourceScore: null });
   // Attach the dragged file if it isn't already.
   if (!a.targets.find((t) => t.file === file)) {
     _attachTargetInternal(a, file);
@@ -377,6 +396,10 @@ export function updateRegionTime(annId, file, regionId, patch) {
   if (!cur) return;
   if (patch.start !== undefined) cur.start = patch.start;
   if (patch.end !== undefined) cur.end = patch.end;
+  // An edit on one recording only: a hand placement a recast must keep. On
+  // the source itself it is just the source moving.
+  const region = a.regions.find((r) => r.id === regionId);
+  if (!region || region.sourceFile !== file) cur.local = true;
   a.hasUnsavedChanges = true;
   _emit();
 }
@@ -384,17 +407,25 @@ export function updateRegionTime(annId, file, regionId, patch) {
 /**
  * Bulk update: set a region's times across many targets in one emit.
  * Used by the waveform bridge to mirror a resize/move across all attached
- * recordings (alignment-aware times computed by the caller).
+ * recordings (alignment-aware times computed by the caller). `sourceFile`
+ * is the recording the edit was made on: it becomes the region's source, and
+ * the targets given times lose any local override.
  */
-export function updateRegionTimeMulti(annId, regionId, timesByFile) {
+export function updateRegionTimeMulti(annId, regionId, timesByFile, sourceFile = null) {
   const a = _getMut(annId);
   if (!a) return;
   let changed = false;
+  const region = a.regions.find((r) => r.id === regionId);
+  if (region && sourceFile && (region.sourceFile !== sourceFile || region.sourceScore)) {
+    region.sourceFile = sourceFile;
+    region.sourceScore = null;
+    changed = true;
+  }
   for (const t of a.targets) {
     const nt = timesByFile[t.file];
     if (!nt) continue;
     const cur = t.regionTimes[regionId];
-    if (!cur || cur.start !== nt.start || cur.end !== nt.end) {
+    if (!cur || cur.start !== nt.start || cur.end !== nt.end || (sourceFile && cur.local)) {
       t.regionTimes[regionId] = { start: nt.start, end: nt.end };
       changed = true;
     }
@@ -403,6 +434,62 @@ export function updateRegionTimeMulti(annId, regionId, timesByFile) {
     a.hasUnsavedChanges = true;
     _emit();
   }
+}
+
+/** Below this a recast leaves a time as it is: a re-derived time differs from
+ *  the stored one by rounding alone (a `#t=` fragment keeps milliseconds). */
+const RECAST_EPS_SEC = 1e-3;
+
+/**
+ * Map every sourced region's times again — after an alignment correction.
+ * `timesFor(annotation, region)` returns `{ [file]: {start, end} }` from the
+ * region's source, or null when it cannot. The source recording and `local`
+ * overrides are left alone; regions without a source are skipped. Changed
+ * annotations are marked unsaved; one emit for the lot.
+ *
+ * @returns {number} how many annotations changed
+ */
+export function recastRegionTimes(timesFor) {
+  let changedAnns = 0;
+  for (const a of _annotations) {
+    let changed = false;
+    for (const r of a.regions) {
+      if (!r.sourceFile && !r.sourceScore) continue;
+      if (r.sourceFile && !a.targets.some((t) => t.file === r.sourceFile)) continue;
+      const timesByFile = timesFor(a, r);
+      if (!timesByFile) continue;
+      for (const t of a.targets) {
+        if (t.file === r.sourceFile) continue;
+        const cur = t.regionTimes[r.id];
+        const nt = timesByFile[t.file];
+        if (!cur || cur.local || !nt) continue;
+        if (!Number.isFinite(nt.start) || !Number.isFinite(nt.end)) continue;
+        if (
+          Math.abs(cur.start - nt.start) >= RECAST_EPS_SEC ||
+          Math.abs(cur.end - nt.end) >= RECAST_EPS_SEC
+        ) {
+          cur.start = nt.start;
+          cur.end = nt.end;
+          changed = true;
+        }
+      }
+    }
+    if (changed) {
+      a.hasUnsavedChanges = true;
+      changedAnns++;
+    }
+  }
+  if (changedAnns) _emit();
+  return changedAnns;
+}
+
+/** Record the MEI element ids a score-projected region came from. */
+export function setRegionSourceScore(annId, regionId, elementIds) {
+  const a = _getMut(annId);
+  const r = a && a.regions.find((x) => x.id === regionId);
+  if (!r) return;
+  r.sourceFile = null;
+  r.sourceScore = elementIds.length ? [...elementIds] : null;
 }
 
 export function updateRegionLabel(annId, regionId, label) {

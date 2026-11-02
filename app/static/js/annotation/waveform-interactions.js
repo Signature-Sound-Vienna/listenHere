@@ -316,7 +316,7 @@ function _ensureHooked(plugin, file) {
     // so all updated numbers light up in the region colour and fade
     // back to default in step.
     const timesByFile = _alignedTimesByFile(ann, file, start, end);
-    state.updateRegionTimeMulti(meta.annId, meta.regionId, timesByFile);
+    state.updateRegionTimeMulti(meta.annId, meta.regionId, timesByFile, file);
     _flashRows(meta.regionId, Object.keys(timesByFile), annColor);
   });
 }
@@ -477,6 +477,19 @@ function _alignedTimesByFile(ann, sourceFile, start, end) {
     out[t.file] = { start: s, end: e };
   }
   return out;
+}
+
+/**
+ * A recording-sourced region's times on every target, mapped from its source
+ * recording's current times through the current alignment grids; null for a
+ * region without one.
+ */
+export function alignedTimesFromSource(ann, region) {
+  if (!region.sourceFile) return null;
+  const src = ann.targets.find((t) => t.file === region.sourceFile);
+  const st = src && src.regionTimes[region.id];
+  if (!st) return null;
+  return _alignedTimesByFile(ann, region.sourceFile, st.start, st.end);
 }
 
 // ---------------------------------------------------------------------------

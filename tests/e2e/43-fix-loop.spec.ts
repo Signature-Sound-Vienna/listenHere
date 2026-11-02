@@ -3436,4 +3436,159 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(await realignsPosted(page)).toHaveLength(1);
     expect((await fixState(page)).pending).toEqual([]);
   });
+
+  /** Three annotations over the same regions, loaded into V6 as the alignment
+   *  JSON carries them: `ann_src` with the given sources, `ann_local` the same
+   *  but every non-source target marked local, `ann_none` with no source. */
+  const loadSourcedAnnotations = (page: Page, regions: any[], files: string[], timesFor: Record<string, any>[]) =>
+    page.evaluate(({ regions, files, timesFor }) => {
+      const mk = (id: string, keepSource: boolean, local: boolean) => ({
+        id,
+        label: id,
+        regions: regions.map((r: any) => (keepSource ? { ...r } : { id: r.id, label: '' })),
+        targets: files.map((file) => ({
+          file,
+          regionTimes: Object.fromEntries(
+            regions.map((r: any, i: number) => {
+              const t = { ...timesFor[i][file] };
+              if (local && file !== r.sourceFile) t.local = true;
+              return [r.id, t];
+            }),
+          ),
+        })),
+        schemaVersion: 3,
+      });
+      (window as any).__annotationV6.loadAnnotationsFromAlignment({
+        annotations: [mk('ann_src', true, false), mk('ann_local', true, true), mk('ann_none', false, false)],
+      });
+    }, { regions, files, timesFor });
+
+  const annotationTimes = (page: Page) =>
+    page.evaluate(() =>
+      Object.fromEntries(
+        (window as any).__annotationV6.state.getAll().map((a: any) => [
+          a.id,
+          {
+            dirty: a.hasUnsavedChanges,
+            times: Object.fromEntries(
+              a.targets.map((t: any) => [
+                t.file,
+                a.regions.map((r: any) => ({ start: t.regionTimes[r.id].start, end: t.regionTimes[r.id].end })),
+              ]),
+            ),
+          },
+        ]),
+      ),
+    );
+
+  test('43.61 an audio-to-audio correction recasts annotation regions sourced on the reference recording onto the corrected grid; local overrides and regions without a source stay as they were', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    // Regions on the reference recording spread over its grid; the target's
+    // times mapped through the grid as it stands (the drawing-time mapping).
+    const mapAll = (regions: any[]) =>
+      page.evaluate(async ({ regions, REF, T }) => {
+        const m: any = await import('/static/js/listen.js');
+        const map = (t: number) => m.getCorrespondingTime(T, m.getClosestAlignmentIx(t, REF));
+        return regions.map((r: any) => ({
+          [REF]: { start: r.start, end: r.end },
+          [T]: { start: map(r.start), end: map(r.end) },
+        }));
+      }, { regions, REF: REF_ROW, T: TARGET_ROW } as any);
+    const spans: any[] = await page.evaluate((REF) => {
+      const rg: number[] = (window as any)._listenTest.session.alignmentGrids[REF];
+      return Array.from({ length: 24 }, (_, i) => {
+        const k = Math.floor((rg.length * (i + 1)) / 25);
+        return { start: rg[k], end: rg[Math.min(k + 3, rg.length - 1)] };
+      });
+    }, REF_ROW);
+    const before = await mapAll(spans);
+    const regions = spans.map((_, i) => ({ id: `r${i}`, label: '', sourceFile: REF_ROW }));
+    await loadSourcedAnnotations(page, regions, [REF_ROW, TARGET_ROW], before);
+
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    for (let k = 0; k < 12; k++) await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await dragSelectedTick(page, 30);
+    expect((await fixState(page)).gridAnchors).toHaveLength(1);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+
+    const want = await mapAll(spans);
+    const got = await annotationTimes(page);
+    let moved = 0;
+    want.forEach((w: any, i: number) => {
+      expect(got.ann_src.times[TARGET_ROW][i].start, `region ${i}`).toBeCloseTo(w[TARGET_ROW].start, 9);
+      expect(got.ann_src.times[TARGET_ROW][i].end, `region ${i}`).toBeCloseTo(w[TARGET_ROW].end, 9);
+      expect(got.ann_src.times[REF_ROW][i]).toEqual(before[i][REF_ROW]);
+      if (Math.abs(w[TARGET_ROW].start - before[i][TARGET_ROW].start) > 1e-3) moved++;
+      expect(got.ann_local.times[TARGET_ROW][i]).toEqual(before[i][TARGET_ROW]);
+      expect(got.ann_none.times[TARGET_ROW][i]).toEqual(before[i][TARGET_ROW]);
+    });
+    expect(moved).toBeGreaterThan(0);
+    expect(got.ann_src.dirty).toBe(true);
+    expect(got.ann_local.dirty).toBe(false);
+    expect(got.ann_none.dirty).toBe(false);
+  });
+
+  test('43.62 a score↔reference correction projects score-sourced annotation regions again from their cached MEI element ids; a region without a source stays', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    const SYNTH = 'Score (synthesised from MEI)';
+    await page.waitForFunction(
+      (k) => Array.isArray((window as any)._listenTest.alignmentGrids[k]),
+      SYNTH,
+    );
+    // One region per early score event, sourced on the notes sounding at it.
+    const regions: any[] = await page.evaluate(async () => {
+      const m: any = await import('/static/js/listen.js');
+      const onsets = m.correctedSynthOnsets || m.scoreAlignment.synth_onset;
+      const out: any[] = [];
+      for (let k = 2; k <= 12; k++) {
+        let res = m.tk.getElementsAtTime(Math.round(onsets[k] * 1000) + 1);
+        if (typeof res === 'string') res = JSON.parse(res);
+        const notes: string[] = (res && res.notes) || [];
+        if (notes.length) out.push({ id: `s${k}`, label: '', sourceScore: notes });
+      }
+      return out;
+    });
+    expect(regions.length).toBeGreaterThan(5);
+    const project = () =>
+      page.evaluate(async ({ regions, files }) => {
+        const sl: any = await import('/static/js/annotation/solid-load.js');
+        const ann = { targets: files.map((file: string) => ({ file })) };
+        return regions.map((r: any) => sl.projectedTimesFromScore(ann, r));
+      }, { regions, files: [REF_ROW, TARGET_ROW] });
+    const before = await project();
+    for (const b of before) expect(Object.keys(b).sort()).toEqual([REF_ROW, TARGET_ROW].sort());
+    await loadSourcedAnnotations(page, regions, [REF_ROW, TARGET_ROW], before);
+
+    await enterFix(page);
+    await waitLoopReady(page);
+    await selectEvent(page, 6);
+    await dragSelectedTick(page, 30);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+
+    const want = await project();
+    const got = await annotationTimes(page);
+    let moved = 0;
+    want.forEach((w: any, i: number) => {
+      for (const file of [REF_ROW, TARGET_ROW]) {
+        expect(got.ann_src.times[file][i].start, `${file} region ${i}`).toBeCloseTo(w[file].start, 9);
+        expect(got.ann_src.times[file][i].end, `${file} region ${i}`).toBeCloseTo(w[file].end, 9);
+        expect(got.ann_none.times[file][i]).toEqual(before[i][file]);
+      }
+      if (Math.abs(w[REF_ROW].start - before[i][REF_ROW].start) > 1e-3) moved++;
+    });
+    expect(moved).toBeGreaterThan(0);
+    expect(got.ann_src.dirty).toBe(true);
+    expect(got.ann_none.dirty).toBe(false);
+  });
 });

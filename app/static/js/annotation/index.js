@@ -13,6 +13,7 @@ import {
   initWaveformInteractions,
   syncWaveformRegions,
   setActiveRegionStart,
+  alignedTimesFromSource,
 } from "./waveform-interactions.js";
 
 export { setActiveRegionStart, setPlayingAnnotations };
@@ -27,6 +28,7 @@ import {
   loadAnnotationFromMM,
   listAnnotationsForAudio,
   listAnnotationsForLoadedAudios,
+  projectedTimesFromScore,
 } from "./solid-load.js";
 import { openLoadModal, consumeLoadIntent } from "./ui-ribbon.js";
 import { confirmLoadFromLink } from "./ui-common.js";
@@ -52,6 +54,20 @@ export function commitAnnotationsToAlignment(alignmentJSON) {
   state.markAllSaved();
 }
 
+/**
+ * After an alignment correction: every sourced region's other targets follow
+ * the corrected alignment — mapped from the source recording, or projected
+ * again from the score. Regions without a source, and local overrides, stay.
+ * Returns how many annotations changed (they are marked unsaved).
+ */
+export function recastAnnotationsToAlignment() {
+  return state.recastRegionTimes((ann, region) =>
+    region.sourceScore
+      ? projectedTimesFromScore(ann, region)
+      : alignedTimesFromSource(ann, region),
+  );
+}
+
 /** The annotations as a save writes them, WITHOUT marking anything saved —
  *  for session recovery's snapshots, which must not clear the dirty state. */
 export function serializeAnnotations() {
@@ -70,7 +86,12 @@ function _serializeAnnotationForAlignment(a) {
     preservedSelections: Array.isArray(a.preservedSelections)
       ? [...a.preservedSelections]
       : [],
-    regions: a.regions.map((r) => ({ id: r.id, label: r.label || "" })),
+    regions: a.regions.map((r) => {
+      const out = { id: r.id, label: r.label || "" };
+      if (r.sourceFile) out.sourceFile = r.sourceFile;
+      if (r.sourceScore) out.sourceScore = [...r.sourceScore];
+      return out;
+    }),
     targets: a.targets.map((t) => ({
       file: t.file,
       description: t.description || "",
@@ -103,7 +124,9 @@ function _serializeAnnotationForAlignment(a) {
     // v2: group notes/comparisons keyed by stable groupId (was label); adds
     // detachedNotes. Older v1 files load fine — state._normalise backfills
     // groupId = label, which is exactly how v1 keyed everything.
-    schemaVersion: 2,
+    // v3: optional regions[].sourceFile / sourceScore and regionTimes local
+    // flags; an older file has none, and its regions are never recast.
+    schemaVersion: 3,
   };
 }
 
@@ -111,6 +134,7 @@ function _cloneRegionTimes(rt) {
   const out = {};
   for (const k of Object.keys(rt || {})) {
     out[k] = { start: rt[k].start, end: rt[k].end };
+    if (rt[k].local) out[k].local = true;
   }
   return out;
 }
@@ -166,6 +190,7 @@ export function initAnnotationV6() {
     waveformViews,
     commitAnnotationsToAlignment,
     loadAnnotationsFromAlignment,
+    recastAnnotationsToAlignment,
     postAnnotationToSolid,
     updateAnnotationOnSolid,
     getAnnotationAccess,

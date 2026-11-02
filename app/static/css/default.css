@@ -1203,6 +1203,15 @@ details {
   margin-bottom: .1em;
 }
 
+/* The audible waveform: an accent ring and a soft glow round it, lifted a
+   level so the halo paints over its neighbours (the exhibit's ?activeStrip=glow).
+   A box-shadow ring, not a wider border, so switching rows shifts no layout. */
+#waveforms .waveform.active {
+  z-index: 1;
+  box-shadow: 0 0 0 2px var(--color-accent, #606c38),
+    0 0 14px color-mix(in srgb, var(--color-accent, #606c38) 55%, transparent);
+}
+
 /* wave marker rules removed (WaveSurfer v4 only) */
 
 .timerValueContainer {

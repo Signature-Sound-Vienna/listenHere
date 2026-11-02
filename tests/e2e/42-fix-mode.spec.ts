@@ -1617,4 +1617,41 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await page.keyboard.press('Escape');
     await expect(page.locator('.fix-chooser')).toHaveCount(0);
   });
+
+  test('42.34 an open annotation drawer closes on entry and reopens on exit as it was: the same annotation, mode, and unsaved edits', async ({
+    page,
+  }) => {
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await page.locator('.lh-v6-ribbon-new').click();
+    await expect(page.locator('.lh-v6-drawer.open')).toHaveCount(1);
+    await page.locator('.lh-v6-drawer [data-v6-key="title"]').fill('Half-typed title');
+    const before = await page.evaluate(() => {
+      const v = (window as any).__annotationV6;
+      return { id: v.state.getActiveId(), mode: v.uiState.getMode() };
+    });
+
+    await enterFix(page, REF_ROW);
+    await expect(page.locator('.lh-v6-drawer.open')).toHaveCount(0);
+    expect(await page.evaluate(() => document.body.classList.contains('lh-v6-drawer-open'))).toBe(false);
+
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await expect(page.locator('.lh-v6-drawer.open')).toHaveCount(1);
+    await expect(page.locator('.lh-v6-drawer [data-v6-key="title"]')).toHaveValue('Half-typed title');
+    const after = await page.evaluate(() => {
+      const v = (window as any).__annotationV6;
+      const a = v.state.getById(v.state.getActiveId());
+      return { id: a.id, mode: v.uiState.getMode(), label: a.label, dirty: a.hasUnsavedChanges };
+    });
+    expect(after).toEqual({ ...before, label: 'Half-typed title', dirty: true });
+
+    // A closed drawer stays closed across a session.
+    await page.evaluate(() => (window as any).__annotationV6.uiState.setDrawerOpen(false));
+    await expect(page.locator('.lh-v6-drawer.open')).toHaveCount(0);
+    await enterFix(page, REF_ROW);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await expect(page.locator('.lh-v6-drawer.open')).toHaveCount(0);
+  });
 });

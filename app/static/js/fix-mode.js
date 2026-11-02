@@ -81,6 +81,8 @@ import {
 import { parseMidi } from "./engine/mei-synth.js";
 import { updateTransportIcons } from "./engine/transport.js";
 import { confirmDialog } from "./annotation/ui-common.js";
+import { recastAnnotationsToAlignment } from "./annotation/index.js";
+import * as v6UiState from "./annotation/ui-state.js";
 import WaveSurfer from "../vendor/wavesurfer.esm.js";
 
 // ---------------------------------------------------------------------------
@@ -745,8 +747,17 @@ export async function enterFixMode(entryFile) {
     return;
   }
 
+  // The annotation drawer stands down while correcting — it pads the body by
+  // 380 px, narrowing the score pane — and comes back as it was on the way
+  // out (its annotation's edits are state, so closing it loses nothing).
+  const drawerWasOpen = v6UiState.getDrawerOpen();
+  const drawerScroll = document.querySelector(".lh-v6-drawer-body")?.scrollTop ?? 0;
+  if (drawerWasOpen) v6UiState.setDrawerOpen(false);
+
   _fix = {
     mode: audioMode ? "audio" : "score-ref",
+    drawerWasOpen,
+    drawerScroll,
     entryFile,
     refFile,
     /** The recording being corrected (audio mode), or null. */
@@ -969,6 +980,14 @@ function _teardownFixDom(f) {
   document.body.classList.remove("fix-mode-open");
   const waveformsEl = document.getElementById("waveforms");
   if (waveformsEl) waveformsEl.style.display = "";
+  if (f.drawerWasOpen) {
+    v6UiState.setDrawerOpen(true);
+    // A frame later: the exit's annotation recast re-renders the body after this.
+    requestAnimationFrame(() => {
+      const body = document.querySelector(".lh-v6-drawer-body");
+      if (body) body.scrollTop = f.drawerScroll;
+    });
+  }
 }
 
 /**
@@ -1035,6 +1054,7 @@ export async function fixFlushPending() {
  * audio wholesale.
  */
 export function fixModeOnPieceReset() {
+  if (_fix) _fix.drawerWasOpen = false; // the outgoing piece's drawer stays shut
   exitFixMode({ discardPending: true });
   _closeChooser();
   _derived = null;
@@ -4208,6 +4228,9 @@ function _onTickMouseDown(e) {
   };
   window.addEventListener("mousemove", f.drag.onMove);
   window.addEventListener("mouseup", f.drag.onUp);
+  // Select on the press, so the score shows the grabbed onset's notes while
+  // it is dragged; the seek waits for a plain click's release.
+  _select(hit, { seek: false });
 }
 
 function _onTickMouseMove(e) {
@@ -5148,6 +5171,12 @@ function _followPlayback() {
   ) {
     _audPause();
     _audSeek(Math.max(0, _groupStripTime(f.groups[ix]) - 0.01));
+    return;
+  }
+  // A pressed tick owns the selection until it is released: following here
+  // would take the grabbed onset's highlight away mid-drag.
+  if (f.drag && !f.drag.keyboard && ix !== f.selGroupIx) {
+    _setSounding(false);
     return;
   }
   if (ix !== f.selGroupIx) _select(ix, { seek: false });
@@ -6904,6 +6933,13 @@ function _refreshMainView() {
     _dirtyGridFiles.clear();
   } catch (err) {
     console.error("fix mode: main-view recompute failed:", err);
+  }
+  // Annotations placed through the old alignment follow the corrected one.
+  try {
+    const n = recastAnnotationsToAlignment();
+    if (n) console.log(`fix mode: ${n} annotation(s) recast to the corrected alignment`);
+  } catch (err) {
+    console.error("fix mode: annotation recast failed:", err);
   }
 }
 

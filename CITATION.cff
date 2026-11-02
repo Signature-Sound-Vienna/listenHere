@@ -1,0 +1,42 @@
+cff-version: 1.2.0
+message: "If Listen Here! is useful in your research, please cite the article below."
+type: software
+title: "Listen Here!"
+abstract: "A browser-based environment for tool-assisted close listening to score-aligned collections of performance recordings."
+authors:
+  - family-names: Weigl
+    given-names: David M.
+    orcid: "https://orcid.org/0000-0003-1502-1528"
+    affiliation: "mdw – University of Music and Performing Arts Vienna"
+  - family-names: VanderHart
+    given-names: Chanda
+    orcid: "https://orcid.org/0000-0002-2055-273X"
+    affiliation: "mdw – University of Music and Performing Arts Vienna"
+  - family-names: Goebl
+    given-names: Werner
+    orcid: "https://orcid.org/0000-0002-1722-0718"
+    affiliation: "mdw – University of Music and Performing Arts Vienna"
+repository-code: "https://github.com/Signature-Sound-Vienna/listenHere"
+url: "https://listen-here.mdw.ac.at"
+license: AGPL-3.0-or-later
+preferred-citation:
+  type: article
+  title: "Publishing and Performing Digital Musicology on the Web: Signature Sound Vienna"
+  authors:
+    - family-names: Weigl
+      given-names: David M.
+      orcid: "https://orcid.org/0000-0003-1502-1528"
+    - family-names: VanderHart
+      given-names: Chanda
+      orcid: "https://orcid.org/0000-0002-2055-273X"
+    - family-names: Goebl
+      given-names: Werner
+      orcid: "https://orcid.org/0000-0002-1722-0718"
+  journal: "Transactions of the International Society for Music Information Retrieval"
+  volume: 9
+  issue: 1
+  start: 247
+  end: 263
+  year: 2026
+  doi: "10.5334/tismir.315"
+  url: "https://doi.org/10.5334/tismir.315"

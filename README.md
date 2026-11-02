@@ -2,13 +2,19 @@
 
 <img src="/app/static/bat/ListenHereBat.png" width="150" alt="Listen Here!">
 
-_Listen Here!_ is a tool that lets you seamlessly compare and switch between different audio recordings of the same piece of music. It provides a machine-assisted close listening interface.
+_Listen Here!_ is a tool that lets you seamlessly compare and switch between different audio recordings of the same piece of music. It provides a machine-assisted close listening interface: align the recordings (and, optionally, a score), listen across them, annotate what you hear, and correct the alignment where the machine got it wrong.
 
 For a detailed description, please see: [Weigl et al (DLfM '23)](https://doi.org/10.1145/3625135.3625144).
 
+If Listen Here! is useful in your research, please cite:
+
+> Weigl, D. M., VanderHart, C., & Goebl, W. (2026). Publishing and Performing Digital Musicology on the Web: Signature Sound Vienna. _Transactions of the International Society for Music Information Retrieval_, 9(1), 247–263. https://doi.org/10.5334/tismir.315
+
+Citation metadata is also available in [CITATION.cff](CITATION.cff).
+
 This tool is developed as part of the [Signature Sound Vienna (SSV)](https://iwk.mdw.ac.at/signature-sound-vienna) [FWF P 34664-G](https://doi.org/10.55776/P34664) and [Vienna's New Year's Concerts: Same procedure as every year?](https://iwk.mdw.ac.at/same-procedure) [FWF SCP 1556025](https://doi.org/10.55776/SCP1556025) projects, funded by the Austrian Science Fund.
 
-> **🔒 Your audio is never uploaded.** Whether you load files from your computer or stream them from the web, all audio processing — including alignment, playback, and waveform rendering — happens entirely in your web browser. Audio is fetched directly into your browser and is never sent onward to Listen Here! or any other server. This is particularly important when working with copyrighted recordings.
+> **🔒 Your audio is never uploaded.** Whether you load files from your computer or stream them from the web, all audio processing — including alignment, alignment correction, playback, and waveform rendering — happens entirely in your web browser. Audio is fetched directly into your browser and is never sent onward to Listen Here! or any other server. This is particularly important when working with copyrighted recordings.
 
 ## Getting Started
 
@@ -16,10 +22,10 @@ Listen Here! is publicly hosted and runs directly in your web browser at **https
 
 To use the tool, you need two things:
 
-1. An **alignment JSON file** (a mapping file that tells the app how the different audio recordings match up in time). You can generate this mapping within the tool using the "Align in browser" feature.
+1. An **alignment JSON file** (a mapping file that tells the app how the different audio recordings match up in time). You can create one within the tool using the **Align in browser** feature.
 2. A collection of **audio files** that you want to compare. You can load these files directly from your computer or from a web server.
 
-There are a few ways to load your audio into the application:
+There are a few ways to get started:
 
 ### 1. Loading audio directly from your computer (Easiest)
 
@@ -32,10 +38,11 @@ You can load audio files directly from your computer using your browser's built-
    - **Choose a folder** to automatically match all audio files inside it.
    - **Choose individual files** to select specific audio recordings.
    - **Drag and drop** audio files directly onto the overlay.
-   - Optionally, switch to the **Linked Data URIs** tab to configure how linked-data annotations will be targeted - see [Annotations (Linked Data)](#annotations-linked-data) below.
-4. You can reopen this overlay at any time by clicking the **Manage files** button in the toolbar.
+   - Optionally, **name the session** (the name is used for the saved file and helps find unsaved work again).
+   - Optionally, switch to the **Linked Data URIs** tab to configure how linked-data annotations will be targeted — see [Sharing annotations on Solid](#sharing-annotations-on-solid) below.
+4. You can reopen this overlay at any time with the **Manage recordings** button in the toolbar.
 
-### 2. Using hosted audio files (Basic Usage)
+### 2. Using hosted audio files
 
 If your audio files are already hosted on a web server, you can point the app to load them automatically.
 
@@ -44,178 +51,197 @@ If your audio files are already hosted on a web server, you can point the app to
 3. Alternatively, visit this link directly:
    `https://listen-here.mdw.ac.at/?align=<URL_of_your_alignment_JSON>`
 
-The app will read the alignment JSON file, which contains the web addresses (URLs) for your audio files, and your browser will fetch them directly. Loading from authenticated servers is supported using HTTP Basic Authentication.
+The app reads the alignment JSON file, which contains the web addresses (URLs) of your audio files, and your browser fetches them directly. If the alignment file can't be fetched or isn't valid, you are returned to the start page with the reason. Loading from authenticated servers is supported using HTTP Basic Authentication. Remote servers must allow cross-origin requests — see [CORS requirements](#cors-requirements-for-remote-audio).
 
 ### 3. Creating a new alignment in your browser
 
-If you don't have an alignment JSON file yet, you can create one directly in the app! The alignment runs entirely in your browser; your audio files are never uploaded to any server.
+If you don't have an alignment JSON file yet, you can create one directly in the app. The alignment runs entirely in your browser; your audio files are never uploaded to any server.
 
 1. Go to the start page at **https://listen-here.mdw.ac.at** and click **Align in browser**.
 2. Alternatively, visit this link directly:
    `https://listen-here.mdw.ac.at/?mode=align`
 3. A step-by-step wizard guides you through the process:
 
-   **Step 1 — Files:** Select or drag-and-drop the audio files you want to align. You need at least two. By default the reference is chosen automatically once the files are read: the recording the others agree with best (cycle consistency over coarse alignments between every pair; with only two files, the longer one). To choose it yourself, use the radio buttons in the file table's Ref column.
+   **Step 1 — Files:** Select or drag-and-drop the audio files you want to align. You need at least two.
+   - **Reference:** by default the reference is chosen automatically once the files are read: the recording the others agree with best. To choose it yourself, use the radio buttons in the file table's **Ref** column.
+   - **Trim ends:** by default, audio at the start or end of a recording that has no counterpart in the reference — applause, announcements, or tuning — is left out of the alignment rather than stretched to fit. Set a single recording differently in the **Trim ends** column.
 
    **Step 2 — Quality:** Choose an alignment quality preset:
    - **Fast** — good quality, quickest results. Best for previewing or working with many files.
    - **Balanced** (recommended) — better precision, a little slower.
    - **High quality** — best precision, slower. Best for final or archival alignments.
 
-   You can also expand **Advanced parameters** to fine-tune individual settings (see [Alignment parameters](#alignment-parameters) below). Changing a value switches automatically to "Custom" mode; you can reset back to a preset at any time. Your quality settings are remembered across sessions.
+   You can also expand **Advanced parameters** to fine-tune individual settings (see [Alignment parameters](#alignment-parameters) below). Changing a value switches to "Custom"; you can reset to a preset at any time. Your quality settings are remembered across sessions.
 
-   **Step 3 — URIs** (optional): Provide a **MEI URI** if you want to include score–performance alignment. You can also set an **Audio URI prefix** to embed linked-data identifiers in the output.
+   **Step 3 — URIs** (optional): Provide an **MEI URI** if you want to include score–performance alignment. A score alignment enables the score row, the tempo curve, and [alignment correction](#correcting-an-alignment). You can also set an **Audio URI prefix** to embed linked-data identifiers in the output.
 
-   **Step 4 — Align:** Review a summary of your choices, optionally enable pre-calculated waveform peaks (speeds up later load times at the cost of a slightly larger file), then click **Start Alignment**. A progress display shows each step in real time.
+   **Step 4 — Align:** Review a summary of your choices, optionally include pre-calculated waveform peaks (faster loading later, at the cost of a slightly larger file), then click **Start Alignment**. A progress display shows each step in real time.
 
 4. You can click any completed step in the indicator bar at the top to jump back and adjust settings before starting.
-5. After alignment completes, you can click **Save data** to download the alignment JSON file, or click **Listen!** to transition seamlessly into the listening interface — no page reload required. Your audio stays loaded and ready to play.
+5. When the alignment completes, a summary names the chosen reference and lists anything trimmed. You can name the session, click **Save data** to download the alignment JSON file, or click **Listen!** to move straight into the listening interface — no page reload required. Your audio stays loaded and ready to play.
 
 ---
 
 ## Using the listening interface
 
-Once your audio files and alignment are loaded, the listening interface allows you to seamlessly switch between different recordings of the same piece during playback.
+Once your audio files and alignment are loaded, the listening interface lets you switch between different recordings of the same piece during playback, always landing at the same moment in the music.
 
-### Basic Features
+### Basic features
 
-- **Sidebar**: Toggle which audio recordings are visible by checking/unchecking them in the left sidebar.
-- **Playback**: Use the play/pause button or the **Spacebar** to toggle playback. Click anywhere on a waveform to jump to that timestamp across all synced recordings.
-- **Switching Audio**: Click on a recording's name in the sidebar, or use the **Up/Down Arrow** keys to change which audio recording is currently active and audible.
-- **Toolbar Options**: You can toggle waveform normalization, visualize alignment points, or show relative positions using the checkboxes in the sidebar toolbar. The toolbar also features a **Save data** button, which displays an orange dot (change indicator) whenever there are unsaved modifications to the alignment JSON (such as new marker locations or grouped files).
+- **Sidebar**: Toggle which recordings are visible by checking or unchecking them. The toolbar's controls sit in collapsible **Playback**, **Files**, and **Tools** sections.
+- **Playback**: Use the play/pause button or the **Spacebar**. Click anywhere on a waveform to jump to that moment across all synced recordings. The recording you are hearing is marked with an accent-coloured glow.
+- **Switching recordings**: Click on a recording's name in the sidebar, or use the **Up/Down Arrow** keys, to change which recording is audible.
+- **Score**: When the alignment includes a score, the MEI encoding is synthesised and shown as its own row, aligned like any recording.
+- **Display options**: Normalize audio levels, **Visualise alignments** (lines joining aligned moments, drawn either from each waveform **to the next** or **to the reference**), **Show relative position**, and **Shared time axis**.
+- **Trimmed ends**: Where a recording's head or tail has no counterpart in the reference, it is hatched over, so it doesn't read as a misalignment.
+- **Save data**: Downloads the alignment JSON with everything you've added — markers, groupings, annotations, and corrections. An orange dot on the button shows there are unsaved changes; its tooltip says what they are.
 
-### Keyboard Shortcuts
+### Keyboard shortcuts
 
 - **`Spacebar`** - Play/Pause
 - **`Up`/`Down` Arrow** - Switch between previous/next visible waveforms
 - **`Left`/`Right` Arrow** - Seek backwards/forwards by 10 seconds. Hold `Shift` for 5 seconds, or `Shift + Alt` for 1 second increments.
-- **`1` - `9` and `0`** - Quickly jump to the 1st through 10th loaded waveform.
-- **`Alt` + `1` - `9` and `0`** - Numbered badges will appear over the visible waveforms, allowing you to quickly jump to the first ten waveforms currently on screen (which change depending on your scroll position).
+- **`1` - `9` and `0`** - Jump to the 1st through 10th loaded waveform.
+- **`Alt` + `1` - `9` and `0`** - Numbered badges appear over the visible waveforms, letting you jump to the first ten waveforms currently on screen.
 - **`M`** - Drop a marker at the current playback position.
+- **`C`** - Toggle close-listening mode.
+- **`Ctrl`/`Cmd` + `Z`** - Undo; add `Shift` to redo.
 
-### Close-Listening Mode
+### Markers and close listening
 
-Close-listening mode allows targeted navigation between specific markers you've dropped.
+Markers drop at the current moment on every recording at once and are saved in the alignment file. With **Enable dragging** (under Tools → Drag Markers), markers can be moved by dragging.
 
-- Press **`C`** to toggle close-listening mode on or off.
-- Use the **`Left`/`Right` Arrow** keys to immediately snap playback to the previous or next marker.
-- Hold **`Shift` + `Left`/`Right` Arrow** to precisely nudge the selected marker's position (100ms, or hold **`Alt`** for 20ms).
-- Press **`Backspace` / `Delete`** to delete the currently selected marker.
+Close-listening mode allows targeted navigation between markers and annotation regions:
+
+- Press **`C`** to toggle close-listening mode. Turning it off leaves the playhead where it is.
+- Use the **`Left`/`Right` Arrow** keys to snap playback to the previous or next marker or annotation region start.
+- Hold **`Shift` + `Left`/`Right` Arrow** to nudge the selected marker (100 ms, or hold **`Alt`** for 20 ms).
+- Press **`Backspace` / `Delete`** to delete the selected marker.
+- When the active stop is the start of an annotation region, that region loops.
 
 ### Zoom
 
-The zoom slider in the Settings panel lets you magnify all waveforms simultaneously (up to 50x) for detailed analysis, and alignment inspection and correction.
+The zoom slider in the Playback section magnifies all waveforms simultaneously (up to 50x). You can also zoom with **Ctrl+scroll** (Cmd+scroll on Mac) over any waveform.
 
-- When zoomed, waveforms become horizontally scrollable. Scrolling one waveform automatically scrolls all others to the corresponding aligned position.
-- Three **scroll modes** appear when zoomed (selectable via radio buttons below the slider):
-  - **Page** — the view jumps when the playhead reaches the edge of the visible area (default).
-  - **Follow** — the playhead stays centred during playback.
-  - **Manual** — no automatic scrolling; scroll freely by hand.
-- The **alignment grid** ("Visualise alignments") scales with zoom: more grid lines become visible at higher magnification, up to the grid's native resolution (at 20 ms in the reference audio).
-- You can also zoom using **Ctrl+scroll** (Cmd+scroll on Mac) while hovering over any waveform.
+- When zoomed, waveforms scroll horizontally; scrolling one scrolls all others to the corresponding aligned position.
+- Three **scroll modes** decide what happens during playback: **Page** (the view jumps when the playhead reaches the edge; default), **Follow** (the playhead stays centred), and **Manual** (no automatic scrolling).
+- The alignment lines scale with zoom: more become visible at higher magnification.
 
-### Time Axis and Measurement
+### Time axis and measurement
 
-Each waveform displays **time-axis ticks** along its top edge. Tick density adapts automatically to the zoom level.
+Each waveform shows **time-axis ticks** along its top edge, with density adapting to the zoom level. The **Shared time axis** option places all waveforms on the same time scale: shorter recordings appear proportionally narrower.
 
-The **Shared time axis** checkbox (in Settings) places all waveforms on the same time scale. Shorter recordings appear proportionally narrower, and scroll sync becomes absolute (1:1) rather than alignment-based.
-
-Hold **Shift** to enter time-measurement mode:
+Hold **Shift** to measure:
 - **Duration labels** appear between consecutive markers, showing the elapsed time in each recording.
-- **Shift+drag** on any waveform to measure an arbitrary time span. The span is projected across all waveforms via the alignment grid, so you can see how the same musical passage differs in duration across recordings.
-- All measurement visuals disappear when you release Shift.
+- **Shift+drag** on any waveform measures an arbitrary span, projected across all waveforms, so you can see how the same passage differs in duration across recordings.
 
-### File Grouping
+### Tempo curve
 
-When many recordings are loaded, you can organise them into named groups for easier navigation.
+When the alignment includes a score, **Tempo curve** draws each recording's tempo over its waveform, either in quarter notes per minute (**QPM**) or as a percentage **Deviation** from the mean tempo of the recordings it is compared with. Those are all recordings (**Across groups**) or those in the same group (**Within group**), optionally restricted to the **Only visible** ones. **Smooth** sets the smoothing window. See [docs/tempo-curve-algorithm.md](docs/tempo-curve-algorithm.md) for how the curve is derived.
 
-- Click the **Group files** button in the toolbar to open the grouping modal.
-- The modal has two panes: **Ungrouped Files** on the left and **Groups** on the right.
-- Click **+ New Group** to create a group. Give it a name and optionally a substring or regex pattern to auto-match filenames.
-- **Drag and drop** files from the ungrouped list into a group, or use the remove button (✕) to move them back.
-- Groups can be **reordered** (▲/▼), **renamed**, or **deleted**.
-- Each group can be assigned a **colour** — choose from the built-in pastel palette or pick a custom colour. Group colours are shown as background tints in both the sidebar and the content pane.
-- In the sidebar, groups can also be **reordered by dragging** the ☰ handle on each group header (including Score and Ungrouped). The content pane updates live during the drag.
-- Click **Apply** to save. All group configuration is persisted in the alignment JSON file.
+### Grouping recordings
 
-#### Grouping Tabs
+When many recordings are loaded, you can organise them into named, coloured groups. Click **Group recordings** in the toolbar:
 
-You can maintain **multiple independent groupings** of the same recordings — for example, one grouped by year of recording and another by orchestra.
+- Create groups with **+ New Group**, optionally with a filename pattern (substring or regular expression) that matches recordings automatically.
+- **Drag and drop** recordings into, between, and out of groups (several at once with multi-select), or drag onto empty space to create a group.
+- Reorder, rename, recolour, or delete groups; click **Apply** to save.
+- **Grouping tabs** keep several independent groupings of the same recordings — say, one by year and another by orchestra. Switch between them with the pill buttons above the waveforms.
+- Groups can also be reordered in the sidebar by dragging the ☰ handle on each group header.
 
-- In the Group Files modal, a **tab bar** appears above the groups area. The first tab is called "Default".
-- Click **+** to add a new tab with its own independent set of groups.
-- **Double-click** a tab name to rename it.
-- Click **✕** on a tab to delete it (with confirmation). There must always be at least one tab.
-- Each tab has its own groups, group order, and group colours.
-- In the **content pane**, a row of pill-shaped buttons appears when you have two or more tabs, letting you switch between groupings. The sidebar updates to match.
-- Switching tabs in the modal does not affect the content pane until you click **Apply**.
+A recording belongs to exactly one group per tab. All grouping is saved in the alignment JSON.
 
-### Settings, Themes, and Appearance
+### Settings and themes
 
-Click the **cog (⚙) button** on the right edge of the screen to open the Settings drawer. 
+The **cog (⚙)** button on the right edge opens the Settings drawer. Choose from eight themes: Light (default), Solarized, Sepia, Peach, Dark, Dracula, Forest, and Nord. Your choice is remembered. A language choice (English, Deutsch) is stored, but the interface is not yet translated.
 
-- **Eight built-in themes**: Light (default), Solarized, Sepia, Peach, Dark, Dracula, Forest, and Nord. Light and Solarized are light-background themes; Dark, Dracula, Forest, and Nord are dark-background themes.
-- Your chosen theme is **saved automatically** and restored on your next visit — including when switching between the landing page and the listening interface.
+---
 
-Support for internationalisation (choosing UI language in the settings menu) to be implemented in future.
+## Annotations
 
+Annotations describe passages of the music across recordings: which recordings, which time regions, and what you have to say about them, as a whole, per recording, per group of recordings, and as comparisons between groups. They are saved in the alignment JSON with **Save data**, and can be published as linked data to a [Solid Pod](https://solidproject.org).
 
-### Annotations (Linked Data)
+### Creating and editing an annotation
 
-If you are logged into a [Solid Pod](https://solidproject.org), you can create and manage linked-data annotations using the Music Annotation Ontology.
+Open the annotation drawer with the **pencil** button on the right edge. The annotation ribbon along the bottom lists the loaded annotations, with a search box.
 
-#### Getting started
+1. Click **+ New** in the ribbon to create an annotation. It opens in **Edit** mode.
+2. Give it a **title**, a **colour**, and a **description**.
+3. **Select recordings** by clicking their waveforms. A selected recording shows a ✓; click it to remove the recording again.
+4. **Draw regions** by dragging on a waveform. A region appears at the same musical moment on every selected recording; drawing on a recording that isn't selected yet adds it.
+   - Drag a region's edges or body to adjust it; the change follows the alignment on every recording.
+   - Hold **Shift** while dragging for a **local adjustment** to that one recording.
+5. Add **notes** on each recording, **group notes** on each group of recordings, and **comparisons** between two groups. The annotation keeps its own copy of the grouping it was made with; **Update groups to current view** adopts the current grouping later.
 
-- Click the **RDF logo** button in the toolbar to open the Linked Data drawer and log in. Login opens in a popup window, so your loaded audio and waveforms are preserved — no page reload.
-- You can also load annotations from any publicly accessible URL by pasting it into the **Load annotations** input at the bottom of the Linked Data drawer — no Solid login required.
+Switch to **View** mode to read an annotation. Clicking an annotation card jumps to the start of its first region and plays; cards light up in their colour while the playhead is inside one of their regions. When zoomed, arrows on each waveform lead to regions that are off-screen.
 
-#### Creating a new annotation
+When you [correct an alignment](#correcting-an-alignment), annotation regions follow: each region remembers the recording it was drawn on (or, for annotations from mei-friend, the score notes it covers) and is placed again through the corrected alignment. Local adjustments stay as they are. Annotations saved before version 0.107.0 don't carry this information and are not moved.
 
-Once logged in, a **+ New Annotation** button appears at the bottom of the interface. Clicking it creates a **draft card** — a workspace where you build up an annotation before posting it.
+### Sharing annotations on Solid
 
-1. **Give it a label.** Type a name into the text field at the top of the card.
-2. **Draw regions.** Click **Draw Regions** to enter drawing mode — your cursor changes and you can click-and-drag on any waveform to mark a time region. Each region appears as a coloured overlay across all synchronised recordings. Click **Stop Drawing** when you are done. You can draw multiple regions per annotation.
-   - Regions can be **resized or repositioned** by dragging their edges or body. By default, adjustments snap to the alignment grid so all recordings stay in sync.
-   - Hold **Shift** while dragging to make a **local override** — an adjustment that applies only to that specific recording's waveform.
-   - Each region is listed on the card with a **delete** button (✕) to remove it.
-3. **Select recordings.** Click **Select Recordings** to enter selection mode. Overlay icons appear on each waveform — click them to **stage** (or unstage) recordings you want to include in the annotation. A counter shows how many are selected.
-4. **Include peaks** (optional). The "Include peaks" checkbox (on by default) attaches a compact waveform envelope so the waveform shape can be displayed publicly without sharing any playable audio.
-5. **Post to Solid.** Click **Post to Solid** to publish the annotation to your Solid Pod. The button is disabled until you have selected at least one recording with a valid audio URI (set via _Manage files → Linked Data URIs_).
-6. **Discard.** Click the **✕** in the card header to discard a draft at any time.
+Sign in to your Solid Pod from the bottom of the annotation drawer (the sign-in opens in a popup, so your loaded audio stays put).
 
-You can have multiple draft cards open simultaneously; each is assigned a distinct colour so its regions are easy to identify on the waveforms.
+- **Post to Solid** publishes the selected annotation to your pod, using the [Music Annotation Ontology](https://doi.org/10.1145/3543882.3543891) and Web Annotations. **Update on Solid** pushes later edits. Recordings are identified by their audio URIs, set under _Manage recordings → Linked Data URIs_.
+- **Make public / Make private** sets who can read a posted annotation. New annotations are private.
+- **Load from Solid** lists the annotations on your pod that involve the loaded recordings. From there you can load them, delete them from your pod, or **Tidy up** list entries whose annotation was already deleted. You can also load a specific annotation by its MusicalMaterial URI, including other people's public annotations.
+- Annotations created in [mei-friend](https://mei-friend.mdw.ac.at) against the score load too, and are projected onto every aligned recording.
+- Annotations outside your own pod can be read, but never updated or deleted from Listen Here!.
 
-#### Working with existing annotations
+**What does posting publish?** Only structured linked data: the time intervals of each selection, your texts, and (optionally) a compact waveform envelope that lets the waveform shape be displayed publicly. **No playable audio is ever uploaded.**
 
-- Annotation cards appear pinned at the bottom of the interface. Each card has a **Play** button to loop the annotated region. Loop playback automatically transfers when you switch between waveforms.
-- Use **Select Recordings** on a card to enter selection mode: click waveform overlays to stage recordings, then **Post to Solid** to save.
-- Use **Describe** on a card to add a textual description (posted as a Web Annotation to your Solid Pod).
-- Use **Primal** to open the Primal interface, which identifies the original recording used when creating the annotation.
-- Click the **✕** button on a card to unload it from the interface.
+---
 
-**What does "Post to Solid" publish?** Only structured linked-data annotations are posted: timeline interval descriptions (start/end times) identifying selections within recordings, and (if the "Include peaks" option is checked) a compact waveform envelope that allows the waveform shape to be displayed publicly. **No playable audio data is ever uploaded.** Audio content never leaves your browser.
+## Correcting an alignment
+
+Automatic alignment is good but not perfect. When the alignment includes a score, **Correct alignment…** (under Tools) opens a correction screen. It offers two steps:
+
+1. **The score against the reference recording.**
+2. **Each other recording against the reference**, available once step 1 has been opened (or skipped).
+
+The correction screen shows the score above a strip with the recording's waveform, with optional **spectrogram** and **onset** lanes beneath. Ticks on the strip mark where each score event currently falls. During playback, the left ear hears the recording and the right ear a synthesised rendering of the score, so you can hear where the two part ways.
+
+- **Drag a tick** to where the note really is. It becomes an **anchor**, and the alignment ahead of it is recomputed up to the next anchor or the **Reach** horizon. **Bend** sets how far the ticks behind follow it. With **Magnet on drag**, a dragged tick snaps to nearby detected onsets.
+- **`Left`/`Right`** step between onsets; **`Shift` + `Left`/`Right`** nudge the selected tick (add **`Alt`** for finer steps). **`Up`/`Down`** turn the score page.
+- **`Enter`** anchors the selected tick where it stands, or unanchors it; **`Backspace`/`Delete`** unanchors it.
+- **`S`** moves the selected ticks to the nearest detected onset; **`A`** selects all ticks on the page.
+- **`G`** marks the audio after the selected onset as **unscored** (applause, a pause, an unwritten repeat), so nothing is aligned across it.
+- **`R`** replays the last fix. With **Re-align automatically** turned off, fixes only pin their ticks and **`Shift` + `R`** re-aligns the spans that are waiting.
+- **`+`/`-`** zoom the score; **`Escape`** or the **×** returns to the listening view.
+
+Every correction can be undone and redone, and **Revert alignment edits** restores the original alignment. Corrections are saved in the alignment JSON with **Save data** and resumed when the file is loaded again. The listening view, the tempo curve, and annotation regions all follow the corrected alignment.
+
+---
+
+## Adding recordings to an alignment
+
+To add recordings to an alignment you have already made, open **Manage recordings → Add Recordings** and pick or drop the new audio files. They are aligned to the existing reference and join the session without a reload. Nothing already aligned changes, including the score alignment and any corrections.
+
+The settings default to those of the original alignment run, where the file records them; **Restore original alignment settings** puts them back if you change them. In a local-files session, the reference recording's audio is needed too, and the tab asks for it.
+
+---
+
+## Unsaved work and recovery
+
+Listen Here! keeps a copy of your unsaved work in your browser: markers, groupings, and annotations are saved locally a moment after each change. If you close or reload the tab with unsaved work, the browser asks first. When you next load the same piece, the app offers the unsaved work back: **Restore**, **Discard**, or **Not now**. The file picker also lists unsaved work from earlier sessions.
+
+- Corrections and added recordings are not part of this copy; save them with **Save data**.
+- Copies older than 30 days, or beyond the newest 20, are discarded.
+- **Save data** is still the way to keep your work: the copy lives only in this browser.
 
 ---
 
 ## Alignment parameters
 
-The alignment wizard exposes several parameters that control how the DTW (Dynamic Time Warping) chroma alignment is computed. The three built-in presets set sensible combinations; you can also adjust each value individually.
+The alignment wizard exposes several parameters that control how the DTW (Dynamic Time Warping) chroma alignment is computed. The three presets set sensible combinations; you can also adjust each value individually.
 
-| Parameter          | Fast     | Balanced | High quality | Description                                                                                                                                                                            |
-| ------------------ | -------- | -------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Coarse resolution  | 4        | 2        | 2            | How much to downsample audio for the initial structural pass. Lower values are more precise but slower.                                                                                |
-| Search flexibility | 80       | 120      | 160          | How far (in frames) the fine alignment can deviate from the structural estimate. Wider values are more forgiving of large tempo changes, but slower.                                   |
-| Feature rate       | 10 Hz    | 10 Hz    | 20 Hz        | How many chroma analysis frames are computed per second of audio. Higher rates capture fast passages more accurately but increase processing time.                                     |
-| Score resolution   | 2 (half) | 1 (full) | 1 (full)     | Downsampling factor for score-to-performance alignment. Only applies when an MEI URI is provided. 1 = full resolution, slower but more accurate.                                       |
-| Onset emphasis     | 2.0      | 2.0      | 2.0          | How strongly note attacks in the score are emphasised during alignment. Higher values anchor the alignment more firmly to clear note onsets. Only applies when an MEI URI is provided. |
+| Parameter          | Fast     | Balanced | High quality | Description                                                                                                                                          |
+| ------------------ | -------- | -------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Coarse resolution  | 4        | 2        | 2            | How much to downsample audio for the initial structural pass. Lower values are more precise but slower.                                              |
+| Search flexibility | 80       | 120      | 160          | How far (in frames) the fine alignment can deviate from the structural estimate. Wider values are more forgiving of large tempo changes, but slower. |
+| Feature rate       | 10 Hz    | 10 Hz    | 20 Hz        | How many chroma analysis frames are computed per second of audio. Higher rates capture fast passages more accurately but increase processing time.   |
+| Score resolution   | 2 (half) | 1 (full) | 1 (full)     | Downsampling factor for score-to-performance alignment. Only applies when an MEI URI is provided. 1 = full resolution, slower but more accurate.     |
 
-**Choosing a preset:**
-
-- Use **Fast** when you want a quick preview or are working with a large number of files.
-- Use **Balanced** (the default) for most situations — it offers noticeably better precision with only a modest speed trade-off.
-- Use **High quality** when precision matters most, for example when producing a final or archival alignment.
-
-All settings are saved in your browser and restored automatically the next time you open the wizard. If the "Include alignment settings in output" checkbox is enabled (on by default), the chosen parameter values are written into the `header.alignmentParams` field of the output JSON for reproducibility.
+All settings are saved in your browser and restored the next time you open the wizard. The values used are always written into the output file (`header.alignmentParams`) for reproducibility.
 
 ---
 
@@ -223,9 +249,7 @@ All settings are saved in your browser and restored automatically the next time 
 
 ### CORS requirements for remote audio
 
-Listen Here! needs [CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) headers on any remote audio server. The tool fetches and decodes audio in the browser (for waveform rendering and for the "Normalize audio" feature, which routes playback through a Web Audio `GainNode`). Without CORS, the browser will block the fetch request and the audio will fail to load.
-
-If you control the server, ensure it sends at least:
+Listen Here! needs [CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS) headers on any remote server it loads audio or alignment files from. The browser fetches and decodes audio itself (for waveform rendering and audio normalisation), and blocks the fetch without CORS. If you control the server, ensure it sends at least:
 
 ```
 Access-Control-Allow-Origin: *
@@ -235,7 +259,7 @@ The bundled `serve_local.py` script already includes this header.
 
 ### Serving audio from your local machine
 
-If your audio files are on your local computer but you prefer to use a local file server (e.g., when publishing Linked Data about audio files that cannot be put online for copyright reasons), you can use the `?useLocal` parameter along with the included `serve_local.py` script.
+If your audio files are on your computer but you prefer a local file server (e.g., when publishing linked data about audio files that cannot be put online for copyright reasons), use the `useLocal` parameter with the included `serve_local.py` script:
 
 1. Start a local file server pointing at the directory containing your audio files:
    ```bash
@@ -244,90 +268,75 @@ If your audio files are on your local computer but you prefer to use a local fil
 2. Open Listen Here! with the `useLocal` parameter appended:
    `https://listen-here.mdw.ac.at/?align=<URL_of_your_alignment_JSON>&useLocal=http://localhost:8080`
 
-When `useLocal` is specified, the tool extracts only the filename from each audio key in the alignment file and loads it from your local server.
-
-> **Note:** `serve_local.py` is a minimal CORS-enabled HTTP file server. It accepts any local directory path (absolute or relative) and an optional port number (default: 8080).
+When `useLocal` is specified, the tool takes only the filename from each audio key in the alignment file and loads it from your local server. `serve_local.py` accepts any directory path and an optional port (default: 8080).
 
 ### Alignment JSON format
 
-The alignment file tells the app how recordings relate in time. It follows this structure:
+This section covers what you need to use Listen Here! alignments and annotations in other tools. Other fields in the file (groupings, correction records, run provenance) are Listen Here!'s own bookkeeping and can be ignored.
 
 ```json
 {
   "header": {
-    "ref": "<URL or filename of the reference audio>",
-    "meiUri": "<URL of MEI encoding (optional, for score alignment)>",
-    "linkedDataUriPrefix": "<URI prefix for linked-data annotations (optional)>",
-    "createdBy": "Listen Here! v0.13.0",
-    "createdAt": "2026-03-15T12:00:00.000Z",
-    "alignmentParams": {
-      "coarse": 2,
-      "slack": 120,
-      "featureRate": 10,
-      "scoreDownsample": 1,
-      "onsetWeight": 2.0
-    }
+    "ref": "VPO-2005.wav",
+    "meiUri": "https://example.org/score.mei",
+    "label": "Donauwalzer",
+    "markers": [1520, 8410],
+    ...
   },
   "body": {
     "audio": {
-      "<audio_key_1>": [0.0, 0.02, 0.04, ...],
-      "<audio_key_2>": [0.0, 0.03, 0.05, ...],
-      ...
+      "VPO-2005.wav": {
+        "times": [0.0, 0.02, 0.04, ...],
+        "duration": 698.25,
+        "alignedFrom": 4.60,
+        "alignedTo": 555.20,
+        "peaks": [...]
+      },
+      "NYP-1982.wav": { "times": [0.0, 0.0, 0.01, ...], ... }
     },
     "score": {
-      "score_onset": [0.0, 0.5, 1.0, ...],
-      "ref_onset": [0.0, 0.48, 0.97, ...],
-      "score_offset": [0.25, 0.75, 1.25, ...],
-      "ref_offset": [0.24, 0.73, 1.22, ...]
+      "score_onset": [0, 0.125, 0.25, ...],
+      "ref_onset": [4.60, 4.66, 4.73, ...],
+      "score_offset": [...],
+      "ref_offset": [...]
     }
-  }
+  },
+  "annotations": [ ... ]
 }
 ```
 
-When **peaks** are included (the default), each audio entry becomes an object instead of a plain array:
+**The alignment grid.** `body.audio` has one entry per recording, keyed by URL or filename. `header.ref` names the reference recording. All `times` arrays have the same length: entry *i* of every array is the same musical moment, given in seconds of that recording. In alignments made by Listen Here!, the reference's own `times` run on a regular 20 ms grid. So to find where reference time *t* falls in another recording, look up index *t* / 0.02 in that recording's `times` (interpolating between entries as needed). A recording's entry may also be a bare array of times, without the other fields.
 
-```json
-"<audio_key>": {
-  "times": [0.0, 0.02, 0.04, ...],
-  "peaks": [0.12, 0.45, 0.87, ...],
-  "duration": 423.576
-}
-```
+- `alignedFrom` / `alignedTo` (optional) bound the part of a recording that is aligned; outside it (applause, tuning) grid values are not meaningful.
+- `duration` is the recording's length in seconds; `peaks` is an optional waveform envelope for display.
 
-#### Header fields
+**The score alignment** (`body.score`, present when `header.meiUri` is): parallel arrays, one entry per score event. `score_onset` / `score_offset` are positions in the score in quarter notes; `ref_onset` / `ref_offset` are the corresponding times in seconds in the reference recording. Combine with the grid to place a score event in any other recording. (`synth_onset` / `synth_offset`, if present, are times in Listen Here!'s synthesised score audio.)
 
-| Field                 | Required            | Description                                                                                                                                                                             |
-| --------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ref`                 | yes                 | Must match one of the keys in `body.audio`. Identifies the reference recording.                                                                                                         |
-| `meiUri`              | if score is present | URL of the MEI encoding used for score–performance alignment.                                                                                                                           |
-| `linkedDataUriPrefix` | no                  | A URI prefix prepended to audio filenames when constructing linked-data annotation targets.                                                                                             |
-| `createdBy`           | no                  | Tool name and version that generated the file. Added automatically by Listen Here!                                                                                                      |
-| `createdAt`           | no                  | ISO 8601 timestamp of when the alignment was created.                                                                                                                                   |
-| `alignmentParams`     | no                  | The DTW parameter values used to produce the alignment (see [Alignment parameters](#alignment-parameters)). Included when the "Include alignment settings in output" option is enabled. |
-| `referenceChoice`     | no                  | How the wizard chose `ref`: `{"mode": "manual"}`, or `mode` `"automatic"` with `method` (`"cycle"`, or `"longest"` for two files), and for `"cycle"` the `rateHz` compared at, each candidate's `scores` (lower is better), and the candidates `excluded` because too many targets would fail the span guard. |
-| `groupingTabs`        | no                  | Array of grouping tab objects, each with `name`, `fileGroups` (array of `{name, files, pattern?, color?}`), and `groupOrder`. Supports multiple independent file groupings.             |
-| `activeTab`           | no                  | Name of the currently selected grouping tab.                                                                                                                                            |
+**Markers** (`header.markers`) are indices into the grid.
 
-#### Body fields
+**Annotations** (`annotations`, top level) are an array of objects with `id`, `label`, `color`, `description`, `regions` (each with an `id`), and `targets`: one per recording, with its `file` (a key of `body.audio`), its `description` (the per-recording note), and `regionTimes`, which maps each region `id` to `{start, end}` in seconds of that recording. Group notes and comparisons refer to the annotation's own copy of the grouping (`pinnedGrouping`). The format version is `schemaVersion`.
 
-| Field        | Required | Description                                                                                                                                                                                             |
-| ------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `body.audio` | yes      | Each key is a URL or filename identifying an audio recording. The value is either an array of alignment times (in seconds), or an object with `times`, `peaks`, and `duration` when peaks are included. |
-| `body.score` | no       | Score-to-performance alignment arrays (`score_onset`, `ref_onset`, `score_offset`, `ref_offset`). Requires `header.meiUri`.                                                                             |
+Annotations posted to Solid follow the [Music Annotation Ontology](https://doi.org/10.1145/3543882.3543891) (`mao:MusicalMaterial` → `mao:Extract` → one `mao:Selection` per recording, with media-fragment time intervals) plus [Web Annotations](https://www.w3.org/TR/annotation-model/) for the texts. They can be read from a pod without Listen Here!.
 
-Alignment JSON files can be generated using the tool's in-client alignment feature, or offline using the [SSV alignment workflow](https://github.com/signature-sound-vienna/alignment), based on [SyncToolbox](https://github.com/meinhardmueller/synctoolbox).
+Alignment JSON files can be generated using the tool's in-browser alignment, or offline using the [SSV alignment workflow](https://github.com/signature-sound-vienna/alignment), based on [SyncToolbox](https://github.com/meinhardmueller/synctoolbox). Score alignments from that workflow are converted when loaded.
 
 ### Running locally (Development)
 
-To run Listen Here! locally for development:
+To run Listen Here! locally for development, with pip:
 
 ```bash
 pip install -r requirements.txt
 flask run
 ```
 
-Then visit `http://localhost:5000/?align=<alignment_URL>`.
+or with [uv](https://docs.astral.sh/uv/):
 
-### Annotations
+```bash
+uv venv
+uv pip install -r requirements.txt
+uv run flask run
+```
 
-Use [mei-friend](https://mei-friend.mdw.ac.at) to generate compatible MEI annotations within your [Solid Pod](https://solidproject.org), using the Music Annotation Ontology data model described in [Lewis et al. (DLfM 2022)](https://doi.org/10.1145/3543882.3543891).
+Then visit `http://localhost:5000/`.
+
+The end-to-end tests use [Playwright](https://playwright.dev): `npm install`, then `npm test` (with the Flask server running, or Playwright starts it).

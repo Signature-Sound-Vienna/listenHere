@@ -1,5 +1,6 @@
 import { type Page } from '@playwright/test';
 import { test, expect, AUDIO_A, AUDIO_B } from '../support/fixtures';
+import { waitForWaveformsReady, waitForWaveformWidthSettled } from '../support/helpers';
 
 // ---------------------------------------------------------------------------
 // Section 22 — Annotation editor: selection-group re-pinning
@@ -139,6 +140,35 @@ test.describe('22. Annotation editor — group re-pinning', () => {
     page.once('dialog', (d) => d.accept());
     await page.locator('.lh-v6-detached-discard').click();
     await expect(page.locator('.lh-v6-detached-tile')).toHaveCount(0);
+  });
+
+  // 22.3 Applying the modal rebuilds every waveform with a fresh RegionsPlugin;
+  // draw mode must be wired onto the new plugins, not left on the destroyed ones
+  // (it was, until edit → view → edit forced a re-wire).
+  test('22.3 a region can still be drawn after applying the grouping modal', async ({ loadedPage: page }) => {
+    await page.locator('.lh-v6-ribbon-new').click();
+    await page.waitForSelector('body.lh-v6-edit-active');
+    const annId = await page.evaluate(() => (window as any).__annotationV6.state.getActiveId());
+    await setupTwoGroups(page);
+    await waitForWaveformsReady(page);
+    await waitForWaveformWidthSettled(page, AUDIO_A);
+
+    const box = (await page.locator(`#waveforms .waveform[data-ix="${AUDIO_A}"]`).boundingBox())!;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(box.x + box.width * 0.3, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * 0.5, y, { steps: 12 });
+    await page.mouse.up();
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            (id) => (window as any).__annotationV6.state.getById(id).regions.length,
+            annId,
+          ),
+        { message: 'drag after the modal drew no region' },
+      )
+      .toBe(1);
   });
 
 });

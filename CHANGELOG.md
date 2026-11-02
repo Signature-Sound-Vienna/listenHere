@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.108.1 -- Regions can be drawn again after applying the grouping modal
+
+* Applying the Group Recordings modal rebuilds every waveform, and the new waveforms did not accept a drag to draw an annotation region until the drawer was switched to View and back to Edit. Draw mode now follows each waveform as it is built.
+* Testing: 22.3; 07, 20, 31, 42, and 58 pass (67).
+
 ### 0.108.0 -- Open public annotations in Primal; posts carry waveform peaks and always an oa/top
 
 * Every posted Selection carries its recording's waveform peaks again (`ssv:peaks`, a JSON string `{peaks, duration}`, as before the annotation rework), so a reader that cannot fetch the audio, such as Primal, still draws its waveform and regions. Peaks come from the alignment JSON (4096 per recording), else from the decoded audio; amplitudes are rounded to 4 decimals.

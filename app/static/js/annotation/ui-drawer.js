@@ -370,6 +370,10 @@ function _renderPublishBar(bar, ann) {
 // state: loading | public | private | legacy | unsupported | error.
 const _accessUi = new Map();
 
+// Primal reads only public resources; it is opened on the annotation's oa/top,
+// the one resource from which it reaches every note.
+const PRIMAL_URL = "https://primal.mdw.ac.at/";
+
 function _renderAccessControl(bar, ann) {
   const mm = ann.lastPostedUris["mm"];
   let st = _accessUi.get(ann.id);
@@ -467,6 +471,33 @@ function _renderAccessControl(bar, ann) {
       },
       label,
     ),
+  );
+  if (st.state === "public" && !st.busy) _renderPrimalLink(bar, ann);
+}
+
+function _renderPrimalLink(bar, ann) {
+  const top = ann.lastPostedUris["oa/top"];
+  if (!top) {
+    // Posted before oa/top was always written, without a description.
+    bar.appendChild(
+      el("span", {
+        class: "lh-v6-publish-link lh-v6-primal-link is-unavailable",
+        title: "Update this annotation to open it in Primal.",
+        text: "↗ Primal",
+      }),
+    );
+    return;
+  }
+  const href = PRIMAL_URL + "?obj=" + encodeURIComponent(top);
+  bar.appendChild(
+    el("a", {
+      class: "lh-v6-publish-link lh-v6-primal-link",
+      href,
+      target: "_blank",
+      rel: "noopener noreferrer",
+      title: "Open in Primal: " + top,
+      text: "↗ Primal",
+    }),
   );
 }
 

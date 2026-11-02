@@ -56,7 +56,12 @@ import {
   annotationContainer,
   solid,
 } from "../solid.js";
-import { getAudioLinkedDataUri, loadedAlignmentJSON } from "../listen.js";
+import {
+  getAudioLinkedDataUri,
+  getWaveformPeaks,
+  loadedAlignmentJSON,
+  wavesurfers,
+} from "../listen.js";
 import { commitAnnotationsToAlignment } from "./index.js";
 
 // ---------------------------------------------------------------------------
@@ -330,6 +335,7 @@ export async function postAnnotationToSolid(annId, opts = {}) {
 
   const { templates } = adapter.serialize(ann, {
     resolveAudioUri: (f) => fileToAudioUri[f],
+    resolvePeaks: _peaksFor,
   });
 
   const byKey = new Map(templates.map((t) => [t.localKey, t]));
@@ -400,6 +406,29 @@ function _resolveAudioUris(ann) {
     out[t.file] = _normaliseIri(audioUri);
   }
   return out;
+}
+
+// Peaks exported from decoded audio get the resolution of the precomputed
+// ones in an alignment JSON.
+const PEAKS_FOR_SELECTION = 4096;
+
+/**
+ * A recording's waveform peaks for its Selection's ssv:peaks: the alignment's
+ * precomputed {peaks, duration}, else peaks exported from the decoded audio,
+ * else null (the Selection is then posted without them).
+ */
+function _peaksFor(file) {
+  const pre = getWaveformPeaks(file);
+  if (pre && pre.peaks.length && pre.duration) return pre;
+  const ws = wavesurfers[file];
+  try {
+    const decoded = ws && ws.getDecodedData();
+    if (!decoded) return null;
+    const peaks = ws.exportPeaks({ channels: 1, maxLength: PEAKS_FOR_SELECTION })[0];
+    return peaks && peaks.length ? { peaks, duration: decoded.duration } : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 function _labelForKind(kind) {
@@ -702,6 +731,7 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
   // Generate new templates from current state.
   const { templates } = adapter.serialize(ann, {
     resolveAudioUri: (f) => fileToAudioUri[f],
+    resolvePeaks: _peaksFor,
   });
 
   const byKey = new Map(templates.map((t) => [t.localKey, t]));

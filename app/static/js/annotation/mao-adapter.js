@@ -21,7 +21,14 @@
 //       sda:commenting  — top-level description, targets MusicalMaterial directly
 //                         when no lower-level OAs exist; otherwise an
 //                         oa:compositeTarget over the highest-covering roots
-//                         from the per-track OA tree.
+//                         from the per-track OA tree. ALWAYS written, without
+//                         oa:hasBody when there is no description: it is the
+//                         one root from which a forward-only reader (Primal,
+//                         opened at ?obj=<oa/top>) reaches every note.
+//   - Each Selection carries the recording's precomputed waveform peaks as an
+//     ssv:peaks literal, a JSON string {peaks, duration} (a Listen Here
+//     specialisation, not MAO): readers draw waveform and regions without
+//     the copyright-protected audio, which they cannot fetch.
 //   - Chain enforcement: a group-level OA can only exist when at least one
 //     recording in that group has a track-level OA. A comparison can only
 //     exist between two group-level OAs. The UI (Phase D) gates inputs
@@ -66,6 +73,18 @@ function lit(value) {
   return { "@value": value };
 }
 
+// {peaks, duration} → the ssv:peaks literal, or null when there is nothing to
+// write. Amplitudes are rounded to 4 decimals (below a pixel at any waveform
+// height), which keeps a 4096-peak Selection near 30 KB instead of 86 KB.
+function peaksLiteral(p) {
+  if (!p || !Array.isArray(p.peaks) || p.peaks.length === 0) return null;
+  if (!(Number.isFinite(p.duration) && p.duration > 0)) return null;
+  const peaks = p.peaks.map((v) =>
+    Number.isFinite(v) ? Math.round(v * 1e4) / 1e4 : 0,
+  );
+  return lit(JSON.stringify({ peaks, duration: p.duration }));
+}
+
 // ---------------------------------------------------------------------------
 // serialize: annotation state → resource templates
 // ---------------------------------------------------------------------------
@@ -77,6 +96,7 @@ function lit(value) {
  * @param {object} ctx
  * @param {(file: string) => string|null} ctx.resolveAudioUri — recording filename → LD URI
  * @param {(localKey: string) => string} [ctx.uri] — localKey → posted URI (Phase E supplies a real resolver; tests use a stub)
+ * @param {(file: string) => {peaks: number[], duration: number}|null} [ctx.resolvePeaks] — recording filename → its waveform peaks, written as ssv:peaks on its Selection
  * @returns {object} { templates: Array<{localKey, kind, body, dependsOn}> }
  */
 export function serialize(annotation, ctx) {
@@ -103,6 +123,10 @@ export function serialize(annotation, ctx) {
     }
     if (nonEmpty(annotation.label)) {
       selBody[nsp.RDFS + "label"] = [lit(`${annotation.label} — ${target.file}`)];
+    }
+    const peaks = peaksLiteral(ctx.resolvePeaks ? ctx.resolvePeaks(target.file) : null);
+    if (peaks) {
+      selBody[nsp.SSV + "peaks"] = [peaks];
     }
     templates.push({
       localKey: selKey,
@@ -264,44 +288,45 @@ export function serialize(annotation, ctx) {
   // ---- Top-level description (sda:commenting) ----------------------------
   // No lower-level OAs at all → hasTarget = MusicalMaterial directly.
   // Otherwise → hasTarget = compositeTarget over highest-covering roots,
-  // computed per-track and deduped.
+  // computed per-track and deduped. Written with or without a description
+  // (then bodiless), so oa/top is always the annotation's entry point.
+  const roots = _computeTopCommentingRoots(
+    annotation,
+    trackKeysByFile,
+    groupKeysById,
+    comparisonKeys,
+  );
+  const topBody = {
+    "@type": [nsp.OA + "Annotation", nsp.SCHEMA + "Dataset"],
+    [nsp.OA + "motivatedBy"]: [ref(nsp.SDA + "commenting")],
+  };
   if (nonEmpty(annotation.description)) {
-    const roots = _computeTopCommentingRoots(
-      annotation,
-      trackKeysByFile,
-      groupKeysById,
-      comparisonKeys,
-    );
-    const body = {
-      "@type": [nsp.OA + "Annotation", nsp.SCHEMA + "Dataset"],
-      [nsp.OA + "motivatedBy"]: [ref(nsp.SDA + "commenting")],
-      [nsp.OA + "hasBody"]: [textBody(annotation.description)],
-    };
-    let dependsOn;
-    if (roots.length === 0) {
-      body[nsp.OA + "hasTarget"] = [linkTo("mm")];
-      dependsOn = ["mm"];
-    } else {
-      body[nsp.OA + "hasTarget"] = [
-        {
-          "@type": [nsp.OA + "CompositeTarget"],
-          [nsp.OA + "items"]: roots.map((rk) => ({
-            "@type": [nsp.OA + "SpecificResource"],
-            [nsp.OA + "hasSource"]: [linkTo(rk)],
-            [nsp.OA + "hasPurpose"]: [ref(nsp.SDA + "evidencing")],
-            [nsp.OA + "hasScope"]: [linkTo("extract")],
-          })),
-        },
-      ];
-      dependsOn = ["mm", "extract", ...roots];
-    }
-    templates.push({
-      localKey: "oa/top",
-      kind: "oa:Annotation",
-      body,
-      dependsOn,
-    });
+    topBody[nsp.OA + "hasBody"] = [textBody(annotation.description)];
   }
+  let topDependsOn;
+  if (roots.length === 0) {
+    topBody[nsp.OA + "hasTarget"] = [linkTo("mm")];
+    topDependsOn = ["mm"];
+  } else {
+    topBody[nsp.OA + "hasTarget"] = [
+      {
+        "@type": [nsp.OA + "CompositeTarget"],
+        [nsp.OA + "items"]: roots.map((rk) => ({
+          "@type": [nsp.OA + "SpecificResource"],
+          [nsp.OA + "hasSource"]: [linkTo(rk)],
+          [nsp.OA + "hasPurpose"]: [ref(nsp.SDA + "evidencing")],
+          [nsp.OA + "hasScope"]: [linkTo("extract")],
+        })),
+      },
+    ];
+    topDependsOn = ["mm", "extract", ...roots];
+  }
+  templates.push({
+    localKey: "oa/top",
+    kind: "oa:Annotation",
+    body: topBody,
+    dependsOn: topDependsOn,
+  });
 
   return { templates };
 }
@@ -767,9 +792,12 @@ export function selfTest() {
     },
   };
 
+  // gamma has no peaks: its Selection must carry no ssv:peaks.
   const ctx = {
     resolveAudioUri: (f) => `https://example.org/audio/${f}`,
     uri: (k) => `https://example.org/r/${encodeURIComponent(k)}`,
+    resolvePeaks: (f) =>
+      f === "gamma.wav" ? null : { peaks: [0, 0.123456, 0.5, 0.25], duration: 12.5 },
   };
 
   const { templates } = serialize(annotation, ctx);
@@ -790,6 +818,23 @@ export function selfTest() {
   selTemplates.forEach((s) => {
     const label = (s.body[nsp.RDFS + "label"] || [])[0];
     assert(label && /Test annotation — /.test(label["@value"]), "Selection label missing or wrong form");
+  });
+  // Inline peaks on the Selections whose recording has them:
+  selTemplates.forEach((s) => {
+    const p = (s.body[nsp.SSV + "peaks"] || [])[0];
+    if (s.localKey === "sel/gamma.wav") {
+      assert(!p, "gamma has no peaks; its Selection must carry no ssv:peaks");
+      return;
+    }
+    let parsed = null;
+    try {
+      parsed = JSON.parse(p["@value"]);
+    } catch (_) {}
+    assert(
+      parsed && parsed.duration === 12.5 && parsed.peaks.length === 4 &&
+        parsed.peaks[1] === 0.1235,
+      `ssv:peaks missing or malformed on ${s.localKey}`,
+    );
   });
   // Track-level OAs only for recordings with notes:
   const trackOAs = templates.filter((t) => t.localKey.startsWith("oa/track/"));
@@ -862,6 +907,43 @@ export function selfTest() {
     assert(lpu["oa/group/Strings"] === ctx.uri("oa/group/Strings"), "lastPostedUris.oa/group/Strings lost");
     assert(lpu["oa/top"] === ctx.uri("oa/top"), "lastPostedUris.oa/top lost");
   }
+
+  // ---- No description: oa/top is still written, without a body, and ------
+  // ---- round-trips to an empty description with its URI kept. ------------
+  const bare = serialize({ ...annotation, description: "" }, ctx).templates;
+  const bareTop = bare.find((t) => t.localKey === "oa/top");
+  assert(bareTop, "oa/top must be written without a description");
+  if (bareTop) {
+    assert(!(nsp.OA + "hasBody" in bareTop.body), "bodiless oa/top must carry no oa:hasBody");
+    assert(
+      _hasType(bareTop.body[nsp.OA + "hasTarget"][0], nsp.OA + "CompositeTarget"),
+      "bodiless oa/top keeps the compositeTarget over the highest roots",
+    );
+    const bareGraph = {};
+    bare.forEach((t) => {
+      const u = ctx.uri(t.localKey);
+      bareGraph[u] = { ...JSON.parse(JSON.stringify(t.body)), "@id": u };
+    });
+    const bareRestored = deserialize(bareGraph, {
+      musicalMaterialUri: ctx.uri("mm"),
+      resolveFileFromAudioUri: (audioUri) =>
+        audioUri.replace("https://example.org/audio/", ""),
+    });
+    assert(bareRestored && bareRestored.description === "", "bodiless oa/top must read back as no description");
+    assert(
+      bareRestored && bareRestored.lastPostedUris["oa/top"] === ctx.uri("oa/top"),
+      "bodiless oa/top URI lost on round-trip",
+    );
+  }
+  // No lower-level OAs and no description: oa/top targets the MM directly.
+  const minimal = serialize(
+    { ...annotation, description: "", groupNotes: {}, targets: annotation.targets.map((t) => ({ ...t, description: "" })) },
+    ctx,
+  ).templates.find((t) => t.localKey === "oa/top");
+  assert(
+    minimal && _firstId(minimal.body[nsp.OA + "hasTarget"]) === ctx.uri("mm"),
+    "bare annotation's oa/top must target the MusicalMaterial",
+  );
 
   return {
     passed: failures.length === 0,

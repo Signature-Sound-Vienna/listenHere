@@ -45,12 +45,13 @@ export const V6_REGION_PREFIX = "v6_";
 // hooked the first time syncRegions encounters it.
 const _hookedPlugins = new WeakSet();
 
-// Cleanup functions returned by enableDragSelection (per plugin). Stored
-// here so we can tear them down when conditions change.
-let _dragSelectionCleanups = [];
-let _activeRegionCreatedListeners = []; // [{plugin, file, fn}]
+// Plugins wired for drag-to-create: plugin → { cleanup, onCreated }, where
+// cleanup is what enableDragSelection returned. Reconciled per plugin, because
+// rebuilding the waveform pane (grouping modal Apply, lazy builds) mints new
+// plugins while the draw-mode key stays the same.
+const _dragWired = new Map();
 
-// Last draw-mode signature applied, so we can short-circuit redundant work.
+// Last draw-mode signature applied; a change tears down and re-wires all.
 let _lastDrawModeKey = null;
 
 // Re-entrancy guard for syncRegions. ensureTargetsAttached emits, which
@@ -104,6 +105,8 @@ export function initWaveformInteractions() {
  */
 export function syncWaveformRegions() {
   syncRegions();
+  // Called as each waveform is built: wire its fresh plugin if draw mode is on.
+  syncDrawMode();
 }
 
 function syncAll() {
@@ -504,31 +507,31 @@ function syncDrawMode() {
     uiState.getMode() === "edit" &&
     uiState.getDrawMode();
   const key = wantEnabled ? `on:${ann.id}:${ann.color}` : "off";
-  if (key === _lastDrawModeKey) return;
-  _lastDrawModeKey = key;
-
-  // Tear down any prior wiring.
-  _tearDownDragMode();
-  if (!wantEnabled) {
-    setDrawModeActive(false);
-    return;
+  if (key !== _lastDrawModeKey) {
+    _lastDrawModeKey = key;
+    _tearDownDragMode();
+    setDrawModeActive(wantEnabled);
   }
-  _setUpDragMode(ann);
+  if (wantEnabled) _wireDragMode(ann);
 }
 
-function _setUpDragMode(ann) {
-  setDrawModeActive(true);
+/** Wire every plugin not yet wired; unwire those whose waveform is gone. */
+function _wireDragMode(ann) {
   const dragColor = _withAlpha(ann.color, 0.25);
   // Pixel threshold (default 3) bumped to 10 so click jitter doesn't get
   // interpreted as a drag and create an accidental thin region. Intentional
   // drags clear this easily; jittered clicks fall back to the click handler.
   const DRAG_THRESHOLD_PX = 10;
+  const live = new Set();
   for (const [file, plugin] of regionsPluginEntries()) {
+    live.add(plugin);
+    // Before its WaveSurfer exists the plugin has no wrapper, and
+    // enableDragSelection would return a no-op; wait for the next sync.
+    if (_dragWired.has(plugin) || !wavesurfers[file]) continue;
     const cleanup = plugin.enableDragSelection(
       { color: dragColor },
       DRAG_THRESHOLD_PX,
     );
-    if (typeof cleanup === "function") _dragSelectionCleanups.push(cleanup);
     const onCreated = (region) => {
       const id = region && region.id;
       if (id && id.startsWith(V6_REGION_PREFIX)) return; // programmatic
@@ -567,23 +570,26 @@ function _setUpDragMode(ann) {
       state.addRegion(activeId, file, start, end, timesByFile);
     };
     plugin.on("region-created", onCreated);
-    _activeRegionCreatedListeners.push({ plugin, file, fn: onCreated });
+    _dragWired.set(plugin, { cleanup, onCreated });
+  }
+  for (const plugin of _dragWired.keys()) {
+    if (!live.has(plugin)) _unwireDragMode(plugin);
   }
 }
 
+function _unwireDragMode(plugin) {
+  const { cleanup, onCreated } = _dragWired.get(plugin);
+  _dragWired.delete(plugin);
+  try {
+    if (typeof cleanup === "function") cleanup();
+  } catch (_) {}
+  try {
+    plugin.un("region-created", onCreated);
+  } catch (_) {}
+}
+
 function _tearDownDragMode() {
-  _dragSelectionCleanups.forEach((fn) => {
-    try {
-      fn();
-    } catch (_) {}
-  });
-  _dragSelectionCleanups = [];
-  _activeRegionCreatedListeners.forEach(({ plugin, fn }) => {
-    try {
-      plugin.un("region-created", fn);
-    } catch (_) {}
-  });
-  _activeRegionCreatedListeners = [];
+  for (const plugin of [..._dragWired.keys()]) _unwireDragMode(plugin);
 }
 
 // ---------------------------------------------------------------------------

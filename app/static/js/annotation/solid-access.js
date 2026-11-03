@@ -6,13 +6,18 @@
 // one folder per type (solid-layout.js), so one ACL per folder, four at most,
 // covers every resource of the annotation, including ones a later update adds.
 //
+// Resources in the older flat layout (<type container>/<slug>: everything
+// mei-friend posts, and Listen Here's posts before the folders) sit directly
+// in a container shared with other annotations, so each gets an ACL of its
+// own instead. They are not moved into a folder: mei-friend finds them, and
+// its own notes point at them, by their addresses.
+//
 // The other mechanism, Access Control Policies (ACP), is recognised and
 // refused with a clear message rather than guessed at.
 //
-// The ACLs this writes REPLACE whatever rules the folder had: the owner keeps
-// full control, and the public rule is added or left out. The folders are
-// created by Listen Here for one annotation; sharing with named people is not
-// done here.
+// The ACLs this writes REPLACE whatever rules the folder or resource had: the
+// owner keeps full control, and the public rule is added or left out. Sharing
+// with named people is not done here.
 //
 // Only folders and resources in the user's own pod are read or written here
 // (isInOwnStorage): an annotation loaded from a link may name any address,
@@ -127,6 +132,31 @@ export function buildFolderAcl({ webId, folderUri, isPublic }) {
   return lines.join("\n") + "\n";
 }
 
+/** The ACL document for a single resource: the owner has everything; optionally anyone may read. */
+export function buildResourceAcl({ webId, resourceUri, isPublic }) {
+  webId = _turtleIri(webId, "WebID");
+  resourceUri = _turtleIri(resourceUri, "resource address");
+  const lines = [
+    "@prefix acl: <http://www.w3.org/ns/auth/acl#>.",
+    "@prefix foaf: <http://xmlns.com/foaf/0.1/>.",
+    "",
+    "<#owner> a acl:Authorization;",
+    "  acl:agent <" + webId + ">;",
+    "  acl:accessTo <" + resourceUri + ">;",
+    "  acl:mode acl:Read, acl:Write, acl:Control.",
+  ];
+  if (isPublic) {
+    lines.push(
+      "",
+      "<#public> a acl:Authorization;",
+      "  acl:agentClass foaf:Agent;",
+      "  acl:accessTo <" + resourceUri + ">;",
+      "  acl:mode acl:Read.",
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+
 const _UNSUPPORTED_ACP =
   "This pod controls access with Access Control Policies (ACP), which Listen Here can't set yet.";
 const _UNSUPPORTED_OTHER =
@@ -139,10 +169,13 @@ function _checkSupported(info) {
   if (!info.aclUri) throw new Error(_UNSUPPORTED_OTHER);
 }
 
-/** Set one folder's ACL (HEAD to find it, then PUT). */
-export async function setFolderAccess(folderUri, isPublic, webId) {
-  if (!(await isInOwnStorage(folderUri))) throw new Error(_NOT_OWN + " (" + folderUri + ")");
-  const info = await discoverAccessControl(folderUri);
+/**
+ * Set the ACL of one folder (ending in "/") or one resource: HEAD to find it,
+ * then PUT.
+ */
+export async function setAccessOn(uri, isPublic, webId) {
+  if (!(await isInOwnStorage(uri))) throw new Error(_NOT_OWN + " (" + uri + ")");
+  const info = await discoverAccessControl(uri);
   _checkSupported(info);
   if (!(await isInOwnStorage(info.aclUri))) {
     throw new Error("The pod named an access document outside your pod: " + info.aclUri);
@@ -150,19 +183,38 @@ export async function setFolderAccess(folderUri, isPublic, webId) {
   const resp = await solid.fetch(info.aclUri, {
     method: "PUT",
     headers: { "Content-Type": "text/turtle" },
-    body: buildFolderAcl({ webId, folderUri, isPublic }),
+    body: uri.endsWith("/")
+      ? buildFolderAcl({ webId, folderUri: uri, isPublic })
+      : buildResourceAcl({ webId, resourceUri: uri, isPublic }),
   });
   if (!resp.ok) {
     throw new Error(
-      "Couldn't set access on " + folderUri + " (" + resp.status + ").",
+      "Couldn't set access on " + uri + " (" + resp.status + ").",
     );
   }
 }
 
 /**
+ * What access is set on for the given resource URIs: the annotation folder of
+ * each resource in one, and each flat resource itself. Only http(s) URIs: a
+ * `local:` one is not in a pod yet.
+ */
+function _accessTargetsOf(uris) {
+  const web = uris.filter((u) => typeof u === "string" && /^https?:/i.test(u));
+  const flat = web.filter((u) => !u.endsWith("/") && !parseAnnotationResourceUri(u));
+  return [...annotationFoldersOf(web), ...new Set(flat)];
+}
+
+/** The folder or the resource that carries `uri`'s access. */
+function _accessTargetOf(uri) {
+  const p = parseAnnotationResourceUri(uri);
+  return p ? p.folder : uri;
+}
+
+/**
  * Whether an annotation is public, read from the MusicalMaterial's WAC-Allow
- * header (one request). `state`: "public", "private", "legacy" (posted in the
- * flat layout, so not settable), "unsupported" (ACP, or no access information).
+ * header (one request). `state`: "public", "private", "foreign" (not in the
+ * user's pod), "unsupported" (ACP, or no access information).
  */
 export async function getAnnotationAccess(lastPostedUris) {
   const mm = lastPostedUris && lastPostedUris.mm;
@@ -170,13 +222,6 @@ export async function getAnnotationAccess(lastPostedUris) {
   // Someone else's annotation (loaded from a link): no request at all, since
   // a signed HEAD would carry the user's credentials to that server.
   if (!(await isInOwnStorage(mm))) return { state: "foreign", reason: _NOT_OWN + "." };
-  if (!parseAnnotationResourceUri(mm)) {
-    return {
-      state: "legacy",
-      reason:
-        "Posted in the older flat layout; delete it from the pod and post it again to make it public.",
-    };
-  }
   const info = await discoverAccessControl(mm);
   if (info.acp) return { state: "unsupported", reason: _UNSUPPORTED_ACP };
   if (!info.hasWacAllow) return { state: "unsupported", reason: _UNSUPPORTED_OTHER };
@@ -185,39 +230,40 @@ export async function getAnnotationAccess(lastPostedUris) {
 
 /**
  * Make an annotation public or private by setting the ACL of each of its
- * folders (a HEAD and a PUT apiece), then reading the result back. The
- * MusicalMaterial's folder goes last when making public and first when making
- * private, so the annotation never looks public with parts of it still closed.
- * `onProgress(done, total)` counts the folders and the read-back.
+ * folders, and of each of its flat resources (a HEAD and a PUT apiece), then
+ * reading the result back. The MusicalMaterial's goes last when making public
+ * and first when making private, so the annotation never looks public with
+ * parts of it still closed. `opts.otherUris`: resources of the chain that are
+ * not in lastPostedUris (the score Selections of a mei-friend annotation).
+ * `onProgress(done, total)` counts the ACLs and the read-back.
  */
 export async function setAnnotationAccess(lastPostedUris, isPublic, opts = {}) {
   const onProgress = opts.onProgress || (() => {});
-  const uris = Object.values(lastPostedUris || {}).filter(Boolean);
-  const folders = annotationFoldersOf(uris);
-  if (folders.length === 0) {
-    throw new Error(
-      "This annotation was posted in the older flat layout; delete it from the pod and post it again to make it public.",
-    );
-  }
+  const mm = lastPostedUris && lastPostedUris.mm;
+  if (!mm) throw new Error("This annotation hasn't been posted yet.");
+  const targets = _accessTargetsOf([
+    ...Object.values(lastPostedUris),
+    ...(opts.otherUris || []),
+  ]);
   const session = solid.getDefaultSession();
   const webId = session && session.info && session.info.webId;
   if (!webId || !session.info.isLoggedIn) {
     throw new Error("Sign in to your Solid pod first.");
   }
-  // Every resource, not just the folders: one outside the user's pod means
-  // the annotation isn't (only) theirs.
-  if ((await notInOwnStorage(uris)).length > 0) throw new Error(_NOT_OWN + ".");
-  const mmFolder = (parseAnnotationResourceUri(lastPostedUris.mm) || {}).folder;
-  const ordered = [...folders].sort((a, b) =>
-    (a === mmFolder ? 1 : 0) - (b === mmFolder ? 1 : 0),
+  // Every folder and resource: one outside the user's pod means the
+  // annotation isn't (only) theirs.
+  if ((await notInOwnStorage(targets)).length > 0) throw new Error(_NOT_OWN + ".");
+  const mmTarget = _accessTargetOf(mm);
+  const ordered = [...targets].sort((a, b) =>
+    (a === mmTarget ? 1 : 0) - (b === mmTarget ? 1 : 0),
   );
   if (!isPublic) ordered.reverse();
 
   const total = ordered.length + 1;
   let done = 0;
   onProgress(done, total);
-  for (const folder of ordered) {
-    await setFolderAccess(folder, isPublic, webId);
+  for (const target of ordered) {
+    await setAccessOn(target, isPublic, webId);
     onProgress(++done, total);
   }
   const after = await getAnnotationAccess(lastPostedUris);
@@ -233,8 +279,9 @@ export async function setAnnotationAccess(lastPostedUris, isPublic, opts = {}) {
 }
 
 /**
- * After an update: give each folder that `afterUris` has and `beforeUris` did
- * not the access the annotation has now (read from the MusicalMaterial).
+ * After an update: give each folder and flat resource that `afterUris` has and
+ * `beforeUris` did not the access the annotation has now (read from the
+ * MusicalMaterial).
  *
  * Some resources are optional (an oa:Annotation exists only once there is
  * text), so an update can add the first resource of its type, in a folder that
@@ -242,29 +289,29 @@ export async function setAnnotationAccess(lastPostedUris, isPublic, opts = {}) {
  * that folder inherits from its type container, which is private, and the
  * annotation would read as public while that part of it is not. Nor can a
  * folder that reappears be trusted to be private: one emptied by an earlier
- * update keeps its old ACL. So every new folder gets an ACL; no request is
- * made when there is none. Annotations in the flat layout, and pods that are
- * not WAC, are left as they are.
- * @returns {Promise<string[]>} the folders that were set
+ * update keeps its old ACL. So every new folder gets an ACL. A new flat
+ * resource has a new address, so no old ACL: it gets one only when the
+ * annotation is public. No request is made when there is nothing new; pods
+ * that are not WAC are left as they are.
+ * @returns {Promise<string[]>} the folders and resources that were set
  */
-export async function matchNewFolderAccess(beforeUris, afterUris) {
-  const before = new Set(
-    annotationFoldersOf(Object.values(beforeUris || {}).filter(Boolean)),
-  );
-  const fresh = annotationFoldersOf(
-    Object.values(afterUris || {}).filter(Boolean),
-  ).filter((f) => !before.has(f));
+export async function matchNewAccess(beforeUris, afterUris) {
+  const before = new Set(_accessTargetsOf(Object.values(beforeUris || {})));
+  const fresh = _accessTargetsOf(Object.values(afterUris || {}))
+    .filter((t) => !before.has(t));
   if (fresh.length === 0) return [];
   // The state is read from the MusicalMaterial, so it must be the user's own
-  // (getAnnotationAccess answers "foreign" otherwise), and so must the folders.
+  // (getAnnotationAccess answers "foreign" otherwise), and so must the targets.
   if ((await notInOwnStorage(fresh)).length > 0) return [];
   const access = await getAnnotationAccess(afterUris);
   if (access.state !== "public" && access.state !== "private") return [];
+  const isPublic = access.state === "public";
+  const toSet = fresh.filter((t) => isPublic || t.endsWith("/"));
   const webId = solid.getDefaultSession().info.webId;
-  for (const folder of fresh) {
-    await setFolderAccess(folder, access.state === "public", webId);
+  for (const target of toSet) {
+    await setAccessOn(target, isPublic, webId);
   }
-  return fresh;
+  return toSet;
 }
 
 /**

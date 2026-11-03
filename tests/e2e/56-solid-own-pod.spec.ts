@@ -186,7 +186,7 @@ test.describe('56. Signed-in requests go only to the user\'s own pod', () => {
       // An update's new folder in the user's own pod, for an annotation whose MM is elsewhere.
       const acc = await import('/static/js/annotation/solid-access.js');
       const ownFolder = 'https://pod.example/at.ac.mdw.mei-friend/oa/f/';
-      const matched = await acc.matchNewFolderAccess(a.lastPostedUris, { ...a.lastPostedUris, 'oa/x': ownFolder + 'reply' });
+      const matched = await acc.matchNewAccess(a.lastPostedUris, { ...a.lastPostedUris, 'oa/x': ownFolder + 'reply' });
       return { set, matched };
     }, mm);
 

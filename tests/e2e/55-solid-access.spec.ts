@@ -7,7 +7,9 @@ import type { Page } from '@playwright/test';
 // An annotation's resources sit in one folder per type
 // (…/mao/selection/<ann>/<slug>), so access is set once per folder with Web
 // Access Control and covers every resource, including ones a later update
-// adds. No real pod: page.route() mocks one that keeps what is PUT, serves the
+// adds. Resources in the older flat layout (…/mao/selection/<slug>, as
+// mei-friend posts them) get one ACL each. No real pod: page.route() mocks one
+// that keeps what is PUT, serves the
 // Link: rel="acl" and WAC-Allow headers from the ACLs it holds (a folder's
 // `acl:default` reaching its members), and can pose as an ACP pod.
 
@@ -155,6 +157,42 @@ const resourcePuts = (pod: WacPod) =>
 
 const aclPuts = (pod: WacPod) => pod.log.filter((r) => r.startsWith('PUT ') && r.endsWith('.acl'));
 
+/**
+ * Move a posted annotation into the older flat layout (<type container>/<slug>)
+ * and give it a score Selection that is not in lastPostedUris: a mei-friend
+ * annotation as Listen Here has it after loading. Returns the flat URIs and
+ * the score Selection.
+ */
+async function flatten(
+  page: Page,
+  pod: WacPod,
+  id: string,
+  uris: Record<string, string>,
+): Promise<{ flat: Record<string, string>; scoreSel: string }> {
+  const flat: Record<string, string> = {};
+  for (const [k, u] of Object.entries(uris)) {
+    const m = /^(.*\/)[^/]+\/([^/]+)$/.exec(u)!;
+    flat[k] = m[1] + m[2];
+  }
+  for (const [k, u] of Object.entries(uris)) {
+    let body = pod.resources.get(u) || '{}';
+    for (const [k2, u2] of Object.entries(uris)) body = body.split(u2).join(flat[k2]);
+    pod.resources.delete(u);
+    pod.resources.set(flat[k], body);
+  }
+  const scoreSel = FRIEND + 'mao/selection/20261030T195705-dd67efd0-0004';
+  pod.resources.set(scoreSel, '{}');
+  await page.evaluate(({ id, flat, scoreSel }) => {
+    const a = (window as any).__annotationV6.state.getById(id);
+    a.lastPostedUris = flat;
+    a.lastPostedHashes = {};
+    a.preservedSelections = [scoreSel];
+  }, { id, flat, scoreSel });
+  return { flat, scoreSel };
+}
+
+const FLAT_RE = /^https:\/\/pod\.example\/at\.ac\.mdw\.mei-friend\/(oa|mao\/musicalMaterial|mao\/extract|mao\/selection)\/[^/]+$/;
+
 test.describe('55. Annotation folders and public access', () => {
 
   test('55.1 a new post puts every resource in its annotation\'s folder inside its type container', async ({ loadedPage: page }) => {
@@ -260,19 +298,40 @@ test.describe('55. Annotation folders and public access', () => {
     expect(aclPuts(pod)).toEqual([]);
   });
 
-  test('55.7 an annotation posted in the older flat layout is reported as legacy and left alone', async ({ loadedPage: page }) => {
+  test('55.7 an annotation in the older flat layout gets one ACL per resource, its score Selections included, the MusicalMaterial\'s last', async ({ loadedPage: page }) => {
     const pod = await wacPod(page);
-    await postAnnotation(page); // signs in
+    const { id, uris } = await postAnnotation(page);
+    const { flat, scoreSel } = await flatten(page, pod, id, uris);
+    const setAccess = (isPublic: boolean) =>
+      page.evaluate(({ flat, scoreSel, isPublic }) =>
+        (window as any).__annotationV6.setAnnotationAccess(flat, isPublic, { otherUris: [scoreSel] }),
+      { flat, scoreSel, isPublic });
     pod.log.length = 0;
-    const flat = { mm: FRIEND + 'mao/musicalMaterial/20261030T195705-dd67efd0-0005', extract: FRIEND + 'mao/extract/20261030T195705-dd67efd0-0006' };
     const got = await page.evaluate((u) => (window as any).__annotationV6.getAnnotationAccess(u), flat);
-    expect(got.state).toBe('legacy');
-    const err = await page.evaluate(async (u) => {
-      try { await (window as any).__annotationV6.setAnnotationAccess(u, true); return 'no error'; }
-      catch (e: any) { return e.message; }
-    }, flat);
-    expect(err).toContain('older flat layout');
-    expect(pod.log).toEqual([]);
+    expect(got.state).toBe('private');
+
+    pod.log.length = 0;
+    expect((await setAccess(true)).state).toBe('public');
+    const resources = [...Object.values(flat), scoreSel];
+    const acls = aclPuts(pod);
+    expect([...acls].sort()).toEqual(resources.map((u) => 'PUT ' + u + '.acl').sort());
+    expect(acls[acls.length - 1], 'MusicalMaterial last').toBe('PUT ' + flat.mm + '.acl');
+    expect([...pod.acls.keys()].filter((k) => k.endsWith('/.acl')), 'no folder or container ACL').toEqual([]);
+    for (const u of resources) {
+      const body = pod.acls.get(u + '.acl')!;
+      expect(body).toContain('<' + WEBID + '>');
+      expect(body).toMatch(/acl:mode acl:Read, acl:Write, acl:Control/);
+      expect(body).not.toContain('acl:default');
+      const publicRule = body.slice(body.indexOf('<#public>'));
+      expect(publicRule).toContain('acl:agentClass foaf:Agent');
+      expect(publicRule).toContain('acl:accessTo <' + u + '>');
+      expect(await publiclyReadable(page, u)).toBe(true);
+    }
+
+    pod.log.length = 0;
+    expect((await setAccess(false)).state).toBe('private');
+    expect(aclPuts(pod)[0], 'MusicalMaterial first').toBe('PUT ' + flat.mm + '.acl');
+    for (const u of resources) expect(pod.acls.get(u + '.acl')).not.toContain('foaf:Agent');
   });
 
   test('55.8 removing an annotation\'s folders deletes one folder per type, and only for the new layout', async ({ loadedPage: page }) => {
@@ -494,5 +553,65 @@ test.describe('55. Annotation folders and public access', () => {
     await toggle.click();
     await expect(bar.locator('.lh-v6-access-status')).toHaveText('Private', { timeout: 15_000 });
     await expect(primal).toHaveCount(0);
+  });
+
+  test('55.17 an update keeps a flat annotation flat; its new resources get an ACL while it is public, none while private', async ({ loadedPage: page }) => {
+    const pod = await wacPod(page);
+    const { id, uris, files } = await postAnnotation(page);
+    const { flat, scoreSel } = await flatten(page, pod, id, uris);
+    await page.evaluate(({ flat, scoreSel }) =>
+      (window as any).__annotationV6.setAnnotationAccess(flat, true, { otherUris: [scoreSel] }),
+    { flat, scoreSel });
+    pod.log.length = 0;
+
+    const newUris: Record<string, string> = await page.evaluate(async ({ id, second, third }) => {
+      const v6 = (window as any).__annotationV6;
+      v6.state.addTarget(id, third);
+      v6.state.updateTargetNote(id, second, 'a note added to the flat annotation');
+      await v6.updateAnnotationOnSolid(id);
+      return v6.state.getById(id).lastPostedUris;
+    }, { id, second: files[1], third: files[2] });
+    const added = Object.values(newUris).filter((u) => !Object.values(flat).includes(u));
+    expect(added.length, 'a Selection and an oa:Annotation').toBeGreaterThanOrEqual(2);
+    for (const u of added) expect(u).toMatch(FLAT_RE);
+    expect([...aclPuts(pod)].sort()).toEqual(added.map((u) => 'PUT ' + u + '.acl').sort());
+    for (const u of added) expect(await publiclyReadable(page, u)).toBe(true);
+    const r = await page.evaluate((u) => (window as any).__annotationV6.getAnnotationAccess(u), newUris);
+    expect(r.state).toBe('public');
+
+    await page.evaluate(({ u, scoreSel }) =>
+      (window as any).__annotationV6.setAnnotationAccess(u, false, { otherUris: [scoreSel] }),
+    { u: newUris, scoreSel });
+    pod.log.length = 0;
+    const again = await updateNote(page, id, files[2], 'written while private');
+    const fresh = Object.values(again).filter((u) => !Object.values(newUris).includes(u));
+    expect(fresh.length, 'the note made an oa:Annotation').toBeGreaterThan(0);
+    expect(aclPuts(pod), 'no ACL while private').toEqual([]);
+    for (const u of fresh) expect(await publiclyReadable(page, u)).toBe(false);
+  });
+
+  test('55.18 the card makes a flat annotation public, the score Selections from mei-friend with it', async ({ loadedPage: page }) => {
+    const pod = await wacPod(page);
+    const alerts: string[] = [];
+    page.on('dialog', (d) => { alerts.push(d.message()); d.dismiss(); });
+    // Flattened before the drawer opens, so the card is drawn from the flat state.
+    const { id, uris } = await _post(page, true);
+    const { flat, scoreSel } = await flatten(page, pod, id, uris);
+    await page.locator('.lh-v6-pull-tab').click();
+    await expect(page.locator('.lh-v6-drawer')).toHaveClass(/open/);
+
+    const bar = page.locator('.lh-v6-publish-bar');
+    const toggle = bar.locator('.lh-v6-access-btn');
+    await expect(bar.locator('.lh-v6-access-status')).toHaveText('Private');
+    await expect(toggle).toBeEnabled();
+    await toggle.click();
+    await page.getByRole('button', { name: 'Make public' }).last().click();
+    await expect(bar.locator('.lh-v6-access-status'), alerts.join(' | ')).toHaveText('Public', { timeout: 15_000 });
+    expect(await publiclyReadable(page, scoreSel)).toBe(true);
+    for (const u of Object.values(flat)) expect(await publiclyReadable(page, u)).toBe(true);
+    await expect(bar.locator('.lh-v6-primal-link')).toHaveAttribute(
+      'href',
+      'https://primal.mdw.ac.at/?obj=' + encodeURIComponent(flat['oa/top']),
+    );
   });
 });

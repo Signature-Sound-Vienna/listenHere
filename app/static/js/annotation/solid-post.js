@@ -41,7 +41,7 @@ import * as state from "./state.js";
 import * as adapter from "./mao-adapter.js";
 import { nsp } from "../linked-data.js";
 import { folderIdOf } from "./solid-layout.js";
-import { matchNewFolderAccess } from "./solid-access.js";
+import { matchNewAccess } from "./solid-access.js";
 import {
   createResourceAtUri,
   discoveryUriFor,
@@ -896,7 +896,7 @@ export async function updateAnnotationOnSolid(annId, opts = {}) {
   // A resource of a type the annotation had none of (its first text, say)
   // sits in a new folder, which must get the annotation's access.
   try {
-    await matchNewFolderAccess(previousUris, localToUri);
+    await matchNewAccess(previousUris, localToUri);
   } catch (err) {
     throw new Error(
       "The update was saved, but its new part may not have the annotation's public/private setting: " +

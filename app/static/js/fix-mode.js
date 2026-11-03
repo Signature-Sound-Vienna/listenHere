@@ -1354,6 +1354,26 @@ function _buildGroupsFrom(qOn) {
 let _lastGroupStats = null;
 
 /**
+ * The reference-time table the events are indexed into: the score's live
+ * ref_onset. A group's identity in audio mode is its event's entry here (target
+ * anchors are keyed by it), so every such read goes through these accessors —
+ * the one place a score-less session will supply the reference's own detected
+ * onsets instead. Read live, never cached on the group: score↔ref edits move
+ * ref_onset in place.
+ */
+function _refOnsetTable() {
+  return scoreAlignment.ref_onset;
+}
+
+function _eventRefT(i) {
+  return _refOnsetTable()[i];
+}
+
+function _groupRefT(group) {
+  return _eventRefT(group.eventIxs[0]);
+}
+
+/**
  * A group's CURRENT time on the STRIP's timeline — read live, so refills show
  * through. Score↔ref: the reference onset itself. Audio-to-audio: that onset
  * projected through the target recording's live grid (score → ref → target,
@@ -1366,8 +1386,8 @@ function _groupStripTime(group) {
 
 function _eventStripTime(i) {
   const f = _fix;
-  if (f?.mode === "audio") return f.projOn ? f.projOn[i] : _refToTarget(scoreAlignment.ref_onset[i]);
-  return scoreAlignment.ref_onset[i];
+  if (f?.mode === "audio") return f.projOn ? f.projOn[i] : _refToTarget(_eventRefT(i));
+  return _eventRefT(i);
 }
 
 function _eventStripOff(i) {
@@ -1406,7 +1426,7 @@ function _refToTarget(refT) {
  */
 function _recomputeProjection(f) {
   if (f.mode !== "audio") return;
-  const on = scoreAlignment.ref_onset;
+  const on = _refOnsetTable();
   const off = scoreAlignment.ref_offset;
   const n = on.length;
   const pOn = new Array(n);
@@ -3509,7 +3529,7 @@ function _occupiedTimes(groupIxOrSet) {
     const ownRef = new Set();
     for (const ix of ixs) {
       const g = f.groups[ix];
-      if (g) ownRef.add(Math.round(scoreAlignment.ref_onset[g.eventIxs[0]] * 1e6));
+      if (g) ownRef.add(Math.round(_groupRefT(g) * 1e6));
     }
     return targetAnchors(_corrections, f.targetFile)
       .filter((a) => !ownRef.has(Math.round(a.refT * 1e6)))
@@ -3832,7 +3852,7 @@ function _redrawOverlays() {
     const multi = f.multiSel.size > 0 && f.multiSel.has(f.groups.indexOf(g));
     const anchor =
       f.mode === "audio"
-        ? findTargetAnchor(_corrections, f.targetFile, scoreAlignment.ref_onset[g.eventIxs[0]])
+        ? findTargetAnchor(_corrections, f.targetFile, _groupRefT(g))
         : findAnchor(_corrections, _anchorEventOf(g));
     // Tick: the vertical line on the strip — the loop's drag handle.
     if (x >= -1 && x <= w + 1) {
@@ -3958,7 +3978,7 @@ function _redrawOverlays() {
   let freeAnchors = 0;
   if (f.mode === "audio") {
     const onTicks = new Set(
-      pageGroups.map((g) => Math.round(scoreAlignment.ref_onset[g.eventIxs[0]] * 1e6)),
+      pageGroups.map((g) => Math.round(_groupRefT(g) * 1e6)),
     );
     for (const a of targetAnchors(_corrections, f.targetFile)) {
       if (onTicks.has(Math.round(a.refT * 1e6))) continue;
@@ -4144,7 +4164,7 @@ function _dragBounds(groupIx) {
     // Neighbouring TARGET anchors (strict by reference time, so the group's
     // own anchor is never its own neighbour); the corners are the grid's
     // first and last samples, frozen.
-    const refT = scoreAlignment.ref_onset[f.groups[groupIx].eventIxs[0]];
+    const refT = _groupRefT(f.groups[groupIx]);
     const { prev, next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
     const tg = _targetGrid();
     let lo = Math.max(prev ? prev.t : tg[0], _pushFloor(groupIx, tg[0]));
@@ -5318,7 +5338,7 @@ const BEND_REACH_SIGMAS = 4;
 function _groupAnchored(g) {
   const f = _fix;
   if (f.mode === "audio") {
-    return !!findTargetAnchor(_corrections, f.targetFile, scoreAlignment.ref_onset[g.eventIxs[0]]);
+    return !!findTargetAnchor(_corrections, f.targetFile, _groupRefT(g));
   }
   return g.eventIxs.some((e) => findAnchor(_corrections, e));
 }
@@ -5390,7 +5410,7 @@ function _bendTargets(gix, t0, t, wall) {
  */
 function _pushPlan(gix, t) {
   const f = _fix;
-  const wall = _pushWall(scoreAlignment.ref_onset[f.groups[gix].eventIxs[0]]);
+  const wall = _pushWall(_groupRefT(f.groups[gix]));
   const t0 = _groupStripTime(f.groups[gix]);
   const bent = _bendTargets(gix, t0, t, wall);
   const moves = [];
@@ -5419,7 +5439,7 @@ function _pushPlan(gix, t) {
  */
 function _pushFloor(gix, floor) {
   const f = _fix;
-  const wall = _pushWall(scoreAlignment.ref_onset[f.groups[gix].eventIxs[0]]);
+  const wall = _pushWall(_groupRefT(f.groups[gix]));
   let acc = 0;
   let nextOld = _groupStripTime(f.groups[gix]);
   for (let j = gix - 1; j >= 0; j--) {
@@ -5557,7 +5577,7 @@ function _leftGridSpan(groupIx, refT, t) {
   const grid = _targetGrid();
   const prevG = f.groups[groupIx - 1];
   const { prev } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
-  let refPrev = prevG ? scoreAlignment.ref_onset[prevG.eventIxs[0]] : refGrid[0];
+  let refPrev = prevG ? _groupRefT(prevG) : refGrid[0];
   if (prev && prev.refT > refPrev) refPrev = prev.refT;
   const k0 = rasterAfter(refGrid, refPrev);
   const kHi = rasterBefore(refGrid, refT);
@@ -5624,7 +5644,7 @@ function _nextLocalGridSpan(groupIx, refT, t) {
   const last = refGrid.length - 1;
   const nextG = f.groups[groupIx + 1];
   const { next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
-  let refNext = nextG ? scoreAlignment.ref_onset[nextG.eventIxs[0]] : refGrid[last];
+  let refNext = nextG ? _groupRefT(nextG) : refGrid[last];
   if (next && next.refT < refNext) refNext = next.refT;
   const k1 = rasterBefore(refGrid, refNext);
   const kLo = rasterAfter(refGrid, refT);
@@ -6054,7 +6074,7 @@ async function _commitGridAnchor(groupIx, t, kind) {
     return;
   }
   const i = g.eventIxs[0];
-  const refT = scoreAlignment.ref_onset[i];
+  const refT = _eventRefT(i);
   if (!Number.isFinite(refT)) return;
   const tBefore = _eventStripTime(i); // for the trail: the projection is recomputed below
   const ctx = {
@@ -6591,7 +6611,7 @@ function _unanchorGroup(groupIx) {
   const audio = f.mode === "audio";
   const i = audio ? g.eventIxs[0] : _anchorEventOf(g);
   const a = audio
-    ? findTargetAnchor(_corrections, f.targetFile, scoreAlignment.ref_onset[i])
+    ? findTargetAnchor(_corrections, f.targetFile, _eventRefT(i))
     : findAnchor(_corrections, i);
   if (!a) {
     _announce("This onset is not anchored.");
@@ -7899,7 +7919,7 @@ export function fixTestState() {
     gridAnchors: f.targetFile
       ? targetAnchors(_corrections, f.targetFile).map((a) => ({ ...a }))
       : [],
-    selRefT: sel ? scoreAlignment.ref_onset[sel.eventIxs[0]] : null,
+    selRefT: sel ? _groupRefT(sel) : null,
     nEvents: f.nEvents,
     groupCount: f.groups.length,
     page: f.page,

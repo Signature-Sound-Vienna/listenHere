@@ -367,7 +367,7 @@ function _renderPublishBar(bar, ann) {
 
 // Per-annotation public/private state, read from the pod when the card first
 // shows it (one HEAD) and kept here. { mm, state, reason?, busy?, step?, total? };
-// state: loading | public | private | legacy | unsupported | error.
+// state: loading | public | private | foreign | unsupported | error.
 const _accessUi = new Map();
 
 // Primal reads only public resources; it is opened on the annotation's oa/top,
@@ -448,6 +448,7 @@ function _renderAccessControl(bar, ann) {
           if (_rerenderPublishBar) _rerenderPublishBar();
           try {
             const r = await setAnnotationAccess(ann.lastPostedUris, goingPublic, {
+              otherUris: ann.preservedSelections,
               onProgress: (done, total) => {
                 st.step = done;
                 st.total = total;

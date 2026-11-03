@@ -93,7 +93,7 @@ async function wacPod(page: Page, opts: { acp?: boolean } = {}): Promise<WacPod>
 
 /**
  * Sign in (faked), then post a new annotation to two recordings; returns what was posted.
- * `withNote: false` leaves out the note, so the annotation has no oa:Annotation (and no oa/ folder).
+ * `withNote: false` leaves out the note, so the annotation's one oa:Annotation is the bodiless oa/top.
  * Returns once the card has read the new annotation's access (one HEAD of its
  * MusicalMaterial), so that read never lands in a log a test clears after posting.
  */
@@ -142,8 +142,9 @@ async function publiclyReadable(page: Page, uri: string): Promise<boolean> {
   }, uri);
 }
 
+/** The note's oa:Annotation (a per-recording one), if any. */
 const oaUriOf = (uris: Record<string, string>) =>
-  Object.entries(uris).find(([k]) => k.startsWith('oa/'))?.[1];
+  Object.entries(uris).find(([k]) => k.startsWith('oa/track/'))?.[1];
 const folderOf = (uri: string) => uri.slice(0, uri.lastIndexOf('/') + 1);
 
 const resourcePuts = (pod: WacPod) =>
@@ -376,45 +377,55 @@ test.describe('55. Annotation folders and public access', () => {
     expect(r.absent).toBe(0);
   });
 
-  // 55.12 / 55.13 An oa:Annotation exists only once there is text, so an update
-  // can add the first one, in an oa/ folder the annotation did not have when
-  // its access was set. That folder gets the annotation's access.
-  test('55.12 the first text an update adds to a public annotation is public too', async ({ loadedPage: page }) => {
+  // 55.12 Annotations posted before oa/top was always written (0.108.0) have no
+  // oa:Annotation until there is text, so an update can add the first one, in
+  // an oa/ folder the annotation did not have when its access was set. That
+  // folder gets the annotation's access.
+  test('55.12 the first text an update adds to an older public annotation without one is public too', async ({ loadedPage: page }) => {
     const pod = await wacPod(page);
     const { id, uris, files } = await postAnnotation(page, { withNote: false });
-    expect(oaUriOf(uris), 'no oa:Annotation before the note').toBeUndefined();
-    await page.evaluate((u) => (window as any).__annotationV6.setAnnotationAccess(u, true), uris);
+    // As posted before 0.108.0: no oa/top, so no oa/ folder.
+    expect(uris['oa/top'], 'oa/top is written without any text').toBeTruthy();
+    pod.resources.delete(uris['oa/top']);
+    await page.evaluate((id) => {
+      const a = (window as any).__annotationV6.state.getById(id);
+      delete a.lastPostedUris['oa/top'];
+      if (a.lastPostedHashes) delete a.lastPostedHashes['oa/top'];
+    }, id);
+    const { 'oa/top': _gone, ...older } = uris;
+    await page.evaluate((u) => (window as any).__annotationV6.setAnnotationAccess(u, true), older);
     pod.log.length = 0;
 
     const newUris = await updateNote(page, id, files[0], 'written after it was made public');
     const oaUri = oaUriOf(newUris)!;
     expect(oaUri, 'the update created an oa:Annotation').toBeTruthy();
+    expect(folderOf(newUris['oa/top']), 'the restored oa/top shares its folder').toBe(folderOf(oaUri));
     expect(aclPuts(pod), 'one ACL, for the new oa/ folder').toEqual(['PUT ' + folderOf(oaUri) + '.acl']);
     expect(await publiclyReadable(page, oaUri)).toBe(true);
     const r = await page.evaluate((u) => (window as any).__annotationV6.getAnnotationAccess(u), newUris);
     expect(r.state).toBe('public');
   });
 
-  test('55.13 text re-added to a private annotation stays private, though its old folder was left public', async ({ loadedPage: page }) => {
+  test('55.13 removing the last note keeps the oa/ folder, so access changes still reach text re-added later', async ({ loadedPage: page }) => {
     const pod = await wacPod(page);
     const { id, uris, files } = await postAnnotation(page);
     const v6Access = (u: Record<string, string>, isPublic: boolean) =>
       page.evaluate(({ u, isPublic }) => (window as any).__annotationV6.setAnnotationAccess(u, isPublic), { u, isPublic });
     await v6Access(uris, true);
-    const oldOaFolder = folderOf(oaUriOf(uris)!);
+    const oaFolder = folderOf(oaUriOf(uris)!);
 
-    // Removing the note deletes the oa:Annotation; its folder's public ACL stays
-    // behind, and making the annotation private no longer reaches that folder.
+    // Removing the note deletes its oa:Annotation; the bodiless oa/top stays in
+    // the same folder, so making the annotation private reaches that folder.
     const noNote = await updateNote(page, id, files[0], '');
     expect(oaUriOf(noNote)).toBeUndefined();
+    expect(folderOf(noNote['oa/top'])).toBe(oaFolder);
     await v6Access(noNote, false);
-    expect(pod.acls.get(oldOaFolder + '.acl'), 'the emptied folder kept its public ACL').toMatch(/<#public>/);
+    expect(pod.acls.get(oaFolder + '.acl'), 'the oa/ folder is private again').not.toMatch(/<#public>/);
 
     const again = await updateNote(page, id, files[0], 'written again while private');
     const oaUri = oaUriOf(again)!;
-    expect(folderOf(oaUri)).toBe(oldOaFolder);
+    expect(folderOf(oaUri)).toBe(oaFolder);
     expect(await publiclyReadable(page, oaUri), 'the new text is not public').toBe(false);
-    expect(pod.acls.get(oldOaFolder + '.acl')).not.toMatch(/<#public>/);
   });
 
   test('55.14 an update that adds no folder makes no access request', async ({ loadedPage: page }) => {
@@ -425,5 +436,63 @@ test.describe('55. Annotation folders and public access', () => {
     // (The update establishes each recording's discovery resource with a HEAD; those aren't access requests.)
     const access = pod.log.filter((r) => (r.startsWith('HEAD ') && !r.startsWith('HEAD ' + DISC)) || r.endsWith('.acl'));
     expect(access, 'no access HEAD, no ACL').toEqual([]);
+  });
+
+  // What a reader without the audio (Primal, opened at oa/top) depends on.
+  test('55.15 each Selection carries its recording\'s peaks, and oa/top is posted without a body when there is no text', async ({ loadedPage: page }) => {
+    const pod = await wacPod(page);
+    const { uris, files } = await postAnnotation(page, { withNote: false });
+    const doc = (u: string) => {
+      const d = JSON.parse(pod.resources.get(u) || 'null');
+      return Array.isArray(d) ? d[0] : d;
+    };
+    const OA = 'http://www.w3.org/ns/oa#';
+
+    const top = doc(uris['oa/top']);
+    expect(top, 'oa/top is posted').toBeTruthy();
+    expect(top[OA + 'hasBody']).toBeUndefined();
+    expect(top[OA + 'motivatedBy']).toEqual([{ '@id': 'https://w3id.org/sda#commenting' }]);
+    expect(top[OA + 'hasTarget']).toEqual([{ '@id': uris.mm }]);
+
+    const expected = await page.evaluate(async (files) => {
+      const listen = (await import('/static/js/listen.js')) as any;
+      return files.map((f: string) => listen.getWaveformPeaks(f));
+    }, files.slice(0, 2));
+    files.slice(0, 2).forEach((f, i) => {
+      const lit = doc(uris['sel/' + f])['https://w3id.org/ssv/vocab#peaks'];
+      expect(lit, 'ssv:peaks on the Selection for ' + f).toHaveLength(1);
+      const { peaks, duration } = JSON.parse(lit[0]['@value']);
+      expect(duration).toBe(expected[i].duration);
+      expect(peaks).toHaveLength(expected[i].peaks.length);
+      const maxDiff = Math.max(...peaks.map((v: number, j: number) => Math.abs(v - expected[i].peaks[j])));
+      expect(maxDiff, 'peaks rounded to 4 decimals').toBeLessThanOrEqual(5e-5);
+    });
+  });
+
+  test('55.16 ↗ Primal shows only while the annotation is public, opening Primal on its oa/top', async ({ loadedPage: page }) => {
+    await wacPod(page);
+    await page.locator('.lh-v6-pull-tab').click();
+    await expect(page.locator('.lh-v6-drawer')).toHaveClass(/open/);
+    const { uris } = await postAnnotation(page);
+
+    const bar = page.locator('.lh-v6-publish-bar');
+    const primal = bar.locator('.lh-v6-primal-link');
+    const toggle = bar.locator('.lh-v6-access-btn');
+    await expect(bar.locator('.lh-v6-access-status')).toHaveText('Private');
+    await expect(primal).toHaveCount(0);
+
+    await toggle.click();
+    await page.getByRole('button', { name: 'Make public' }).last().click();
+    await expect(bar.locator('.lh-v6-access-status')).toHaveText('Public', { timeout: 15_000 });
+    await expect(primal).toHaveText('↗ Primal');
+    await expect(primal).toHaveAttribute(
+      'href',
+      'https://primal.mdw.ac.at/?obj=' + encodeURIComponent(uris['oa/top']),
+    );
+    await expect(primal).toHaveAttribute('target', '_blank');
+
+    await toggle.click();
+    await expect(bar.locator('.lh-v6-access-status')).toHaveText('Private', { timeout: 15_000 });
+    await expect(primal).toHaveCount(0);
   });
 });

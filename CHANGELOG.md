@@ -1,5 +1,17 @@
 # Listen Here! CHANGELOG.md
 
+### 0.108.1 -- Regions can be drawn again after applying the grouping modal
+
+* Applying the Group Recordings modal rebuilds every waveform, and the new waveforms did not accept a drag to draw an annotation region until the drawer was switched to View and back to Edit. Draw mode now follows each waveform as it is built.
+* Testing: 22.3; 07, 20, 31, 42, and 58 pass (67).
+
+### 0.108.0 -- Open public annotations in Primal; posts carry waveform peaks and always an oa/top
+
+* Every posted Selection carries its recording's waveform peaks again (`ssv:peaks`, a JSON string `{peaks, duration}`, as before the annotation rework), so a reader that cannot fetch the audio, such as Primal, still draws its waveform and regions. Peaks come from the alignment JSON (4096 per recording), else from the decoded audio; amplitudes are rounded to 4 decimals.
+* The top-level oa:Annotation (`sda:commenting`, `oa/top`) is now posted for every annotation, without `oa:hasBody` when it has no description. It is the one resource from which every note is reachable. Annotations posted earlier gain it on their next update.
+* ↗ Primal, beside ↗ pod, while an annotation is public: opens `https://primal.mdw.ac.at/?obj=<oa/top>`. It goes when the annotation is made private. An annotation without `oa/top` shows it greyed out until it is updated.
+* Testing: adapter self-test (peaks, bodiless `oa/top` round trip); 55.12–55.13 rewritten for the always-present `oa/` folder, 55.15–55.16 new; the functional suite passes (646, 2 skipped).
+
 ### 0.107.0 -- Annotations follow corrected alignments
 
 * An annotation region now remembers where it was placed by hand: the recording it was drawn or dragged on (`sourceFile`), or, for a score annotation from mei-friend, the MEI element ids it was projected from at load (`sourceScore`). A Shift+drag on one recording marks that recording's times `local`. All three are saved in the alignment JSON (annotations `schemaVersion` 3).

@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.109.0 -- Annotations in the older flat layout, such as mei-friend's, can be made public
+
+* An annotation whose resources sit directly in their type containers (everything mei-friend posts, and Listen Here's posts before the per-annotation folders) is no longer refused as "posted in the older flat layout": Make public and Make private set an ACL on each of its resources, including the score Selections of a mei-friend annotation, the MusicalMaterial's last when making public. Nothing is moved, so mei-friend still finds them at their addresses.
+* An update keeps such an annotation flat; while it is public, the resources the update adds get a public ACL of their own.
+* Testing: 55.7 rewritten, 55.17–55.18 new; the functional suite passes (649, 2 skipped).
+
 ### 0.108.2 -- Correction screen: one accessor for a tick's reference time
 
 * Internal, no change in behaviour: every read of a tick's reference time in the correction screen goes through one accessor, the step before correcting alignments that have no score.

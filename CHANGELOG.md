@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.108.2 -- Correction screen: one accessor for a tick's reference time
+
+* Internal, no change in behaviour: every read of a tick's reference time in the correction screen goes through one accessor, the step before correcting alignments that have no score.
+* Testing: 42 and 43 pass (95); the functional suite passes (647).
+
 ### 0.108.1 -- Regions can be drawn again after applying the grouping modal
 
 * Applying the Group Recordings modal rebuilds every waveform, and the new waveforms did not accept a drag to draw an annotation region until the drawer was switched to View and back to Edit. Draw mode now follows each waveform as it is built.

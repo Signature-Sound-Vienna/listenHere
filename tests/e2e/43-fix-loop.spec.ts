@@ -3579,7 +3579,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(regions.length).toBeGreaterThan(5);
     const project = () =>
       page.evaluate(async ({ regions, files }) => {
-        const sl: any = await import('/static/js/annotation/solid-load.js');
+        const sl: any = await import('/static/js/annotation/score-projection.js');
         const ann = { targets: files.map((file: string) => ({ file })) };
         return regions.map((r: any) => sl.projectedTimesFromScore(ann, r));
       }, { regions, files: [REF_ROW, TARGET_ROW] });

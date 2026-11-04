@@ -2337,6 +2337,25 @@ let _meiLoadError = null;
 // runtime callback, and whoever touches `tk` first must not assume it has fired.
 let _verovioReady = null;
 
+// Settles true once the loaded alignment's score is in Verovio and the timemap
+// is filled, or false when there is none or it failed to load. Verovio's 7.3 MB
+// script can still be starting on a slow connection while an annotation is
+// already being placed, so score regions wait on this rather than on `tk`.
+// Replaced as each alignment starts loading; pending until the first.
+let _scoreReady = null;
+let _settleScoreReady = () => {};
+function _beginScoreLoad() {
+  _settleScoreReady(false); // anyone still waiting on the outgoing score
+  _scoreReady = new Promise((resolve) => {
+    _settleScoreReady = resolve;
+  });
+}
+_beginScoreLoad();
+/** @returns {Promise<boolean>} see _scoreReady. */
+export function whenScoreReady() {
+  return _scoreReady;
+}
+
 /**
  * Fetch the score MEI, failing loudly on anything that is not XML.
  *
@@ -3555,6 +3574,7 @@ async function setGrids(grids) {
   }
   // After the guard, not before: the confirm dialog must not sit behind a spinner.
   showWaveformsPaneLoading("Loading alignment\u2026");
+  _beginScoreLoad();
   setLoadedAlignmentJSON(grids);
   // V6 hook: load any persisted V6 annotations out of the alignment JSON
   // into the in-memory state. No-op when V6 is inactive.
@@ -3613,6 +3633,7 @@ async function setGrids(grids) {
               delete _tempoRawCache[k];
             _tempoYRange = null;
             console.log("timemap set!", timemap, mei);
+            _settleScoreReady(true);
           } catch (e) {
             // Record WHY, so the score waveform can say so instead of blaming
             // synthesis. Without this the failure surfaced as "synthesis
@@ -3640,6 +3661,7 @@ async function setGrids(grids) {
     // old version of alignment json
     setAlignmentGrids(grids);
   }
+  _settleScoreReady(false); // a no-op once the score has loaded
   console.log("setting grids: ", grids);
 
   // Any waveform the new alignment doesn't mention must go before anything
@@ -5636,8 +5658,8 @@ function initFilePicker() {
 
 /**
  * Close Manage recordings: persist the LD config, and apply an alignment
- * picked from a local file. The V6 publish bar re-reads its enable conditions
- * on each render, so LD URI edits need no imperative refresh.
+ * picked from a local file. Persisting announces the change, so the V6
+ * drawer re-renders its Post to Solid gate.
  */
 function _closeManageRecordings() {
   if (populateLdUriSection._persist) populateLdUriSection._persist();
@@ -5912,6 +5934,8 @@ function populateLdUriSection() {
     } else {
       delete loadedAlignmentJSON.header.linkedDataUris;
     }
+    // Post to Solid is gated on every recording having one.
+    document.dispatchEvent(new CustomEvent("lh-linked-data-uris-changed"));
   }
 
   // Expose so the modal-close handler can call it

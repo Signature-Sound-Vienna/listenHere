@@ -30,6 +30,14 @@ import * as uiState from "./ui-state.js";
 import { fmtRegionRange, fmtRegionDuration } from "./ui-editor.js";
 import { confirmRemoveIfTextful } from "./ui-common.js";
 import {
+  SCORE_REGION_DRAG_REFUSED,
+  SCORE_REGION_SYNTH_TITLE,
+  SCORE_REGION_TITLE,
+  isScoreReady,
+  projectScoreRegion,
+  scoreReadyWithin,
+} from "./score-projection.js";
+import {
   regionsPluginEntries,
   waveformViews,
   wavesurfers,
@@ -37,6 +45,7 @@ import {
   setCurrentAudioInactive,
   getClosestAlignmentIx,
   getCorrespondingTime,
+  SYNTH_MEI_KEY,
 } from "../listen.js";
 
 export const V6_REGION_PREFIX = "v6_";
@@ -77,16 +86,19 @@ function _installShiftListeners() {
     if (e.key !== "Shift" || e.repeat) return;
     _shiftHeld = true;
     _showRegionDurations();
+    _applyScoreRegionCursors();
   });
   document.addEventListener("keyup", (e) => {
     if (e.key !== "Shift") return;
     _shiftHeld = false;
     _clearRegionDurations();
+    _applyScoreRegionCursors();
   });
   // Safety: if the window loses focus, drop the held state and clear visuals.
   window.addEventListener("blur", () => {
     _shiftHeld = false;
     _clearRegionDurations();
+    _applyScoreRegionCursors();
   });
 }
 
@@ -128,6 +140,10 @@ function syncRegions() {
     const specsByFile = _computeSpecsByFile(annotations, activeId);
     for (const [file, plugin] of regionsPluginEntries()) {
       _ensureHooked(plugin, file);
+      // Until its waveform knows its duration the plugin holds new regions
+      // back and can't remove them, so each sync would leave one more behind;
+      // the render that follows "ready" syncs again.
+      if (!(wavesurfers[file] && wavesurfers[file].getDuration() > 0)) continue;
       _reconcileForFile(plugin, file, specsByFile[file] || []);
     }
   } finally {
@@ -184,7 +200,9 @@ function _computeSpecsByFile(annotations, activeId) {
   for (const ann of annotations) {
     const isActive = ann.id === activeId;
     const allowResize = isActive && canResizeActive;
+    const color = _withAlpha(ann.color, isActive ? 0.45 : 0.3);
     for (const target of ann.targets) {
+      if (target.file === SYNTH_MEI_KEY) continue; // never a target
       if (!byFile[target.file]) byFile[target.file] = [];
       for (const r of ann.regions) {
         const t = target.regionTimes[r.id];
@@ -195,13 +213,36 @@ function _computeSpecsByFile(annotations, activeId) {
           regionId: r.id,
           start: t.start,
           end: t.end,
-          color: _withAlpha(ann.color, isActive ? 0.45 : 0.3),
-          // drag and resize follow the same edit gate. Alt-held during a
-          // drag/resize scopes the change to this recording only.
+          color,
+          // drag and resize follow the same edit gate. Shift-held during a
+          // drag/resize scopes the change to this recording only — the only
+          // edit a score region takes (_wireScoreRegion).
           drag: allowResize,
           resize: allowResize,
+          score: r.sourceScore ? "audio" : null,
+          border: r.sourceScore ? ann.color : null,
         });
       }
+    }
+    // The synthesised score row shows only a score selection's region, at its
+    // elements' own times; display only.
+    for (const r of ann.regions) {
+      if (!r.sourceScore) continue;
+      const t = projectScoreRegion(r.sourceScore, SYNTH_MEI_KEY);
+      if (!t) continue;
+      if (!byFile[SYNTH_MEI_KEY]) byFile[SYNTH_MEI_KEY] = [];
+      byFile[SYNTH_MEI_KEY].push({
+        id: `${V6_REGION_PREFIX}${ann.id}_${r.id}`,
+        annId: ann.id,
+        regionId: r.id,
+        start: t.start,
+        end: t.end,
+        color,
+        drag: false,
+        resize: false,
+        score: "synth",
+        border: ann.color,
+      });
     }
   }
   return byFile;
@@ -231,7 +272,8 @@ function _reconcileForFile(plugin, file, specs) {
       _resizeFlag(cur) === spec.resize
     ) {
       // Up-to-date; keep metadata current and continue.
-      cur._v6Meta = { annId: spec.annId, regionId: spec.regionId };
+      cur._v6Meta = _metaFor(spec);
+      _styleScoreRegion(cur);
       continue;
     }
     if (cur) cur.remove();
@@ -243,8 +285,175 @@ function _reconcileForFile(plugin, file, specs) {
       drag: spec.drag,
       resize: spec.resize,
     });
-    if (r) r._v6Meta = { annId: spec.annId, regionId: spec.regionId };
+    if (r) {
+      r._v6Meta = _metaFor(spec);
+      _wireScoreRegion(r);
+      _styleScoreRegion(r);
+    }
   }
+}
+
+function _metaFor(spec) {
+  return {
+    annId: spec.annId,
+    regionId: spec.regionId,
+    score: spec.score,
+    border: spec.border,
+    editable: spec.drag || spec.resize,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Score regions
+//
+// A score selection's region is dashed wherever it shows. On a recording it
+// takes one-recording edits only: in edit mode its handles show the forbidden
+// cursor until Shift is held, and a plain drag is refused with a note saying
+// why. On the synthesised score row it is nailed to its elements' times, with
+// inert handles that say so.
+// ---------------------------------------------------------------------------
+
+function _styleScoreRegion(r) {
+  const meta = r._v6Meta;
+  const el = r.element;
+  if (!meta || !el) return;
+  if (!meta.score) {
+    el.style.outline = "";
+    el.removeAttribute("title");
+    el.querySelectorAll(".lh-v6-pinned-handle").forEach((h) => h.remove());
+    return;
+  }
+  // An outline takes no space, so the wider dash shifts nothing.
+  el.style.outline = `2px dashed ${meta.border}`;
+  el.style.outlineOffset = "-2px";
+  el.title = meta.score === "synth" ? SCORE_REGION_SYNTH_TITLE : SCORE_REGION_TITLE;
+  // The plugin's handles are dashed too: only the side each one draws.
+  el.querySelectorAll('[part~="region-handle-left"]').forEach((h) => (h.style.borderLeftStyle = "dashed"));
+  el.querySelectorAll('[part~="region-handle-right"]').forEach((h) => (h.style.borderRightStyle = "dashed"));
+  if (meta.score === "synth" && !el.querySelector(".lh-v6-pinned-handle")) {
+    // The plugin draws no handles on a region that can't be resized; these
+    // look like them and only say why they don't move.
+    for (const side of ["left", "right"]) {
+      const h = document.createElement("div");
+      h.className = "lh-v6-pinned-handle";
+      h.title = SCORE_REGION_SYNTH_TITLE;
+      Object.assign(h.style, {
+        position: "absolute",
+        zIndex: "2",
+        width: "6px",
+        height: "100%",
+        top: "0",
+        [side]: "0",
+        cursor: "not-allowed",
+        [side === "left" ? "borderLeft" : "borderRight"]: "2px dashed rgba(0, 0, 0, 0.5)",
+      });
+      el.appendChild(h);
+    }
+  }
+  _applyScoreRegionCursor(r);
+}
+
+function _applyScoreRegionCursor(r) {
+  const meta = r._v6Meta;
+  if (!meta || meta.score !== "audio" || !r.element || !meta.editable) return;
+  if (r._lhRefusing) return; // a refused drag owns the cursor until it ends
+  const live = _shiftHeld;
+  r.element.style.cursor = live ? "grab" : "default";
+  r.element
+    .querySelectorAll('[part~="region-handle"]')
+    .forEach((h) => (h.style.cursor = live ? "ew-resize" : "not-allowed"));
+}
+
+function _applyScoreRegionCursors() {
+  for (const [, plugin] of regionsPluginEntries()) {
+    for (const r of plugin.getRegions()) _applyScoreRegionCursor(r);
+  }
+}
+
+/** Refuse a plain drag of a score region on a recording (Shift lets it by). */
+function _wireScoreRegion(r) {
+  const el = r.element;
+  if (!el) return;
+  // Capture on the region itself runs before the plugin's own listeners on it
+  // and its handles, and before the waveform's drag-to-draw: stopping it here
+  // means a refused drag neither moves the region nor draws a new one. A
+  // click still arrives as a click.
+  el.addEventListener(
+    "pointerdown",
+    (e) => {
+      const meta = r._v6Meta;
+      if (!meta || meta.score !== "audio" || !meta.editable) return;
+      if (e.shiftKey || _shiftHeld || e.button !== 0) return;
+      e.stopImmediatePropagation();
+      _refuseDrag(r, e);
+    },
+    { capture: true },
+  );
+}
+
+const DRAG_REFUSE_THRESHOLD_PX = 4;
+
+function _refuseDrag(r, down) {
+  const el = r.element;
+  const x0 = down.clientX;
+  const y0 = down.clientY;
+  let refused = false;
+  try {
+    el.setPointerCapture(down.pointerId); // keeps the cursor while it lasts
+  } catch (_) {}
+  const onMove = (e) => {
+    if (refused) return;
+    if (Math.abs(e.clientX - x0) <= DRAG_REFUSE_THRESHOLD_PX &&
+        Math.abs(e.clientY - y0) <= DRAG_REFUSE_THRESHOLD_PX) return;
+    refused = true;
+    r._lhRefusing = true;
+    el.style.cursor = "not-allowed";
+    _showDragNote(e.clientX, e.clientY);
+  };
+  const onEnd = () => {
+    el.removeEventListener("pointermove", onMove);
+    el.removeEventListener("pointerup", onEnd);
+    el.removeEventListener("pointercancel", onEnd);
+    r._lhRefusing = false;
+    _applyScoreRegionCursor(r);
+  };
+  el.addEventListener("pointermove", onMove);
+  el.addEventListener("pointerup", onEnd);
+  el.addEventListener("pointercancel", onEnd);
+}
+
+let _dragNote = null;
+let _dragNoteTimer = null;
+const DRAG_NOTE_MS = 6000;
+
+function _showDragNote(x, y) {
+  if (!_dragNote) {
+    _dragNote = document.createElement("div");
+    _dragNote.className = "lh-v6-score-drag-note";
+    _dragNote.setAttribute("role", "status");
+    document.body.appendChild(_dragNote);
+  }
+  _dragNote.textContent = SCORE_REGION_DRAG_REFUSED;
+  const w = Math.min(360, window.innerWidth - 16);
+  _dragNote.style.left = Math.max(8, Math.min(x + 12, window.innerWidth - w - 8)) + "px";
+  _dragNote.style.top = Math.min(y + 16, window.innerHeight - 120) + "px";
+  _dragNote.classList.remove("is-fading");
+  _dragNote.hidden = false;
+  clearTimeout(_dragNoteTimer);
+  _dragNoteTimer = setTimeout(() => {
+    _dragNote.classList.add("is-fading");
+    _dragNoteTimer = setTimeout(_hideDragNote, 600);
+  }, DRAG_NOTE_MS);
+  // It shows mid-drag, so the release ending that drag leaves it; the next
+  // press anywhere — any click — dismisses it.
+  document.removeEventListener("pointerdown", _hideDragNote, true);
+  document.addEventListener("pointerdown", _hideDragNote, true);
+}
+
+function _hideDragNote() {
+  document.removeEventListener("pointerdown", _hideDragNote, true);
+  clearTimeout(_dragNoteTimer);
+  if (_dragNote) _dragNote.hidden = true;
 }
 
 function _resizeFlag(region) {
@@ -306,7 +515,9 @@ function _ensureHooked(plugin, file) {
     const end = Math.max(region.start, region.end);
     const ann = state.getById(meta.annId);
     const annColor = ann && ann.color;
-    if (_shiftHeld) {
+    // A score region only ever moves on this recording, Shift still held at
+    // the drop or not: anything wider is the alignment's to correct.
+    if (_shiftHeld || meta.score) {
       // Local override: only this recording's times change. Flash just
       // the source row so the user sees confirmation of the local edit.
       state.updateRegionTime(meta.annId, file, meta.regionId, { start, end });
@@ -524,6 +735,7 @@ function _wireDragMode(ann) {
   const DRAG_THRESHOLD_PX = 10;
   const live = new Set();
   for (const [file, plugin] of regionsPluginEntries()) {
+    if (file === SYNTH_MEI_KEY) continue; // the score row is never drawn on
     live.add(plugin);
     // Before its WaveSurfer exists the plugin has no wrapper, and
     // enableDragSelection would return a no-op; wait for the next sync.
@@ -703,6 +915,12 @@ function syncSelectionOverlays() {
   }
 
   for (const file of Object.keys(waveformViews)) {
+    if (file === SYNTH_MEI_KEY) {
+      // Never selectable as a recording.
+      const el = waveformViews[file].container;
+      if (el && el.classList) el.classList.add("lh-v6-unselectable");
+      continue;
+    }
     const wfEl = document.querySelector(
       ".waveform[data-ix='" +
         (window.CSS && CSS.escape ? CSS.escape(file) : file) +
@@ -752,14 +970,42 @@ function _ensureIndicator(wfEl, file) {
 function _wireWaveformClickOnce(wfEl, file) {
   if (_wiredWaveformsForAdd.has(wfEl)) return;
   _wiredWaveformsForAdd.add(wfEl);
-  wfEl.addEventListener("click", (e) => {
+  wfEl.addEventListener("click", async (e) => {
     // The indicator button has its own handler with stopPropagation; this
     // guard is a belt-and-braces in case stopPropagation didn't reach us.
     if (e.target.closest(".lh-v6-selection-indicator")) return;
-    const ann = state.getById(state.getActiveId());
-    if (!ann) return;
-    if (!uiState.getDrawerOpen() || uiState.getMode() !== "edit") return;
-    if (ann.targets.some((t) => t.file === file)) return; // already selected
+    let ann = state.getById(state.getActiveId());
+    if (!_canAttach(ann, file)) return;
+    if (ann.regions.some((r) => r.sourceScore) && !isScoreReady()) {
+      // The score region is placed from the score, which may still be loading
+      // (Verovio's script is large): wait for it, then check the click still
+      // stands.
+      if (_attachWaiting.has(file)) return;
+      _attachWaiting.add(file);
+      wfEl.classList.add("lh-v6-attach-waiting");
+      let ready;
+      try {
+        ready = await scoreReadyWithin();
+      } finally {
+        _attachWaiting.delete(file);
+        wfEl.classList.remove("lh-v6-attach-waiting");
+      }
+      const annId = ann.id;
+      ann = state.getById(state.getActiveId());
+      if (!ann || ann.id !== annId || !_canAttach(ann, file)) return;
+      if (ready !== true) {
+        console.warn("[annotation/v6] score not ready for placing a score region:", ready);
+        if (ann.targets.length === 0) {
+          window.alert(
+            ready === "timeout"
+              ? "The score is still loading after a minute, so this annotation's region, which comes from a score selection, can't be placed on a recording yet. Try again once the score row has appeared."
+              : "The score didn't load, so this annotation's region, which comes from a score selection, can't be placed on a recording.",
+          );
+          return;
+        }
+        // Otherwise it is mapped from a recording it is already on.
+      }
+    }
     const regionTimes = _seedRegionTimesForAttach(ann, file);
     const description = _consumeOrphanNote(ann.id, file);
     state.addTarget(ann.id, file, {
@@ -769,12 +1015,31 @@ function _wireWaveformClickOnce(wfEl, file) {
   });
 }
 
+// Recordings whose attach is waiting for the score.
+const _attachWaiting = new Set();
+
+function _canAttach(ann, file) {
+  return (
+    !!ann &&
+    uiState.getDrawerOpen() &&
+    uiState.getMode() === "edit" &&
+    !ann.targets.some((t) => t.file === file) // already selected
+  );
+}
+
 function _seedRegionTimesForAttach(ann, newFile) {
-  if (ann.regions.length === 0 || ann.targets.length === 0) return null;
+  if (ann.regions.length === 0) return null;
   const source = ann.targets[0];
   const out = {};
   for (const r of ann.regions) {
-    const src = source.regionTimes[r.id];
+    // The score region is placed from the score; failing that (the score
+    // isn't there), it is mapped like any other region.
+    const fromScore = r.sourceScore && projectScoreRegion(r.sourceScore, newFile);
+    if (fromScore) {
+      out[r.id] = fromScore;
+      continue;
+    }
+    const src = source && source.regionTimes[r.id];
     if (!src) continue;
     let fromIdx = null;
     let toIdx = null;

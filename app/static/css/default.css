@@ -5164,6 +5164,18 @@ body.lh-v6-edit-active .waveform:not(.lh-v6-selected):hover::before {
   opacity: 1;
 }
 
+/* The synthesised score row can't be selected: no dimming, no selection hint,
+   so the score region it shows keeps its colour. */
+body.lh-v6-edit-active .waveform.lh-v6-unselectable {
+  filter: none;
+  opacity: 1;
+  cursor: default;
+}
+
+body.lh-v6-edit-active .waveform.lh-v6-unselectable::before {
+  content: none;
+}
+
 /* V6 selection indicator: small button at top-left of each waveform.
    Shown only when the file is in the active annotation's targets while the
    drawer is open in edit mode. Defaults to a tick; on hover swaps to a
@@ -6690,6 +6702,10 @@ body.fix-mode-open .lh-v6-pull-tab {
   font-weight: 600;
 }
 
+.lh-v6-access-status.is-error {
+  color: var(--color-warning-text);
+}
+
 .lh-v6-access-btn {
   margin-left: 6px;
   padding: 4px 10px;
@@ -6939,6 +6955,62 @@ body.lh-v6-drawer-open .drawer-btns {
   background: #fee2e2;
   border-color: #dc2626;
   color: #dc2626;
+}
+
+/* A score selection's region: dashed, as on the waveforms, and not removable. */
+.lh-v6-region-row--score {
+  border-style: dashed;
+}
+
+.lh-v6-region-trash--locked,
+.lh-v6-region-trash--locked:hover {
+  opacity: 0.4;
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+/* A recording picked while the score it is placed from is still loading. */
+.waveform.lh-v6-attach-waiting,
+.waveform.lh-v6-attach-waiting * {
+  cursor: progress !important;
+}
+
+.waveform.lh-v6-attach-waiting::after {
+  content: "Waiting for the score\2026";
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  pointer-events: none;
+}
+
+/* Why a plain drag of a score region did nothing. */
+.lh-v6-score-drag-note {
+  position: fixed;
+  z-index: 10000;
+  max-width: 360px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  transition: opacity 0.5s;
+}
+
+.lh-v6-score-drag-note.is-fading {
+  opacity: 0;
 }
 
 .lh-v6-section-subhead {

@@ -379,6 +379,9 @@ export function addRegion(annId, file, start, end, timesByFile) {
 export function removeRegion(annId, regionId) {
   const a = _getMut(annId);
   if (!a) return;
+  // The score selection's region stays: on the pod it is position 1 by
+  // convention, and without the score the annotation is a new one.
+  if (a.regions.some((r) => r.id === regionId && r.sourceScore)) return;
   a.regions = a.regions.filter((r) => r.id !== regionId);
   a.targets.forEach((t) => {
     delete t.regionTimes[regionId];
@@ -490,6 +493,18 @@ export function setRegionSourceScore(annId, regionId, elementIds) {
   if (!r) return;
   r.sourceFile = null;
   r.sourceScore = elementIds.length ? [...elementIds] : null;
+}
+
+/** Mark a region's times on these recordings as placed by hand, as loaded:
+ *  restores what the pod doesn't keep, so nothing is unsaved by it. */
+export function markRegionTimesLocal(annId, regionId, files) {
+  const a = _getMut(annId);
+  if (!a) return;
+  for (const t of a.targets) {
+    const cur = files.includes(t.file) && t.regionTimes[regionId];
+    if (cur) cur.local = true;
+  }
+  _emit();
 }
 
 export function updateRegionLabel(annId, regionId, label) {

@@ -12,6 +12,7 @@
 
 import * as state from "./state.js";
 import { el, confirmRemoveIfTextful, confirmRepin } from "./ui-common.js";
+import { SCORE_REGION_TITLE, SCORE_REGION_LOCKED } from "./score-projection.js";
 import { getActiveGroupingSnapshot } from "../listen.js";
 
 // Custom drag MIME for transferring a detached (removed-group) note onto a
@@ -98,8 +99,10 @@ function _regionRowForTarget(ann, target, region, ix) {
   // data-* attributes let waveform-interactions.js's region-update handler
   // find this row by (file, regionId) and patch its text directly during
   // a drag — no state churn until drop.
+  const fromScore = !!region.sourceScore;
   return el("li", {
-    class: "lh-v6-region-row",
+    class: "lh-v6-region-row" + (fromScore ? " lh-v6-region-row--score" : ""),
+    title: fromScore ? SCORE_REGION_TITLE : null,
     "data-region-file": target.file,
     "data-region-id": region.id,
   }, [
@@ -114,12 +117,19 @@ function _regionRowForTarget(ann, target, region, ix) {
       ? el("span", { class: "lh-v6-region-label", text: region.label })
       : null,
     el("button", {
-      class: "lh-v6-region-trash",
+      class: "lh-v6-region-trash" + (fromScore ? " lh-v6-region-trash--locked" : ""),
       type: "button",
-      title: "Remove this region from every recording in this annotation",
+      "aria-disabled": fromScore ? "true" : null,
+      title: fromScore
+        ? SCORE_REGION_LOCKED
+        : "Remove this region from every recording in this annotation",
       "aria-label": "Remove region",
       text: "🗑",
       onclick: () => {
+        if (fromScore) {
+          window.alert(SCORE_REGION_LOCKED);
+          return;
+        }
         const ok = window.confirm(
           "Remove region #" +
             (ix + 1) +
@@ -235,8 +245,9 @@ function _recordingsSection(ann) {
     sec.appendChild(
       el("p", {
         class: "lh-v6-empty-hint",
-        text:
-          "No recordings selected yet. While Edit mode is active, click on any waveform to add it as a selection. Drawing a region on a waveform also selects it automatically.",
+        text: ann.regions.some((r) => r.sourceScore)
+          ? "No recordings selected yet. This annotation's region comes from a score selection: while Edit mode is active, click on a recording's waveform to place the region on it."
+          : "No recordings selected yet. While Edit mode is active, click on any waveform to add it as a selection. Drawing a region on a waveform also selects it automatically.",
       }),
     );
     return sec;

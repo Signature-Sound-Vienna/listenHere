@@ -1,5 +1,18 @@
 # Listen Here! CHANGELOG.md
 
+### 0.111.0 -- Score regions: mei-friend annotations load without recordings; the score row shows their region
+
+* Annotations loaded from Solid take the next palette colour, as a new annotation, instead of grey.
+* A mei-friend annotation loads with no recordings selected; picking a recording places its one score region there, from the earliest onset to the latest offset of its MEI elements in Verovio's timemap (a chord, measure, or slur stands for the notes it holds or joins).
+* Loading no longer needs the score: "Score-rendering toolkit not ready" is gone. Placing a score region waits up to a minute for the score, then says why it can't.
+* The synthesised score row shows a score selection's region, nailed to its elements' times, and nothing else; it is never selected or drawn on as a recording, nor dimmed as one in Edit mode.
+* The score region is dashed everywhere and can't be deleted. On a recording it moves for that recording only: its handles show a forbidden cursor until Shift is held, and a plain drag is refused with a note pointing to Correct alignment… and Shift+drag, gone at the next click or after six seconds.
+* On the pod the score region is position 1 of every audio Selection; a reload links it to the score Selection again and marks recordings moved off the projection as Shift-moved.
+* Regions are no longer added to a waveform before it knows its duration, which left stray copies at 0:00.
+* Post to Solid, refused while recordings lack Linked Data URIs, comes on as soon as Manage recordings closes with them set, not only after the drawer is reopened.
+* When an annotation's access can't be read (a dropped connection, say after a failed Make public), the card shows "Access unknown" with Try again, instead of a greyed-out button that only a reload revived.
+* Testing: spec 59 new (3), 13.2 and 55.19 new; 43.62's import updated; the functional suite passes (656, 2 skipped).
+
 ### 0.110.3 -- The start page's URL field remembers earlier entries
 
 * "Open from the Web" is now a plain GET form with a named field instead of a scripted redirect, so the browser offers previously loaded alignment URLs; the resulting `/?align=` address is unchanged.

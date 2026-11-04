@@ -376,9 +376,22 @@ let _scoreRefReviewed = false;
 /** The open chooser's overlay, or null. */
 let _chooserEl = null;
 
-/** Whether the loaded alignment can be corrected here at all. This increment
- *  renders the score pane in both modes, so a score is required. */
+/** A score-less alignment (no score table): its sessions are audio-to-audio
+ *  only, ticked by the reference's own detected onsets (plan 2026-11-03). */
+function _scoreless() {
+  return !scoreAlignment?.score_onset?.length;
+}
+
+/** Whether the loaded alignment can be corrected here at all: with a score,
+ *  the score tables and a reference grid; score-less, a reference grid and
+ *  one recording with a grid on its raster. */
 function _entryUsable() {
+  if (_scoreless()) {
+    return (
+      Array.isArray(alignmentGrids?.[getReferenceAudioIx()]) &&
+      _targetCandidates().some((k) => _targetGridUsable(k))
+    );
+  }
   return (
     !!scoreAlignment?.score_onset?.length &&
     !!scoreAlignment?.ref_onset?.length &&
@@ -450,7 +463,9 @@ function _closeChooser() {
 
 function _renderChooser(card) {
   const ref = getReferenceAudioIx();
-  const reviewed = _scoreRefReviewed;
+  // Score-less, there is no step 1 to review: the recordings stand alone.
+  const scoreless = _scoreless();
+  const reviewed = scoreless || _scoreRefReviewed;
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   card.innerHTML = "";
 
@@ -506,7 +521,9 @@ function _renderChooser(card) {
   s2.className = "fix-chooser-step" + (reviewed ? "" : " fix-chooser-locked");
   s2.dataset.step = "2";
   const h2 = document.createElement("h3");
-  h2.textContent = "2 · Recordings against the reference";
+  h2.textContent = scoreless
+    ? `Recordings against the reference (${ref})`
+    : "2 · Recordings against the reference";
   s2.appendChild(h2);
   if (!reviewed) {
     const note = document.createElement("p");
@@ -570,7 +587,8 @@ function _renderChooser(card) {
     list.appendChild(none);
   }
   s2.appendChild(list);
-  card.append(head, s1, s2);
+  if (scoreless) card.append(head, s2);
+  else card.append(head, s1, s2);
 }
 
 // ---------------------------------------------------------------------------
@@ -736,6 +754,15 @@ export async function enterFixMode(entryFile) {
   // ref_onset; any other recording edits THAT recording's grid against the
   // reference, on the same score pane with every onset projected through
   // the composed map into the recording's timeline.
+  const scoreless = _scoreless();
+  if (scoreless && (entryFile === refFile || entryFile === SYNTH_MEI_KEY)) {
+    await _refuse(
+      "this alignment has no score",
+      "Without a score there is no score ↔ reference alignment to correct; open " +
+        "a recording to correct it against the reference.",
+    );
+    return;
+  }
   const audioMode = entryFile !== SYNTH_MEI_KEY && entryFile !== refFile;
   if (audioMode && !_targetGridUsable(entryFile)) {
     await _refuse(
@@ -756,6 +783,9 @@ export async function enterFixMode(entryFile) {
 
   _fix = {
     mode: audioMode ? "audio" : "score-ref",
+    /** No score: the ticks are the reference's detected onsets (refOnsets). */
+    scoreless,
+    refOnsets: null, // score-less: { peaks, pat } from the worker, index-aligned
     drawerWasOpen,
     drawerScroll,
     entryFile,
@@ -825,6 +855,10 @@ export async function enterFixMode(entryFile) {
   // so a slow entry looks like loading instead of a hang; one painted frame
   // is yielded for it. The prewarmed path removes the overlay ~instantly.
   _buildDom(contentEl, waveformsEl);
+  if (f.scoreless) {
+    _enterScoreless(f, t0);
+    return;
+  }
   const w = f.els.scoreEl.clientWidth;
   const h = f.els.scoreEl.clientHeight;
   const usePrewarm = _derivedFitsPane(w, h);
@@ -885,7 +919,109 @@ export async function enterFixMode(entryFile) {
     `fix mode: entered in ${_lastEntry.ms} ms` +
       (_lastEntry.usedPrewarm ? " (prewarmed)" : " (cold: layout + guard ran now)"),
   );
+  _finishEntry(f);
+  // The engine bootstrap (decode + fix_begin) runs in the background; the
+  // screen is usable for inspection while it loads, and the loop's realign
+  // and audition wait on it.
+  _startBootstrap();
+}
 
+/**
+ * Score-less entry: no score to lay out, and no ticks until the worker has
+ * found the reference's onsets — so the bootstrap starts at once, behind the
+ * loading overlay, and the ticks, pages, and selection follow its reply. A
+ * re-entry on the same reference takes them from the cache.
+ */
+async function _enterScoreless(f, t0) {
+  _lastEntry = { usedPrewarm: false, spinnerShown: true, ms: 0 };
+  _showFixLoading("Finding the reference's onsets…");
+  _buildStrip(_stripSource());
+  const cached = _refOnsetCache?.file === f.refFile ? _refOnsetCache : null;
+  if (cached) f.refOnsets = { peaks: cached.peaks, pat: cached.pat };
+  else f.refOnsetsWait = _deferred();
+  _startBootstrap();
+  if (!cached) {
+    try {
+      await f.refOnsetsWait.promise;
+    } catch (e) {
+      if (_fix !== f) return;
+      _teardownFixDom(f);
+      await _refuse(`the reference's onsets could not be found (${e.message})`);
+      return;
+    }
+  }
+  if (_fix !== f) return; // exited while waiting
+  const n = f.refOnsets.peaks.length;
+  if (!n) {
+    _teardownFixDom(f);
+    await _refuse("no onsets were detected in the reference recording");
+    return;
+  }
+  f.nEvents = n;
+  f.groups = Array.from({ length: n }, (_, k) => ({ eventIxs: [k], ids: [], page: 1 }));
+  f.pageCount = _assignTimePages(f.groups);
+  _recomputeProjection(f);
+  _renderPage(1);
+  _select(0);
+  _hideFixLoading();
+  _lastEntry.ms = Math.round(performance.now() - t0);
+  console.log(
+    `fix mode: entered score-less in ${_lastEntry.ms} ms ` +
+      `(${n} reference onsets on ${f.pageCount} pages${cached ? ", cached" : ""})`,
+  );
+  _finishEntry(f);
+}
+
+/** A promise with its resolve/reject exposed. */
+function _deferred() {
+  const d = {};
+  d.promise = new Promise((resolve, reject) => {
+    d.resolve = resolve;
+    d.reject = reject;
+  });
+  return d;
+}
+
+function _startBootstrap() {
+  _bootstrap().catch((e) => {
+    console.error("fix-mode bootstrap failed:", e);
+    _setChip("error", `Correction engine unavailable: ${e.message}`);
+    _fix?.refOnsetsWait?.reject(e);
+  });
+}
+
+/** The reference onsets of the last score-less session, per reference file:
+ *  a re-entry (another recording, same reference) need not wait for them. */
+let _refOnsetCache = null;
+
+/** Score-less pages: about PAGE_SEC of reference time each, every page break
+ *  at the first onset past the mark, so a page never splits a tick from its
+ *  window. Returns the page count. */
+const SCORELESS_PAGE_SEC = 8;
+function _assignTimePages(groups) {
+  const on = _fix.refOnsets.peaks;
+  let page = 1;
+  let pageStart = on[0];
+  for (let k = 0; k < groups.length; k++) {
+    if (on[k] - pageStart >= SCORELESS_PAGE_SEC) {
+      page++;
+      pageStart = on[k];
+    }
+    groups[k].page = page;
+  }
+  return page;
+}
+
+/** Seconds as "m:ss.s" — a score-less session's stand-in for bar numbers. */
+function _fmtClock(s) {
+  if (!Number.isFinite(s)) return "?";
+  const m = Math.floor(s / 60);
+  const rest = (s - m * 60).toFixed(1).padStart(4, "0");
+  return `${m}:${rest}`;
+}
+
+/** The shared tail of both entries: resize tracking and the keyboard. */
+function _finishEntry(f) {
   // The score pane can resize without a window resize — the nav collapsing,
   // the annotation drawer pushing, the pane becoming visible at all — and
   // every one of those invalidates the page-fit geometry wholesale.
@@ -909,8 +1045,9 @@ export async function enterFixMode(entryFile) {
       // One system per page with the page box tracking content: the pane's
       // HEIGHT never changes the page model, only the on-screen scale (the
       // CSS fit) — so a height-only change takes the light re-fit, and only
-      // a width change pays for a relayout.
-      if (widthChanged) _onResize();
+      // a width change pays for a relayout. Score-less, only the strip refits.
+      if (f.scoreless) _refitStrip();
+      else if (widthChanged) _onResize();
       else _refitScorePane();
     }, 150);
   });
@@ -933,14 +1070,6 @@ export async function enterFixMode(entryFile) {
     _commitPendingNudge();
   };
   window.addEventListener("blur", f.blurHandler);
-
-  // The engine bootstrap (decode + fix_begin) runs in the background; the
-  // screen is usable for inspection while it loads, and the loop's realign
-  // and audition wait on it.
-  _bootstrap().catch((e) => {
-    console.error("fix-mode bootstrap failed:", e);
-    _setChip("error", `Correction engine unavailable: ${e.message}`);
-  });
 }
 
 /** Remove a session's DOM and renderer without any toolkit work. */
@@ -1058,6 +1187,7 @@ export function fixModeOnPieceReset() {
   exitFixMode({ discardPending: true });
   _closeChooser();
   _derived = null;
+  _refOnsetCache = null;
   clearTimeout(_prewarmTimer);
   if (_worker) {
     try {
@@ -1082,6 +1212,7 @@ export function fixModeOnPieceReset() {
  */
 export function fixModePrewarm() {
   _derived = null;
+  _refOnsetCache = null;
   // A (re)loaded piece invalidates the piece-scoped correction state too.
   _corrections = createCorrections();
   _pristine = null;
@@ -1154,6 +1285,11 @@ function _schedulePrewarm(delayMs, retries) {
 
 function _runPrewarm() {
   if (_fix || _derived) return; // entered already, or a prewarm landed
+  // Score-less: no layout to prepare; only the engine's runtime is worth warming.
+  if (_scoreless()) {
+    if (_entryUsable()) _warmRuntime();
+    return;
+  }
   if (!tk || !getMeiXml()) return;
   if (!scoreAlignment?.score_onset?.length || !scoreAlignment?.ref_onset?.length)
     return;
@@ -1355,13 +1491,15 @@ let _lastGroupStats = null;
 
 /**
  * The reference-time table the events are indexed into: the score's live
- * ref_onset. A group's identity in audio mode is its event's entry here (target
- * anchors are keyed by it), so every such read goes through these accessors —
- * the one place a score-less session will supply the reference's own detected
- * onsets instead. Read live, never cached on the group: score↔ref edits move
- * ref_onset in place.
+ * ref_onset, or — score-less — the reference's own detected onsets, as flux
+ * peaks or perceived attacks after the snap toggle. A group's identity in audio
+ * mode is its event's entry here (target anchors are keyed by it), so every
+ * such read goes through these accessors. Read live, never cached on the
+ * group: score↔ref edits move ref_onset in place.
  */
 function _refOnsetTable() {
+  const r = _fix?.refOnsets;
+  if (r) return _snapTarget === "perceived" && r.pat.length ? r.pat : r.peaks;
   return scoreAlignment.ref_onset;
 }
 
@@ -1371,6 +1509,28 @@ function _eventRefT(i) {
 
 function _groupRefT(group) {
   return _eventRefT(group.eventIxs[0]);
+}
+
+/**
+ * Score-less: the target anchor on a group, laid under EITHER of its onset's
+ * times (peak or perceived attack — the lists are index-aligned), so flipping
+ * the snap toggle never detaches an anchor from its tick. Elsewhere the plain
+ * lookup by the group's reference time.
+ */
+function _groupTargetAnchor(group) {
+  const f = _fix;
+  const a = findTargetAnchor(_corrections, f.targetFile, _groupRefT(group));
+  if (a || !f.refOnsets) return a;
+  const i = group.eventIxs[0];
+  const alt = _refOnsetTable() === f.refOnsets.pat ? f.refOnsets.peaks : f.refOnsets.pat;
+  return Number.isFinite(alt[i]) ? findTargetAnchor(_corrections, f.targetFile, alt[i]) : null;
+}
+
+/** The reference time a group's anchor is (or will be) stored under: its
+ *  existing anchor's, so a re-commit or a neighbour search never splits it. */
+function _groupKeyRefT(group) {
+  if (!_fix?.refOnsets) return _groupRefT(group);
+  return _groupTargetAnchor(group)?.refT ?? _groupRefT(group);
 }
 
 /**
@@ -1392,7 +1552,7 @@ function _eventStripTime(i) {
 
 function _eventStripOff(i) {
   const f = _fix;
-  const off = scoreAlignment.ref_offset;
+  const off = scoreAlignment?.ref_offset;
   if (!Array.isArray(off)) return undefined;
   if (f?.mode === "audio") return f.projOff ? f.projOff[i] : _refToTarget(off[i]);
   return off[i];
@@ -1427,7 +1587,7 @@ function _refToTarget(refT) {
 function _recomputeProjection(f) {
   if (f.mode !== "audio") return;
   const on = _refOnsetTable();
-  const off = scoreAlignment.ref_offset;
+  const off = scoreAlignment?.ref_offset;
   const n = on.length;
   const pOn = new Array(n);
   const pOff = new Array(n);
@@ -1443,6 +1603,7 @@ function _recomputeProjection(f) {
  *  (score↔ref) or the projection into the target (audio-to-audio). */
 function _audTables(f) {
   if (f.mode === "audio" && f.projOn) return { on: f.projOn, off: f.projOff };
+  if (f.scoreless) return { on: [], off: [] }; // no projection yet, and no synth to render
   return { on: scoreAlignment.ref_onset, off: scoreAlignment.ref_offset };
 }
 
@@ -1550,6 +1711,8 @@ function _buildDom(contentEl, waveformsEl) {
 
   const root = document.createElement("div");
   root.id = "fix-mode";
+  // Score-less: no score pane; the strip and its lanes take the height.
+  if (_fix.scoreless) root.classList.add("fix-scoreless");
 
   // The correction controls live in the LEFT NAV, not in a header strip over
   // the score. Neither of the nav's own regions means anything while
@@ -1697,6 +1860,8 @@ function _buildDom(contentEl, waveformsEl) {
       if (!r.checked) return;
       _snapTarget = v;
       r.blur();
+      // Score-less, the ticks themselves follow the toggle.
+      if (_fix?.refOnsets) _recomputeProjection(_fix);
       _scheduleRedraw();
     });
     const l = document.createElement("label");
@@ -1846,7 +2011,7 @@ function _buildDom(contentEl, waveformsEl) {
   const balance = document.createElement("span");
   balance.className = "fix-balance";
   balance.title =
-    "Audition balance — left ear: the recording, right ear: the aligned synth";
+    `Audition balance — left ear: the recording, right ear: ${_rightEar()}`;
   const balanceL = _sliderIcon("\u{1F3BB}", "Left ear: the recording");
   const balanceInput = document.createElement("input");
   balanceInput.type = "range";
@@ -1855,7 +2020,7 @@ function _buildDom(contentEl, waveformsEl) {
   balanceInput.step = "5";
   balanceInput.value = String(Math.round(_audBalance * 100));
   balanceInput.setAttribute("aria-label", "Audition balance (recording ↔ synth)");
-  const balanceR = _sliderIcon("\u{1F4BB}", "Right ear: the aligned synth");
+  const balanceR = _sliderIcon("\u{1F4BB}", `Right ear: ${_rightEar()}`);
   balanceInput.addEventListener("input", () => {
     _audBalance = Number(balanceInput.value) / 100;
     if (_fix?.aud) _applyAudBalance(_fix.aud);
@@ -1900,7 +2065,8 @@ function _buildDom(contentEl, waveformsEl) {
       else _setScoreZoom("pct", Number(v));
     },
   );
-  pageCtl.append(pageLabel, zoomSel);
+  if (f.scoreless) pageCtl.append(pageLabel); // no score to zoom
+  else pageCtl.append(pageLabel, zoomSel);
 
   const chip = document.createElement("span");
   chip.className = "fix-chip";
@@ -1932,7 +2098,9 @@ function _buildDom(contentEl, waveformsEl) {
     } catch (_) {}
     return { fs, body };
   };
-  const fsScore = fieldset("fix-fs-score", "Score", "Collapse / expand the score controls");
+  const fsScore = f.scoreless
+    ? fieldset("fix-fs-score", "Pages", "Collapse / expand the page readout")
+    : fieldset("fix-fs-score", "Score", "Collapse / expand the score controls");
   fsScore.body.append(pageCtl);
   const fsPlayback = fieldset("fix-fs-playback", "Playback", "Collapse / expand playback options");
   fsPlayback.body.append(pageOnlyRow, replayRow, speed, balance);
@@ -2210,6 +2378,11 @@ const FIX_TRANSPORT_TITLES = {
   "skip-end": "Next page (Down arrow)",
 };
 
+/** What the audition's right ear carries: the synth, or nothing score-less. */
+function _rightEar() {
+  return _fix?.scoreless ? "silent (no score)" : "the aligned synth";
+}
+
 /** Titles displaced by the takeover, restored verbatim at exit. */
 let _transportTitles = null;
 
@@ -2219,7 +2392,7 @@ function _takeOverTransport() {
     const el = document.getElementById(id);
     if (!el) continue;
     _transportTitles[id] = el.title;
-    el.title = title;
+    el.title = id === "playpause" ? title.replace("the aligned synth", _rightEar()) : title;
   }
   // The audition is not playable until its buffers exist; _updatePlayBtn
   // releases the button when they do.
@@ -2432,6 +2605,17 @@ function _renderPage(page) {
   const f = _fix;
   page = Math.min(Math.max(1, page), f.pageCount);
   f.page = page;
+  if (f.scoreless) {
+    // No score page to draw: the page is a stretch of reference time.
+    const on = _groupsOnPage(page).map((g) => _groupRefT(g));
+    f.els.pageLabel.textContent = on.length
+      ? `${_fmtClock(Math.min(...on))}–${_fmtClock(Math.max(...on))} · ${page} / ${f.pageCount}`
+      : `${page} / ${f.pageCount}`;
+    _updateStripWindow();
+    _scheduleRedraw();
+    _schedulePlayheadFrame();
+    return;
+  }
   let svg = f.pageSvgCache.get(page);
   if (!svg) {
     svg = tk.renderToSVG(page, {});
@@ -2922,7 +3106,7 @@ function _effectiveZoomPct() {
 function _setScoreZoom(mode, pct) {
   _scoreZoom = { mode, pct: mode === "pct" ? pct : mode === "fit" ? 100 : _scoreZoom.pct };
   const f = _fix;
-  if (!f) return;
+  if (!f || f.scoreless) return;
   _applyScoreZoom();
   _scrollScoreToSelection();
   _updateScoreX();
@@ -3529,7 +3713,7 @@ function _occupiedTimes(groupIxOrSet) {
     const ownRef = new Set();
     for (const ix of ixs) {
       const g = f.groups[ix];
-      if (g) ownRef.add(Math.round(_groupRefT(g) * 1e6));
+      if (g) ownRef.add(Math.round(_groupKeyRefT(g) * 1e6));
     }
     return targetAnchors(_corrections, f.targetFile)
       .filter((a) => !ownRef.has(Math.round(a.refT * 1e6)))
@@ -3582,18 +3766,20 @@ function _targetsWithin(pk, t, radius, occupied) {
  * slope over that window was 3× off on the fixture (the window straddles a
  * tempo change), and a median also shrugs off the piled-up pairs the
  * dispersal exists to separate (they have Δt ≈ 0 and are skipped).
+ * Score-less, positions are reference seconds (_eventPos), so the same median
+ * is the local slope — target seconds per reference second — near 1.
  */
 function _localSecondsPerQuarter(iLo, iHi) {
   const f = _fix;
-  const refOn = scoreAlignment?.ref_onset;
-  if (!f || !refOn) return 0.5;
+  const fallback = f?.scoreless ? 1 : 0.5;
+  if (!f || !(f.scoreless || scoreAlignment?.ref_onset)) return fallback;
   const lo = Math.max(0, iLo - 8);
   const hi = Math.min(f.nEvents - 1, iHi + 8);
   const rates = [];
   let prevQ = null;
   let prevT = null;
   for (let i = lo; i <= hi; i++) {
-    const q = f.qOn[i];
+    const q = _eventPos(i);
     const t = _eventStripTime(i); // the STRIP recording's tempo
     if (!Number.isFinite(q) || !Number.isFinite(t)) continue;
     if (prevQ !== null && q > prevQ + 1e-6 && t > prevT + 0.02) {
@@ -3602,11 +3788,17 @@ function _localSecondsPerQuarter(iLo, iHi) {
     prevQ = q;
     prevT = t;
   }
-  if (!rates.length) return 0.5;
+  if (!rates.length) return fallback;
   rates.sort((a, b) => a - b);
   const mid = rates.length >> 1;
   const med = rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
-  return med > 0.05 ? med : 0.5;
+  return med > 0.05 ? med : fallback;
+}
+
+/** An event's musical position for spacing heuristics: its score quarter, or —
+ *  score-less — its reference time in seconds. */
+function _eventPos(i) {
+  return _fix.qOn ? _fix.qOn[i] : _eventRefT(i);
 }
 
 /**
@@ -3852,7 +4044,7 @@ function _redrawOverlays() {
     const multi = f.multiSel.size > 0 && f.multiSel.has(f.groups.indexOf(g));
     const anchor =
       f.mode === "audio"
-        ? findTargetAnchor(_corrections, f.targetFile, _groupRefT(g))
+        ? _groupTargetAnchor(g)
         : findAnchor(_corrections, _anchorEventOf(g));
     // Tick: the vertical line on the strip — the loop's drag handle.
     if (x >= -1 && x <= w + 1) {
@@ -3948,7 +4140,7 @@ function _redrawOverlays() {
     // (the underlay, beneath the score elements); this polyline takes over at
     // the rendered content's bottom edge, drops to the pane bottom, and bends
     // across the gap onto the strip tick (faint, selected emphasised).
-    if (g.xScore !== null) {
+    if (g.xScore != null) {
       const xt = stripRect.x - rootRect.x + x;
       if (xt < -40 || xt > f.els.root.clientWidth + 40) continue;
       // A zoomed page: a note scrolled out of the pane has no connector, and
@@ -3978,7 +4170,7 @@ function _redrawOverlays() {
   let freeAnchors = 0;
   if (f.mode === "audio") {
     const onTicks = new Set(
-      pageGroups.map((g) => Math.round(_groupRefT(g) * 1e6)),
+      pageGroups.map((g) => Math.round(_groupKeyRefT(g) * 1e6)),
     );
     for (const a of targetAnchors(_corrections, f.targetFile)) {
       if (onTicks.has(Math.round(a.refT * 1e6))) continue;
@@ -4046,8 +4238,8 @@ function _select(ix, { seek = false } = {}) {
     const el = f.pageIndex.get(id);
     if (el) el.classList.add("fix-note-sel");
   }
-  _applyUnderlaySelection();
-  if (_scoreZoom.mode !== "fit") {
+  if (!f.scoreless) _applyUnderlaySelection();
+  if (!f.scoreless && _scoreZoom.mode !== "fit") {
     _scrollScoreToSelection();
     _updateScoreX();
   }
@@ -4164,7 +4356,7 @@ function _dragBounds(groupIx) {
     // Neighbouring TARGET anchors (strict by reference time, so the group's
     // own anchor is never its own neighbour); the corners are the grid's
     // first and last samples, frozen.
-    const refT = _groupRefT(f.groups[groupIx]);
+    const refT = _groupKeyRefT(f.groups[groupIx]);
     const { prev, next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
     const tg = _targetGrid();
     let lo = Math.max(prev ? prev.t : tg[0], _pushFloor(groupIx, tg[0]));
@@ -4481,8 +4673,19 @@ function _cancelPendingNudge() {
 function _refitScorePane() {
   const f = _fix;
   if (!f) return;
+  if (f.scoreless) return _refitStrip();
   _applyScoreZoom();
   _buildPageGeometry(f.page);
+  f.refits = (f.refits || 0) + 1;
+  _updateStripWindow();
+  _scheduleRedraw();
+  _schedulePlayheadFrame();
+}
+
+/** Score-less: a pane change only refits the strip to the page window. */
+function _refitStrip() {
+  const f = _fix;
+  if (!f) return;
   f.refits = (f.refits || 0) + 1;
   _updateStripWindow();
   _scheduleRedraw();
@@ -4492,6 +4695,7 @@ function _refitScorePane() {
 async function _onResize() {
   const f = _fix;
   if (!f) return;
+  if (f.scoreless) return _refitStrip();
   // A pane resize (window, nav collapse, drawer) changes the page geometry
   // wholesale: re-lay-out, re-derive the page model, and re-render around the
   // current selection. On a large score that is seconds of synchronous wasm,
@@ -4536,6 +4740,9 @@ async function _onResize() {
  * chunks so a large score never freezes the screen.
  */
 function _buildAudition(f, refSamples) {
+  // Score-less: no synth — the recording alone, its right ear silent until
+  // the warped reference takes that place.
+  if (f.scoreless) return _buildAuditionBuffer(f, refSamples, []);
   const refOff = scoreAlignment.ref_offset;
   if (!Array.isArray(refOff)) {
     console.warn("fix mode: no ref_offset table — audition disabled");
@@ -4568,7 +4775,12 @@ function _buildAudition(f, refSamples) {
     v: n.v,
     ix: ixByKey.get(n.s + ":" + n.e),
   }));
+  return _buildAuditionBuffer(f, refSamples, audNotes);
+}
 
+/** The audition's stereo buffer and gain graph around `refSamples` (the left
+ *  ear), with the synth's notes (none, score-less) for the right. */
+function _buildAuditionBuffer(f, refSamples, audNotes) {
   // A default-rate context resamples on output; the buffer itself lives at
   // FIX_SR so positions stay sample-locked to the aligner's timeline.
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -5202,7 +5414,7 @@ function _followPlayback() {
   if (ix !== f.selGroupIx) _select(ix, { seek: false });
   const g = f.groups[ix];
   let offEnd = Infinity;
-  if (Array.isArray(scoreAlignment.ref_offset)) {
+  if (Array.isArray(scoreAlignment?.ref_offset)) {
     offEnd = -Infinity;
     for (const e of g.eventIxs) {
       const v = _eventStripOff(e);
@@ -5338,7 +5550,7 @@ const BEND_REACH_SIGMAS = 4;
 function _groupAnchored(g) {
   const f = _fix;
   if (f.mode === "audio") {
-    return !!findTargetAnchor(_corrections, f.targetFile, _groupRefT(g));
+    return !!_groupTargetAnchor(g);
   }
   return g.eventIxs.some((e) => findAnchor(_corrections, e));
 }
@@ -5410,7 +5622,7 @@ function _bendTargets(gix, t0, t, wall) {
  */
 function _pushPlan(gix, t) {
   const f = _fix;
-  const wall = _pushWall(_groupRefT(f.groups[gix]));
+  const wall = _pushWall(_groupKeyRefT(f.groups[gix]));
   const t0 = _groupStripTime(f.groups[gix]);
   const bent = _bendTargets(gix, t0, t, wall);
   const moves = [];
@@ -5439,7 +5651,7 @@ function _pushPlan(gix, t) {
  */
 function _pushFloor(gix, floor) {
   const f = _fix;
-  const wall = _pushWall(_groupRefT(f.groups[gix]));
+  const wall = _pushWall(_groupKeyRefT(f.groups[gix]));
   let acc = 0;
   let nextOld = _groupStripTime(f.groups[gix]);
   for (let j = gix - 1; j >= 0; j--) {
@@ -5577,7 +5789,7 @@ function _leftGridSpan(groupIx, refT, t) {
   const grid = _targetGrid();
   const prevG = f.groups[groupIx - 1];
   const { prev } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
-  let refPrev = prevG ? _groupRefT(prevG) : refGrid[0];
+  let refPrev = prevG ? _groupKeyRefT(prevG) : refGrid[0];
   if (prev && prev.refT > refPrev) refPrev = prev.refT;
   const k0 = rasterAfter(refGrid, refPrev);
   const kHi = rasterBefore(refGrid, refT);
@@ -5644,7 +5856,7 @@ function _nextLocalGridSpan(groupIx, refT, t) {
   const last = refGrid.length - 1;
   const nextG = f.groups[groupIx + 1];
   const { next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
-  let refNext = nextG ? _groupRefT(nextG) : refGrid[last];
+  let refNext = nextG ? _groupKeyRefT(nextG) : refGrid[last];
   if (next && next.refT < refNext) refNext = next.refT;
   const k1 = rasterBefore(refGrid, refNext);
   const kLo = rasterAfter(refGrid, refT);
@@ -6074,7 +6286,7 @@ async function _commitGridAnchor(groupIx, t, kind) {
     return;
   }
   const i = g.eventIxs[0];
-  const refT = _eventRefT(i);
+  const refT = _groupKeyRefT(g);
   if (!Number.isFinite(refT)) return;
   const tBefore = _eventStripTime(i); // for the trail: the projection is recomputed below
   const ctx = {
@@ -6093,10 +6305,11 @@ async function _commitGridAnchor(groupIx, t, kind) {
     file,
     refT,
     i,
-    q: f.qOn[i],
+    q: f.qOn ? f.qOn[i] : undefined,
     t,
     kind,
-    barHint: _barOfQuarter(f.qOn[i]),
+    barHint: f.qOn ? _barOfQuarter(f.qOn[i]) : null,
+    clockHint: f.scoreless ? _fmtClock(refT) : null,
     prevAnchor: prevRecord ? { ...prevRecord } : null,
     own: null, // {k, before, after} when refT sits ON a raster sample
     segments: [], // {kLo, kHi, interiorCount, before[], after[]}
@@ -6120,7 +6333,7 @@ async function _commitGridAnchor(groupIx, t, kind) {
     setTargetAnchor(
       _corrections,
       file,
-      { refT, t, kind, ts: Date.now(), i, q: entry.q },
+      { refT, t, kind, ts: Date.now(), i: f.scoreless ? undefined : i, q: entry.q },
       ctx,
     );
     segs = [
@@ -6213,7 +6426,7 @@ async function _commitGridAnchor(groupIx, t, kind) {
   let t1 = segs[segs.length - 1].tB;
   const refA = segs[0].refA;
   const refB = segs[segs.length - 1].refB;
-  const refOn = scoreAlignment.ref_onset;
+  const refOn = _refOnsetTable();
   const { on: pOn, off: pOff } = _audTables(f);
   const iLo = Math.max(0, _lowerBound(refOn, refA) - 1);
   for (let k = iLo; k < f.nEvents && refOn[k] <= refB + 1e-9; k++) {
@@ -6296,8 +6509,8 @@ async function _realignPending() {
   if (!(await _whenIdle(f))) return false;
   const audio = f.mode === "audio";
   const file = f.targetFile;
-  const refOn = scoreAlignment.ref_onset;
-  const refOff = scoreAlignment.ref_offset;
+  const refOn = scoreAlignment?.ref_onset;
+  const refOff = scoreAlignment?.ref_offset;
   const grid = audio ? _targetGrid() : null;
   const refGrid = audio ? alignmentGrids[f.refFile] : null;
   const items = f.pending
@@ -6426,7 +6639,7 @@ async function _realignPending() {
  *  in [refA, refB]). */
 function _renderEndOf(t1, refA, refB) {
   const f = _fix;
-  const refOn = scoreAlignment.ref_onset;
+  const refOn = _refOnsetTable();
   let end = t1;
   if (f.mode === "audio") {
     const { on: pOn, off: pOff } = _audTables(f);
@@ -6611,7 +6824,7 @@ function _unanchorGroup(groupIx) {
   const audio = f.mode === "audio";
   const i = audio ? g.eventIxs[0] : _anchorEventOf(g);
   const a = audio
-    ? findTargetAnchor(_corrections, f.targetFile, _eventRefT(i))
+    ? _groupTargetAnchor(g)
     : findAnchor(_corrections, i);
   if (!a) {
     _announce("This onset is not anchored.");
@@ -6627,7 +6840,8 @@ function _unanchorGroup(groupIx) {
     file: audio ? f.targetFile : null,
     i,
     refT: audio ? a.refT : null,
-    barHint: _barOfQuarter(f.qOn[i]),
+    barHint: f.qOn ? _barOfQuarter(f.qOn[i]) : null,
+    clockHint: f.scoreless ? _fmtClock(a.refT) : null,
     removed: { ...a },
     pendingAhead: false,
     window: null,
@@ -6643,7 +6857,7 @@ function _unanchorGroup(groupIx) {
   _syncRealignUi();
   _scheduleRedraw();
   _announce(
-    `Unanchored near bar ${entry.barHint ?? "?"}: it keeps its time, and later fixes may move it.`,
+    `Unanchored ${_placeOf(entry)}: it keeps its time, and later fixes may move it.`,
   );
   return true;
 }
@@ -7001,7 +7215,7 @@ async function _snapSelectionToOnsets() {
     if (!g) continue;
     const t = _groupStripTime(g);
     if (!Number.isFinite(t)) continue;
-    marks.push({ ix, t, q: f.qOn[g.eventIxs[0]], i: g.eventIxs[0] });
+    marks.push({ ix, t, q: _eventPos(g.eventIxs[0]), i: g.eventIxs[0] });
   }
   marks.sort((a, b) => a.t - b.t);
   const cands = marks.map((m) =>
@@ -7213,6 +7427,13 @@ function _syncCorrectionsHeader() {
   header.corrections = serializeCorrections(_corrections, _correctionsBase);
 }
 
+/** Where an entry happened, for announcements: near its bar, or — score-less —
+ *  at its reference time. */
+function _placeOf(entry) {
+  if (entry.clockHint) return `at ${entry.clockHint}`;
+  return `near bar ${entry.barHint ?? "?"}`;
+}
+
 /** Rough bar number for a quarter position (announcement copy only). */
 function _barOfQuarter(q) {
   let bar = 0;
@@ -7375,7 +7596,9 @@ function _afterHistoryHop(entry, verb, count = 1, win = null) {
   const visible = f && (!gridEntry || (f.mode === "audio" && f.targetFile === entry.file));
   if (visible) {
     if (gridEntry) _recomputeProjection(f);
-    const ix = f.groups.findIndex((g) => g.eventIxs.includes(entry.i));
+    const ix = f.scoreless
+      ? f.groups.findIndex((g) => Math.abs(_groupKeyRefT(g) - entry.refT) <= REF_T_EPS)
+      : f.groups.findIndex((g) => g.eventIxs.includes(entry.i));
     if (ix !== -1) _select(ix, { seek: false });
     const w =
       win || (entry.window ? { t0: entry.window.t0, t1: entry.renderT1 ?? entry.window.t1 } : null);
@@ -7383,7 +7606,7 @@ function _afterHistoryHop(entry, verb, count = 1, win = null) {
     f.growPending = true;
     _scheduleRedraw();
   } else {
-    const where = entry.barHint ? `near bar ${entry.barHint}` : `at event ${entry.i}`;
+    const where = entry.barHint || entry.clockHint ? _placeOf(entry) : `at event ${entry.i}`;
     const what =
       entry.type === "fix-gap"
         ? "unscored-audio gap"
@@ -7808,6 +8031,20 @@ async function _bootstrap() {
         `Step 3/4: ${short}`,
         `Preparing correction engine: ${d.message}`,
       );
+    } else if (d.type === "fix_ref_onsets") {
+      // Score-less: the reference's detected onsets — the session's ticks.
+      f.refOnsets = { peaks: Float64Array.from(d.peaks), pat: Float64Array.from(d.pat) };
+      _refOnsetCache = { file: f.refFile, ...f.refOnsets };
+      f.refOnsetsWait?.resolve();
+    } else if (d.type === "fix_ref_onsets_error") {
+      f.refOnsetsWait?.reject(new Error(d.message));
+    } else if (d.type === "fix_ready" && f.scoreless) {
+      _workerHasSession = true;
+      if (!f.refOnsets) worker.postMessage({ type: "fix_ref_onsets" });
+      f.workerEvents = d.events;
+      f.fixReady = true;
+      f.timing.worker = d.timing || null;
+      _maybeArm(f, T0);
     } else if (d.type === "fix_ready") {
       _workerHasSession = true;
       if (d.events?.n_events !== f.nEvents) {
@@ -8024,8 +8261,12 @@ export function fixTestState() {
         q: g.q,
         t,
         x: Number.isFinite(t) ? _timeToStripX(t) : null,
+        refT: f.mode === "audio" ? _groupRefT(g) : null,
+        anchored: f.mode === "audio" ? !!_groupTargetAnchor(g) : null,
       };
     }),
+    scoreless: !!f.scoreless,
+    refOnsetCount: f.refOnsets ? f.refOnsets.peaks.length : null,
     specCfg: { ..._specCfg },
     snapTarget: _snapTarget,
     stripHeightPx: _stripHeightPx,

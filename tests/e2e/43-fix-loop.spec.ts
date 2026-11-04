@@ -23,14 +23,18 @@ const REF_ROW = 'audio-b.mp3';
 const TARGET_ROW = 'audio-a.mp3';
 
 /** Navigate with ?fixMode (the spec-42 helper, plus its alignment patch). */
-async function gotoFixMode(page: Page, patch?: (json: any) => void) {
+async function gotoFixMode(
+  page: Page,
+  patch?: (json: any) => void,
+  fixture = 'alignment.json',
+) {
   await stubExternalMei(page);
   if (patch) {
     // Predicate matcher, deliberately not a glob: the navigation URL carries
     // /static/test/ inside its ?align= query and a glob would intercept the
     // navigation itself (the spec-39 trap).
     await page.route(
-      (url) => url.pathname === '/static/test/alignment.json',
+      (url) => url.pathname === `/static/test/${fixture}`,
       async (route) => {
         const resp = await route.fetch();
         const json = await resp.json();
@@ -40,7 +44,7 @@ async function gotoFixMode(page: Page, patch?: (json: any) => void) {
     );
   }
   const params =
-    `?align=${env.baseUrl}/static/test/alignment.json` +
+    `?align=${env.baseUrl}/static/test/${fixture}` +
     `&useLocal=${env.baseUrl}/static/test&fixMode`;
   await page.goto(`/${params}`);
   await page.waitForFunction(
@@ -65,6 +69,9 @@ async function installWorkerStub(
      *  peaks (perceived attacks = peaks + patShift); without it the test
      *  calls __fixStub.sendLanes(peaks, opts) itself. */
     lanes?: { peaks: number[]; patShift?: number };
+    /** Score-less sessions: answer fix_ref_onsets with these reference onsets
+     *  (perceived attacks = peaks + patShift, default −0.03). */
+    refOnsets?: { peaks: number[]; patShift?: number };
   } = {},
 ) {
   await page.evaluate((o) => {
@@ -130,6 +137,7 @@ async function installWorkerStub(
       };
       w.postMessage = (msg: any) => {
         const rec: any = { type: msg.type };
+        if (msg.type === 'fix_begin') rec.hasMidi = msg.meiMidi != null;
         if (msg.type === 'fix_realign') {
           rec.iA = msg.iA;
           rec.tA = msg.tA;
@@ -224,6 +232,16 @@ async function installWorkerStub(
             });
           if (o.deferReady) w.releaseReady = sendReady;
           else setTimeout(sendReady, 5);
+        } else if (msg.type === 'fix_ref_onsets') {
+          const peaks = o.refOnsets?.peaks ?? [];
+          const shift = o.refOnsets?.patShift ?? -0.03;
+          setTimeout(
+            () =>
+              w.onmessage?.({
+                data: { type: 'fix_ref_onsets', hop: 512, peaks, pat: peaks.map((t) => t + shift) },
+              }),
+            5,
+          );
         } else if (msg.type === 'fix_realign') {
           setTimeout(() => {
             if (o.realignShort) {
@@ -3590,5 +3608,164 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(moved).toBeGreaterThan(0);
     expect(got.ann_src.dirty).toBe(true);
     expect(got.ann_none.dirty).toBe(false);
+  });
+});
+
+// Score-less correction (plan 2026-11-03, B1): the same alignment without its
+// score; the ticks are the reference recording's detected onsets, which the
+// stub supplies — every 0.5 s from 2.0 s, so 16 to a page of ~8 s.
+const REF_ONSETS = Array.from({ length: 120 }, (_, k) => 2 + k * 0.5);
+
+async function gotoScoreless(page: Page, errors: string[]) {
+  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(`console: ${m.text()}`);
+  });
+  await gotoFixMode(page, undefined, 'alignment-noscore.json');
+  await installWorkerStub(page, { refOnsets: { peaks: REF_ONSETS } });
+}
+
+test.describe('43: score-less correction (B1)', () => {
+  test('43.63 a score-less alignment opens on its recordings alone: no step 1, ticks at the reference onsets projected through the target grid, time pages, no score pane, a MIDI-free engine', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await page.click('#fix-chooser-open');
+    await page.waitForSelector('.fix-chooser');
+    await expect(page.locator('#fix-chooser-open-ref')).toHaveCount(0);
+    await expect(page.locator('#fix-chooser-skip')).toHaveCount(0);
+    await expect(page.locator('.fix-chooser-step h3')).toHaveText([
+      `Recordings against the reference (${REF_ROW})`,
+    ]);
+    await expect(
+      page.locator(`.fix-chooser-row[data-file="${TARGET_ROW}"] .fix-chooser-go`),
+    ).toBeEnabled();
+    await page.click('.fix-chooser-close');
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    const st = await fixState(page);
+    expect(st.scoreless).toBe(true);
+    expect(st.mode).toBe('audio');
+    expect(st.refOnsetCount).toBe(REF_ONSETS.length);
+    expect(st.groupCount).toBe(REF_ONSETS.length);
+    expect(st.pageCount).toBe(8);
+    expect(st.page).toBe(1);
+    await expect(page.locator('.fix-page-label')).toHaveText('0:02.0–0:09.5 · 1 / 8');
+    // Every tick is its reference onset, projected through the target's grid.
+    expect(st.pageTicks).toHaveLength(16);
+    for (const pt of st.pageTicks) {
+      expect(pt.refT).toBeCloseTo(REF_ONSETS[pt.eventIx], 9);
+      expect(pt.t).toBeCloseTo(await projectInPage(page, pt.refT), 6);
+    }
+    // No score: the pane is gone, its zoom too, and the nav box is "Pages".
+    await expect(page.locator('.fix-score')).toBeHidden();
+    await expect(page.locator('#fix-score-zoom')).toHaveCount(0);
+    await expect(page.locator('#fix-fs-score legend')).toContainText('Pages');
+    // The engine began without MIDI and was asked for the reference onsets once.
+    const posted = await page.evaluate(() => (window as any).__fixStub.posted);
+    expect(posted.find((p: any) => p.type === 'fix_begin').hasMidi).toBe(false);
+    expect(posted.filter((p: any) => p.type === 'fix_ref_onsets')).toHaveLength(1);
+    // The audition holds the recording alone (no synth in the right ear).
+    expect(st.aud.duration).toBeGreaterThan(270);
+    // Page turns walk reference time.
+    await page.click('#skip-end');
+    await expect(page.locator('.fix-page-label')).toHaveText('0:10.0–0:17.5 · 2 / 8');
+    expect(errors).toEqual([]);
+  });
+
+  test('43.64 a score-less drag lays an anchor keyed by the reference onset, with no score fields; undo and redo restore the grid exactly', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const before = await gridSnapshot(page);
+    const pre = await fixState(page);
+    expect(pre.selRefT).toBeCloseTo(REF_ONSETS[2], 9);
+    await dragSelectedTick(page, 30);
+    const st = await fixState(page);
+    expect(st.chipState, st.chipText ?? '').not.toBe('error');
+    expect(st.lastCommit).toMatchObject({ kind: 'drag', file: TARGET_ROW });
+    expect(st.gridAnchors).toHaveLength(1);
+    const a = st.gridAnchors[0];
+    expect(a.refT).toBeCloseTo(REF_ONSETS[2], 9);
+    expect(a.t - pre.selT).toBeCloseTo(30 / pre.stripPps, 1);
+    // A tick index means nothing outside this session's onset detection.
+    expect('i' in a).toBe(false);
+    expect('q' in a).toBe(false);
+    const hdr = await page.evaluate(
+      () => (window as any)._listenTest.session.loadedAlignmentJSON.header.corrections,
+    );
+    expect(hdr.audio[TARGET_ROW].anchors).toHaveLength(1);
+    expect(hdr.audio[TARGET_ROW].anchors[0]).toMatchObject({ refT: a.refT, t: a.t, kind: 'drag' });
+    expect((await gridSnapshot(page)).checksum).not.toBe(before.checksum);
+    await expect(page.locator('#undo-btn')).toContainText(`alignment anchor (${TARGET_ROW})`);
+    await page.click('#undo-btn');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gridAnchors.length === 0);
+    expect((await gridSnapshot(page)).checksum).toBe(before.checksum);
+    await page.click('#redo-btn');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.gridAnchors.length === 1);
+    expect((await fixState(page)).selRefT).toBeCloseTo(REF_ONSETS[2], 9);
+    expect(errors).toEqual([]);
+  });
+
+  test('43.65 score-less ticks follow the snap toggle, and an anchor laid on a detected onset stays on its tick as a perceived attack — a second drag there moves the same anchor', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await dragSelectedTick(page, 30);
+    const laid = (await fixState(page)).gridAnchors[0];
+    await page.click('#fix-snap-target-perceived');
+    const st = await fixState(page);
+    expect(st.snapTarget).toBe('perceived');
+    // The ticks moved to the perceived attacks (the stub's peaks − 30 ms) …
+    const t0 = st.pageTicks[0];
+    expect(t0.refT).toBeCloseTo(REF_ONSETS[0] - 0.03, 9);
+    expect(t0.t).toBeCloseTo(await projectInPage(page, t0.refT), 6);
+    // … and the anchor, laid at the peak, is still its tick's: not a free stem.
+    expect(st.pageTicks[2].anchored).toBe(true);
+    expect(st.freeAnchorsDrawn).toBe(0);
+    // A second drag on that tick moves the SAME anchor, under its stored key.
+    await dragSelectedTick(page, 20);
+    const after = await fixState(page);
+    expect(after.gridAnchors).toHaveLength(1);
+    expect(after.gridAnchors[0].refT).toBeCloseTo(laid.refT, 9);
+    expect(after.gridAnchors[0].t).toBeGreaterThan(laid.t);
+    expect(errors).toEqual([]);
+  });
+
+  test('43.66 re-entry on the same reference takes its onsets from the cache: no second detection, the anchors carried over', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.click('#fix-replay-off');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await dragSelectedTick(page, 30);
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await enterFixOn(page, TARGET_ROW);
+    const st = await fixState(page);
+    expect(st.groupCount).toBe(REF_ONSETS.length);
+    expect(st.gridAnchors).toHaveLength(1);
+    expect(st.pageTicks[0].anchored).toBe(true);
+    const posted = await page.evaluate(() => (window as any).__fixStub.posted);
+    expect(posted.filter((p: any) => p.type === 'fix_ref_onsets')).toHaveLength(1);
+    expect(errors).toEqual([]);
   });
 });

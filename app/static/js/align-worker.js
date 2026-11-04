@@ -1574,6 +1574,31 @@ def fix_begin(ref_audio, midi_bytes_py):
         'midi_duration': midi_dur,
     }
 
+def fix_begin_audio(ref_audio):
+    """Bootstrap a SCORE-LESS correction session: the reference alone, no MIDI
+    and no synth. The target ops (fix_target_*) and the lanes work on top of it
+    unchanged; the tick set comes from fix_ref_onsets."""
+    global _fix
+    ref = np.asarray(ref_audio, dtype=np.float32)
+    _fix = {'ref': ref, 'ref_dur': len(ref) / SR}
+    return {'n_events': 0, 'ref_duration': _fix['ref_dur']}
+
+def fix_ref_onsets():
+    """The reference's detected onsets — the tick set of a score-less session —
+    with one perceived attack per onset (index-aligned). Always at LANE_HOP,
+    never the lane display's configurable hop, so the ticks (and the anchors
+    keyed by their times) do not move when the user re-configures the lanes."""
+    if _fix is None:
+        raise RuntimeError('fix_ref_onsets before fix_begin')
+    ref = _fix['ref']
+    onset = compute_onset_strength(ref, hop=LANE_HOP)
+    peaks = pick_onset_peaks(onset, LANE_HOP)
+    return {
+        'hop': LANE_HOP,
+        'peaks': [float(t) for t in peaks],
+        'pat': [float(t) for t in perceptual_attack_times(ref, peaks, LANE_HOP)],
+    }
+
 def _fix_features(audio, lo_sec, hi_sec, hop):
     """Per-frame L2-normalised chroma for one audio slice at the segment's hop."""
     lo = max(0, int(lo_sec * SR))
@@ -2087,6 +2112,11 @@ async function initPyodide() {
  *   main → worker: "fix_target_dispose"   →   worker → main: "fix_target_disposed"
  *   "fix_lanes" takes which: "ref" | "target" for the audio on the strip.
  *
+ *   Score-less sessions: "fix_begin" with meiMidi null holds the reference
+ *   alone (fix_ready's events: { n_events: 0, ref_duration }); the tick set is
+ *   main → worker: "fix_ref_onsets"
+ *   worker → main: "fix_ref_onsets" { hop, peaks, pat } | "fix_ref_onsets_error" { message }
+ *
  *   (errors at any point) worker → main: "error" { message }
  *
  * Memory discipline: raw PCM is decoded on the main thread, transferred once,
@@ -2262,9 +2292,11 @@ json.dumps(_added)
 import json
 _apply_options()
 _fix_ref_arr = np.frombuffer(_fix_ref_data.to_py(), dtype=np.float32).copy()
-_fix_midi_bytes = bytes(_fix_midi_arg.to_py())
-_fix_events = fix_begin(_fix_ref_arr, _fix_midi_bytes)
-del _fix_ref_arr, _fix_midi_bytes
+if _fix_midi_arg is None:
+    _fix_events = fix_begin_audio(_fix_ref_arr)
+else:
+    _fix_events = fix_begin(_fix_ref_arr, bytes(_fix_midi_arg.to_py()))
+del _fix_ref_arr
 del globals()['_fix_ref_data']
 import gc
 gc.collect()
@@ -2300,6 +2332,22 @@ json.dumps(fix_realign_segment(
 ))
 `);
       self.postMessage({ type: "fix_segment", iA, iB, result: JSON.parse(segJson) });
+      return;
+    }
+
+    if (e.data.type === "fix_ref_onsets") {
+      // A score-less session's tick set. Own error type, like the lanes: a
+      // generic "error" would be claimed by a pending realign.
+      try {
+        const pyodide = await pyodideReady;
+        const json = await pyodide.runPythonAsync(`
+import json
+json.dumps(fix_ref_onsets())
+`);
+        self.postMessage({ type: "fix_ref_onsets", ...JSON.parse(json) });
+      } catch (err) {
+        self.postMessage({ type: "fix_ref_onsets_error", message: err.toString() });
+      }
       return;
     }
 

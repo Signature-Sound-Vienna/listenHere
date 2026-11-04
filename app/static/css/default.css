@@ -7826,6 +7826,15 @@ body.fix-mode-open #mark {
   flex: 0 0 var(--fix-strip-h);
   min-height: 0;
 }
+/* Score-less sessions have no score pane: the strip and its lanes fill it. */
+#fix-mode.fix-scoreless .fix-score,
+#fix-mode.fix-scoreless .fix-gap {
+  display: none;
+}
+#fix-mode.fix-scoreless .fix-strip,
+#fix-mode.fix-scoreless .fix-strip.fix-strip-sized {
+  flex: 1 1 auto;
+}
 /* Handles on the boundaries between visible lanes, above the tick canvas. */
 .fix-lane-handle {
   position: absolute;

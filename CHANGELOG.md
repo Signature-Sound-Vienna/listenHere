@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.110.0 -- Alignments without a score can be corrected
+
+* A score-less alignment opens the correction screen on its recordings alone: the chooser has no score ↔ reference step, and each recording is corrected against the reference.
+* The ticks are the reference recording's detected onsets, or their perceived attacks when the snap toggle says so; an anchor stays on its tick whichever is shown. Pages are about 8 s of reference time, labelled by time instead of page number.
+* There is no score pane; the recording's waveform and lanes take its height. The audition plays the recording alone for now.
+* Anchors in a score-less alignment are stored by reference time only, without event indices.
+* Testing: 41.18 and 43.63–43.66 new, on the score-less fixture `alignment-noscore.json`; the functional suite passes (654, 2 skipped; six timeouts under load passed on a re-run).
+
 ### 0.109.0 -- Annotations in the older flat layout, such as mei-friend's, can be made public
 
 * An annotation whose resources sit directly in their type containers (everything mei-friend posts, and Listen Here's posts before the per-annotation folders) is no longer refused as "posted in the older flat layout": Make public and Make private set an ACL on each of its resources, including the score Selections of a mei-friend annotation, the MusicalMaterial's last when making public. Nothing is moved, so mei-friend still finds them at their addresses.

@@ -3887,4 +3887,29 @@ test.describe('43: score-less correction (B1)', () => {
     expect(s.refPlayhead.x).toBeCloseTo(xOf(inverse), 3);
     expect(errors).toEqual([]);
   });
+
+  test('43.69 the right ear is the reference warped by the stretch worklet: level-matched to the recording, named as such, and handed the new grid after every fix', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    let st = await fixState(page);
+    const w = st.aud.warp;
+    expect(w).not.toBeNull();
+    expect(w.levels.rec).toBeGreaterThan(0);
+    expect(w.levels.ref).toBeGreaterThan(0);
+    expect(w.gain).toBeCloseTo(Math.min(w.levels.peakGain, w.levels.rec / w.levels.ref), 9);
+    await expect(page.locator('#playpause')).toHaveAttribute('title', /right ear: the reference, warped to this recording/);
+    await expect(page.locator('.fix-balance')).toHaveAttribute('title', /right ear: the reference, warped to this recording/);
+    // A fix moves the recording's grid; the worklet gets the new one.
+    const before = w.gridPosts;
+    await page.click('#fix-replay-off');
+    await dragSelectedTick(page, 30);
+    st = await fixState(page);
+    expect(st.aud.warp.gridPosts).toBeGreaterThan(before);
+    expect(errors).toEqual([]);
+  });
 });

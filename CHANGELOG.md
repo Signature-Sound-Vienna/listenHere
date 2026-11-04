@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.113.0 -- Score-less correction plays the reference, warped to the recording, in the right ear
+
+* The audition's right ear is the reference recording played through the alignment: the speed control's stretch worklet gives it its own pitch-preserving grain for each of the recording's, starting where the grids map that grain's centre.
+* A fix, undo, or revert hands the worklet the new grid, which it uses from its next grain; nothing is re-rendered.
+* Where the reference runs more than four times faster or slower than the recording over the surrounding 2 s (a gap, applause, a repeat only one has), the right ear fades out.
+* The right ear is level-matched to the recording, and the transport and balance tooltips name it.
+* Testing: spec 60 new (3: the worklet rendered offline), 43.69 new; the functional suite passes (668, 2 skipped), 0.112.0's changes included. Measured on the fixture's recordings, 77 of 81 reference onsets land in the warped ear within 100 ms of their projected time (median 5 ms); a fix reaches the warped ear about 120 ms after the drag, the realign's time.
+
 ### 0.112.0 -- Score-less correction shows the reference recording above the one being corrected
 
 * The reference recording takes the score pane's place, unwarped, over the page's span of reference time: waveform, spectrogram, and onset curve, resizable like the strip's lanes, and split 50/50 with the strip, whose resized height is remembered apart from score sessions'.

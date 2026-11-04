@@ -1653,6 +1653,48 @@ function _recomputeProjection(f) {
   }
   f.projOn = pOn;
   f.projOff = pOff;
+  // Score-less: the warped right ear follows the same grids from its next grain.
+  const a = f.aud;
+  if (f.scoreless && a?.warp && a.stretch) {
+    a.stretch.port.postMessage({ type: "warpGrid", ..._warpGrids(f), sentAt: a.ctx.currentTime });
+    a.warp.gridPosts++; // test surface
+    a.warp.lastPostAt = performance.now();
+  }
+}
+
+/** The grids the warped right ear maps through, as copies for the worklet. */
+function _warpGrids(f) {
+  return {
+    rg: Float64Array.from(alignmentGrids[f.refFile] || []),
+    tg: Float64Array.from(alignmentGrids[f.targetFile] || []),
+  };
+}
+
+/**
+ * Score-less: the right ear is the reference recording itself, which the
+ * stretch worklet warps onto the recording's time through the live grids
+ * (pitch kept, its own WSOLA grain per channel-0 grain). Level-matched to the
+ * recording by median frame RMS — both ears are recordings, so the gain is
+ * near 1 — and never past the peak clamp. The worklet takes the samples.
+ */
+function _loadWarp(f, a, node) {
+  const ref = f.refEarPcm;
+  f.refEarPcm = null;
+  const recLevel = _medianFrameRms(a.buffer.getChannelData(0));
+  const refLevel = _medianFrameRms(ref);
+  let peak = 0;
+  for (let i = 0; i < ref.length; i++) {
+    const v = ref[i] < 0 ? -ref[i] : ref[i];
+    if (v > peak) peak = v;
+  }
+  const peakGain = peak > 1e-6 ? 0.98 / peak : 1;
+  const gain = refLevel > 0 ? Math.min(peakGain, recLevel / refLevel) : 1;
+  a.warp = { gain, levels: { rec: recLevel, ref: refLevel, peakGain }, gridPosts: 0 };
+  node.port.postMessage({ type: "warp", ref, ..._warpGrids(f), gain }, [ref.buffer]);
+  console.log(
+    `fix mode: warped reference ear — reference ${refLevel.toFixed(4)} RMS, ` +
+      `recording ${recLevel.toFixed(4)} → gain ${gain.toFixed(4)}`,
+  );
 }
 
 /** The onset/offset tables the audition renders from: the live ref tables
@@ -2076,7 +2118,8 @@ function _buildDom(contentEl, waveformsEl) {
   balanceInput.step = "5";
   balanceInput.value = String(Math.round(_audBalance * 100));
   balanceInput.setAttribute("aria-label", "Audition balance (recording ↔ synth)");
-  const balanceR = _sliderIcon("\u{1F4BB}", `Right ear: ${_rightEar()}`);
+  // The synth is a computer; score-less, the right ear is another recording.
+  const balanceR = _sliderIcon(f.scoreless ? "\u{1F399}" : "\u{1F4BB}", `Right ear: ${_rightEar()}`);
   balanceInput.addEventListener("input", () => {
     _audBalance = Number(balanceInput.value) / 100;
     if (_fix?.aud) _applyAudBalance(_fix.aud);
@@ -2523,9 +2566,10 @@ const FIX_TRANSPORT_TITLES = {
   "skip-end": "Next page (Down arrow)",
 };
 
-/** What the audition's right ear carries: the synth, or nothing score-less. */
+/** What the audition's right ear carries: the synth, or score-less the
+ *  reference itself, warped to the recording by the stretch worklet. */
 function _rightEar() {
-  return _fix?.scoreless ? "silent (no score)" : "the aligned synth";
+  return _fix?.scoreless ? "the reference, warped to this recording" : "the aligned synth";
 }
 
 /** Titles displaced by the takeover, restored verbatim at exit. */
@@ -5224,8 +5268,8 @@ async function _onResize() {
  * chunks so a large score never freezes the screen.
  */
 function _buildAudition(f, refSamples) {
-  // Score-less: no synth — the recording alone, its right ear silent until
-  // the warped reference takes that place.
+  // Score-less: no synth. The right ear is the reference, warped by the
+  // stretch worklet (_loadWarp); without the worklet it stays silent.
   if (f.scoreless) return _buildAuditionBuffer(f, refSamples, []);
   const refOff = scoreAlignment.ref_offset;
   if (!Array.isArray(refOff)) {
@@ -5402,6 +5446,9 @@ async function _attachStretch(f, a) {
       const m = e.data;
       if (m.type === "pos") {
         a.workletPos = m.pos;
+        if (m.refPos != null) a.workletWarp = { refPos: m.refPos, gain: m.warpGain };
+      } else if (m.type === "warpAck") {
+        a.warpAck = { deliverMs: m.deliverMs, waitMs: m.waitMs, at: performance.now() }; // test surface
       } else if (m.type === "probe") {
         // What the worklet holds IS what the ear hears; the AudioBuffer beside
         // it can be right while this copy is stale.
@@ -5422,6 +5469,7 @@ async function _attachStretch(f, a) {
       ch0.buffer,
       ch1.buffer,
     ]);
+    if (f.scoreless && f.refEarPcm) _loadWarp(f, a, node);
     node.connect(a.splitter);
     a.stretch = node;
     f.els.speedInput.disabled = false;
@@ -5431,6 +5479,7 @@ async function _attachStretch(f, a) {
       "fix mode: time-stretch worklet unavailable — speed control disabled:",
       err,
     );
+    f.refEarPcm = null; // no warped ear without the worklet
     if (f.els.speedWrap) f.els.speedWrap.hidden = true;
   }
 }
@@ -8475,6 +8524,8 @@ async function _bootstrap() {
   // now — the transfer to the worker below detaches the samples.
   if (f.scoreless) {
     f.refPeaks = { peaks: _peaksFromSamples(refSamples), duration: refSamples.length / FIX_SR };
+    // A copy for the warped right ear, which the stretch worklet then takes.
+    f.refEarPcm = refSamples.slice();
     _scheduleRedraw();
   }
   // Audio mode: the TARGET recording decodes too — it is the strip, the
@@ -8846,6 +8897,16 @@ export function fixTestState() {
           rate: f.aud.rate,
           stretch: !!f.aud.stretch,
           workletPos: f.aud.workletPos,
+          warp: f.aud.warp
+            ? {
+                gain: f.aud.warp.gain,
+                gridPosts: f.aud.warp.gridPosts,
+                lastPostAt: f.aud.warp.lastPostAt ?? null,
+                levels: { ...f.aud.warp.levels },
+              }
+            : null,
+          warpAck: f.aud.warpAck ? { ...f.aud.warpAck } : null,
+          workletWarp: f.aud.workletWarp ? { ...f.aud.workletWarp } : null,
           gainL: f.aud.gainL.gain.value,
           gainR: f.aud.gainR.gain.value,
           levels: f.aud.levels ? { ...f.aud.levels } : null,

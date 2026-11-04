@@ -119,6 +119,12 @@
   /* unplayed wave                */
   --color-waveform-progress: #2d5a7a;
   /* played / progress            */
+  /* Score-less correction's reference pane: a cool scheme per theme, each
+     colour chosen by measurement (CIEDE2000, worst case over normal vision
+     and the three dichromacies) against the theme's waveform, ticks, anchor,
+     selection, and the recording's playhead; >= 3:1 against the ground. */
+  --color-ref-waveform: #1f6b7a;
+  --color-ref-playhead: #169c91;
   --color-waveform-active: rgba(107, 140, 173, 0.10);
   /* active waveform bg */
   --color-waveform-border: #cbd5e1;
@@ -231,6 +237,8 @@
 
   --color-waveform: #4a90a4;
   --color-waveform-progress: #7cc0d0;
+  --color-ref-waveform: #86b6f9;
+  --color-ref-playhead: #2999a3;
   --color-waveform-active: rgba(74, 144, 164, 0.18);
   --color-waveform-border: #334155;
   --color-waveform-tick: #b4bece;
@@ -310,6 +318,8 @@
 
   --color-waveform: #2aa198;
   --color-waveform-progress: #187068;
+  --color-ref-waveform: #235c53;
+  --color-ref-playhead: #08916f;
   --color-waveform-active: rgba(42, 161, 152, 0.12);
   --color-waveform-border: #cdc9b8;
   --color-marker: #dc322f;
@@ -364,6 +374,8 @@
 
   --color-waveform: #8a7340;
   --color-waveform-progress: #5a4920;
+  --color-ref-waveform: #388c94;
+  --color-ref-playhead: #23585c;
   --color-waveform-active: rgba(138, 115, 64, 0.10);
   --color-waveform-border: #c8b99a;
   --color-marker: #b03020;
@@ -418,6 +430,8 @@
 
   --color-waveform: #c07848;
   --color-waveform-progress: #884820;
+  --color-ref-waveform: #089191;
+  --color-ref-playhead: #23585c;
   --color-waveform-active: rgba(192, 120, 72, 0.10);
   --color-waveform-border: #f5c49a;
   --color-marker: #b82020;
@@ -475,6 +489,8 @@
 
   --color-waveform: #50c878;
   --color-waveform-progress: #80e898;
+  --color-ref-waveform: #38948c;
+  --color-ref-playhead: #0df2b9;
   --color-waveform-active: rgba(80, 200, 120, 0.12);
   --color-waveform-border: #44475a;
   --color-waveform-tick: #b0b0d8;
@@ -544,6 +560,8 @@
 
   --color-waveform: #6ab858;
   --color-waveform-progress: #98de80;
+  --color-ref-waveform: #86f9f9;
+  --color-ref-playhead: #09aa9c;
   --color-waveform-active: rgba(106, 184, 88, 0.15);
   --color-waveform-border: #3d6048;
   --color-waveform-tick: #96c882;
@@ -613,6 +631,8 @@
 
   --color-waveform: #5e9ab0;
   --color-waveform-progress: #88c0d0;
+  --color-ref-waveform: #1dc99e;
+  --color-ref-playhead: #999fe5;
   --color-waveform-active: rgba(94, 154, 176, 0.15);
   --color-waveform-border: #4c566a;
   --color-waveform-tick: #aab8ce;
@@ -7898,13 +7918,118 @@ body.fix-mode-open #mark {
   flex: 0 0 var(--fix-strip-h);
   min-height: 0;
 }
-/* Score-less sessions have no score pane: the strip and its lanes fill it. */
-#fix-mode.fix-scoreless .fix-score,
-#fix-mode.fix-scoreless .fix-gap {
+/* Score-less sessions: the reference recording's pane takes the score's slot
+   and splits the height 50/50 with the strip; a resized strip keeps a height
+   of its own, apart from score sessions' (_stripH). */
+#fix-mode.fix-scoreless .fix-score {
+  flex: 1 1 0;
+  min-height: 0;
+  background: none;
+}
+#fix-mode.fix-scoreless .fix-score-scroll {
   display: none;
 }
-#fix-mode.fix-scoreless .fix-strip,
+#fix-mode.fix-scoreless .fix-strip {
+  flex: 1 1 0;
+}
 #fix-mode.fix-scoreless .fix-strip.fix-strip-sized {
+  flex: 0 0 var(--fix-strip-h);
+}
+/* The reference pane: its lanes stop short of the bottom edge, as the strip's
+   do, leaving a gutter for the playhead's arrowhead and the connectors. */
+.fix-ref {
+  position: absolute;
+  inset: 0;
+}
+.fix-ref-lanes {
+  position: absolute;
+  inset: 0 0 12px 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Its lanes in the strip's proportions (10 : 10 : 4) and borders. */
+.fix-ref-wave,
+.fix-ref-spec,
+.fix-ref-onset {
+  display: block;
+  width: 100%;
+  flex: 10 1 0;
+  min-height: 0;
+}
+.fix-ref-spec,
+.fix-ref-onset {
+  border-top: 1px solid var(--color-waveform-border, #cbd5e1);
+}
+.fix-ref-onset {
+  flex: 4 1 0;
+}
+.fix-ref-lanes > canvas[hidden] {
+  display: none;
+}
+/* The reference's ticks over its lanes (the lane handles sit above them). */
+.fix-ref-ticks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 3;
+  cursor: pointer;
+}
+.fix-ref-playhead {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 4;
+  pointer-events: none;
+}
+/* Two recordings on screen: each pane framed in its dominant colour and named
+   on a tab at its top-left, like a legend on the frame. Both sit above the
+   pane's canvases, change no layout, and let every click through. */
+#fix-mode.fix-scoreless .fix-ref {
+  --fix-pane-color: var(--color-ref-waveform);
+}
+#fix-mode.fix-scoreless .fix-strip {
+  --fix-pane-color: var(--color-waveform);
+}
+#fix-mode.fix-scoreless .fix-ref::after,
+#fix-mode.fix-scoreless .fix-strip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--fix-pane-color);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 6;
+}
+.fix-pane-tab {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 7;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 8px 1px 6px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--color-text, #1e293b);
+  background: var(--color-surface, #f8fafc);
+  border: 2px solid var(--fix-pane-color);
+  border-radius: 4px 0 6px 0;
+  pointer-events: none;
+}
+.fix-pane-tab b {
+  font-weight: 600;
+}
+/* Every reference lane switched off: the pane closes, the strip fills. */
+#fix-mode.fix-scoreless.fix-ref-off .fix-score,
+#fix-mode.fix-scoreless.fix-ref-off .fix-gap {
+  display: none;
+}
+#fix-mode.fix-scoreless.fix-ref-off .fix-strip,
+#fix-mode.fix-scoreless.fix-ref-off .fix-strip.fix-strip-sized {
   flex: 1 1 auto;
 }
 /* Handles on the boundaries between visible lanes, above the tick canvas. */
@@ -7943,6 +8068,15 @@ body.fix-mode-open #mark {
 }
 .fix-spec-cfg[hidden] {
   display: none;
+}
+/* Score-less: the Lanes box's two groups, the recording's and the reference's. */
+.fix-nav-subhead {
+  margin: 0.3em 0 0.05em;
+  font-size: var(--font-size-small, 0.8em);
+  color: var(--color-text-muted, #64748b);
+}
+.fix-nav-subhead:first-child {
+  margin-top: 0;
 }
 /* The Correction region's fieldsets (the listening interface's collapsible
    shape): each body a column of rows, each row a flex line. */

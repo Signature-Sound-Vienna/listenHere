@@ -1,5 +1,16 @@
 # Listen Here! CHANGELOG.md
 
+### 0.112.0 -- Score-less correction shows the reference recording above the one being corrected
+
+* The reference recording takes the score pane's place, unwarped, over the page's span of reference time: waveform, spectrogram, and onset curve, resizable like the strip's lanes, and split 50/50 with the strip, whose resized height is remembered apart from score sessions'.
+* Each pane is framed in its dominant colour and named on a tab at its corner: "Reference · file" above, "Recording · file" below.
+* The Lanes box gains a Reference group with a switch per lane, all on by default; with all three off the pane closes and the recording takes the height.
+* Ticks at the reference's onsets join the recording's ticks by connectors, as score notes do; a click on one selects its onset, a click between them seeks the recording to that moment.
+* A reference playhead follows the audition mapped back through the recording's grid, so it moves at warped speed.
+* The reference pane has its own colours per theme (a cool waveform and playhead, a viridis-like spectrogram), each measured against the theme's ticks, anchors, selection, playhead, and waveform, the three colour-vision deficiencies included.
+* The alignment worker runs lanes requests one at a time: two in flight overwrote each other's results, so a quick run of spectrogram settings could paint the wrong data.
+* Testing: 43.67 and 43.68 new, 43.63 updated; specs 41–43 pass (119; timeouts under load passed alone). The functional suite was not run: full runs are on hold while the machine is closed.
+
 ### 0.111.1 -- A score edited since its alignment keeps a correct score row
 
 * When the score's MEI has changed since the alignment was made (a tempo mark over grace notes moves them in quarters), the score row's timing is matched to the fresh MIDI by event position, as long as every event is within 1/8 quarter of its stored onset, instead of falling back to the stored synth tables, which carry the old tempo map.

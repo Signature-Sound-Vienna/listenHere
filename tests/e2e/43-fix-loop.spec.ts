@@ -115,6 +115,7 @@ async function installWorkerStub(
         w.onmessage?.({
           data: {
             type: 'fix_lanes',
+            which: opts.which, // score-less: 'ref' lanes go to the reference pane
             what,
             sr,
             n_mels: nMels,
@@ -214,6 +215,7 @@ async function installWorkerStub(
                   melHop: msg.melHop,
                   nMels: msg.nMels,
                   what: msg.what,
+                  which: msg.which,
                   patShift: o.lanes!.patShift,
                 }),
               5,
@@ -3658,8 +3660,10 @@ test.describe('43: score-less correction (B1)', () => {
       expect(pt.refT).toBeCloseTo(REF_ONSETS[pt.eventIx], 9);
       expect(pt.t).toBeCloseTo(await projectInPage(page, pt.refT), 6);
     }
-    // No score: the pane is gone, its zoom too, and the nav box is "Pages".
-    await expect(page.locator('.fix-score')).toBeHidden();
+    // No score: the reference pane (B2) holds the score's slot, its zoom is
+    // gone, and the nav box is "Pages".
+    await expect(page.locator('.fix-score-scroll')).toBeHidden();
+    await expect(page.locator('.fix-ref-wave')).toBeVisible();
     await expect(page.locator('#fix-score-zoom')).toHaveCount(0);
     await expect(page.locator('#fix-fs-score legend')).toContainText('Pages');
     // The engine began without MIDI and was asked for the reference onsets once.
@@ -3766,6 +3770,121 @@ test.describe('43: score-less correction (B1)', () => {
     expect(st.pageTicks[0].anchored).toBe(true);
     const posted = await page.evaluate(() => (window as any).__fixStub.posted);
     expect(posted.filter((p: any) => p.type === 'fix_ref_onsets')).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+
+  test('43.67 the reference pane holds the reference lanes over a fixed reference window, a tick and a connector per page onset; lanes are asked for both recordings, and switching every reference lane off closes the pane', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    // Lanes for both recordings: the strip's (the target) and the pane's.
+    const posted = await page.evaluate(() => (window as any).__fixStub.posted);
+    expect(
+      posted.filter((p: any) => p.type === 'fix_lanes').map((p: any) => p.which),
+    ).toEqual(['target', 'ref']);
+    await page.evaluate((peaks) => (window as any).__fixStub.sendLanes(peaks, { which: 'target' }), REF_ONSETS);
+    await page.evaluate((peaks) => (window as any).__fixStub.sendLanes(peaks, { which: 'ref' }), REF_ONSETS);
+    await page.waitForFunction(() => {
+      const f = (window as any)._listenTest.fix;
+      return f.refLanes && !f.refLanesPending && f.lanes;
+    });
+    let st = await fixState(page);
+    expect(st.refLanes.melFrames).toBeGreaterThan(0);
+    expect(st.refLaneOn).toEqual({ wave: true, spec: true, onset: true });
+    // Each pane is named on its frame.
+    await expect(page.locator('.fix-pane-tab')).toHaveText([
+      `Reference · ${REF_ROW}`,
+      `Recording · ${TARGET_ROW}`,
+    ]);
+    // The strip's proportions: waveform and spectrogram alike, onsets smaller.
+    expect(Math.abs(st.refLaneHeights.wave - st.refLaneHeights.spec)).toBeLessThanOrEqual(1);
+    expect(st.refLaneHeights.onset).toBeLessThan(st.refLaneHeights.wave);
+    // Page 1's reference onsets (2.0–9.5 s) padded by STRIP_PAD_SEC either side.
+    expect(st.refWindow.t0).toBeCloseTo(0.5, 9);
+    expect(st.refWindow.t1).toBeCloseTo(11.0, 9);
+    // Every lane painted; one tick and one connector per onset on the page.
+    const painted = await page.evaluate(() =>
+      ['.fix-ref-wave', '.fix-ref-spec', '.fix-ref-onset'].map((sel) => {
+        const c = document.querySelector(sel) as HTMLCanvasElement;
+        const d = c.getContext('2d')!.getImageData(0, 0, c.width, c.height).data;
+        let n = 0;
+        for (let i = 3; i < d.length; i += 4) if (d[i] > 10) n++;
+        return n;
+      }),
+    );
+    for (const n of painted) expect(n).toBeGreaterThan(100);
+    expect(st.refTicksDrawn).toBe(16);
+    await expect(page.locator('.fix-connectors polyline')).toHaveCount(16);
+    // A connector starts at its reference tick: refT through the pane's window.
+    const want = await page.evaluate(({ t0, t1, refT }) => {
+      const pane = document.querySelector('.fix-ref')!;
+      const x0 = pane.getBoundingClientRect().x - document.getElementById('fix-mode')!.getBoundingClientRect().x;
+      return x0 + ((refT - t0) * pane.clientWidth) / (t1 - t0);
+    }, { ...st.refWindow, refT: REF_ONSETS[st.selEventIx] });
+    expect(st.selXScore).toBeCloseTo(want, 3);
+    // All three reference lanes off: the pane closes and the strip takes the height.
+    const stripH = st.laneHeights.strip;
+    for (const k of ['wave', 'spec', 'onset']) await page.click(`#fix-ref-lane-${k}`);
+    await expect(page.locator('#fix-mode')).toHaveClass(/fix-ref-off/);
+    await expect(page.locator('.fix-score')).toBeHidden();
+    await expect(page.locator('.fix-connectors polyline')).toHaveCount(0);
+    st = await fixState(page);
+    expect(st.refTicksDrawn).toBe(0);
+    expect(st.laneHeights.strip).toBeGreaterThan(stripH * 1.5);
+    // One back on: the pane returns with its ticks.
+    await page.click('#fix-ref-lane-spec');
+    await expect(page.locator('.fix-score')).toBeVisible();
+    await page.waitForFunction(() => (window as any)._listenTest.fix.refTicksDrawn === 16);
+    expect(errors).toEqual([]);
+  });
+
+  test('43.68 on the reference pane a click on a tick selects its onset, a click between ticks seeks the recording to the projected time, and the reference playhead sits at the inverse projection of the audition position', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const st = await fixState(page);
+    const box = (await page.locator('.fix-ref-ticks').boundingBox())!;
+    // The pane maps through its clientWidth (whole pixels), as the code does.
+    const paneW = await page.evaluate(() => document.querySelector('.fix-ref')!.clientWidth);
+    const xOf = (refT: number) =>
+      ((refT - st.refWindow.t0) * paneW) / (st.refWindow.t1 - st.refWindow.t0);
+    // A tick, hit off-centre within the hit radius.
+    await page.mouse.click(box.x + xOf(REF_ONSETS[3]) + 3, box.y + 30);
+    expect((await fixState(page)).selEventIx).toBe(3);
+    // Between two ticks (4.5 and 5.0 s): a seek, not a selection.
+    await page.mouse.click(box.x + xOf(4.75), box.y + 30);
+    let s = await fixState(page);
+    expect(s.selEventIx).toBe(3);
+    expect(Math.abs(s.lastRefSeek.refT - 4.75)).toBeLessThan(0.02); // a pixel's worth
+    expect(s.lastRefSeek.t).toBeCloseTo(await projectInPage(page, s.lastRefSeek.refT), 6);
+    // The playhead follows the seek: the target time mapped back is the
+    // clicked reference time (a round trip), and the inverse in-page agrees.
+    await page.waitForFunction(() => {
+      const f = (window as any)._listenTest.fix;
+      return f.refPlayhead && Math.abs(f.refPlayhead.t - f.lastRefSeek.t) < 1e-9;
+    });
+    s = await fixState(page);
+    expect(s.refPlayhead.refT).toBeCloseTo(s.lastRefSeek.refT, 6);
+    const inverse = await page.evaluate(
+      ({ t, REF, TGT }) => {
+        const g = (window as any)._listenTest.session.alignmentGrids;
+        const rg: number[] = g[REF];
+        const tg: number[] = g[TGT];
+        let k = tg.findIndex((v) => v >= t);
+        if (k <= 0) k = 1;
+        return rg[k - 1] + ((t - tg[k - 1]) / (tg[k] - tg[k - 1])) * (rg[k] - rg[k - 1]);
+      },
+      { t: s.refPlayhead.t, REF: REF_ROW, TGT: TARGET_ROW },
+    );
+    expect(s.refPlayhead.refT).toBeCloseTo(inverse, 9);
+    expect(s.refPlayhead.x).toBeCloseTo(xOf(inverse), 3);
     expect(errors).toEqual([]);
   });
 });

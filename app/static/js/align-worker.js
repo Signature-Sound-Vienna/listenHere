@@ -2048,6 +2048,50 @@ let pyodideReady = null;
 /** How long the three boot stages took (ms), for the fix-mode arming trail. */
 let bootTiming = null;
 
+/** fix_lanes requests run one at a time: each passes its arguments and its
+ *  result through Python globals across awaits, so a second request in flight
+ *  (the score-less reference's, or a quick run of spectrogram settings) would
+ *  overwrite the first's arrays — the first reply then carried the second's
+ *  data, and the second failed with a NameError. */
+let lanesQueue = Promise.resolve();
+
+/** One fix_lanes request, start to finish; never rejects (the queue goes on). */
+async function runFixLanes(data) {
+  try {
+    const pyodide = await pyodideReady;
+    const { hop, nMels, nFft, window: win, melHop, what, scale, which } = data;
+    pyodide.globals.set("_lanes_hop", hop ?? 512);
+    pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
+    pyodide.globals.set("_lanes_n_fft", nFft ?? 2048);
+    pyodide.globals.set("_lanes_window", win || "hann");
+    pyodide.globals.set("_lanes_mel_hop", melHop ?? hop ?? 512);
+    pyodide.globals.set("_lanes_what", what || "all");
+    pyodide.globals.set("_lanes_scale", scale || "mel");
+    pyodide.globals.set("_lanes_which", which || "ref");
+    const metaJson = await pyodide.runPythonAsync(`
+import json
+_lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels), int(_lanes_n_fft),
+                   str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what),
+                   str(_lanes_scale), str(_lanes_which))
+_lanes_mel = _lanes.pop('mel')
+_lanes_onset = _lanes.pop('onset')
+json.dumps(_lanes)
+`);
+    const meta = JSON.parse(metaJson);
+    const mel = takeBuffer(pyodide, "_lanes_mel", "u8", Uint8Array);
+    const onset =
+      meta.what === "mel"
+        ? null
+        : takeBuffer(pyodide, "_lanes_onset", "f32", Float32Array);
+    await pyodide.runPythonAsync("del _lanes, _lanes_mel, _lanes_onset");
+    const transfer = [mel.buffer];
+    if (onset) transfer.push(onset.buffer);
+    self.postMessage({ type: "fix_lanes", ...meta, mel, onset }, transfer);
+  } catch (err) {
+    self.postMessage({ type: "fix_lanes_error", which: data.which || "ref", message: err.toString() });
+  }
+}
+
 async function initPyodide() {
   const t0 = performance.now();
   reportProgress("Loading Python runtime...", 0);
@@ -2355,39 +2399,10 @@ json.dumps(fix_ref_onsets())
       // The v2 lanes (mel spectrogram, onset curve, onset peaks) for the
       // resident session. Failures post under their OWN type: a generic
       // "error" would be claimed by whatever realign the client has pending.
-      try {
-        const pyodide = await pyodideReady;
-        const { hop, nMels, nFft, window: win, melHop, what, scale, which } = e.data;
-        pyodide.globals.set("_lanes_hop", hop ?? 512);
-        pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
-        pyodide.globals.set("_lanes_n_fft", nFft ?? 2048);
-        pyodide.globals.set("_lanes_window", win || "hann");
-        pyodide.globals.set("_lanes_mel_hop", melHop ?? hop ?? 512);
-        pyodide.globals.set("_lanes_what", what || "all");
-        pyodide.globals.set("_lanes_scale", scale || "mel");
-        pyodide.globals.set("_lanes_which", which || "ref");
-        const metaJson = await pyodide.runPythonAsync(`
-import json
-_lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels), int(_lanes_n_fft),
-                   str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what),
-                   str(_lanes_scale), str(_lanes_which))
-_lanes_mel = _lanes.pop('mel')
-_lanes_onset = _lanes.pop('onset')
-json.dumps(_lanes)
-`);
-        const meta = JSON.parse(metaJson);
-        const mel = takeBuffer(pyodide, "_lanes_mel", "u8", Uint8Array);
-        const onset =
-          meta.what === "mel"
-            ? null
-            : takeBuffer(pyodide, "_lanes_onset", "f32", Float32Array);
-        await pyodide.runPythonAsync("del _lanes, _lanes_mel, _lanes_onset");
-        const transfer = [mel.buffer];
-        if (onset) transfer.push(onset.buffer);
-        self.postMessage({ type: "fix_lanes", ...meta, mel, onset }, transfer);
-      } catch (err) {
-        self.postMessage({ type: "fix_lanes_error", message: err.toString() });
-      }
+      // Queued behind any request still running (see lanesQueue).
+      const run = lanesQueue.then(() => runFixLanes(e.data));
+      lanesQueue = run;
+      await run;
       return;
     }
 
@@ -2397,7 +2412,6 @@ json.dumps(_lanes)
       self.postMessage({ type: "fix_disposed" });
       return;
     }
-
     if (e.data.type === "fix_target_begin") {
       // The audio-to-audio TARGET: a second recording resident beside the
       // reference. Failures post under their own type — a pending realign

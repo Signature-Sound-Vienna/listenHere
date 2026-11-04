@@ -281,6 +281,9 @@ let _replaySuppressed = false;
  *  above. The lane switches also size the strip (see _stripClassName). */
 let _laneSpec = true;
 let _laneOnset = true;
+/** The score-less reference pane's lanes (sticky; all three on by default,
+ *  user 2026-11-04). All three off hides the pane: the strip takes the height. */
+let _refLaneOn = { wave: true, spec: true, onset: true };
 let _snapOnsets = true;
 /** Spectrogram configuration (sticky): FFT size, window, overlap, mel bands. */
 let _specCfg = {
@@ -327,6 +330,21 @@ let _autoAnchor = true;
  *  sticky, and both part of what the prewarm probe must reproduce. */
 let _stripHeightPx = null;
 let _laneWeights = null;
+/** The score-less reference pane's lane weights, sticky like the strip's. */
+let _refLaneWeights = null;
+/** Score-less sessions keep their own strip height: there the strip shares
+ *  the pane 50/50 with the reference, not 15 % with a score. */
+let _scorelessStripHeightPx = null;
+
+/** The sticky strip height of the session kind that is open. */
+function _stripH() {
+  return _fix?.scoreless ? _scorelessStripHeightPx : _stripHeightPx;
+}
+
+function _setStripH(px) {
+  if (_fix?.scoreless) _scorelessStripHeightPx = px;
+  else _stripHeightPx = px;
+}
 /** A running "move to nearest onset" batch: its commits collect into ONE
  *  history entry and replay once at the end. */
 let _batch = null;
@@ -951,6 +969,7 @@ async function _enterScoreless(f, t0) {
   _lastEntry = { usedPrewarm: false, spinnerShown: true, ms: 0 };
   _showFixLoading("Finding the reference's onsets…");
   _buildStrip(_stripSource());
+  f.refPeaks = _peaksSource(f.refFile); // the decode upgrades it (_bootstrap)
   const cached = _refOnsetCache?.file === f.refFile ? _refOnsetCache : null;
   if (cached) f.refOnsets = { peaks: cached.peaks, pat: cached.pat };
   else f.refOnsetsWait = _deferred();
@@ -1594,6 +1613,28 @@ function _refToTarget(refT) {
 }
 
 /**
+ * Target time → reference time through the target's LIVE grid: the inverse of
+ * _refToTarget. A binary search finds the raster interval, the reference
+ * raster is interpolated across it, and beyond the grid the edge slope
+ * extrapolates. A flat stretch of the target grid (the recording holding
+ * still while the reference moves on) maps to its FIRST sample. The
+ * score-less reference playhead reads this; C's right ear will too.
+ */
+function _targetToRef(t) {
+  const f = _fix;
+  if (!Number.isFinite(t) || !f?.targetFile) return t;
+  const rg = alignmentGrids[f.refFile];
+  const tg = alignmentGrids[f.targetFile];
+  if (!rg || !tg || rg.length !== tg.length || rg.length < 2) return t;
+  let k = _lowerBound(tg, t); // first raster index with tg[k] >= t
+  if (k <= 0) k = 1;
+  if (k >= tg.length) k = tg.length - 1;
+  const d = tg[k] - tg[k - 1];
+  if (!(d > 1e-9)) return rg[k - 1]; // flat at an edge: nothing to extrapolate by
+  return rg[k - 1] + ((t - tg[k - 1]) / d) * (rg[k] - rg[k - 1]);
+}
+
+/**
  * Audio mode: every event's onset and offset projected into the target's
  * timeline, refreshed after any change to the target's grid (commit, undo,
  * redo, revert). The audition renders from these tables and the ticks read
@@ -1909,7 +1950,7 @@ function _buildDom(contentEl, waveformsEl) {
   // shown only while the lane is).
   const specCfg = document.createElement("div");
   specCfg.className = "fix-spec-cfg";
-  specCfg.hidden = !_laneSpec;
+  specCfg.hidden = !(_laneSpec || (f.scoreless && _refLaneOn.spec));
   const cfgRow1 = document.createElement("span");
   const cfgRow2 = document.createElement("span");
   cfgRow1.append(
@@ -2122,7 +2163,37 @@ function _buildDom(contentEl, waveformsEl) {
   const fsSnap = fieldset("fix-fs-snap", "Snap to onsets", "Collapse / expand the snap-to-onset controls");
   fsSnap.body.append(snapRow, snapTargetRow);
   const fsLanes = fieldset("fix-fs-lanes", "Lanes", "Collapse / expand the strip's lanes");
-  fsLanes.body.append(specRow, specCfg, onsetRow);
+  if (f.scoreless) {
+    // Two panes, two sets of switches: the recording's (the strip, whose
+    // waveform always shows) and the reference's, any of whose lanes may go.
+    const subhead = (text) => {
+      const d = document.createElement("div");
+      d.className = "fix-nav-subhead";
+      d.textContent = text;
+      return d;
+    };
+    const refRow = (k, label, what) =>
+      _navCheckbox(
+        `fix-ref-lane-${k}`,
+        label,
+        `Show the reference recording's ${what} in the upper pane — with all ` +
+          "three off the pane closes and the recording takes the height",
+        _refLaneOn[k],
+        (on) => _setRefLane(k, on),
+      )[0];
+    fsLanes.body.append(
+      subhead("Recording"),
+      specRow,
+      onsetRow,
+      subhead("Reference"),
+      refRow("wave", "Waveform", "waveform"),
+      refRow("spec", "Spectrogram", "mel spectrogram"),
+      refRow("onset", "Onset curve", "onset-strength curve"),
+      specCfg, // one configuration for both panes' spectrograms
+    );
+  } else {
+    fsLanes.body.append(specRow, specCfg, onsetRow);
+  }
   // Undo, redo, revert, and Save data are NOT listen-mode controls that
   // happen to sit in the nav — a correction session needs every one of them
   // (undo is unified onto listen.js's stack by ruling, and an unsaveable
@@ -2243,11 +2314,51 @@ function _buildDom(contentEl, waveformsEl) {
   score.appendChild(scoreScroll);
   scoreSvg.addEventListener("click", (e) => _onScoreClick(e));
   scoreScroll.addEventListener("scroll", () => _onScoreScroll(), { passive: true });
+  // Score-less: the reference recording's own lanes take the score's slot,
+  // unwarped, over the page's reference-time window (canvases only — the pane
+  // never scrolls on its own, so it needs no WaveSurfer).
+  let refEls = {};
+  if (f.scoreless) {
+    const ref = document.createElement("div");
+    ref.className = "fix-ref";
+    const refLanes = document.createElement("div");
+    refLanes.className = "fix-ref-lanes";
+    const refWave = document.createElement("canvas");
+    refWave.className = "fix-ref-wave";
+    const refSpec = document.createElement("canvas");
+    refSpec.className = "fix-ref-spec";
+    const refOnset = document.createElement("canvas");
+    refOnset.className = "fix-ref-onset";
+    refLanes.append(refWave, refSpec, refOnset);
+    // Ticks at the reference onsets, over the lanes. They select, never
+    // drag (that is the recording's); a click off them seeks.
+    const refTicks = document.createElement("canvas");
+    refTicks.className = "fix-ref-ticks";
+    refTicks.addEventListener("click", (e) => _onRefClick(e));
+    const refPlayhead = document.createElement("canvas");
+    refPlayhead.className = "fix-ref-playhead";
+    ref.append(refLanes, refTicks, refPlayhead);
+    // The same handles as the strip's, between neighbouring visible lanes.
+    const refLaneHandles = [0, 1].map(() => {
+      const h = document.createElement("div");
+      h.className = "fix-lane-handle";
+      h.dataset.stack = "ref";
+      h.title = "Drag to resize the reference's lanes; double-click to reset";
+      h.addEventListener("pointerdown", (e) => _onLaneHandlePointerDown(e, h));
+      h.addEventListener("dblclick", () => _resetLaneWeights("ref"));
+      ref.append(h);
+      return h;
+    });
+    score.append(ref);
+    refEls = { ref, refLanes, refWave, refSpec, refOnset, refTicks, refPlayhead, refLaneHandles };
+    _applyRefLaneSwitches(root, refEls);
+    _applyLaneWeights(refEls, "ref");
+  }
 
   // The gap doubles as the handle that drags the lane stack against the score.
   const gap = document.createElement("div");
   gap.className = "fix-gap";
-  gap.title = "Drag to resize the lanes against the score; double-click to reset";
+  gap.title = `Drag to resize the lanes against the ${f.scoreless ? "reference" : "score"}; double-click to reset`;
   gap.addEventListener("pointerdown", (e) => _onGapPointerDown(e));
   gap.addEventListener("dblclick", () => _resetStripHeight());
 
@@ -2311,6 +2422,24 @@ function _buildDom(contentEl, waveformsEl) {
   skipPrev.addEventListener("click", () => _skipOnset(-1));
   skipNext.addEventListener("click", () => _skipOnset(1));
   strip.append(lanes, ticks, playhead, handleA, handleB, skipPrev, skipNext);
+  // Score-less: two recordings on screen, each framed in its own colour and
+  // named on a tab, so the one being aligned and its reference never blur.
+  if (f.scoreless) {
+    const tab = (role, file) => {
+      const t = document.createElement("div");
+      t.className = "fix-pane-tab";
+      const b = document.createElement("b");
+      b.textContent = role;
+      t.append(b, ` · ${file}`);
+      t.title =
+        role === "Reference"
+          ? `The reference recording, ${file}, unwarped: the recording below is aligned to it`
+          : `The recording being aligned, ${file}: drag its ticks onto the onsets they belong to`;
+      return t;
+    };
+    refEls.ref.append(tab("Reference", f.refFile));
+    strip.append(tab("Recording", f.targetFile));
+  }
 
   // Connector overlay spans the whole fix container so a polyline can run
   // from a note in the score pane down across the gap into the strip.
@@ -2340,6 +2469,7 @@ function _buildDom(contentEl, waveformsEl) {
     navRegion,
     scoreEl: score,
     scoreSvg,
+    ...refEls,
     gap,
     scoreScroll,
     zoomSel,
@@ -2626,6 +2756,7 @@ function _renderPage(page) {
     f.els.pageLabel.textContent = on.length
       ? `${_fmtClock(Math.min(...on))}–${_fmtClock(Math.max(...on))} · ${page} / ${f.pageCount}`
       : `${page} / ${f.pageCount}`;
+    f.refWindow = _refPageWindow();
     _updateStripWindow();
     _scheduleRedraw();
     _schedulePlayheadFrame();
@@ -2782,13 +2913,19 @@ function _turnPage(delta) {
 // The strip (peaks-only WaveSurfer, the exhibit's proven pattern)
 // ---------------------------------------------------------------------------
 
-/** Best available peaks + duration for the reference recording. */
+/** Best available peaks + duration for the strip's recording. */
 function _stripSource() {
-  const pk = waveformPeaks[_fix.stripFile];
+  return _peaksSource(_fix.stripFile);
+}
+
+/** Best available peaks + duration for a recording before its decode: the
+ *  stored envelope, else its listening WaveSurfer's. */
+function _peaksSource(file) {
+  const pk = waveformPeaks[file];
   if (pk?.peaks?.length && pk?.duration) {
     return { peaks: pk.peaks, duration: pk.duration };
   }
-  const ws = wavesurfers[_fix.stripFile];
+  const ws = wavesurfers[file];
   if (ws) {
     try {
       const duration = ws.getDuration();
@@ -2876,17 +3013,33 @@ function _pageTimes(page) {
  * page's last bar on the next).
  */
 function _pageWindow() {
+  return _paddedPageWindow(_pageTimes, _fix.stripSource?.duration || 0);
+}
+
+/**
+ * Score-less: the same window in REFERENCE time, for the reference pane. Set
+ * once per page (_renderPage) and held: the reference is never warped, so
+ * nothing on it moves out of the window while the page is open.
+ */
+function _refPageWindow() {
+  const refTimes = (page) =>
+    _groupsOnPage(page)
+      .map((g) => _groupRefT(g))
+      .filter((t) => Number.isFinite(t));
+  return _paddedPageWindow(refTimes, _fix.refPeaks?.duration || 0);
+}
+
+function _paddedPageWindow(timesOf, duration) {
   const f = _fix;
-  const times = _pageTimes(f.page);
-  const duration = f.stripSource?.duration || 0;
+  const times = timesOf(f.page);
   if (!times.length) return { t0: 0, t1: duration || 1 };
   let t0 = Math.min(...times);
   let t1 = Math.max(...times);
   const pad = Math.max(STRIP_PAD_SEC, (t1 - t0) * STRIP_PAD_FRAC);
   t0 -= pad;
   t1 += pad;
-  const prev = f.page > 1 ? _pageTimes(f.page - 1) : [];
-  const next = f.page < f.pageCount ? _pageTimes(f.page + 1) : [];
+  const prev = f.page > 1 ? timesOf(f.page - 1) : [];
+  const next = f.page < f.pageCount ? timesOf(f.page + 1) : [];
   if (prev.length) t0 = Math.min(t0, Math.max(...prev) - STRIP_NEIGHBOUR_SEC);
   if (next.length) t1 = Math.max(t1, Math.min(...next) + STRIP_NEIGHBOUR_SEC);
   return { t0, t1 };
@@ -3025,8 +3178,37 @@ function _setLane(which, on) {
   _applyStripSizing(f.els.strip);
   f.els.laneSpec.hidden = !_laneSpec;
   f.els.laneOnset.hidden = !_laneOnset;
-  f.els.specCfg.hidden = !_laneSpec;
+  _syncSpecCfgShown(f);
   _buildStrip(f.stripSource);
+  _scheduleRedraw();
+}
+
+/** The spectrogram settings show while any spectrogram lane does. */
+function _syncSpecCfgShown(f) {
+  f.els.specCfg.hidden = !(_laneSpec || (f.scoreless && _refLaneOn.spec));
+}
+
+/** The reference pane's lane switches onto its elements; with all three off
+ *  the pane (and the gap handle) goes and the strip takes the height. */
+function _applyRefLaneSwitches(root, els) {
+  for (const [el, k] of _stackLanes(els, "ref")) el.hidden = !_refLaneOn[k];
+  root.classList.toggle("fix-ref-off", !Object.values(_refLaneOn).some(Boolean));
+}
+
+/** A reference-pane lane switch (score-less sessions). */
+function _setRefLane(which, on) {
+  _refLaneOn = { ..._refLaneOn, [which]: on };
+  const f = _fix;
+  if (!f?.els.ref) return;
+  const paneWas = !f.els.root.classList.contains("fix-ref-off");
+  _applyRefLaneSwitches(f.els.root, f.els);
+  _syncSpecCfgShown(f);
+  if (paneWas !== !f.els.root.classList.contains("fix-ref-off")) {
+    // The strip's height changed with the pane: its WaveSurfer sizes itself
+    // at creation (the observer stands down on a zero-sized pane).
+    _buildStrip(f.stripSource);
+    _refitStrip();
+  }
   _scheduleRedraw();
 }
 
@@ -3038,7 +3220,7 @@ function _setSpecCfg(patch) {
   if (!f) return;
   const displayOnly = Object.keys(patch).every((k) => k === "labels");
   if (displayOnly) {
-    if (f.lanes) f.lanes.lastKey = null; // repaint the lane, no recompute
+    for (const L of [f.lanes, f.refLanes]) if (L) L.lastKey = null; // repaint, no recompute
     _scheduleRedraw();
   } else if (f.engineReady) {
     _requestLanes(f, "mel");
@@ -3056,17 +3238,31 @@ function _melHop() {
 function _requestLanes(f, what) {
   f.lanesPending = true;
   _scheduleRedraw(); // the spectrogram shows its busy state
-  _ensureWorker().postMessage({
-    type: "fix_lanes",
-    what,
-    which: f.mode === "audio" ? "target" : "ref", // the audio on the strip
-    hop: LANE_HOP,
-    nMels: _specCfg.nMels,
-    nFft: _specCfg.nFft,
-    window: _specCfg.window,
-    scale: _specCfg.scale,
-    melHop: _melHop(),
-  });
+  const post = (which) =>
+    _ensureWorker().postMessage({
+      type: "fix_lanes",
+      what,
+      which,
+      hop: LANE_HOP,
+      nMels: _specCfg.nMels,
+      nFft: _specCfg.nFft,
+      window: _specCfg.window,
+      scale: _specCfg.scale,
+      melHop: _melHop(),
+    });
+  post(f.mode === "audio" ? "target" : "ref"); // the audio on the strip
+  // Score-less: the reference pane's lanes too, whichever are showing, so a
+  // lane switched on later has its data at once.
+  if (f.scoreless) {
+    f.refLanesPending = true;
+    post("ref");
+  }
+}
+
+/** Whether a fix_lanes reply (or its error) is the score-less reference
+ *  pane's rather than the strip's. */
+function _isRefLanesReply(f, d) {
+  return f.mode === "audio" && d.which === "ref";
 }
 
 // --- Score zoom-and-scroll (fit | fill width | fill height | percent) ---
@@ -3224,25 +3420,35 @@ function _warmRuntime() {
 /** The strip's classes and (when the user resized it) its fixed height. Both
  *  _buildDom and the prewarm probe go through here — see _stripClassName. */
 function _applyStripSizing(el) {
-  el.className = _stripClassName() + (_stripHeightPx ? " fix-strip-sized" : "");
-  if (_stripHeightPx) el.style.setProperty("--fix-strip-h", `${Math.round(_stripHeightPx)}px`);
+  const px = _stripH();
+  el.className = _stripClassName() + (px ? " fix-strip-sized" : "");
+  if (px) el.style.setProperty("--fix-strip-h", `${Math.round(px)}px`);
   else el.style.removeProperty("--fix-strip-h");
 }
 
-/** User lane weights as inline flex-grow (px-proportional); none = CSS. */
-function _applyLaneWeights(els) {
-  const w = _laneWeights;
-  els.stripWs.style.flexGrow = w ? String(w.wave) : "";
-  els.laneSpec.style.flexGrow = w ? String(w.spec) : "";
-  els.laneOnset.style.flexGrow = w ? String(w.onset) : "";
+/** User lane weights as inline flex-grow (px-proportional); none = CSS. A
+ *  stack is the strip's lanes or the score-less reference pane's. */
+function _applyLaneWeights(els, stack = "strip") {
+  const w = stack === "ref" ? _refLaneWeights : _laneWeights;
+  for (const [el, k] of _stackLanes(els, stack)) el.style.flexGrow = w ? String(w[k]) : "";
 }
 
-function _visibleLanes(f) {
-  return [
-    [f.els.stripWs, "wave"],
-    [f.els.laneSpec, "spec"],
-    [f.els.laneOnset, "onset"],
-  ].filter(([el]) => !el.hidden);
+function _stackLanes(els, stack = "strip") {
+  return stack === "ref"
+    ? [
+        [els.refWave, "wave"],
+        [els.refSpec, "spec"],
+        [els.refOnset, "onset"],
+      ]
+    : [
+        [els.stripWs, "wave"],
+        [els.laneSpec, "spec"],
+        [els.laneOnset, "onset"],
+      ];
+}
+
+function _visibleLanes(f, stack = "strip") {
+  return _stackLanes(f.els, stack).filter(([el]) => !el.hidden);
 }
 
 /** The spectrogram's busy state: a pending RECOMPUTE (a configuration change)
@@ -3272,9 +3478,9 @@ function _setRealignBusy(f, on) {
 }
 
 /** One handle per boundary between visible lanes, on that boundary. */
-function _layoutLaneHandles(f) {
-  const vis = _visibleLanes(f);
-  f.els.laneHandles.forEach((h, k) => {
+function _layoutLaneHandles(f, stack = "strip") {
+  const vis = _visibleLanes(f, stack);
+  (stack === "ref" ? f.els.refLaneHandles : f.els.laneHandles).forEach((h, k) => {
     const upper = vis[k];
     const lower = vis[k + 1];
     if (!upper || !lower) {
@@ -3313,16 +3519,19 @@ function _onLaneHandlePointerDown(e, h) {
   const f = _fix;
   if (!f || e.button !== 0 || h.hidden || f.resizing) return;
   e.preventDefault();
+  const stack = h.dataset.stack || "strip";
   const heights = {};
-  for (const [el, k] of _visibleLanes(f)) heights[k] = el.clientHeight;
+  for (const [el, k] of _visibleLanes(f, stack)) heights[k] = el.clientHeight;
   if (!(h.dataset.upper in heights) || !(h.dataset.lower in heights)) return;
   f.resizing = {
     kind: "lanes",
+    stack,
     startY: e.clientY,
     upper: h.dataset.upper,
     lower: h.dataset.lower,
     heights,
-    ..._wsHostAtDragStart(f),
+    // The reference pane is canvases only: no WaveSurfer to scale and rebuild.
+    ...(stack === "ref" ? {} : _wsHostAtDragStart(f)),
     moved: false,
     onMove: (ev) => _onResizeMove(ev),
     onUp: (ev) => _onResizeUp(ev),
@@ -3338,21 +3547,23 @@ function _onResizeMove(e) {
   const dy = e.clientY - r.startY;
   if (Math.abs(dy) >= 1) r.moved = true;
   if (r.kind === "strip") {
-    _stripHeightPx = Math.min(r.maxH, Math.max(r.minH, r.startH - dy));
+    _setStripH(Math.min(r.maxH, Math.max(r.minH, r.startH - dy)));
     _applyStripSizing(f.els.strip);
   } else {
     const total = r.heights[r.upper] + r.heights[r.lower];
     const up = Math.min(total - LANE_MIN_PX, Math.max(LANE_MIN_PX, r.heights[r.upper] + dy));
     // Pixels as weights: every visible lane keeps its height, the two
     // neighbours trade; a hidden lane keeps a default-proportioned weight.
-    const w = { ...(_laneWeights || {}) };
+    const ref = r.stack === "ref";
+    const w = { ...((ref ? _refLaneWeights : _laneWeights) || {}) };
     for (const k of Object.keys(r.heights)) w[k] = r.heights[k];
     w[r.upper] = up;
     w[r.lower] = total - up;
     const def = { wave: 10, spec: 10, onset: 4 };
     for (const k of Object.keys(def)) if (w[k] == null) w[k] = (def[k] * total) / 24;
-    _laneWeights = w;
-    _applyLaneWeights(f.els);
+    if (ref) _refLaneWeights = w;
+    else _laneWeights = w;
+    _applyLaneWeights(f.els, r.stack);
   }
   // The lanes are canvases repainted per frame; the WaveSurfer is sized at
   // creation and rebuilt on release. Until then, scale its host to the
@@ -3381,7 +3592,7 @@ function _onResizeUp() {
   if (!r) return;
   _endResize(f);
   if (!r.moved) return;
-  _buildStrip(f.stripSource); // a WaveSurfer sizes itself at creation
+  if (r.stack !== "ref") _buildStrip(f.stripSource); // a WaveSurfer sizes itself at creation
   // The score pane moved: the LIGHT re-fit (the observer stood down during
   // the drag, and the CSS fit has already sized the page — no relayout).
   if (r.kind === "strip") _refitScorePane();
@@ -3397,7 +3608,7 @@ function _endResize(f) {
 }
 
 function _resetStripHeight() {
-  _stripHeightPx = null;
+  _setStripH(null);
   const f = _fix;
   if (!f) return;
   _applyStripSizing(f.els.strip);
@@ -3405,17 +3616,20 @@ function _resetStripHeight() {
   _refitScorePane();
 }
 
-function _resetLaneWeights() {
-  _laneWeights = null;
+function _resetLaneWeights(stack = "strip") {
+  if (stack === "ref") _refLaneWeights = null;
+  else _laneWeights = null;
   const f = _fix;
   if (!f) return;
-  _applyLaneWeights(f.els);
-  _buildStrip(f.stripSource);
+  _applyLaneWeights(f.els, stack);
+  if (stack !== "ref") _buildStrip(f.stripSource);
   _scheduleRedraw();
 }
 
-/** Keep the worker's lanes for the session, derive the display curve, paint. */
+/** Keep the worker's lanes for the session, derive the display curve, paint.
+ *  Score-less sessions keep the reference pane's apart, in f.refLanes. */
 function _installLanes(f, d) {
+  const slot = _isRefLanesReply(f, d) ? "refLanes" : "lanes";
   const melPart = {
     sr: d.sr,
     nMels: d.n_mels,
@@ -3432,12 +3646,12 @@ function _installLanes(f, d) {
     scratch: null,
     lastKey: null,
   };
-  if (d.what === "mel" && f.lanes) {
+  if (d.what === "mel" && f[slot]) {
     // A configuration change: the onset lane and its peaks are kept.
-    f.lanes = { ...f.lanes, ...melPart };
+    f[slot] = { ...f[slot], ...melPart };
   } else {
     const onset = d.onset || new Float32Array(0);
-    f.lanes = {
+    f[slot] = {
       ...melPart,
       onsetHop: d.onset_hop,
       onsetFrames: d.onset_frames ?? onset.length,
@@ -3451,8 +3665,13 @@ function _installLanes(f, d) {
       pat: Float64Array.from(d.pat || []),
     };
   }
-  f.lanesError = null;
-  f.lanesPending = false;
+  if (slot === "refLanes") {
+    f.refLanesError = null;
+    f.refLanesPending = false;
+  } else {
+    f.lanesError = null;
+    f.lanesPending = false;
+  }
   _scheduleRedraw();
 }
 
@@ -3475,8 +3694,7 @@ let _melLutCache = null;
 /** A 256-entry RGBA ramp (inferno-like), fading to transparent below the knee
  *  so the theme's ground shows through the quiet parts, light or dark. */
 function _melLut() {
-  if (_melLutCache) return _melLutCache;
-  const stops = [
+  _melLutCache ||= _rampLut([
     [0.0, 0, 0, 4],
     [0.13, 31, 12, 72],
     [0.25, 85, 15, 109],
@@ -3486,7 +3704,29 @@ function _melLut() {
     [0.75, 249, 140, 10],
     [0.88, 249, 201, 50],
     [1.0, 252, 255, 164],
-  ];
+  ]);
+  return _melLutCache;
+}
+
+let _refMelLutCache = null;
+/** The score-less reference pane's ramp: viridis-like, the cool counterpart
+ *  of the recording's, with the same fade to transparent. */
+function _refMelLut() {
+  _refMelLutCache ||= _rampLut([
+    [0.0, 68, 1, 84],
+    [0.125, 71, 44, 122],
+    [0.25, 59, 82, 139],
+    [0.375, 44, 113, 142],
+    [0.5, 33, 145, 140],
+    [0.625, 39, 173, 129],
+    [0.75, 92, 200, 99],
+    [0.875, 170, 220, 50],
+    [1.0, 253, 231, 37],
+  ]);
+  return _refMelLutCache;
+}
+
+function _rampLut(stops) {
   const lut = new Uint8ClampedArray(256 * 4);
   for (let v = 0; v < 256; v++) {
     const x = v / 255;
@@ -3500,7 +3740,6 @@ function _melLut() {
     lut[v * 4 + 2] = b0 + (b1 - b0) * u;
     lut[v * 4 + 3] = Math.min(1, x / LANE_ALPHA_KNEE) * 255;
   }
-  _melLutCache = lut;
   return lut;
 }
 
@@ -3523,14 +3762,243 @@ function _paintLanes() {
     if (el.width !== w) el.width = w;
     if (el.height !== h) el.height = h;
     const ctx = el.getContext("2d");
-    if (!L || !f.stripWS || !f.stripPps) {
+    const view = L ? _stripView() : null;
+    if (!view) {
       ctx.clearRect(0, 0, w, h);
       _paintLanePlaceholder(ctx, w, h, kind, f.lanesError);
       continue;
     }
-    if (kind === "spec") _paintSpectrogram(ctx, L, w, h);
-    else _paintOnsetLane(ctx, L, w, h);
+    if (kind === "spec") _paintSpectrogram(ctx, L, w, h, view);
+    else _paintOnsetLane(ctx, L, w, h, view);
   }
+}
+
+/**
+ * What a lane painter draws through: the time ↔ x mapping, the repaint key
+ * that mapping implies, and what the lane overlays. The strip's view reads
+ * its WaveSurfer's zoom and scroll; the score-less reference pane builds its
+ * own over a fixed window, so one set of painters serves both.
+ */
+function _laneView(left, pps, extra) {
+  return {
+    xToTime: (x) => (x + left) / pps,
+    timeToX: (t) => t * pps - left,
+    key: `${left}|${pps}`,
+    marks: [], // onset marks hanging from the onset lane's top
+    snapT: null, // the onset a drag is snapped to, ringed
+    specEl: null, // the spectrogram canvas (its Hz labels dodge avoidEl)
+    avoidEl: null,
+    fill: null, // the onset curve's fill; null = the theme's waveform colour
+    lut: null, // the spectrogram's ramp; null = the recording's (_melLut)
+    ...extra,
+  };
+}
+
+/** The strip's view, or null before its WaveSurfer has a zoom. */
+function _stripView() {
+  const f = _fix;
+  if (!f.stripWS || !f.stripPps) return null;
+  const scrollEl = f.stripWS.getWrapper().parentElement;
+  return _laneView(scrollEl.scrollLeft, f.stripPps, {
+    marks: _snapTargetList() || [],
+    snapT: f.drag?.snapT ?? null,
+    specEl: f.els.laneSpec,
+    avoidEl: f.els.strip.querySelector(".fix-onset-prev"),
+  });
+}
+
+/** The score-less reference pane's view: the page's reference window across
+ *  the pane's width, or null before the page has one. */
+function _refView() {
+  const f = _fix;
+  const win = f.refWindow;
+  const w = f.els.ref?.clientWidth;
+  if (!win || !w) return null;
+  const pps = w / Math.max(win.t1 - win.t0, 0.5);
+  return _laneView(win.t0 * pps, pps, {
+    specEl: f.els.refSpec,
+    fill: _refWaveColor(),
+    lut: _refMelLut(),
+  });
+}
+
+function _refWaveColor() {
+  return (
+    getComputedStyle(document.documentElement).getPropertyValue("--color-ref-waveform").trim() ||
+    "#2a9d9f"
+  );
+}
+
+/** Paint the score-less reference pane's lanes through its view. The onset
+ *  lane carries no marks: the pane's ticks stand at those very onsets. */
+function _paintRefPane() {
+  const f = _fix;
+  if (!f?.els.ref) return;
+  _layoutLaneHandles(f, "ref");
+  const view = _refView();
+  const L = f.refLanes;
+  for (const [el, kind] of _visibleLanes(f, "ref")) {
+    const w = el.clientWidth;
+    const h = el.clientHeight;
+    if (!w || !h) continue;
+    if (el.width !== w) el.width = w;
+    if (el.height !== h) el.height = h;
+    const ctx = el.getContext("2d");
+    if (kind === "wave") {
+      ctx.clearRect(0, 0, w, h);
+      if (view && f.refPeaks) _paintPeaksLane(ctx, f.refPeaks, w, h, view, view.fill);
+    } else if (!L || !view) {
+      ctx.clearRect(0, 0, w, h);
+      _paintLanePlaceholder(ctx, w, h, kind, f.refLanesError);
+    } else if (kind === "spec") {
+      _paintSpectrogram(ctx, L, w, h, view);
+    } else {
+      _paintOnsetLane(ctx, L, w, h, view);
+    }
+  }
+  _paintRefTicks(f, view);
+}
+
+/**
+ * The reference pane's ticks: one per onset of the page at its reference time
+ * (the snap toggle's estimator), in the strip's colours — anchored, active,
+ * multi-selected — but without the anchor glyphs, which are laid and lifted on
+ * the recording. Each page group's xScore (root coordinates) is set here: the
+ * connector to its strip tick starts there, as a score note's does.
+ */
+function _paintRefTicks(f, view) {
+  const c = f.els.refTicks;
+  // The pane's size, not the canvas's own: a positioned canvas keeps its
+  // intrinsic width whatever its insets say.
+  const w = f.els.ref.clientWidth;
+  const h = f.els.ref.clientHeight;
+  if (c.width !== w) c.width = w;
+  if (c.height !== h) c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  for (const g of f.groups) g.xScore = null;
+  f.refTicksDrawn = 0; // test surface
+  if (!view || !w || f.els.root.classList.contains("fix-ref-off")) return;
+  const lb = f.els.refLanes.offsetHeight; // the ticks stop where the lanes do
+  const rootX = c.getBoundingClientRect().x - f.els.root.getBoundingClientRect().x;
+  const style = getComputedStyle(document.documentElement);
+  const tickColor = style.getPropertyValue("--color-alignment").trim() || "rgb(140,90,90)";
+  const anchorColor = style.getPropertyValue("--color-alignment-anchor").trim() || "#4e1ca8";
+  const selColor = style.getPropertyValue("--color-alignment-selected").trim() || "#ffa500";
+  const selGroup = f.groups[f.selGroupIx] || null;
+  const dragGroup = f.drag?.moved ? f.groups[f.drag.groupIx] : null;
+  for (const g of _groupsOnPage(f.page)) {
+    const x = view.timeToX(_groupRefT(g));
+    if (!Number.isFinite(x) || x < -1 || x > w + 1) continue;
+    g.xScore = rootX + x;
+    const active = g === selGroup || g === dragGroup;
+    const multi = f.multiSel.size > 0 && f.multiSel.has(f.groups.indexOf(g));
+    const anchored = !!_groupTargetAnchor(g);
+    const col = anchored ? anchorColor : tickColor;
+    if (active) {
+      // Cased, as on the strip: orange alone vanishes over the warm ramp.
+      ctx.beginPath();
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = "#000";
+      ctx.globalAlpha = 0.7;
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, lb);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.lineWidth = active ? 2.5 : anchored || multi ? 2 : 1;
+    ctx.strokeStyle = active ? selColor : col;
+    ctx.globalAlpha = active || multi ? 0.95 : anchored ? 0.8 : 0.35;
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, lb);
+    ctx.stroke();
+    if (g === selGroup) {
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = selColor;
+      ctx.fillRect(x - 5, 0, 10, 3);
+    } else if (multi) {
+      ctx.globalAlpha = 0.95;
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = col;
+      ctx.strokeRect(x - 4.5, 0.75, 9, 2.5);
+    }
+    f.refTicksDrawn++;
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** A click on the reference pane: on a tick (within the strip's hit radius)
+ *  it selects that onset as a click on a score note does; elsewhere it seeks
+ *  the audition to where that reference moment falls in the recording. */
+function _onRefClick(e) {
+  const f = _fix;
+  if (!f) return;
+  _commitPendingNudge();
+  const view = _refView();
+  if (!view) return;
+  const x = e.clientX - f.els.refTicks.getBoundingClientRect().x;
+  let best = -1;
+  let bestDist = TICK_HIT_PX + 1;
+  for (const g of _groupsOnPage(f.page)) {
+    const d = Math.abs(view.timeToX(_groupRefT(g)) - x);
+    if (d < bestDist) {
+      bestDist = d;
+      best = f.groups.indexOf(g);
+    }
+  }
+  if (best !== -1) {
+    _clickGroup(best, e.shiftKey);
+    return;
+  }
+  f.lastRefSeek = { refT: view.xToTime(x), t: _refToTarget(view.xToTime(x)) }; // test surface
+  _audSeek(f.lastRefSeek.t);
+  _schedulePlayheadFrame();
+}
+
+/**
+ * A peaks envelope mirrored about the lane's middle, one column per pixel, at
+ * the strip WaveSurfer's unnormalised scale (amplitude 1 fills half the
+ * height) so the two waveforms read alike. Zoomed in past a pixel per peak
+ * the envelope runs through the peak centres, as WaveSurfer's line does,
+ * rather than stepping. Stored peaks may be signed.
+ */
+function _paintPeaksLane(ctx, src, w, h, view, color) {
+  const { peaks, duration } = src;
+  const n = peaks.length;
+  if (!n || !duration) return;
+  const perSec = n / duration;
+  const mid = h / 2;
+  const xs = [];
+  const amp = [];
+  const pxPerPeak = (view.timeToX(1) - view.timeToX(0)) / perSec;
+  if (pxPerPeak > 1) {
+    const a = Math.max(0, Math.floor(view.xToTime(0) * perSec) - 1);
+    const b = Math.min(n, Math.ceil(view.xToTime(w) * perSec) + 1);
+    for (let i = a; i < b; i++) {
+      xs.push(view.timeToX((i + 0.5) / perSec));
+      amp.push(Math.min(1, Math.abs(peaks[i])) * mid);
+    }
+  } else {
+    for (let x = 0; x < w; x++) {
+      const a = Math.max(0, Math.floor(view.xToTime(x) * perSec));
+      const b = Math.min(n, Math.max(a + 1, Math.floor(view.xToTime(x + 1) * perSec)));
+      let m = 0;
+      for (let i = a; i < b; i++) {
+        const v = Math.abs(peaks[i]);
+        if (v > m) m = v;
+      }
+      xs.push(x);
+      amp.push(Math.min(1, m) * mid);
+    }
+  }
+  if (!xs.length) return;
+  ctx.beginPath();
+  ctx.moveTo(xs[0], mid - amp[0]);
+  for (let k = 1; k < xs.length; k++) ctx.lineTo(xs[k], mid - amp[k]);
+  for (let k = xs.length - 1; k >= 0; k--) ctx.lineTo(xs[k], mid + amp[k]);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
 }
 
 function _paintLanePlaceholder(ctx, w, h, kind, error) {
@@ -3551,19 +4019,17 @@ function _paintLanePlaceholder(ctx, w, h, kind, error) {
  * the lane with a fractional source rectangle so frame edges land exactly on
  * the waveform's time→x. The whole recording is never rasterised at once: a
  * ten-minute piece is ~26k columns, past what a canvas may be wide. Cached on
- * the (scroll, zoom, size) key — a selection or drag redraw costs nothing.
+ * the view's (scroll, zoom) key plus the size — a selection or drag redraw
+ * costs nothing. The cache lives on L, so each pane's lanes keep their own.
  */
-function _paintSpectrogram(ctx, L, w, h) {
-  const f = _fix;
-  const scrollEl = f.stripWS.getWrapper().parentElement;
-  const key = `${scrollEl.scrollLeft}|${f.stripPps}|${w}|${h}|${_specCfg.labels ? 1 : 0}`;
+function _paintSpectrogram(ctx, L, w, h, view) {
+  const key = `${view.key}|${w}|${h}|${_specCfg.labels ? 1 : 0}`;
   if (L.lastKey === key) return;
   L.lastKey = key;
   ctx.clearRect(0, 0, w, h);
   L.labelsDrawn = 0;
-  const t0 = _stripXToTime(0);
-  const t1 = _stripXToTime(w);
-  if (t0 === null || t1 === null) return;
+  const t0 = view.xToTime(0);
+  const t1 = view.xToTime(w);
   const fr = L.sr / L.melHop;
   // Frame i is centred at i / fr + melT0 and owns the cell [i − ½, i + ½).
   const F0 = Math.max(0, Math.floor((t0 - L.melT0) * fr - 0.5));
@@ -3573,7 +4039,7 @@ function _paintSpectrogram(ctx, L, w, h) {
   const nM = L.nMels;
   if (!L.img || L.img.width !== nF) L.img = new ImageData(nF, nM);
   const data = L.img.data;
-  const lut = _melLut();
+  const lut = view.lut || _melLut();
   const mel = L.mel;
   const stride = L.melFrames;
   for (let m = 0; m < nM; m++) {
@@ -3596,23 +4062,22 @@ function _paintSpectrogram(ctx, L, w, h) {
   const sx1 = (t1 - L.melT0) * fr + 0.5 - F0;
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(sc, sx0, 0, sx1 - sx0, nM, 0, 0, w, h);
-  if (_specCfg.labels && L.bandHz?.length) L.labelsDrawn = _drawHzLabels(ctx, L, w, h);
+  if (_specCfg.labels && L.bandHz?.length) L.labelsDrawn = _drawHzLabels(ctx, L, w, h, view);
 }
 
 /** Frequency labels on the lane's left edge: round values that have a band
  *  near them, spaced to stay legible, kept clear of the ◀ onset-skip button. */
-function _drawHzLabels(ctx, L, w, h) {
-  const f = _fix;
+function _drawHzLabels(ctx, L, w, h, view) {
   const nB = L.bandHz.length;
   const yOf = (m) => h * (1 - (m + 0.5) / nB);
   // The ◀ onset-skip button sits over the strip's middle, i.e. over this lane
   // in the default stack: labels start just right of it then (a vertical
   // exclusion zone starved a 49 px lane of every label but one).
   let x0 = 2;
-  const btn = f.els.strip.querySelector(".fix-onset-prev");
-  if (btn) {
+  const btn = view.avoidEl;
+  if (btn && view.specEl) {
     const br = btn.getBoundingClientRect();
-    const lr = f.els.laneSpec.getBoundingClientRect();
+    const lr = view.specEl.getBoundingClientRect();
     if (br.bottom > lr.top && br.top < lr.bottom) x0 = Math.max(2, br.right - lr.left + 4);
   }
   const wanted = [50, 100, 200, 500, 1000, 2000, 5000, 10000];
@@ -3654,42 +4119,42 @@ function _drawHzLabels(ctx, L, w, h) {
  * detected onsets as marks hanging from the lane's top (they are the snap
  * targets), and a ring on the one a drag is currently snapped to.
  */
-function _paintOnsetLane(ctx, L, w, h) {
+function _paintOnsetLane(ctx, L, w, h, view) {
   const f = _fix;
   ctx.clearRect(0, 0, w, h);
-  const t0 = _stripXToTime(0);
-  const t1 = _stripXToTime(w);
-  if (t0 === null || t1 === null) return;
+  const t0 = view.xToTime(0);
+  const t1 = view.xToTime(w);
   if (!L.onsetFrames) return;
   const fr = L.sr / L.onsetHop;
   const F0 = Math.max(0, Math.floor((t0 - L.onsetT0) * fr) - 1);
   const F1 = Math.min(L.onsetFrames, Math.ceil((t1 - L.onsetT0) * fr) + 2);
   if (F1 <= F0) return;
   const style = getComputedStyle(document.documentElement);
-  const fill = style.getPropertyValue("--color-waveform").trim() || "violet";
+  const fill = view.fill || style.getPropertyValue("--color-waveform").trim() || "violet";
   const tickColor =
     style.getPropertyValue("--color-alignment").trim() || "rgb(140,90,90)";
   const top = LANE_PEAK_MARK_H + 1; // the curve keeps below the marks' row
+  const toX = view.timeToX;
   ctx.beginPath();
-  ctx.moveTo(_timeToStripX(F0 / fr + L.onsetT0), h);
+  ctx.moveTo(toX(F0 / fr + L.onsetT0), h);
   for (let i = F0; i < F1; i++) {
-    ctx.lineTo(_timeToStripX(i / fr + L.onsetT0), h - L.onsetNorm[i] * (h - top));
+    ctx.lineTo(toX(i / fr + L.onsetT0), h - L.onsetNorm[i] * (h - top));
   }
-  ctx.lineTo(_timeToStripX((F1 - 1) / fr + L.onsetT0), h);
+  ctx.lineTo(toX((F1 - 1) / fr + L.onsetT0), h);
   ctx.closePath();
   ctx.globalAlpha = 0.55;
   ctx.fillStyle = fill;
   ctx.fill();
   ctx.globalAlpha = 0.85;
   ctx.fillStyle = tickColor;
-  const pk = _snapTargetList() || [];
+  const pk = view.marks;
   for (let k = _lowerBound(pk, t0 - 1); k < pk.length && pk[k] <= t1 + 1; k++) {
-    const x = _timeToStripX(pk[k]);
+    const x = toX(pk[k]);
     ctx.fillRect(Math.round(x) - 1, 0, 2, LANE_PEAK_MARK_H);
   }
-  const snapT = f.drag?.snapT;
+  const snapT = view.snapT;
   if (snapT != null) {
-    const x = _timeToStripX(snapT);
+    const x = toX(snapT);
     ctx.globalAlpha = 0.95;
     ctx.fillStyle = f.playheadColor;
     ctx.beginPath();
@@ -3909,13 +4374,17 @@ function _redrawOverlays() {
   ctx.clearRect(0, 0, w, h);
 
   _paintLanes();
+  _paintRefPane();
 
   const rootRect = f.els.root.getBoundingClientRect();
   const stripRect = strip.getBoundingClientRect();
   const stripTopY = stripRect.y - rootRect.y;
   const scoreRect = f.els.scoreEl.getBoundingClientRect();
   const scoreBottomY = scoreRect.bottom - rootRect.y;
-  const _cbs = _scoreContentBottomScreen();
+  // Score-less, a connector starts where the reference pane's ticks end.
+  const _cbs = f.scoreless
+    ? (f.els.refLanes?.getBoundingClientRect().bottom ?? null)
+    : _scoreContentBottomScreen();
   const contentBottomY = _cbs === null ? null : _cbs - rootRect.y;
 
   const style = getComputedStyle(document.documentElement);
@@ -5343,12 +5812,43 @@ function _paintPlayhead() {
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, w, h);
   const a = f.aud;
+  _paintRefPlayhead(a?.ready ? _audPos() : null);
   if (!a?.ready) return;
   const x = _timeToStripX(_audPos());
   if (x === null || x < -PH_ARROW_HALF_W || x > w + PH_ARROW_HALF_W) return;
   // The bracket: one arrowhead just inside the top edge pointing down, one in
   // the gutter beneath the waveform pointing up, and nothing between them.
   ctx.fillStyle = f.playheadColor;
+  ctx.globalAlpha = 0.95;
+  _fillArrowhead(ctx, x, 1, 1);
+  _fillArrowhead(ctx, x, h - 1, -1);
+}
+
+/**
+ * Score-less: the reference pane's playhead, the same bracket as the strip's,
+ * at the audition position mapped back through the recording's grid — so it
+ * moves at warped speed, where the reference is at the moment heard.
+ */
+function _paintRefPlayhead(t) {
+  const f = _fix;
+  const canvas = f.els.refPlayhead;
+  if (!canvas) return;
+  const w = f.els.ref.clientWidth;
+  const h = f.els.ref.clientHeight;
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  f.refPlayhead = null; // test surface
+  const view = t === null ? null : _refView();
+  if (!view || !w) return;
+  const refT = _targetToRef(t);
+  const x = view.timeToX(refT);
+  f.refPlayhead = { t, refT, x };
+  if (!Number.isFinite(x) || x < -PH_ARROW_HALF_W || x > w + PH_ARROW_HALF_W) return;
+  ctx.fillStyle =
+    getComputedStyle(document.documentElement).getPropertyValue("--color-ref-playhead").trim() ||
+    "#0d9488";
   ctx.globalAlpha = 0.95;
   _fillArrowhead(ctx, x, 1, 1);
   _fillArrowhead(ctx, x, h - 1, -1);
@@ -7971,6 +8471,12 @@ async function _bootstrap() {
   _syncReadyAffordance();
   const refSamples = await _decodeRefAudio(f.refFile);
   if (!_fix || _fix !== f) return; // exited while decoding
+  // Score-less: the reference pane's waveform at the strip's density, taken
+  // now — the transfer to the worker below detaches the samples.
+  if (f.scoreless) {
+    f.refPeaks = { peaks: _peaksFromSamples(refSamples), duration: refSamples.length / FIX_SR };
+    _scheduleRedraw();
+  }
   // Audio mode: the TARGET recording decodes too — it is the strip, the
   // audition's left ear, and the worker's second resident PCM. Sequential,
   // not parallel: two whole-recording decodes in flight double the peak.
@@ -8025,17 +8531,28 @@ async function _bootstrap() {
     if (!_fix || _fix !== f) return;
     if (d.type === "fix_lanes") {
       _installLanes(f, d);
-      // The arming trail closes on the FIRST, full reply; a spectrogram
-      // re-request (what: "mel") is not part of arming.
-      if (d.what !== "mel" && f.timing.readyAt && f.timing.lanesMs == null) {
+      // The arming trail closes on the strip's FIRST, full reply; a
+      // spectrogram re-request (what: "mel") is not part of arming, nor is
+      // the score-less reference pane's.
+      if (
+        d.what !== "mel" &&
+        !_isRefLanesReply(f, d) &&
+        f.timing.readyAt &&
+        f.timing.lanesMs == null
+      ) {
         f.timing.lanesMs = Math.round(performance.now() - f.timing.readyAt);
         _logArmingTrail(f);
       }
     } else if (d.type === "fix_lanes_error") {
       // The lanes are a comfort, not the engine: the session stays live.
       console.warn("fix mode: lanes unavailable:", d.message);
-      f.lanesError = d.message;
-      f.lanesPending = false;
+      if (_isRefLanesReply(f, d)) {
+        f.refLanesError = d.message;
+        f.refLanesPending = false;
+      } else {
+        f.lanesError = d.message;
+        f.lanesPending = false;
+      }
       _scheduleRedraw();
     } else if (d.type === "progress" && !f.engineReady) {
       // fix_begin's one progress message is the score synth. Shortened to
@@ -8282,6 +8799,22 @@ export function fixTestState() {
     }),
     scoreless: !!f.scoreless,
     refOnsetCount: f.refOnsets ? f.refOnsets.peaks.length : null,
+    refWindow: f.refWindow ? { ...f.refWindow } : null,
+    refPeakCount: f.refPeaks ? f.refPeaks.peaks.length : 0,
+    refLanes: f.refLanes
+      ? { melFrames: f.refLanes.melFrames, onsetFrames: f.refLanes.onsetFrames, labelsDrawn: f.refLanes.labelsDrawn }
+      : null,
+    refLanesPending: !!f.refLanesPending,
+    refTicksDrawn: f.refTicksDrawn ?? 0,
+    lastRefSeek: f.lastRefSeek ? { ...f.lastRefSeek } : null,
+    refPlayhead: f.refPlayhead ? { ...f.refPlayhead } : null,
+    refLanesError: f.refLanesError ?? null,
+    refLaneOn: { ..._refLaneOn },
+    refLaneWeights: _refLaneWeights ? { ..._refLaneWeights } : null,
+    refLaneHeights: f.els.ref
+      ? Object.fromEntries(_stackLanes(f.els, "ref").map(([el, k]) => [k, el.hidden ? 0 : el.clientHeight]))
+      : null,
+    scorelessStripHeightPx: _scorelessStripHeightPx,
     specCfg: { ..._specCfg },
     snapTarget: _snapTarget,
     stripHeightPx: _stripHeightPx,

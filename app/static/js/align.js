@@ -11,6 +11,7 @@ import {
   meiTitle,
 } from "./engine/session-recovery.js";
 import { rememberUriInput } from "./uri-history.js";
+import { meiSha256 } from "./engine/score-rebase.js";
 
 const TARGET_SR = 22050;
 
@@ -166,6 +167,10 @@ let _meiMidiVerovioVersion = null;
 /** Expansion-related Verovio options live at that render (null when all default). */
 let _meiMidiVerovioOptions = null;
 
+/** SHA-256 of the MEI text this run's score MIDI was rendered from (null when
+ *  no MEI was used, or Web Crypto is unavailable). */
+let _meiMidiSha256 = null;
+
 /** This run's score title (MEI titleStmt), the session label's default. */
 let _meiTitleText = "";
 
@@ -203,6 +208,7 @@ async function fetchMeiMidi(meiUri) {
   if (!resp.ok) throw new Error(`Could not fetch MEI (HTTP ${resp.status})`);
   const meiText = await resp.text();
   _meiTitleText = meiTitle(meiText);
+  _meiMidiSha256 = await meiSha256(meiText);
   const loaded = tk.loadData(meiText);
   if (!loaded) throw new Error("Verovio could not parse the MEI data");
   const midiBase64 = tk.renderToMIDI();
@@ -614,6 +620,11 @@ async function startAlignment() {
       if (alignmentResult.header && _meiMidiVerovioOptions) {
         alignmentResult.header.verovioOptions = _meiMidiVerovioOptions;
       }
+      // ...and which MEI: meiUri may be a moving target (a branch head), so
+      // the text's hash is what tells a later edit of the score apart.
+      if (alignmentResult.header && _meiMidiSha256) {
+        alignmentResult.header.meiSha256 = _meiMidiSha256;
+      }
       // The run's parameters, always: a recording added later is aligned
       // with them by default, and fix mode re-aligns with them.
       if (alignmentResult.header) {
@@ -764,6 +775,7 @@ async function startAlignment() {
     let meiMidi = null;
     _meiMidiVerovioVersion = null;
     _meiMidiVerovioOptions = null;
+    _meiMidiSha256 = null;
     if (meiUri) {
       progressText.textContent = "Loading MEI and rendering to MIDI…";
       const meiLi = addStep("Render MEI → MIDI");

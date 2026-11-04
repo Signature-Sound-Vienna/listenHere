@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.115.0 -- Correction mode re-bases an alignment onto an edited score
+
+* When the score has changed since the alignment was made, but only as far as an edit moves the same events (same event count, no neighbouring events reordered, every onset within 1/8 quarter), correction mode offers to re-base onto the current score instead of refusing: the score quarters and synth times come from the fresh render, score↔reference anchors and the score hints of audio-to-audio anchors follow their events, recording times are kept, and `header.rebased` records what moved; the change is unsaved until saved. Larger differences still refuse.
+* New alignments carry a SHA-256 of their MEI (`header.meiSha256`), renewed by a re-base; when it differs from the loaded score, the re-base offer and the refusal say that the score's MEI has changed.
+* Testing: 42.36–42.38 new; specs 39 (4), 42 (37), and 43 (65) pass, eight tests that timed out or misplaced a drag under load passing on a re-run; the full suite was not run.
+
 ### 0.111.1 -- A score edited since its alignment keeps a correct score row
 
 * When the score's MEI has changed since the alignment was made (a tempo mark over grace notes moves them in quarters), the score row's timing is matched to the fresh MIDI by event position, as long as every event is within 1/8 quarter of its stored onset, instead of falling back to the stored synth tables, which carry the old tempo map.

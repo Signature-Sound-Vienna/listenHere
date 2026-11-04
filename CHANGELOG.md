@@ -1,5 +1,14 @@
 # Listen Here! CHANGELOG.md
 
+### 0.110.2 -- URI fields remember earlier entries
+
+* The wizard's MEI URI and audio URI prefix fields, and Manage recordings' global URI prefix, offer the last twelve http(s) values committed in them as a drop-down, most recent first; the two prefix fields share one history.
+* Testing: 17.23 new; the functional suite passes (655, 2 skipped; eleven timeouts under load passed on a re-run).
+
+### 0.110.1 -- The favicon stays visible in dark browsers
+
+* The favicon sits on a round badge in the dark theme's logo tint (`#e8f0d0`), clipped to the circle, so the dark bat no longer disappears against a dark tab strip.
+
 ### 0.110.0 -- Alignments without a score can be corrected
 
 * A score-less alignment opens the correction screen on its recordings alone: the chooser has no score ↔ reference step, and each recording is corrected against the reference.

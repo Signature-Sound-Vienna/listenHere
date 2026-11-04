@@ -3,6 +3,7 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { initSolidAuth } from "./solid.js";
+import { rememberUriInput } from "./uri-history.js";
 import { alignmentJsonProblem } from "./alignment-validate.js";
 import { confirmDialog, el } from "./annotation/ui-common.js";
 import * as v6UiState from "./annotation/ui-state.js";
@@ -5384,6 +5385,8 @@ function initFilePicker() {
   const jsonStatusEl = document.getElementById("file-picker-json-status");
   const labelRow = document.getElementById("file-picker-label-row");
   const labelInput = document.getElementById("file-picker-label");
+
+  rememberUriInput(document.getElementById("ld-uri-prefix"), "ldPrefix");
 
   // The session label lives in the alignment's header, so it travels with the
   // file and is prefilled from it next time. Editing it is not an edit of the

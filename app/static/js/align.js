@@ -10,6 +10,7 @@ import {
   alignmentFileName,
   meiTitle,
 } from "./engine/session-recovery.js";
+import { rememberUriInput } from "./uri-history.js";
 
 const TARGET_SR = 22050;
 
@@ -1168,6 +1169,8 @@ export function initAlignPanel() {
     meiInput.addEventListener("input", updateScoreParamState);
     updateScoreParamState(); // initial state
   }
+  rememberUriInput(meiInput, "mei");
+  rememberUriInput(document.getElementById("align-ld-uri-prefix"), "ldPrefix");
 
   // The session label: written straight into the result's header, so Save
   // data names the file after it and the listen view inherits it.

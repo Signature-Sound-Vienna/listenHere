@@ -88,12 +88,8 @@
       <div class="usage-box">
         <form
           id="url-form"
-          onsubmit="
-            event.preventDefault();
-            window.location.href =
-              '/?align=' +
-              encodeURIComponent(document.getElementById('align-url').value);
-          "
+          action="/"
+          method="get"
         >
           <label for="align-url" class="splash-form-label"
             >Open from the Web:</label
@@ -102,6 +98,7 @@
             <input
               type="url"
               id="align-url"
+              name="align"
               placeholder="https://example.com/alignment.json"
               required
               class="splash-form-input"

@@ -93,4 +93,20 @@ test.describe('1. Application Load & Initialisation', () => {
     expect(errors).toHaveLength(0);
   });
 
+  // 1.11 The landing page's "Open from the Web" form submits natively (a named
+  // field, no script), which is what lets the browser remember earlier URLs.
+  test('1.11 Open from the Web submits ?align= as a plain form', async ({ page }) => {
+    await page.goto('/');
+    const url = `${env.baseUrl}/static/test/${ALIGNMENT_JSON}?x=a b&y=1`;
+    await expect(page.locator('#align-url')).toHaveAttribute('name', 'align');
+    await page.fill('#align-url', url);
+    await Promise.all([
+      page.waitForURL((u) => u.searchParams.has('align')),
+      page.press('#align-url', 'Enter'),
+    ]);
+    const params = new URL(page.url()).searchParams;
+    expect([...params.keys()]).toEqual(['align']);
+    expect(params.get('align')).toBe(url);
+  });
+
 });

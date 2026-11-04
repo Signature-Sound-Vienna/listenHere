@@ -1,5 +1,10 @@
 # Listen Here! CHANGELOG.md
 
+### 0.110.3 -- The start page's URL field remembers earlier entries
+
+* "Open from the Web" is now a plain GET form with a named field instead of a scripted redirect, so the browser offers previously loaded alignment URLs; the resulting `/?align=` address is unchanged.
+* Testing: 1.11 new; spec 01 passes (7, 2 skipped).
+
 ### 0.110.2 -- URI fields remember earlier entries
 
 * The wizard's MEI URI and audio URI prefix fields, and Manage recordings' global URI prefix, offer the last twelve http(s) values committed in them as a drop-down, most recent first; the two prefix fields share one history.

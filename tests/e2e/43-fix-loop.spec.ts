@@ -982,7 +982,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     );
   });
 
-  test('43.21 page-only mode clamps playback at the page boundary; play snaps back into the page', async ({
+  test('43.21 with Auto-page off, playback clamps at the page boundary and play snaps back into the page; the choice is remembered across a reload', async ({
     page,
   }) => {
     await gotoFixMode(page);
@@ -991,11 +991,12 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await waitLoopReady(page);
     let st = await fixState(page);
     expect(st.pageOnly).toBe(false);
+    await expect(page.locator('#fix-auto-page')).toBeChecked(); // on by default
     const win = st.pageWindow;
     expect(win).not.toBeNull();
     expect(win.endT).toBeGreaterThan(win.startT);
-    await page.click('#fix-page-only');
-    await expect(page.locator('#fix-page-only')).toBeChecked();
+    await page.click('#fix-auto-page');
+    await expect(page.locator('#fix-auto-page')).not.toBeChecked();
     // Play into the boundary: the audition pauses there instead of turning
     // the page (paused-at-boundary is a stable state — polling is safe).
     await page.evaluate((t) => {
@@ -1019,9 +1020,9 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(st.aud.time).toBeLessThan(win.endT - 0.3);
     expect(st.aud.time).toBeGreaterThan(Math.max(0, win.startT - 0.6) - 0.01);
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
-    // Mode off: the same approach crosses the boundary and turns the page.
-    await page.click('#fix-page-only');
-    await expect(page.locator('#fix-page-only')).not.toBeChecked();
+    // Auto-page on: the same approach crosses the boundary and turns the page.
+    await page.click('#fix-auto-page');
+    await expect(page.locator('#fix-auto-page')).toBeChecked();
     await page.evaluate((t) => {
       const ct = (window as any)._listenTest.fixCtl;
       ct.seek(t);
@@ -1036,6 +1037,13 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
       { timeout: 15_000 },
     );
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    // Remembered: switched off again, it stays off through a fresh load.
+    await page.click('#fix-auto-page');
+    await gotoFixMode(page);
+    await installWorkerStub(page);
+    await enterFix(page);
+    await expect(page.locator('#fix-auto-page')).not.toBeChecked();
+    expect((await fixState(page)).pageOnly).toBe(true);
   });
 
   test('43.22 a drag beside an existing anchor still remaps the dragged event\'s own offset', async ({
@@ -1317,7 +1325,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await waitLoopReady(page);
     // No auto-replay, so the playback follower cannot move the selection
     // between the two fixes; the replay span is still recorded.
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     // An onset whose previous tick lies far behind (the fixture has a 5.6 s
     // jump): the span starts at that tick, and MAX_RUNUP_SEC = 2 decides.
     // First, while the jump is still there — the stub's linear refill evens
@@ -1349,7 +1357,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(st.lastReplay.startT).toBeCloseTo(st.lastReplay.fixedT - 0.5, 6);
   });
 
-  test('43.28 Replay off suppresses the auto-replay but still commits; R replays on demand', async ({
+  test('43.28 Auto-replay off suppresses the replay but still commits; R replays on demand', async ({
     page,
   }) => {
     await gotoFixMode(page);
@@ -1357,8 +1365,9 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await enterFix(page);
     await waitLoopReady(page);
 
-    await page.click('#fix-replay-off');
-    await expect(page.locator('#fix-replay-off')).toBeChecked();
+    await expect(page.locator('#fix-auto-replay')).toBeChecked(); // on by default
+    await page.click('#fix-auto-replay');
+    await expect(page.locator('#fix-auto-replay')).not.toBeChecked();
     expect((await fixState(page)).replaySuppressed).toBe(true);
 
     const before = await refChecksum(page);
@@ -2290,7 +2299,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFixOn(page, TARGET_ROW);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off'); // no auto-replay: the follower must not move the selection under the assertions
+    await page.click('#fix-auto-replay'); // no auto-replay: the follower must not move the selection under the assertions
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
@@ -2417,7 +2426,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page, { realignShort: true });
     await enterFixOn(page, TARGET_ROW);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
     const pre = await page.evaluate((file) => {
@@ -2450,20 +2459,26 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
         if (kH === -1) kH = n - 1;
         let movedBehind = 0;
         for (let k = 0; k <= k0; k++) if (tg[k] !== before[k]) movedBehind++;
+        // The two samples flanking the anchor are left out of the lines: one
+        // of them carries the anchor EXACTLY (0.114.0) — the chord across the
+        // lines' kink would otherwise miss it — checked below instead.
         let worstL = 0;
-        for (let k = k0 + 1; k < kA; k++) {
+        for (let k = k0 + 1; k < kA - 1; k++) {
           if (rg[k] >= refT - 1e-6) continue;
           const want = before[k0] + ((rg[k] - rg[k0]) / (refT - rg[k0])) * (t - before[k0]);
           worstL = Math.max(worstL, Math.abs(tg[k] - want));
         }
         let worstR = 0;
-        for (let k = kA; k < kH; k++) {
+        for (let k = kA + 1; k < kH; k++) {
           const want = t + ((rg[k] - refT) / (rg[kH] - refT)) * (before[kH] - t);
           worstR = Math.max(worstR, Math.abs(tg[k] - want));
         }
+        const atAnchor =
+          tg[kA - 1] + ((refT - rg[kA - 1]) / (rg[kA] - rg[kA - 1])) * (tg[kA] - tg[kA - 1]);
+        const monotone = tg[kA - 2] <= tg[kA - 1] && tg[kA - 1] <= tg[kA] && tg[kA] <= tg[kA + 1];
         let movedAfter = 0;
         for (let k = kH; k < n; k++) if (tg[k] !== before[k]) movedAfter++;
-        return { worstL, worstR, kA, n, movedBehind, movedAfter, k0 };
+        return { worstL, worstR, kA, n, movedBehind, movedAfter, k0, atAnchor, monotone };
       },
       { refT: a.refT, t: a.t, file: TARGET_ROW, REF: REF_ROW, before: pre.grid, refPrev: pre.refPrev },
     );
@@ -2474,6 +2489,8 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     expect(lines.movedAfter).toBe(0);
     expect(lines.worstL).toBeLessThan(1e-6);
     expect(lines.worstR).toBeLessThan(1e-6);
+    expect(lines.atAnchor).toBeCloseTo(a.t, 9); // the grid passes through the anchor
+    expect(lines.monotone).toBe(true);
   });
 
   /** The whole live ref tables (the 43.35 helper reads only eight events). */
@@ -2497,7 +2514,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     for (let k = 0; k < 6; k++) await page.click('.fix-onset-next');
     const i = (await fixState(page)).selEventIx;
     const t0 = await fullTables(page);
@@ -2568,7 +2585,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await enterFix(page);
     await waitLoopReady(page);
     await page.selectOption('#fix-bend', '0'); // the pure push
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     for (let k = 0; k < 12; k++) await page.click('.fix-onset-next');
     const i = (await fixState(page)).selEventIx;
     const t0 = await fullTables(page);
@@ -2626,7 +2643,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await enterFix(page);
     await waitLoopReady(page);
     await page.selectOption('#fix-bend', '0'); // the pure push
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     for (let k = 0; k < 9; k++) await page.click('.fix-onset-next');
     await page.keyboard.press('Enter'); // approve: an anchor at its own time
     for (let k = 0; k < 3; k++) await page.click('.fix-onset-next');
@@ -2663,7 +2680,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await enterFixOn(page, TARGET_ROW);
     await waitLoopReady(page);
     await page.selectOption('#fix-bend', '0'); // the pure push
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     for (let k = 0; k < 12; k++) await page.keyboard.press('ArrowRight');
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
     const before = await gridSnapshot(page);
@@ -2792,7 +2809,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await waitLoopReady(page);
     expect(await page.inputValue('#fix-bend')).toBe('0.6');
     expect((await fixState(page)).bendSec).toBe(0.6);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     for (let k = 0; k < 12; k++) await page.click('.fix-onset-next');
     const i = (await fixState(page)).selEventIx;
     const t0 = await fullTables(page);
@@ -2859,7 +2876,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await enterFix(page);
     await waitLoopReady(page);
     await page.selectOption('#fix-bend', '0.2');
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     // Onset 23: two ticks 38 ms apart sit 0.29 and 0.33 s behind it, inside 4σ.
     for (let k = 0; k < 23; k++) await page.click('.fix-onset-next');
     const t0 = await fullTables(page);
@@ -2907,7 +2924,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await enterFix(page);
     await waitLoopReady(page);
     await page.selectOption('#fix-bend', '1.8');
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     for (let k = 0; k < 6; k++) await page.click('.fix-onset-next');
     await page.keyboard.press('Enter'); // approve: an anchor at its own time
     for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
@@ -2953,7 +2970,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFixOn(page, TARGET_ROW);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     for (let k = 0; k < 12; k++) await page.keyboard.press('ArrowRight');
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
     const before = await gridSnapshot(page);
@@ -3042,7 +3059,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     for (let k = 0; k < 3; k++) await page.click('.fix-onset-next');
     const sum0 = await refChecksum(page);
     const line = await selTickPixel(page, 'line');
@@ -3103,7 +3120,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
     await dragSelectedTick(page, 12);
     const sumDragged = await refChecksum(page);
@@ -3145,7 +3162,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     await page.uncheck('#fix-auto-anchor');
     expect((await fixState(page)).autoAnchor).toBe(false);
     for (let k = 0; k < 6; k++) await page.click('.fix-onset-next');
@@ -3248,7 +3265,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     await page.click('.fix-onset-next');
     const pageTimes = (st: any) => st.pageTicks.map((q: any) => q.t).filter((t: number) => Number.isFinite(t));
     const before = await fixState(page);
@@ -3300,7 +3317,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
     await page.selectOption('#fix-horizon', '10');
     expect((await fixState(page)).horizonSec).toBe(10);
@@ -3336,7 +3353,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     await page.click('#fix-auto-realign');
     await expect(page.locator('#fix-auto-realign')).not.toBeChecked();
     expect((await fixState(page)).autoRealign).toBe(false);
@@ -3404,7 +3421,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFixOn(page, TARGET_ROW);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     await page.click('#fix-auto-realign');
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
@@ -3442,7 +3459,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
     await installWorkerStub(page);
     await enterFix(page);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     await page.click('#fix-auto-realign');
     for (let k = 0; k < 4; k++) await page.click('.fix-onset-next');
     await dragSelectedTick(page, 10);
@@ -3530,7 +3547,7 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
 
     await enterFixOn(page, TARGET_ROW);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     for (let k = 0; k < 12; k++) await page.keyboard.press('ArrowRight');
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
     await dragSelectedTick(page, 30);
@@ -3685,7 +3702,7 @@ test.describe('43: score-less correction (B1)', () => {
     await gotoScoreless(page, errors);
     await enterFixOn(page, TARGET_ROW);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
@@ -3726,7 +3743,7 @@ test.describe('43: score-less correction (B1)', () => {
     await gotoScoreless(page, errors);
     await enterFixOn(page, TARGET_ROW);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
@@ -3758,7 +3775,7 @@ test.describe('43: score-less correction (B1)', () => {
     await gotoScoreless(page, errors);
     await enterFixOn(page, TARGET_ROW);
     await waitLoopReady(page);
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
     await dragSelectedTick(page, 30);
     await page.click('#fix-exit');
@@ -3885,6 +3902,15 @@ test.describe('43: score-less correction (B1)', () => {
     );
     expect(s.refPlayhead.refT).toBeCloseTo(inverse, 9);
     expect(s.refPlayhead.x).toBeCloseTo(xOf(inverse), 3);
+    // A plain click on the recording's strip, between two ticks, jumps the
+    // playhead there too (and still deselects; a drag would draw a marquee).
+    const [p4, p5] = [s.pageTicks[4], s.pageTicks[5]];
+    const strip = (await page.locator('.fix-ticks').boundingBox())!;
+    await page.mouse.click(strip.x + (p4.x + p5.x) / 2, strip.y + strip.height / 2);
+    s = await fixState(page);
+    expect(Math.abs(s.lastStripSeek.t - (p4.t + p5.t) / 2)).toBeLessThan(0.01);
+    expect(s.aud.time).toBeCloseTo(s.lastStripSeek.t, 3);
+    expect(s.multiSel).toEqual([]);
     expect(errors).toEqual([]);
   });
 
@@ -3906,10 +3932,162 @@ test.describe('43: score-less correction (B1)', () => {
     await expect(page.locator('.fix-balance')).toHaveAttribute('title', /right ear: the reference, warped to this recording/);
     // A fix moves the recording's grid; the worklet gets the new one.
     const before = w.gridPosts;
-    await page.click('#fix-replay-off');
+    await page.click('#fix-auto-replay');
     await dragSelectedTick(page, 30);
     st = await fixState(page);
     expect(st.aud.warp.gridPosts).toBeGreaterThan(before);
+    expect(errors).toEqual([]);
+  });
+
+  /** Pane x of a reference time, through the page's reference window. */
+  const refX = async (page: Page, refT: number) => {
+    const st = await fixState(page);
+    const paneW = await page.evaluate(() => document.querySelector('.fix-ref')!.clientWidth);
+    return ((refT - st.refWindow.t0) * paneW) / (st.refWindow.t1 - st.refWindow.t0);
+  };
+  /** The time of the onset-curve frame nearest t (the stub's frames: hop 512,
+   *  first centre at 512 / 22050). */
+  const frameTime = (t: number) => {
+    const t0 = 1024 / 2 / 22050;
+    return Math.round(((t - t0) * 22050) / 512) * (512 / 22050) + t0;
+  };
+
+  test('43.70 a tick can be added on the reference where none was detected: Shift+click with the Magnet lands on the onset curve’s nearest peak; it is saved, undoable, removable with Delete, and there on re-entry', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    // The reference's onset curve: the detected onsets, plus a weak spike at
+    // 4.78 s that the detector did not take (no tick there).
+    await page.evaluate((peaks) => (window as any).__fixStub.sendLanes(peaks, { which: 'ref' }), [...REF_ONSETS, 4.78]);
+    await page.waitForFunction(() => !!(window as any)._listenTest.fix.refLanes);
+    await expect(page.locator('#fix-ref-click-seek')).toBeChecked();
+    const box = (await page.locator('.fix-ref-ticks').boundingBox())!;
+    const y = box.y + 40;
+    // Shift+click at 4.75 s, Magnet on: the tick lands on the curve's peak.
+    await page.keyboard.down('Shift');
+    await page.mouse.click(box.x + (await refX(page, 4.75)), y);
+    await page.keyboard.up('Shift');
+    let st = await fixState(page);
+    const peakT = frameTime(4.78);
+    expect(st.groupCount).toBe(REF_ONSETS.length + 1);
+    expect(st.addedRefTicks).toHaveLength(1);
+    expect(st.addedRefTicks[0]).toBeCloseTo(peakT, 6);
+    expect(st.selRefT).toBeCloseTo(peakT, 6);
+    expect(st.pageTicks.filter((p: any) => p.added)).toHaveLength(1);
+    const saved = await page.evaluate(
+      () => (window as any)._listenTest.session.loadedAlignmentJSON.header.corrections.refTicks,
+    );
+    expect(saved[0]).toBeCloseTo(peakT, 6);
+    // Undo takes it out, redo puts it back.
+    await page.click('#undo-btn');
+    expect((await fixState(page)).groupCount).toBe(REF_ONSETS.length);
+    await page.click('#redo-btn');
+    st = await fixState(page);
+    expect(st.groupCount).toBe(REF_ONSETS.length + 1);
+    expect(st.selRefT).toBeCloseTo(peakT, 6);
+    // Delete removes an added tick that holds no anchor; a detected one is
+    // only ever unanchored.
+    await page.keyboard.press('Delete');
+    st = await fixState(page);
+    expect(st.groupCount).toBe(REF_ONSETS.length);
+    expect(st.addedRefTicks).toEqual([]);
+    await page.click('#undo-btn'); // the removal undone: the tick is back
+    expect((await fixState(page)).groupCount).toBe(REF_ONSETS.length + 1);
+    // Saved with the alignment, it is a tick again on re-entry.
+    await page.click('#fix-exit');
+    await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
+    await enterFixOn(page, TARGET_ROW);
+    st = await fixState(page);
+    expect(st.groupCount).toBe(REF_ONSETS.length + 1);
+    expect(st.pageTicks.filter((p: any) => p.added).map((p: any) => p.refT)[0]).toBeCloseTo(peakT, 6);
+    expect(errors).toEqual([]);
+  });
+
+  test('43.72 a drag on the reference pane draws a marquee that selects the ticks it spans — no seek, no tick added, in either click mode — and a plain click still seeks', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    const box = (await page.locator('.fix-ref-ticks').boundingBox())!;
+    const y = box.y + 60;
+    // Between onsets 2/3 (3.0/3.5 s) and 6/7 (5.0/5.5 s): ticks 3–6 inside.
+    const drag = async (fromT: number, toT: number) => {
+      await page.mouse.move(box.x + (await refX(page, fromT)), y);
+      await page.mouse.down();
+      await page.mouse.move(box.x + (await refX(page, (fromT + toT) / 2)), y, { steps: 3 });
+      await page.mouse.move(box.x + (await refX(page, toT)), y, { steps: 3 });
+      await page.mouse.up();
+    };
+    const evOf = async () => {
+      const st = await fixState(page);
+      return st.multiSel.map((ix: number) => st.pageTicks.find((p: any) => p.ix === ix).eventIx);
+    };
+    await drag(3.25, 5.25);
+    let st = await fixState(page);
+    expect(await evOf()).toEqual([3, 4, 5, 6]);
+    expect(st.lastRefSeek).toBeNull();
+    expect(st.groupCount).toBe(REF_ONSETS.length);
+    // In "Click to add" mode a drag still selects, and adds nothing.
+    await page.click('#fix-ref-click-add');
+    await drag(5.75, 4.25); // right to left
+    st = await fixState(page);
+    expect(await evOf()).toEqual([5, 6, 7]);
+    expect(st.groupCount).toBe(REF_ONSETS.length);
+    // Back to seeking: a plain click seeks again (the swallowed click is spent).
+    await page.click('#fix-ref-click-seek');
+    await page.mouse.click(box.x + (await refX(page, 6.25)), y);
+    st = await fixState(page);
+    expect(Math.abs(st.lastRefSeek.refT - 6.25)).toBeLessThan(0.02);
+    expect(errors).toEqual([]);
+  });
+
+  test('43.71 “Click to add” makes a plain click add; without the Magnet a tick lands where clicked; a click crowding a tick selects it; the guide shows where a click would land', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    await gotoScoreless(page, errors);
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await page.evaluate((peaks) => (window as any).__fixStub.sendLanes(peaks, { which: 'ref' }), [...REF_ONSETS, 6.78]);
+    await page.waitForFunction(() => !!(window as any)._listenTest.fix.refLanes);
+    const box = (await page.locator('.fix-ref-ticks').boundingBox())!;
+    const y = box.y + 40;
+    // Seek mode: no guide, and a plain click seeks.
+    await page.mouse.move(box.x + (await refX(page, 6.75)), y);
+    expect((await fixState(page)).refGuide).toBeNull();
+    // Shift shows the guide: slanting to the curve's peak with the Magnet on.
+    await page.keyboard.down('Shift');
+    let st = await fixState(page);
+    expect(st.refGuide.snapped).toBe(true);
+    expect(st.refGuide.refT).toBeCloseTo(frameTime(6.78), 6);
+    expect(Math.abs(st.refGuide.xs - st.refGuide.x)).toBeGreaterThan(0.5);
+    await page.keyboard.up('Shift');
+    expect((await fixState(page)).refGuide).toBeNull();
+    // Click to add, Magnet off: a plain click adds where clicked, the guide straight.
+    await page.click('#fix-ref-click-add');
+    await page.click('#fix-snap-onsets');
+    await page.mouse.move(box.x + (await refX(page, 6.75)), y);
+    st = await fixState(page);
+    expect(st.refClickMode).toBe('add');
+    expect(st.refGuide.snapped).toBe(false);
+    expect(st.refGuide.xs).toBeCloseTo(st.refGuide.x, 6);
+    await page.mouse.click(box.x + (await refX(page, 6.75)), y);
+    st = await fixState(page);
+    expect(st.groupCount).toBe(REF_ONSETS.length + 1);
+    expect(Math.abs(st.addedRefTicks[0] - 6.75)).toBeLessThan(0.02); // a pixel's worth
+    // Within 50 ms of that tick but outside the 8 px hit radius: it is selected, not doubled.
+    await page.mouse.click(box.x + (await refX(page, st.addedRefTicks[0] + 0.045)), y);
+    st = await fixState(page);
+    expect(st.groupCount).toBe(REF_ONSETS.length + 1);
+    expect(st.selRefT).toBeCloseTo(st.addedRefTicks[0], 9);
     expect(errors).toEqual([]);
   });
 });

@@ -51,6 +51,7 @@ import {
   pushFixUndoEntry,
   refreshSynthAlignmentGrid,
   refreshRecordingGrid,
+  parseCssColor,
 } from "./listen.js";
 import {
   verifyQuarters,
@@ -74,7 +75,10 @@ import {
   applyTargetAnchorValue,
   rasterAfter,
   rasterBefore,
+  anchorExactEdits,
   REF_T_EPS,
+  addRefTick,
+  removeRefTick,
   serialize as serializeCorrections,
   deserialize as deserializeCorrections,
 } from "./engine/correction-model.js";
@@ -225,6 +229,7 @@ let _lastRefusal = null;
 /** The correction worker. Outlives a fix session (Pyodide is expensive to
  *  boot), disposed of its audio state on exit, terminated on piece reset. */
 let _worker = null;
+let _workerFactory = null; // the test factory _worker came from, or null
 let _workerHasSession = false;
 /**
  * Piece-derived state that outlives a fix session: the guard's fresh event
@@ -253,7 +258,7 @@ const _dirtyGridFiles = new Set();
 let _correctionsBase = null;
 /** The as-loaded correction record, for Revert and dirtiness (JSON of
  *  {a: anchors, g: gaps}; "no record" is the empty pair, not null). */
-let _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {} });
+let _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {}, r: [] });
 /** The one in-flight fix_realign request, or null (the worker is serial). */
 let _pendingRealign = null;
 /** Bumped on every change to the correction record or the tables it governs;
@@ -268,15 +273,33 @@ let _announceTimer = null;
 /** Audition L/R balance, −1 (recording only) … +1 (synth only); 0 = even.
  *  A listening-ergonomics preference, so it survives sessions and pieces. */
 let _audBalance = 0;
+/** A remembered switch (localStorage), or `dflt` when unset or unavailable. */
+function _prefBool(key, dflt) {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? dflt : v === "true";
+  } catch (_) {
+    return dflt;
+  }
+}
+
+function _savePrefBool(key, on) {
+  try {
+    localStorage.setItem(key, String(on));
+  } catch (_) {}
+}
+
 /** Page-only playback: the audition stops at the current page's boundary
- *  instead of turning it (sticky across fix sessions, like the balance). */
-let _pageOnly = false;
-/** Suppress the AUTO-replay after a commit (sticky, like _pageOnly). The
- *  commit itself always happens: it is being dragged back through the span
- *  that gets in the way in a tight cluster, not the anchoring. A sticky mode
+ *  instead of turning it. Offered as its inverse, "Auto-page" (on by
+ *  default), and remembered across reloads (user, 2026-11-04). */
+let _pageOnly = !_prefBool("fix-auto-page", true);
+/** Suppress the AUTO-replay after a commit — offered as its inverse,
+ *  "Auto-replay" (on by default), remembered like Auto-page. The commit
+ *  itself always happens: it is being dragged back through the span that
+ *  gets in the way in a tight cluster, not the anchoring. A sticky mode
  *  rather than a held modifier, because the nudge already owns Shift and
  *  Shift+Alt and commits on the keyup that leaves no nudge key down. */
-let _replaySuppressed = false;
+let _replaySuppressed = !_prefBool("fix-auto-replay", true);
 /** The v2 lanes and snap-to-onset: sticky across fix sessions, like the two
  *  above. The lane switches also size the strip (see _stripClassName). */
 let _laneSpec = true;
@@ -284,6 +307,15 @@ let _laneOnset = true;
 /** The score-less reference pane's lanes (sticky; all three on by default,
  *  user 2026-11-04). All three off hides the pane: the strip takes the height. */
 let _refLaneOn = { wave: true, spec: true, onset: true };
+/** What a plain click off a tick does on the reference pane: "seek" or
+ *  "add" a tick (sticky; Shift+click adds either way — user, 2026-11-04). */
+let _refClickMode = "seek";
+/** An added tick snaps (Magnet on, no Alt) to the strongest local peak of the
+ *  reference's onset curve within this many seconds of the click... */
+const REF_ADD_SNAP_SEC = 0.06;
+/** ...and a click that would land within this of an existing tick selects
+ *  that tick instead (the detector's own minimum spacing). */
+const REF_ADD_MIN_GAP_SEC = 0.05;
 let _snapOnsets = true;
 /** Spectrogram configuration (sticky): FFT size, window, overlap, mel bands. */
 let _specCfg = {
@@ -818,7 +850,8 @@ export async function enterFixMode(entryFile) {
     mode: audioMode ? "audio" : "score-ref",
     /** No score: the ticks are the reference's detected onsets (refOnsets). */
     scoreless,
-    refOnsets: null, // score-less: { peaks, pat } from the worker, index-aligned
+    refDetected: null, // score-less: { peaks, pat } from the worker, index-aligned
+    refOnsets: null, // ...plus the added ticks: the tick table (_buildRefTickTable)
     drawerWasOpen,
     drawerScroll,
     entryFile,
@@ -971,7 +1004,7 @@ async function _enterScoreless(f, t0) {
   _buildStrip(_stripSource());
   f.refPeaks = _peaksSource(f.refFile); // the decode upgrades it (_bootstrap)
   const cached = _refOnsetCache?.file === f.refFile ? _refOnsetCache : null;
-  if (cached) f.refOnsets = { peaks: cached.peaks, pat: cached.pat };
+  if (cached) f.refDetected = { peaks: cached.peaks, pat: cached.pat };
   else f.refOnsetsWait = _deferred();
   _startBootstrap();
   if (!cached) {
@@ -985,16 +1018,14 @@ async function _enterScoreless(f, t0) {
     }
   }
   if (_fix !== f) return; // exited while waiting
+  _buildRefTickTable(f);
   const n = f.refOnsets.peaks.length;
   if (!n) {
     _teardownFixDom(f);
     await _refuse("no onsets were detected in the reference recording");
     return;
   }
-  f.nEvents = n;
-  f.groups = Array.from({ length: n }, (_, k) => ({ eventIxs: [k], ids: [], page: 1 }));
-  f.pageCount = _assignTimePages(f.groups);
-  _recomputeProjection(f);
+  _buildScorelessGroups(f);
   _renderPage(1);
   _select(0);
   _hideFixLoading();
@@ -1004,6 +1035,61 @@ async function _enterScoreless(f, t0) {
       `(${n} reference onsets on ${f.pageCount} pages${cached ? ", cached" : ""})`,
   );
   _finishEntry(f);
+}
+
+/**
+ * Score-less: the tick table — the reference's detected onsets plus the ticks
+ * the user added where the detector found none (header.corrections.refTicks)
+ * — in time order, as index-aligned peaks/pat lists with an `added` flag. An
+ * added tick has one time under both estimators: there is no detected peak
+ * to take a perceived attack from.
+ */
+function _buildRefTickTable(f) {
+  const det = f.refDetected;
+  const add = _corrections.refTicks || [];
+  const n = det.peaks.length + add.length;
+  const peaks = new Float64Array(n);
+  const pat = new Float64Array(n);
+  const added = new Uint8Array(n);
+  let i = 0;
+  let j = 0;
+  for (let k = 0; k < n; k++) {
+    if (j < add.length && (i >= det.peaks.length || add[j] < det.peaks[i])) {
+      peaks[k] = pat[k] = add[j++];
+      added[k] = 1;
+    } else {
+      peaks[k] = det.peaks[i];
+      pat[k] = det.pat[i++];
+    }
+  }
+  f.refOnsets = { peaks, pat, added };
+}
+
+/** Score-less: one group per tick, time pages, and the projection. */
+function _buildScorelessGroups(f) {
+  const n = f.refOnsets.peaks.length;
+  f.nEvents = n;
+  f.groups = Array.from({ length: n }, (_, k) => ({ eventIxs: [k], ids: [], page: 1 }));
+  f.pageCount = _assignTimePages(f.groups);
+  _recomputeProjection(f);
+}
+
+/**
+ * Score-less, after a tick was added or removed: rebuild the table and the
+ * groups, and select the tick at `refT` (or the nearest), turning to its
+ * page. Group indices shift, so whatever held one starts afresh.
+ */
+function _rebuildScorelessTicks(f, refT) {
+  _buildRefTickTable(f);
+  _buildScorelessGroups(f);
+  f.multiSel.clear();
+  f.followFloor = null;
+  let best = 0;
+  for (let k = 1; k < f.groups.length; k++) {
+    if (Math.abs(_groupRefT(f.groups[k]) - refT) < Math.abs(_groupRefT(f.groups[best]) - refT)) best = k;
+  }
+  if (f.groups.length) _select(best, { seek: false });
+  _renderPage(f.groups[best]?.page ?? 1);
 }
 
 /** A promise with its resolve/reject exposed. */
@@ -1092,12 +1178,18 @@ function _finishEntry(f) {
   // stands down via isFixModeActive() (the conscious resolution of the
   // increment-2 deferral), and this document-level handler takes over.
   // Ctrl+Z / Ctrl+Shift+Z stay with listen.js — undo is GLOBAL by ruling.
-  f.keydownHandler = (e) => _onFixKeydown(e);
+  f.keydownHandler = (e) => {
+    _onRefModifierKey(e); // Shift / Alt redraw the reference's add guide
+    _onFixKeydown(e);
+  };
   document.addEventListener("keydown", f.keydownHandler);
   // A floating keyboard nudge commits on full release (see _onFixKeyup); a
   // window blur can eat that keyup, so it commits the nudge instead — a
   // pending nudge is never silently abandoned.
-  f.keyupHandler = (e) => _onFixKeyup(e);
+  f.keyupHandler = (e) => {
+    _onRefModifierKey(e);
+    _onFixKeyup(e);
+  };
   document.addEventListener("keyup", f.keyupHandler);
   f.blurHandler = () => {
     _heldArrows.clear();
@@ -1127,6 +1219,11 @@ function _teardownFixDom(f) {
   _heldArrows.clear();
   _endDrag(f);
   _endMarquee(f);
+  if (f.refMarquee) {
+    window.removeEventListener("mousemove", f.refMarquee.onMove);
+    window.removeEventListener("mouseup", f.refMarquee.onUp);
+    f.refMarquee = null;
+  }
   _endResize(f);
   _auditionDispose(f);
   if (_pendingRealign) {
@@ -1255,7 +1352,7 @@ export function fixModePrewarm() {
   _dirtyGridFiles.clear();
   _scoreRefReviewed = false;
   _closeChooser();
-  _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {} });
+  _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {}, r: [] });
   if (_pendingRealign) {
     _pendingRealign.reject(new Error("piece replaced"));
     _pendingRealign = null;
@@ -1273,6 +1370,7 @@ export function fixModePrewarm() {
         a: _corrections.anchors,
         g: _corrections.gaps,
         u: _corrections.audio,
+        r: _corrections.refTicks,
       });
       const targets = Object.values(state.audio || {}).reduce(
         (n, s) => n + s.anchors.length,
@@ -1855,28 +1953,32 @@ function _buildDom(contentEl, waveformsEl) {
   // back at exit).
   const playBtn = document.getElementById("playpause");
 
-  // Page-only playback toggle: play stops at the current page's boundary.
+  // Auto-page (remembered): playback turns the page at its end; off, it
+  // stops at the page boundary.
   const [pageOnlyRow, pageOnlyBtn] = _navCheckbox(
-    "fix-page-only",
-    "Page only",
-    "Play only the current page — playback stops at the page boundary",
-    _pageOnly,
+    "fix-auto-page",
+    "Auto-page",
+    "Turn the page when playback reaches its end — off: play only the current " +
+      "page, stopping at its boundary",
+    !_pageOnly,
     (on) => {
-      _pageOnly = on;
+      _pageOnly = !on;
+      _savePrefBool("fix-auto-page", on);
       if (_fix) _fix.pageOnlyPassUntilT = null;
     },
   );
 
-  // Auto-replay suppression (sticky). Checked = no replay after a commit;
-  // R replays the last fix on demand.
+  // Auto-replay (remembered): each fix replays its span; off, R replays the
+  // last fix on demand.
   const [replayRow, replayBtn] = _navCheckbox(
-    "fix-replay-off",
-    "Replay off",
-    "Suppress the automatic replay after each fix (the fix is still " +
-      "committed) — R replays the last fix on demand",
-    _replaySuppressed,
+    "fix-auto-replay",
+    "Auto-replay",
+    "Replay the span around each fix once it is committed — off: the fix is " +
+      "still committed, and R replays the last fix on demand",
+    !_replaySuppressed,
     (on) => {
-      _replaySuppressed = on;
+      _replaySuppressed = !on;
+      _savePrefBool("fix-auto-replay", on);
     },
   );
 
@@ -1884,12 +1986,16 @@ function _buildDom(contentEl, waveformsEl) {
   // in the recording within a few pixels; Alt while dragging places freely.
   const [snapRow] = _navCheckbox(
     "fix-snap-onsets",
-    "Magnet on drag",
-    "A dragged onset snaps to the nearest detected onset within a few pixels — " +
-      "hold Alt while dragging to place freely",
+    "Magnet",
+    "A dragged onset snaps to the nearest detected onset within a few pixels" +
+      (f.scoreless
+        ? ", and a tick added on the reference lands on the onset curve's nearest peak"
+        : "") +
+      " — hold Alt to place freely",
     _snapOnsets,
     (on) => {
       _snapOnsets = on;
+      _paintRefGuide();
     },
   );
 
@@ -2118,8 +2224,8 @@ function _buildDom(contentEl, waveformsEl) {
   balanceInput.step = "5";
   balanceInput.value = String(Math.round(_audBalance * 100));
   balanceInput.setAttribute("aria-label", "Audition balance (recording ↔ synth)");
-  // The synth is a computer; score-less, the right ear is another recording.
-  const balanceR = _sliderIcon(f.scoreless ? "\u{1F399}" : "\u{1F4BB}", `Right ear: ${_rightEar()}`);
+  // The synth is a computer; score-less, the right ear is the reference — the target.
+  const balanceR = _sliderIcon(f.scoreless ? "\u{1F3AF}" : "\u{1F4BB}", `Right ear: ${_rightEar()}`);
   balanceInput.addEventListener("input", () => {
     _audBalance = Number(balanceInput.value) / 100;
     if (_fix?.aud) _applyAudBalance(_fix.aud);
@@ -2377,10 +2483,24 @@ function _buildDom(contentEl, waveformsEl) {
     // drag (that is the recording's); a click off them seeks.
     const refTicks = document.createElement("canvas");
     refTicks.className = "fix-ref-ticks";
+    refTicks.addEventListener("mousedown", (e) => _onRefMouseDown(e));
     refTicks.addEventListener("click", (e) => _onRefClick(e));
+    refTicks.addEventListener("mousemove", (e) => _onRefHover(e));
+    refTicks.addEventListener("mouseleave", (e) => _onRefHover(e));
     const refPlayhead = document.createElement("canvas");
     refPlayhead.className = "fix-ref-playhead";
-    ref.append(refLanes, refTicks, refPlayhead);
+    // Where a click would add a tick (_paintRefGuide).
+    const refGuide = document.createElement("canvas");
+    refGuide.className = "fix-ref-guide";
+    // The strip's busy badge, for this pane's spectrogram recompute.
+    const refBadge = document.createElement("div");
+    refBadge.className = "fix-lane-badge";
+    refBadge.hidden = true;
+    const refSpin = document.createElement("span");
+    refSpin.className = "fix-spin";
+    refSpin.textContent = "⟳";
+    refBadge.append(refSpin, " spectrogram…");
+    ref.append(refLanes, refTicks, refPlayhead, refGuide, refBadge);
     // The same handles as the strip's, between neighbouring visible lanes.
     const refLaneHandles = [0, 1].map(() => {
       const h = document.createElement("div");
@@ -2393,7 +2513,7 @@ function _buildDom(contentEl, waveformsEl) {
       return h;
     });
     score.append(ref);
-    refEls = { ref, refLanes, refWave, refSpec, refOnset, refTicks, refPlayhead, refLaneHandles };
+    refEls = { ref, refLanes, refWave, refSpec, refOnset, refTicks, refPlayhead, refGuide, refBadge, refLaneHandles };
     _applyRefLaneSwitches(root, refEls);
     _applyLaneWeights(refEls, "ref");
   }
@@ -2404,6 +2524,44 @@ function _buildDom(contentEl, waveformsEl) {
   gap.title = `Drag to resize the lanes against the ${f.scoreless ? "reference" : "score"}; double-click to reset`;
   gap.addEventListener("pointerdown", (e) => _onGapPointerDown(e));
   gap.addEventListener("dblclick", () => _resetStripHeight());
+  // Score-less: what a click on the reference does, where the eye already is.
+  if (f.scoreless) {
+    const modes = document.createElement("div");
+    modes.className = "fix-ref-click";
+    modes.title =
+      "A click on the reference pane, off its ticks: seek the audition there, or add a tick " +
+      "where the detector found none (the Magnet places it on the onset curve's nearest peak; " +
+      "Alt, exactly). Shift+click adds in either mode.";
+    const arrow = document.createElement("span");
+    arrow.className = "fix-ref-click-arrow";
+    arrow.textContent = "↑"; // it applies to the pane above
+    arrow.setAttribute("aria-hidden", "true");
+    modes.append(arrow);
+    for (const [value, label] of [
+      ["seek", "Click to seek"],
+      ["add", "Click to add"],
+    ]) {
+      const lab = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "fix-ref-click";
+      input.id = `fix-ref-click-${value}`;
+      input.value = value;
+      input.checked = _refClickMode === value;
+      input.addEventListener("change", () => {
+        _refClickMode = value;
+        input.blur();
+        _paintRefGuide();
+      });
+      lab.append(input, ` ${label}`);
+      modes.append(lab);
+    }
+    // The gap is the resize handle: its controls must not start a resize.
+    for (const type of ["pointerdown", "dblclick"]) {
+      modes.addEventListener(type, (e) => e.stopPropagation());
+    }
+    gap.append(modes);
+  }
 
   const strip = document.createElement("div");
   _applyStripSizing(strip);
@@ -3620,6 +3778,9 @@ function _onResizeMove(e) {
       h > 0 && Math.abs(h - r.wsH0) >= 1 ? `scaleY(${(h / r.wsH0).toFixed(4)})` : "";
   }
   _scheduleRedraw();
+  // The playhead repaints only while playing; a paused one must follow the
+  // new size too, or its bitmap is stretched to it until the next play.
+  _schedulePlayheadFrame();
 }
 
 /** The WaveSurfer's host element and the waveform lane's height at a drag's start. */
@@ -3879,6 +4040,12 @@ function _paintRefPane() {
   const f = _fix;
   if (!f?.els.ref) return;
   _layoutLaneHandles(f, "ref");
+  // A spectrogram recompute dims the lane and badges it, as on the strip; the
+  // first computation has the lane's own "computing…" placeholder instead.
+  const busy = !!(f.refLanesPending && f.refLanes && !f.els.refSpec.hidden);
+  f.els.refSpec.classList.toggle("fix-lane-busy", busy);
+  f.els.refBadge.hidden = !busy;
+  if (busy) f.els.refBadge.style.top = `${f.els.refSpec.offsetTop + 3}px`;
   const view = _refView();
   const L = f.refLanes;
   for (const [el, kind] of _visibleLanes(f, "ref")) {
@@ -3901,6 +4068,7 @@ function _paintRefPane() {
     }
   }
   _paintRefTicks(f, view);
+  _paintRefGuide();
 }
 
 /**
@@ -3968,19 +4136,128 @@ function _paintRefTicks(f, view) {
     }
     f.refTicksDrawn++;
   }
+  // A marquee in progress: the span it will select, as on the strip.
+  const m = f.refMarquee;
+  if (m?.moved) {
+    const a = Math.min(m.x0, m.x1);
+    const b = Math.max(m.x0, m.x1);
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = tickColor;
+    ctx.fillRect(a, 0, b - a, lb);
+    ctx.globalAlpha = 0.7;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = tickColor;
+    ctx.strokeRect(a + 0.5, 0.5, Math.max(0, b - a - 1), lb - 1);
+  }
   ctx.globalAlpha = 1;
 }
 
-/** A click on the reference pane: on a tick (within the strip's hit radius)
- *  it selects that onset as a click on a score note does; elsewhere it seeks
- *  the audition to where that reference moment falls in the recording. */
+/**
+ * A click on the reference pane. On a tick (within the strip's hit radius) it
+ * selects that onset, as a click on a score note does. Elsewhere it seeks the
+ * audition to where that reference moment falls in the recording — or, in
+ * "Click to add" mode or with Shift, adds a tick there (_refAddPoint says
+ * where; a click that would crowd an existing tick selects that one).
+ */
 function _onRefClick(e) {
   const f = _fix;
   if (!f) return;
+  if (f.refClickSwallow) {
+    f.refClickSwallow = false; // the click that ends a marquee drag
+    return;
+  }
   _commitPendingNudge();
   const view = _refView();
   if (!view) return;
   const x = e.clientX - f.els.refTicks.getBoundingClientRect().x;
+  const hit = _refTickHit(view, x);
+  if (hit !== -1) {
+    _clickGroup(hit, e.shiftKey);
+    return;
+  }
+  if (_refAddMode(e.shiftKey)) {
+    const p = _refAddPoint(view, x, e.altKey);
+    if (p.dupIx !== -1) {
+      _select(p.dupIx, { seek: false });
+      _announce("A tick is already there: selected it.");
+    } else {
+      _addRefTickAt(p.refT);
+    }
+    return;
+  }
+  f.lastRefSeek = { refT: view.xToTime(x), t: _refToTarget(view.xToTime(x)) }; // test surface
+  _audSeek(f.lastRefSeek.t);
+  _schedulePlayheadFrame();
+}
+
+/**
+ * A press off a tick on the reference pane may start a marquee, as on the
+ * strip: dragged past DRAG_THRESHOLD_PX it selects the page ticks whose
+ * reference times it spans, and the click that follows is swallowed; a press
+ * that does not move stays a click (seek or add, _onRefClick).
+ */
+function _onRefMouseDown(e) {
+  const f = _fix;
+  const view = f && _refView();
+  if (!view || e.button !== 0) return;
+  const x = e.clientX - f.els.refTicks.getBoundingClientRect().x;
+  if (_refTickHit(view, x) !== -1) return; // a tick: the click selects it
+  e.preventDefault();
+  f.refMarquee = {
+    x0: x,
+    x1: x,
+    startX: e.clientX,
+    moved: false,
+    onMove: (ev) => {
+      const m = f.refMarquee;
+      if (!m) return;
+      m.x1 = ev.clientX - f.els.refTicks.getBoundingClientRect().x;
+      if (Math.abs(ev.clientX - m.startX) >= DRAG_THRESHOLD_PX) m.moved = true;
+      _scheduleRedraw();
+    },
+    onUp: () => _onRefMarqueeUp(f),
+  };
+  window.addEventListener("mousemove", f.refMarquee.onMove);
+  window.addEventListener("mouseup", f.refMarquee.onUp);
+}
+
+function _onRefMarqueeUp(f) {
+  const m = f.refMarquee;
+  if (!m) return;
+  window.removeEventListener("mousemove", m.onMove);
+  window.removeEventListener("mouseup", m.onUp);
+  f.refMarquee = null;
+  if (!m.moved) {
+    _scheduleRedraw();
+    return; // a click: _onRefClick has it
+  }
+  // The click event that follows on the pane is this drag's end, not a click;
+  // released elsewhere there is none, so the swallow lapses at once.
+  f.refClickSwallow = true;
+  setTimeout(() => (f.refClickSwallow = false), 0);
+  const view = _refView();
+  const a = Math.min(m.x0, m.x1);
+  const b = Math.max(m.x0, m.x1);
+  const picked = [];
+  if (view) {
+    for (const g of _groupsOnPage(f.page)) {
+      const gx = view.timeToX(_groupRefT(g));
+      if (gx >= a && gx <= b) picked.push(f.groups.indexOf(g));
+    }
+  }
+  f.multiSel = new Set(picked);
+  if (picked.length && !f.multiSel.has(f.selGroupIx)) _select(picked[0], { seek: false });
+  _scheduleRedraw();
+}
+
+/** Whether a click off a tick adds one (Shift adds in either mode). */
+function _refAddMode(shift) {
+  return _refClickMode === "add" || !!shift;
+}
+
+/** The page tick within the hit radius of pane x, or -1. */
+function _refTickHit(view, x) {
+  const f = _fix;
   let best = -1;
   let bestDist = TICK_HIT_PX + 1;
   for (const g of _groupsOnPage(f.page)) {
@@ -3990,13 +4267,147 @@ function _onRefClick(e) {
       best = f.groups.indexOf(g);
     }
   }
-  if (best !== -1) {
-    _clickGroup(best, e.shiftKey);
-    return;
+  return best;
+}
+
+/**
+ * Where a click at pane x would add a tick: with the Magnet on and no Alt, on
+ * the strongest local peak of the reference's onset curve within
+ * REF_ADD_SNAP_SEC — a peak too weak for the detector is exactly what this is
+ * for — else where clicked. `dupIx` is the tick within REF_ADD_MIN_GAP_SEC of
+ * that place, which the click selects instead, or -1.
+ */
+function _refAddPoint(view, x, alt) {
+  const f = _fix;
+  const clicked = view.xToTime(x);
+  const peak = _snapOnsets && !alt ? _refCurvePeakNear(clicked) : null;
+  const refT = peak ?? clicked;
+  let dupIx = -1;
+  let bestD = REF_ADD_MIN_GAP_SEC;
+  const table = _refOnsetTable();
+  for (let k = _lowerBound(table, refT - REF_ADD_MIN_GAP_SEC); k < table.length && table[k] <= refT + REF_ADD_MIN_GAP_SEC; k++) {
+    const d = Math.abs(table[k] - refT);
+    if (d <= bestD) {
+      bestD = d;
+      dupIx = f.groups.findIndex((g) => g.eventIxs[0] === k);
+    }
   }
-  f.lastRefSeek = { refT: view.xToTime(x), t: _refToTarget(view.xToTime(x)) }; // test surface
-  _audSeek(f.lastRefSeek.t);
-  _schedulePlayheadFrame();
+  return { refT, snapped: peak != null, dupIx };
+}
+
+/** The strongest local maximum of the reference's onset curve within
+ *  REF_ADD_SNAP_SEC of t, refined by a parabola, or null. */
+function _refCurvePeakNear(t) {
+  const L = _fix?.refLanes;
+  if (!L?.onsetFrames) return null;
+  const fr = L.sr / L.onsetHop;
+  const c = Math.round((t - L.onsetT0) * fr);
+  const r = Math.max(1, Math.round(REF_ADD_SNAP_SEC * fr));
+  const env = L.onset;
+  let best = -1;
+  for (let i = Math.max(1, c - r); i <= Math.min(L.onsetFrames - 2, c + r); i++) {
+    if (env[i] >= env[i - 1] && env[i] > env[i + 1] && (best === -1 || env[i] > env[best])) best = i;
+  }
+  if (best === -1) return null;
+  const a = env[best - 1];
+  const b = env[best];
+  const d = env[best + 1];
+  const den = a - 2 * b + d;
+  const off = den < 0 ? Math.max(-0.5, Math.min(0.5, (0.5 * (a - d)) / den)) : 0;
+  return (best + off) / fr + L.onsetT0;
+}
+
+/**
+ * The add-mode guide (while the pointer is over the pane and a click would
+ * add): listening mode's alignment line — dashed straight down from the
+ * pointer, then a solid slant to where the tick would land, straight when it
+ * lands where clicked. Over a tick, or where it would select a crowded one,
+ * the slant goes to that tick.
+ */
+function _paintRefGuide() {
+  const f = _fix;
+  const c = f?.els.refGuide;
+  if (!c) return;
+  const w = f.els.ref.clientWidth;
+  const h = f.els.ref.clientHeight;
+  if (c.width !== w) c.width = w;
+  if (c.height !== h) c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  const hv = f.refHover;
+  const adding = !!hv && _refAddMode(hv.shift) && !f.refMarquee?.moved; // not mid-marquee
+  f.els.ref.classList.toggle("fix-ref-adding", adding);
+  f.refGuide = null; // test surface
+  const view = adding ? _refView() : null;
+  if (!view || _refTickHit(view, hv.x) !== -1) return;
+  const p = _refAddPoint(view, hv.x, hv.alt);
+  const xs = view.timeToX(p.dupIx !== -1 ? _groupRefT(f.groups[p.dupIx]) : p.refT);
+  // The full height of the pane, whatever the pointer's y: only its x means
+  // anything, and a line starting at the pointer suggested otherwise.
+  const lb = f.els.refLanes.offsetHeight;
+  const y0 = 0;
+  const yK = (lb * 5) / 6;
+  const rgb = parseCssColor(
+    getComputedStyle(document.documentElement).getPropertyValue("--color-alignment").trim(),
+  ) || { r: 140, g: 90, b: 90 };
+  const col = `${rgb.r},${rgb.g},${rgb.b}`;
+  // Salient, not subtle (user, 2026-11-04): where the click lands must be
+  // obvious. Each stroke is CASED — a dark line under the colour — so it
+  // reads over the spectrogram's ramp and on light and dark grounds alike.
+  const cased = (path, width, alpha, dash = []) => {
+    ctx.setLineDash(dash);
+    ctx.lineWidth = width + 2;
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    path();
+    ctx.stroke();
+    ctx.lineWidth = width;
+    ctx.strokeStyle = `rgba(${col},${alpha})`;
+    path();
+    ctx.stroke();
+    ctx.setLineDash([]);
+  };
+  // The pointer's line: dashed straight down, then the slant to the landing.
+  cased(
+    () => {
+      ctx.beginPath();
+      ctx.moveTo(hv.x, y0);
+      ctx.lineTo(hv.x, yK);
+    },
+    1.5,
+    0.8,
+    [4, 3],
+  );
+  cased(
+    () => {
+      ctx.beginPath();
+      ctx.moveTo(hv.x, yK);
+      ctx.lineTo(xs, lb);
+    },
+    2,
+    0.95,
+  );
+  f.refGuide = { x: hv.x, xs, refT: p.refT, snapped: p.snapped, selects: p.dupIx !== -1 };
+}
+
+/** Pointer and modifier tracking for the guide. */
+function _onRefHover(e) {
+  const f = _fix;
+  if (!f) return;
+  if (e.type === "mouseleave") {
+    f.refHover = null;
+  } else {
+    const r = f.els.refTicks.getBoundingClientRect();
+    f.refHover = { x: e.clientX - r.x, y: e.clientY - r.y, shift: e.shiftKey, alt: e.altKey };
+  }
+  _paintRefGuide();
+}
+
+function _onRefModifierKey(e) {
+  const f = _fix;
+  if (!f?.refHover || (e.key !== "Shift" && e.key !== "Alt")) return;
+  f.refHover.shift = e.shiftKey;
+  f.refHover.alt = e.altKey;
+  _paintRefGuide();
 }
 
 /**
@@ -4917,7 +5328,8 @@ function _onTickMouseDown(e) {
   const x = e.clientX - rect.x;
   const hit = _tickHit(x);
   if (hit === -1) {
-    // Empty strip: a marquee selects the ticks it spans; a plain click clears.
+    // Empty strip: a marquee selects the ticks it spans; a plain click clears
+    // the selection and seeks there.
     e.preventDefault();
     f.marquee = {
       x0: x,
@@ -5069,7 +5481,15 @@ function _onMarqueeUp(e) {
   const rect = f.els.ticks.getBoundingClientRect();
   const x1 = e.clientX - rect.x;
   if (Math.abs(e.clientX - m.startX) < DRAG_THRESHOLD_PX) {
-    f.multiSel.clear(); // a plain click on empty strip deselects
+    // A plain click on empty strip deselects, and jumps the playhead there —
+    // as a click on the reference pane does (user, 2026-11-04).
+    f.multiSel.clear();
+    const t = _stripXToTime(x1);
+    if (t !== null && f.aud?.ready) {
+      f.lastStripSeek = { t }; // test surface
+      _audSeek(t);
+      _schedulePlayheadFrame();
+    }
     _scheduleRedraw();
     return;
   }
@@ -6982,6 +7402,7 @@ async function _commitGridAnchor(groupIx, t, kind) {
     }
     return;
   }
+  f.lastExactEdits = _exactAnchorsInGrid(grid, refGrid, file, entry.segments, { refT, t });
   _dirtyGridFiles.add(file);
   _recomputeProjection(f);
   // The changed span in the TARGET's time, out to the furthest offset of any
@@ -7173,6 +7594,7 @@ async function _realignPending() {
     }
     return false;
   }
+  if (audio) f.lastExactEdits = _exactAnchorsInGrid(grid, refGrid, file, entry.spans);
   _setRealignBusy(f, false);
   f.pending = [];
   f.lastRealign = { spans: entry.spans.length, realigned, linear: linearFilled };
@@ -7369,6 +7791,88 @@ function _redoGridEntryData(entry) {
 function _pushCommitEntry(entry) {
   if (_batch) _batch.entries.push(entry);
   else pushFixUndoEntry(entry);
+}
+
+/**
+ * After a refill: make every target anchor that sits between raster samples
+ * exact in the grid (anchorExactEdits), touching only the samples just
+ * refilled — `parts` are the entry's segments or spans, whose `after` values
+ * take the edits too, so redo replays them and undo's `before` still holds.
+ * `extra` is the anchor just committed, which a floating drag (auto-anchor
+ * off) does not leave in the record. Returns the number of samples edited.
+ */
+function _exactAnchorsInGrid(grid, refGrid, file, parts, extra = null) {
+  const owner = (k) => parts.find((p) => k >= p.kLo && k < p.kLo + p.interiorCount) || null;
+  const anchors = targetAnchors(_corrections, file).map((a) => ({ refT: a.refT, t: a.t }));
+  if (extra && !anchors.some((a) => Math.abs(a.refT - extra.refT) <= REF_T_EPS)) anchors.push(extra);
+  let edited = 0;
+  for (const a of anchors) {
+    for (const { k, value } of anchorExactEdits(grid, refGrid, a.refT, a.t, (k) => !!owner(k))) {
+      const p = owner(k);
+      grid[k] = value;
+      p.after[k - p.kLo] = value;
+      edited++;
+    }
+  }
+  return edited;
+}
+
+/** Score-less: a tick added at reference time `refT` (one undo step). */
+function _addRefTickAt(refT) {
+  const f = _fix;
+  if (!f?.scoreless || f.drag || f.realignBusy) return false;
+  try {
+    addRefTick(_corrections, refT);
+  } catch (err) {
+    _announce(`Cannot add a tick there: ${err.message.replace(/^correction-model: /, "")}.`);
+    return false;
+  }
+  _syncCorrectionsHeader();
+  pushFixUndoEntry({ type: "fix-ref-tick", op: "add", refT, clockHint: _fmtClock(refT) });
+  _rebuildScorelessTicks(f, refT);
+  f.lastRefTick = { op: "add", refT }; // test surface
+  _announce(`Added a tick at ${_fmtClock(refT)} on the reference.`);
+  return true;
+}
+
+/** Score-less: an added tick removed again — only while it holds no anchor. */
+function _removeRefTick(groupIx) {
+  const f = _fix;
+  const g = f?.groups[groupIx];
+  if (!g || !f.refOnsets?.added[g.eventIxs[0]]) return false;
+  if (_groupTargetAnchor(g)) {
+    _announce("Unanchor the tick before removing it.");
+    return true;
+  }
+  const refT = _groupRefT(g);
+  removeRefTick(_corrections, refT);
+  _syncCorrectionsHeader();
+  pushFixUndoEntry({ type: "fix-ref-tick", op: "remove", refT, clockHint: _fmtClock(refT) });
+  _rebuildScorelessTicks(f, refT);
+  f.lastRefTick = { op: "remove", refT };
+  _announce(`Removed the added tick at ${_fmtClock(refT)}.`);
+  return true;
+}
+
+/** Undo (or redo) an added/removed reference tick: the record changes, and an
+ *  open score-less session rebuilds its ticks around it. */
+function _refTickHop(entry, undo) {
+  const adds = (entry.op === "add") !== undo;
+  if (adds) {
+    try {
+      addRefTick(_corrections, entry.refT);
+    } catch (_) {
+      /* already there */
+    }
+  } else {
+    removeRefTick(_corrections, entry.refT);
+  }
+  _syncCorrectionsHeader();
+  const f = _fix;
+  if (f?.scoreless) _rebuildScorelessTicks(f, entry.refT);
+  _announce(
+    `${undo ? "Undid" : "Redid"} ${entry.op === "add" ? "adding" : "removing"} the tick at ${entry.clockHint}.`,
+  );
 }
 
 /**
@@ -7976,7 +8480,8 @@ function _syncCorrectionsHeader() {
   if (
     !_corrections.anchors.length &&
     !_corrections.gaps.length &&
-    !hasTargetAnchors(_corrections)
+    !hasTargetAnchors(_corrections) &&
+    !_corrections.refTicks?.length
   ) {
     delete header.corrections;
     return;
@@ -8021,6 +8526,10 @@ function _barOfQuarter(q) {
  * off-screen (the cluster-B nicety).
  */
 export function applyFixCorrectionUndo(entry) {
+  if (entry.type === "fix-ref-tick") {
+    _refTickHop(entry, true);
+    return;
+  }
   if (entry.type === "fix-unanchor") {
     _unanchorHop(entry, true);
     _afterHistoryHop(entry, "Undid");
@@ -8076,6 +8585,10 @@ function _undoEntryData(entry) {
 
 /** Apply the REDO of a fix-anchor entry: the after-values and the anchor. */
 export function applyFixCorrectionRedo(entry) {
+  if (entry.type === "fix-ref-tick") {
+    _refTickHop(entry, false);
+    return;
+  }
   if (entry.type === "fix-unanchor") {
     _unanchorHop(entry, false);
     _afterHistoryHop(entry, "Redid");
@@ -8220,8 +8733,12 @@ export function fixCorrectionsDirty() {
   // The grids themselves are listen.js's to compare (its as-loaded copies
   // cover every recording); the record is this module's.
   return (
-    JSON.stringify({ a: _corrections.anchors, g: _corrections.gaps, u: _corrections.audio }) !==
-    _loadedCorrectionsJson
+    JSON.stringify({
+      a: _corrections.anchors,
+      g: _corrections.gaps,
+      u: _corrections.audio,
+      r: _corrections.refTicks || [],
+    }) !== _loadedCorrectionsJson
   );
 }
 
@@ -8244,8 +8761,8 @@ export function fixRevertCorrections() {
   }
   const loaded = _loadedCorrectionsJson
     ? JSON.parse(_loadedCorrectionsJson)
-    : { a: [], g: [], u: {} };
-  _corrections = { anchors: loaded.a, gaps: loaded.g, audio: loaded.u || {} };
+    : { a: [], g: [], u: {}, r: [] };
+  _corrections = { anchors: loaded.a, gaps: loaded.g, audio: loaded.u || {}, refTicks: loaded.r || [] };
   _syncCorrectionsHeader();
   // The grids: listen.js's "Revert all" has already put every recording's
   // as-loaded grid back (it owns those copies), so this module only has to
@@ -8253,6 +8770,10 @@ export function fixRevertCorrections() {
   _dirtyGridFiles.clear();
   const f = _fix;
   if (f) {
+    if (f.scoreless) {
+      const sel = f.groups[f.selGroupIx];
+      _rebuildScorelessTicks(f, sel ? _groupRefT(sel) : 0);
+    }
     _recomputeProjection(f);
     if (f.aud?.ready) _auditionRerender(0, f.aud.duration);
     _scheduleRedraw();
@@ -8341,8 +8862,10 @@ function _onFixKeydown(e) {
         break;
       }
       // A floating nudge is the move in hand: it is dropped, nothing else.
+      // Score-less, an added tick with no anchor goes; an anchored one is
+      // unanchored first, as any tick is.
       if (hadPendingNudge) _cancelPendingNudge();
-      else if (f.groups[f.selGroupIx]) _unanchorGroup(f.selGroupIx);
+      else if (f.groups[f.selGroupIx] && !_removeRefTick(f.selGroupIx)) _unanchorGroup(f.selGroupIx);
       break;
     case "KeyR":
       if (e.altKey) {
@@ -8496,11 +9019,24 @@ function _peaksFromSamples(samples, count = STRIP_PEAK_COUNT) {
   return peaks;
 }
 
+/**
+ * The alignment worker, created on first use. A test's worker factory that
+ * arrives AFTER the load-idle prewarm already booted the real worker (the
+ * prewarm fires ~2.2 s after navigation, so a load slower than that — 6.5 s
+ * measured — left every stubbed spec talking to the real engine) replaces it
+ * at the next use. Production never sets a factory, so this never fires there.
+ */
 function _ensureWorker() {
-  if (_worker) return _worker;
-  const factory =
-    window._listenTest?.fixWorkerFactory || ((url) => new Worker(url));
-  _worker = factory(window.root + "js/align-worker.js");
+  const factory = window._listenTest?.fixWorkerFactory || null;
+  if (_worker && _workerFactory === factory) return _worker;
+  if (_worker) {
+    try {
+      _worker.terminate?.();
+    } catch (_) {}
+    _workerHasSession = false;
+  }
+  _workerFactory = factory;
+  _worker = (factory || ((url) => new Worker(url)))(window.root + "js/align-worker.js");
   return _worker;
 }
 
@@ -8616,14 +9152,14 @@ async function _bootstrap() {
       );
     } else if (d.type === "fix_ref_onsets") {
       // Score-less: the reference's detected onsets — the session's ticks.
-      f.refOnsets = { peaks: Float64Array.from(d.peaks), pat: Float64Array.from(d.pat) };
-      _refOnsetCache = { file: f.refFile, ...f.refOnsets };
+      f.refDetected = { peaks: Float64Array.from(d.peaks), pat: Float64Array.from(d.pat) };
+      _refOnsetCache = { file: f.refFile, ...f.refDetected };
       f.refOnsetsWait?.resolve();
     } else if (d.type === "fix_ref_onsets_error") {
       f.refOnsetsWait?.reject(new Error(d.message));
     } else if (d.type === "fix_ready" && f.scoreless) {
       _workerHasSession = true;
-      if (!f.refOnsets) worker.postMessage({ type: "fix_ref_onsets" });
+      if (!f.refDetected) worker.postMessage({ type: "fix_ref_onsets" });
       f.workerEvents = d.events;
       f.fixReady = true;
       f.timing.worker = d.timing || null;
@@ -8846,6 +9382,7 @@ export function fixTestState() {
         x: Number.isFinite(t) ? _timeToStripX(t) : null,
         refT: f.mode === "audio" ? _groupRefT(g) : null,
         anchored: f.mode === "audio" ? !!_groupTargetAnchor(g) : null,
+        added: f.refOnsets ? !!f.refOnsets.added?.[g.eventIxs[0]] : null,
       };
     }),
     scoreless: !!f.scoreless,
@@ -8857,7 +9394,12 @@ export function fixTestState() {
       : null,
     refLanesPending: !!f.refLanesPending,
     refTicksDrawn: f.refTicksDrawn ?? 0,
+    refClickMode: _refClickMode,
+    refGuide: f.refGuide ? { ...f.refGuide } : null,
+    lastRefTick: f.lastRefTick ? { ...f.lastRefTick } : null,
+    addedRefTicks: [...(_corrections.refTicks || [])],
     lastRefSeek: f.lastRefSeek ? { ...f.lastRefSeek } : null,
+    lastStripSeek: f.lastStripSeek ? { ...f.lastStripSeek } : null,
     refPlayhead: f.refPlayhead ? { ...f.refPlayhead } : null,
     refLanesError: f.refLanesError ?? null,
     refLaneOn: { ..._refLaneOn },

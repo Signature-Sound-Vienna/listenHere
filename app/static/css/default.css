@@ -7975,13 +7975,57 @@ body.fix-mode-open #mark {
   z-index: 3;
   cursor: pointer;
 }
-.fix-ref-playhead {
+.fix-ref-playhead,
+.fix-ref-guide {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   z-index: 4;
   pointer-events: none;
+}
+/* Add mode (Click to add, or Shift): a crosshair for placing precisely. */
+.fix-ref.fix-ref-adding .fix-ref-ticks {
+  cursor: crosshair;
+}
+/* The reference pane's click mode, on the gap between the panes; its own
+   pointer, since the gap around it is the resize handle. */
+#fix-mode.fix-scoreless .fix-gap {
+  position: relative;
+}
+/* Hung from the reference pane's frame, in its colour, open at the top. */
+.fix-ref-click {
+  position: absolute;
+  left: 8px;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.9em;
+  padding: 0 8px 1px 6px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--color-text, #1e293b);
+  background: color-mix(in srgb, var(--color-surface, #f8fafc) 70%, transparent);
+  border: 2px solid var(--color-ref-waveform);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  cursor: default;
+}
+.fix-ref-click-arrow {
+  margin-right: -0.4em;
+  color: var(--color-ref-waveform);
+  font-weight: 600;
+}
+.fix-ref-click label {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fix-ref-click input {
+  margin: 0;
 }
 /* Two recordings on screen: each pane framed in its dominant colour and named
    on a tab at its top-left, like a legend on the frame. Both sit above the
@@ -8015,7 +8059,8 @@ body.fix-mode-open #mark {
   font-size: 11px;
   line-height: 15px;
   color: var(--color-text, #1e293b);
-  background: var(--color-surface, #f8fafc);
+  /* See-through, so the add guide and ticks stay visible beneath. */
+  background: color-mix(in srgb, var(--color-surface, #f8fafc) 70%, transparent);
   border: 2px solid var(--fix-pane-color);
   border-radius: 4px 0 6px 0;
   pointer-events: none;
@@ -8109,7 +8154,8 @@ body.fix-mode-open #mark {
 }
 
 /* A pending spectrogram RECOMPUTE: the lane dims and a badge spins on it. */
-.fix-lane-spec.fix-lane-busy {
+.fix-lane-spec.fix-lane-busy,
+.fix-ref-spec.fix-lane-busy {
   opacity: 0.35;
   transition: opacity 0.2s;
 }
@@ -8225,9 +8271,14 @@ body.fix-mode-open #mark {
   cursor: progress;
 }
 
+/* A positioned canvas with only insets keeps its bitmap's aspect ratio: as the
+   strip resized it shrank toward the left edge, carrying the drawing with it.
+   The strip's canvases take its size explicitly. */
 .fix-ticks {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   z-index: 3;
   cursor: pointer;
 }
@@ -8437,6 +8488,8 @@ body.fix-mode-open #mark {
 .fix-playhead {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   z-index: 4;
   pointer-events: none;
 }

@@ -1,5 +1,25 @@
 # Listen Here! CHANGELOG.md
 
+### 0.114.0 -- Score-less correction: ticks can be added on the reference where none was detected
+
+* Where the reference's onset detector found nothing (a legato change, a soft entry), a click on the reference pane adds a tick, which drags on the recording like any other.
+* "Click to seek" / "Click to add" on the gap between the panes sets what a plain click off a tick does; Shift+click adds in either mode.
+* With the Magnet on, an added tick lands on the onset curve's strongest peak within 60 ms, a peak too weak for the detector included; Alt places it exactly. A click within 50 ms of a tick selects that tick.
+* While a click would add, a guide in listening mode's alignment style runs down from the pointer and slants to where the tick will land, or stays straight when it lands where clicked.
+* Added ticks are saved with the alignment (header.corrections.refTicks), shared by every recording corrected against that reference; adding and removing are undoable, and Delete removes an added tick that holds no anchor.
+* "Magnet on drag" is now "Magnet", as it also places added ticks.
+* The click-mode switch hangs from the reference pane's frame, in its colour, with an ↑ to say which pane it rules.
+* The reference's spectrogram dims and shows the busy badge while a configuration change recomputes it, as the recording's does.
+* Score-less, the balance slider's right-ear icon is a bullseye (the reference) instead of a microphone.
+* Audio-to-audio anchors between the grid's 20 ms raster samples are now exact: a refill starting with a run past the anchor drew its tick up to 100 ms or more off where it was dropped (measured 103 ms), which looked like snapping with the Magnet off. The nearer flanking sample now moves so the grid passes through the anchor.
+* Resizing the panes or lanes no longer squeezes the strip's playhead and ticks toward the left edge until release.
+* The add guide is salient: bolder, cased so it reads on any ground, and the pane's full height whatever the pointer's; the pane tabs and the click-mode switch are translucent so it shows through them.
+* A plain click on empty strip, in both correction modes, jumps the playhead there as a click on the reference pane does; it still clears the selection, and a drag still draws a marquee.
+* A drag on the reference pane draws a marquee that selects the ticks it spans, as on the strip, in either click mode.
+* A test's worker stub installed after the load-idle prewarm has booted the real worker now replaces it: on a load slower than ~2.2 s, stubbed specs had been talking to the real engine.
+* In both correction modes "Page only" and "Replay off" are now "Auto-page" and "Auto-replay", on by default (as the old switches were off), and remembered across reloads.
+* Testing: 41.19, 43.70, and 43.71 new; 43.43's linear-refill check leaves out the two samples flanking the anchor and checks the anchor exact instead; 43.21 and 43.28 follow the renamed switches, 43.21 checks the choice survives a reload, 43.68 the strip click; 42.35 and 43.72 new; the functional suite passes (673, 2 skipped; 13 page-load timeouts late in a slow run passed together on a re-run).
+
 ### 0.113.0 -- Score-less correction plays the reference, warped to the recording, in the right ear
 
 * The audition's right ear is the reference recording played through the alignment: the speed control's stretch worklet gives it its own pitch-preserving grain for each of the recording's, starting where the grids map that grain's centre.

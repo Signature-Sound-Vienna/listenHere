@@ -783,8 +783,8 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await expect(page.locator('#fix-mode > #fix-exit.fix-exit-corner')).toHaveCount(1);
     await expect(page.locator('#fix-exit')).toHaveAttribute('title', /returns to the listening mode/);
     for (const sel of [
-      '#fix-page-only',
-      '#fix-replay-off',
+      '#fix-auto-page',
+      '#fix-auto-replay',
       '.fix-speed',
       '.fix-balance',
       '.fix-title',
@@ -1653,5 +1653,29 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await page.click('#fix-exit');
     await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
     await expect(page.locator('.lh-v6-drawer.open')).toHaveCount(0);
+  });
+
+  test('42.35 a worker stub installed after the load-idle prewarm booted the real worker still takes over: the session talks to the stub', async ({
+    page,
+  }) => {
+    // The prewarm creates the worker ~2.2 s after navigation; a load slower
+    // than that used to leave a stubbed spec on the REAL engine. Force it:
+    // let the prewarm boot the real worker first, then install the stub.
+    await page.addInitScript(() => {
+      const W = window.Worker;
+      (window as any).__realWorkers = 0;
+      (window as any).Worker = function (url: string, opts: any) {
+        (window as any).__realWorkers++;
+        return new W(url, opts);
+      };
+    });
+    await gotoFixMode(page);
+    await page.waitForFunction(() => (window as any).__realWorkers > 0, undefined, { timeout: 15_000 });
+    await installWorkerStub(page);
+    await enterFix(page, REF_ROW);
+    await page.waitForFunction(() =>
+      ((window as any).__fixStub?.posted ?? []).some((p: any) => p.type === 'fix_begin'),
+    );
+    expect(await page.evaluate(() => (window as any).__realWorkers)).toBe(1);
   });
 });

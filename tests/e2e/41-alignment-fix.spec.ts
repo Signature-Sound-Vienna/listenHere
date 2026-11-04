@@ -910,6 +910,105 @@ test.describe('41. alignment correction — model', () => {
     expect(r.legacyAudio).toEqual({});
     expect(r.malformed).toBe(true);
   });
+
+  test('41.19 an anchor between raster samples is made exact: the nearer flanking sample moves, else the other, else both take its time; on a sample, already exact, or not editable, nothing changes; reference ticks serialise', async ({
+    page,
+  }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const lerp = (g: number[], rg: number[], x: number) => {
+        let k = rg.findIndex((v) => v >= x);
+        if (k <= 0) k = 1;
+        return g[k - 1] + ((x - rg[k - 1]) / (rg[k] - rg[k - 1])) * (g[k] - g[k - 1]);
+      };
+      const apply = (g: number[], edits: any[]) => {
+        const out = g.slice();
+        for (const e of edits) out[e.k] = e.value;
+        return out;
+      };
+      const mono = (g: number[]) => g.every((v, k) => k === 0 || v >= g[k - 1]);
+      // The case measured live: a run at the start of the refill after the
+      // anchor put the drawn tick 103 ms off it.
+      const rg = [8.62, 8.64, 8.66, 8.68];
+      const tg = [8.6168, 8.6411, 8.8045, 8.8245];
+      const refT = 8.654783681736541;
+      const t = 8.659095796745943;
+      const measured = m.anchorExactEdits(tg, rg, refT, t);
+      const fixed = apply(tg, measured);
+      // Nearer to the LEFT sample (u = 0.25): the left one moves.
+      const rg2 = [0, 1, 2, 3];
+      const tg2 = [0, 1, 2, 3];
+      const left = m.anchorExactEdits(tg2, rg2, 1.25, 1.4);
+      // Neither one move keeps the grid nondecreasing: both take t.
+      const tg3 = [0, 1, 1.05, 1.06];
+      const both = m.anchorExactEdits(tg3, rg2, 1.5, 1.055);
+      // Only the farther sample editable: it moves instead.
+      const farOnly = m.anchorExactEdits(tg2, rg2, 1.25, 1.4, (k: number) => k === 2);
+      // Refill cannot be honoured (nothing editable), on a sample, already exact.
+      const none = m.anchorExactEdits(tg2, rg2, 1.25, 1.4, () => false);
+      const onSample = m.anchorExactEdits(tg2, rg2, 2, 2.5);
+      const exact = m.anchorExactEdits(tg2, rg2, 1.5, 1.5);
+      // Reference ticks: added sorted, refused when doubled, serialised only when present.
+      const st = m.createCorrections();
+      m.addRefTick(st, 4.2);
+      m.addRefTick(st, 1.1);
+      let doubled = false;
+      try {
+        m.addRefTick(st, 4.2);
+      } catch {
+        doubled = true;
+      }
+      const rec = m.serialize(st, null);
+      const back = m.deserialize(rec).state.refTicks;
+      const removed = m.removeRefTick(st, 1.1);
+      const emptyRec = m.serialize(m.createCorrections(), null);
+      return {
+        measured,
+        fixedAt: lerp(fixed, rg, refT),
+        fixedMono: mono(fixed),
+        beforeAt: lerp(tg, rg, refT),
+        left,
+        leftAt: lerp(apply(tg2, left), rg2, 1.25),
+        both,
+        bothMono: mono(apply(tg3, both)),
+        farOnly,
+        farAt: lerp(apply(tg2, farOnly), rg2, 1.25),
+        none,
+        onSample,
+        exact,
+        ticks: rec.refTicks,
+        back,
+        doubled,
+        removed,
+        after: st.refTicks,
+        emptyHasTicks: 'refTicks' in emptyRec,
+      };
+    });
+    expect(Math.abs(r.beforeAt - 8.659095796745943)).toBeGreaterThan(0.1); // the bug, as measured
+    expect(r.measured).toHaveLength(1);
+    expect(r.measured[0].k).toBe(2); // u ≈ 0.74: the right sample is nearer
+    expect(r.fixedAt).toBeCloseTo(8.659095796745943, 9);
+    expect(r.fixedMono).toBe(true);
+    expect(r.left).toEqual([{ k: 1, value: expect.any(Number) }]);
+    expect(r.leftAt).toBeCloseTo(1.4, 9);
+    expect(r.both).toEqual([
+      { k: 1, value: 1.055 },
+      { k: 2, value: 1.055 },
+    ]);
+    expect(r.bothMono).toBe(true);
+    expect(r.farOnly.map((e: any) => e.k)).toEqual([2]);
+    expect(r.farAt).toBeCloseTo(1.4, 9);
+    expect(r.none).toEqual([]);
+    expect(r.onSample).toEqual([]);
+    expect(r.exact).toEqual([]);
+    expect(r.ticks).toEqual([1.1, 4.2]);
+    expect(r.back).toEqual([1.1, 4.2]);
+    expect(r.doubled).toBe(true);
+    expect(r.removed).toBe(true);
+    expect(r.after).toEqual([4.2]);
+    expect(r.emptyHasTicks).toBe(false);
+  });
 });
 
 /* ------------------------------------------------------------------ */

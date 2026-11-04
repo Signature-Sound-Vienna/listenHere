@@ -658,9 +658,16 @@ function _entryGuard() {
   const stampProblem = _stampCheck(header);
   if (stampProblem) throw new Error(stampProblem);
   const fresh = _freshEventTable();
+  // With the stamp matching the live toolkit (the stamp check passed), the
+  // renderer is ruled out: the MEI itself changed, typically under a moving
+  // URI such as a branch head.
   const stampNote = header?.verovioVersion
-    ? `both stamped and rendered under Verovio ${header.verovioVersion}`
+    ? `Verovio is the same (${header.verovioVersion}) as when the alignment ` +
+      "was made, so the score's encoding has changed since: a tempo mark " +
+      "over grace notes (Verovio times them in milliseconds, so their " +
+      "positions in quarters follow the tempo), or an edited rhythm or tie"
     : "the alignment carries no Verovio version stamp";
+  const fmtQ = (q) => +q.toFixed(4);
   for (const [name, stored, freshQ] of [
     ["score_onset", scoreAlignment.score_onset, fresh.qOn],
     ["score_offset", scoreAlignment.score_offset, fresh.qOff],
@@ -679,7 +686,7 @@ function _entryGuard() {
     throw new Error(
       `${v.mismatchCount} of ${stored.length} ${name} quarters differ from ` +
         `the freshly rendered score MIDI (first at event ${f.index}: stored ` +
-        `${f.stored}, fresh ${f.fresh}); ${stampNote}`,
+        `${fmtQ(f.stored)}, fresh ${fmtQ(f.fresh)}); ${stampNote}`,
     );
   }
   return fresh;
@@ -688,14 +695,22 @@ function _entryGuard() {
 function _refuse(message, detail = null) {
   _lastRefusal = message;
   console.warn("fix mode refused:", message);
+  // One paragraph each: bare strings would run together as adjacent text.
+  const para = (text) => {
+    const p = document.createElement("p");
+    p.textContent = text;
+    return p;
+  };
   return confirmDialog({
     title: "Cannot correct this alignment",
     body: [
-      `Correction mode refused: ${message}.`,
-      detail ??
-        "Corrections made against a score rendering that differs from the " +
-          "one the aligner saw would silently corrupt the alignment, so fix " +
-          "mode only opens when the two match exactly.",
+      para(`Correction mode refused: ${message}.`),
+      para(
+        detail ??
+          "Corrections made against a score rendering that differs from the " +
+            "one the aligner saw would silently corrupt the alignment, so fix " +
+            "mode only opens when the two match exactly.",
+      ),
     ],
     confirmLabel: "Close",
     cancelLabel: null,

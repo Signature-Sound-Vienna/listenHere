@@ -2427,13 +2427,11 @@ function _matchScoreQuartersToSynthSecs(
 }
 
 /**
- * Last resort for ancient alignment JSONs with neither a usable score_onset
- * nor synth_onset: rebuild the aligner's event list from the MIDI. Alignment
- * events are the notes deduplicated per unique (start, end) tick pair, sorted
- * by that pair — NOT one per note, so indexing notes[i] directly (the old
- * fallback) drifted as soon as the first chord sounded.
+ * The aligner's event list from parsed MIDI notes: deduplicated per unique
+ * (start, end) tick pair, sorted by that pair — NOT one per note, so indexing
+ * notes[i] directly drifts as soon as the first chord sounds.
  */
-function _reconstructEventOnsetSecs(expectedLen, notes, tpq, tempoChanges) {
+function _alignerEvents(notes) {
   const seen = new Set();
   const events = [];
   for (const n of notes) {
@@ -2444,6 +2442,47 @@ function _reconstructEventOnsetSecs(expectedLen, notes, tpq, tempoChanges) {
     }
   }
   events.sort((a, b) => a.s - b.s || a.e - b.e);
+  return events;
+}
+
+/** Largest per-event onset shift, in quarters, that still counts as the same
+ *  event. Verovio gives an unaccented grace note a fixed ~31 ms lead, so its
+ *  quarter position moves with the tempo: 116 → 176 bpm moved Fledermaus's
+ *  graces by 0.033 q; the whole lead is 0.125 q even at 240 bpm. */
+const MAX_EVENT_SHIFT_Q = 0.125;
+
+/**
+ * Fallback for when exact quarter matching fails because the score was edited
+ * since the alignment was made (a tempo mark over grace notes, a tie added):
+ * if the fresh MIDI yields the same number of events, each within
+ * MAX_EVENT_SHIFT_Q of its stored onset, event i is still event i, so its
+ * synth seconds come from the fresh MIDI by position. Returns
+ * { onsets, offsets, moved } or null.
+ */
+function _matchScoreEventsByIndex(quarters, expectedLen, notes, tpq, tempoChanges) {
+  if (!quarters || quarters.length !== expectedLen || !notes.length || !tpq)
+    return null;
+  const events = _alignerEvents(notes);
+  if (events.length !== expectedLen) return null;
+  let moved = 0;
+  for (let i = 0; i < expectedLen; i++) {
+    const dq = Math.abs(events[i].s / tpq - quarters[i]);
+    if (dq > MAX_EVENT_SHIFT_Q) return null;
+    if (dq > 1e-6) moved++;
+  }
+  return {
+    onsets: events.map((e) => tickToSec(e.s, tpq, tempoChanges)),
+    offsets: events.map((e) => tickToSec(e.e, tpq, tempoChanges)),
+    moved,
+  };
+}
+
+/**
+ * Last resort for ancient alignment JSONs with neither a usable score_onset
+ * nor synth_onset: rebuild the aligner's event list from the MIDI.
+ */
+function _reconstructEventOnsetSecs(expectedLen, notes, tpq, tempoChanges) {
+  const events = _alignerEvents(notes);
   return Array.from({ length: expectedLen }, (_, i) => {
     if (!events.length) return 0;
     const ev = events[Math.min(i, events.length - 1)];
@@ -2533,11 +2572,12 @@ async function _buildAndPrepareSynthWaveform(
   // note ticks. Stored synth_onset is deliberately NOT preferred: alignment
   // JSONs generated before align-worker.js's tempo-sort fix carry a constant
   // skew wherever the MIDI opens with a real tempo event (the seeded 120 BPM
-  // default won the tick-0 tie), and regeneration cannot be assumed. Stored
-  // values remain the fallback for when matching fails (e.g. a Verovio
-  // upgrade changed the rendered MIDI since the alignment was made).
+  // default won the tick-0 tie), and regeneration cannot be assumed. When the
+  // score was edited since (a tempo change moves grace notes in quarters),
+  // events are matched by position instead; stored values remain the
+  // fallback only when that fails too, since they carry the old tempo map.
   const refOnsets = scoreData.ref_onset || [];
-  const derivedOnsets = _matchScoreQuartersToSynthSecs(
+  let derivedOnsets = _matchScoreQuartersToSynthSecs(
     scoreData.score_onset,
     refOnsets.length,
     notes,
@@ -2545,9 +2585,9 @@ async function _buildAndPrepareSynthWaveform(
     tpq,
     tempoChanges,
   );
+  let derivedOffsets = null;
   if (derivedOnsets) {
-    correctedSynthOnsets = derivedOnsets;
-    correctedSynthOffsets = _matchScoreQuartersToSynthSecs(
+    derivedOffsets = _matchScoreQuartersToSynthSecs(
       scoreData.score_offset,
       refOnsets.length,
       notes,
@@ -2555,6 +2595,26 @@ async function _buildAndPrepareSynthWaveform(
       tpq,
       tempoChanges,
     );
+  } else {
+    const byIndex = _matchScoreEventsByIndex(
+      scoreData.score_onset,
+      refOnsets.length,
+      notes,
+      tpq,
+      tempoChanges,
+    );
+    if (byIndex) {
+      derivedOnsets = byIndex.onsets;
+      derivedOffsets = byIndex.offsets;
+      console.info(
+        `score edited since alignment: ${byIndex.moved} event(s) moved ` +
+          `(≤ ${MAX_EVENT_SHIFT_Q} quarter); synth timing matched by position`,
+      );
+    }
+  }
+  if (derivedOnsets) {
+    correctedSynthOnsets = derivedOnsets;
+    correctedSynthOffsets = derivedOffsets;
     // Tempo curves computed against the stored tables are stale now.
     for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
   } else if (scoreData.score_onset) {

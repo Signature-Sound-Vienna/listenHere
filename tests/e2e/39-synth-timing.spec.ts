@@ -18,6 +18,7 @@
 // and the load survives. 39.3 guards the worker fix itself, running the
 // worker's own embedded Python on a synthetic MIDI whose real tempo event
 // sits at tick 0 — and checks the engine's JS parser agrees on the same bytes.
+// 39.4 guards the by-position match for a score edited since the alignment.
 import { test, expect } from '../support/fixtures';
 import {
   loadLocalAlignment,
@@ -139,17 +140,18 @@ test.describe('39. Synth timing correction', () => {
     expect(skewed.gridSample).toEqual(pristine.gridSample);
   });
 
-  // 39.2 Matching is all-or-nothing: nudge every score_onset off the tick grid
-  // (0.0001 quarters ≪ the 1/TPQ spacing, ≫ the matcher's 1e-6 quantisation)
-  // so no event can match. The load must fall back to the stored tables and
-  // still produce a synth waveform and grid.
+  // 39.2 Both matchers fail: every score_onset moves off the tick grid
+  // (+0.0001 ≫ the quarter matcher's 1e-6 quantisation) AND past the
+  // by-position matcher's 1/8-quarter limit (+0.25), so no event is the same
+  // event. The load must fall back to the stored tables and still produce a
+  // synth waveform and grid.
   test('39.2 unmatchable score_onset falls back to the stored tables and the load survives', async ({
     page,
   }) => {
     test.setTimeout(180_000);
     const fixture = readFixture();
     fixture.body.score.score_onset = fixture.body.score.score_onset.map(
-      (q: number) => q + 0.0001,
+      (q: number) => q + 0.2501,
     );
     await serveFixturesFromDisk(page);
     await serveAlignment(page, fixture);
@@ -232,5 +234,37 @@ test.describe('39. Synth timing correction', () => {
       return m.tickToSec(notes[0].e, tpq, tempoChanges);
     }, midi.toString('base64'));
     expect(jsOffsetSec).toBeCloseTo(offsetSec, 6);
+  });
+
+  // 39.4 A score edited since the alignment (a tempo change moving grace
+  // notes in quarters) breaks the exact quarter match, but the event count
+  // and order still hold: events are matched by position, and the synth
+  // tables come from the fresh MIDI, not the stored ones (which carry the old
+  // tempo map). A/B: every onset nudged off the tick grid by 0.0001 quarter
+  // must give the same corrected tables and grid as the pristine load.
+  test('39.4 a slightly moved score_onset is matched by position, not left on the stored tables', async ({
+    page,
+  }) => {
+    test.setTimeout(180_000);
+    const fixture = readFixture();
+    const nEvents = fixture.body.score.ref_onset.length;
+    await serveFixturesFromDisk(page);
+    await loadLocalAlignment(page);
+    await page.waitForSelector(SYNTH_SEL, { timeout: 60_000 });
+    const pristine = await synthState(page);
+
+    fixture.body.score.score_onset = fixture.body.score.score_onset.map(
+      (q: number) => q + 0.0001,
+    );
+    fixture.body.score.synth_onset = fixture.body.score.synth_onset.map((t: number) => t + 4);
+    await serveAlignment(page, fixture);
+    await loadLocalAlignment(page);
+    await page.waitForSelector(SYNTH_SEL, { timeout: 60_000 });
+    const moved = await synthState(page);
+
+    expect(moved.correctedLen).toBe(nEvents);
+    expect(moved.correctedOffsetsLen).toBe(nEvents);
+    expect(moved.correctedSample).toEqual(pristine.correctedSample);
+    expect(moved.gridSample).toEqual(pristine.gridSample);
   });
 });

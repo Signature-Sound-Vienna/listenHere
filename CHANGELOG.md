@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.111.1 -- A score edited since its alignment keeps a correct score row
+
+* When the score's MEI has changed since the alignment was made (a tempo mark over grace notes moves them in quarters), the score row's timing is matched to the fresh MIDI by event position, as long as every event is within 1/8 quarter of its stored onset, instead of falling back to the stored synth tables, which carry the old tempo map.
+* Correction mode's refusal names the likely cause when Verovio is unchanged (the score's encoding was edited), shows quarters to four decimals, and sets its two paragraphs apart.
+* Testing: 39.2 moved past the limit, 39.4 new; the functional suite passes (661, 2 skipped) but for 49.14, whose 60 s wizard wait a slow CDN outlasted with and without these changes.
+
 ### 0.111.0 -- Score regions: mei-friend annotations load without recordings; the score row shows their region
 
 * Annotations loaded from Solid take the next palette colour, as a new annotation, instead of grey.

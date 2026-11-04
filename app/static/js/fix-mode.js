@@ -32,7 +32,9 @@
 // stamps must be compatible with the live toolkit, and a freshly rendered
 // MIDI's event quarters must match the stored score_onset exactly — anchors
 // laid on a skewed quarters basis are poisoned data, so a mismatch refuses
-// entry with an error naming the stamp.
+// entry with an error naming the stamp. A small mismatch from an edited score
+// (every event still recognisably itself: engine/score-rebase.js) is offered
+// as a re-base onto the current score instead.
 
 import {
   tk,
@@ -52,6 +54,8 @@ import {
   refreshSynthAlignmentGrid,
   refreshRecordingGrid,
   parseCssColor,
+  bumpChangeCounter,
+  updateDirtyState,
 } from "./listen.js";
 import {
   verifyQuarters,
@@ -82,7 +86,14 @@ import {
   serialize as serializeCorrections,
   deserialize as deserializeCorrections,
 } from "./engine/correction-model.js";
-import { parseMidi } from "./engine/mei-synth.js";
+import { parseMidi, tickToSec } from "./engine/mei-synth.js";
+import {
+  planRebase,
+  rebaseScoreTable,
+  rebaseAnchorQuarters,
+  rebaseAudioAnchorQuarters,
+  meiSha256,
+} from "./engine/score-rebase.js";
 import { updateTransportIcons } from "./engine/transport.js";
 import { confirmDialog } from "./annotation/ui-common.js";
 import { recastAnnotationsToAlignment } from "./annotation/index.js";
@@ -226,6 +237,11 @@ const qKey = (q) => Math.round(q * 1e6);
 let _fix = null;
 /** The last entry refusal message (test surface; cleared per attempt). */
 let _lastRefusal = null;
+/** The last re-base offer: { offered, accepted, plan } (test surface; cleared
+ *  per attempt). */
+let _lastRebase = null;
+/** The live MEI text's SHA-256, cached per text: { text, sha }. */
+let _meiShaCache = { text: null, sha: null };
 /** The correction worker. Outlives a fix session (Pyodide is expensive to
  *  boot), disposed of its audio state on exit, terminated on piece reset. */
 let _worker = null;
@@ -648,7 +664,9 @@ function _renderChooser(card) {
 /**
  * Render a fresh MIDI from the loaded MEI and build the aligner's event table
  * from it: notes deduplicated per unique (start, end) tick pair, sorted by
- * that pair — the same construction as score_align and fix_begin.
+ * that pair — the same construction as score_align and fix_begin. sOn/sOff
+ * are the events' synth seconds over the same MIDI's tempo map (a re-base's
+ * synth_onset/synth_offset).
  */
 function _freshEventTable() {
   const midiB64 = tk.renderToMIDI();
@@ -656,7 +674,7 @@ function _freshEventTable() {
   const bin = atob(midiB64);
   const midiBytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) midiBytes[i] = bin.charCodeAt(i);
-  const { tpq, notes } = parseMidi(midiBytes);
+  const { tpq, tempoChanges, notes } = parseMidi(midiBytes);
   const seen = new Set();
   const events = [];
   for (const n of notes) {
@@ -670,8 +688,24 @@ function _freshEventTable() {
   return {
     qOn: events.map((e) => e.s / tpq),
     qOff: events.map((e) => e.e / tpq),
+    sOn: events.map((e) => tickToSec(e.s, tpq, tempoChanges)),
+    sOff: events.map((e) => tickToSec(e.e, tpq, tempoChanges)),
     midiBytes,
   };
+}
+
+/** The live MEI's SHA-256 (null where Web Crypto is unavailable). */
+async function _liveMeiSha256() {
+  const text = getMeiXml();
+  if (_meiShaCache.text !== text) {
+    _meiShaCache = { text, sha: await meiSha256(text) };
+  }
+  return _meiShaCache.sha;
+}
+
+/** Whether the alignment's stamped MEI hash and the live one tell an edit. */
+function _meiHashDiffers(header, liveSha) {
+  return !!(header?.meiSha256 && liveSha && header.meiSha256 !== liveSha);
 }
 
 /** The stamp half of the guard: null when compatible, else the refusal text. */
@@ -698,10 +732,13 @@ function _stampCheck(header) {
 }
 
 /**
- * Run the full entry guard. Returns the fresh event table on success; throws
- * with the honest refusal message otherwise.
+ * Run the full entry guard. Returns { fresh, rebase }: the fresh event table,
+ * and — when the stored quarters differ from it only as far as an edited
+ * score can move the same events — the re-base plan to offer (else null).
+ * Throws with the honest refusal message otherwise. `liveSha` is the live
+ * MEI's SHA-256, which names the cause when the alignment stamped one too.
  */
-function _entryGuard() {
+function _entryGuard(liveSha = null) {
   if (!tk) throw new Error("the score renderer (Verovio) is unavailable");
   if (!getMeiXml()) throw new Error("the score MEI is not loaded");
   const header = loadedAlignmentJSON?.header;
@@ -710,13 +747,22 @@ function _entryGuard() {
   const fresh = _freshEventTable();
   // With the stamp matching the live toolkit (the stamp check passed), the
   // renderer is ruled out: the MEI itself changed, typically under a moving
-  // URI such as a branch head.
-  const stampNote = header?.verovioVersion
-    ? `Verovio is the same (${header.verovioVersion}) as when the alignment ` +
-      "was made, so the score's encoding has changed since: a tempo mark " +
-      "over grace notes (Verovio times them in milliseconds, so their " +
-      "positions in quarters follow the tempo), or an edited rhythm or tie"
-    : "the alignment carries no Verovio version stamp";
+  // URI such as a branch head. The MEI hash, where both sides have one, says
+  // so outright.
+  const editCauses =
+    "a tempo mark over grace notes (Verovio times them in milliseconds, so " +
+    "their positions in quarters follow the tempo), or an edited rhythm or tie";
+  const stampNote = _meiHashDiffers(header, liveSha)
+    ? "the score's MEI has changed since this alignment was made (its " +
+      `SHA-256 differs from the one stamped then): ${editCauses}`
+    : header?.meiSha256 && liveSha
+      ? "the score's MEI is the one this alignment was made against (same " +
+        "SHA-256), so the rendering differs for a reason this check cannot name"
+      : header?.verovioVersion
+        ? `Verovio is the same (${header.verovioVersion}) as when the ` +
+          "alignment was made, so the score's encoding has changed since: " +
+          editCauses
+        : "the alignment carries no Verovio version stamp";
   const fmtQ = (q) => +q.toFixed(4);
   for (const [name, stored, freshQ] of [
     ["score_onset", scoreAlignment.score_onset, fresh.qOn],
@@ -725,6 +771,8 @@ function _entryGuard() {
     if (!Array.isArray(stored)) continue; // ancient JSONs may lack offsets
     const v = verifyQuarters(stored, freshQ);
     if (v.ok) continue;
+    const plan = planRebase(scoreAlignment, fresh);
+    if (plan.ok) return { fresh, rebase: plan };
     if (v.lengthMismatch) {
       throw new Error(
         `the freshly rendered score MIDI has ${freshQ.length} events but ` +
@@ -736,10 +784,94 @@ function _entryGuard() {
     throw new Error(
       `${v.mismatchCount} of ${stored.length} ${name} quarters differ from ` +
         `the freshly rendered score MIDI (first at event ${f.index}: stored ` +
-        `${fmtQ(f.stored)}, fresh ${fmtQ(f.fresh)}); ${stampNote}`,
+        `${fmtQ(f.stored)}, fresh ${fmtQ(f.fresh)}); ${stampNote}; too far ` +
+        `to re-base onto the current score: ${plan.reason}`,
     );
   }
-  return fresh;
+  return { fresh, rebase: null };
+}
+
+/**
+ * Offer to re-base the alignment onto the current score. Resolves true when
+ * the user accepts.
+ */
+function _offerRebase(plan, liveSha) {
+  _lastRebase = { offered: true, accepted: null, plan: { ...plan } };
+  const header = loadedAlignmentJSON?.header;
+  const para = (text) => {
+    const p = document.createElement("p");
+    p.textContent = text;
+    return p;
+  };
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const changes = [];
+  if (plan.onsetsMoved) {
+    changes.push(
+      `${plural(plan.onsetsMoved, "event")} moved by at most ` +
+        `${+plan.maxOnsetShiftQ.toFixed(4)} quarter`,
+    );
+  }
+  if (plan.offsetsMoved) {
+    changes.push(`the end of ${plural(plan.offsetsMoved, "event")} moved`);
+  }
+  const what = _meiHashDiffers(header, liveSha)
+    ? "The score's MEI has changed since this alignment was made"
+    : "The score has changed since this alignment was made";
+  return confirmDialog({
+    title: "Re-base onto the current score?",
+    body: [
+      para(`${what}: ${changes.join("; ")}. Re-base onto the current score?`),
+      para(
+        "Re-basing takes every event's score position from the current " +
+          "score; the recording times and the corrections laid so far stay " +
+          "as they are. It changes the alignment in memory only: save it " +
+          "to keep it.",
+      ),
+    ],
+    icon: "↻",
+    confirmLabel: "Re-base",
+    cancelLabel: "Cancel",
+  });
+}
+
+/**
+ * Re-base the loaded alignment onto the fresh event table, in memory: the
+ * score tables, the anchors' quarters — score↔ref and the audio-to-audio
+ * anchors' q hints — (live, durable, and Revert's baseline: Revert undoes
+ * corrections, not the re-base), and the header's provenance. Recording times
+ * are not touched.
+ */
+function _applyRebase(fresh, plan, liveSha) {
+  rebaseScoreTable(scoreAlignment, fresh);
+  const anchorsMoved = rebaseAnchorQuarters(_corrections.anchors, fresh.qOn);
+  const audioAnchorsMoved = rebaseAudioAnchorQuarters(_corrections.audio, fresh.qOn);
+  const header = loadedAlignmentJSON?.header;
+  if (header?.corrections) {
+    rebaseAnchorQuarters(header.corrections.anchors, fresh.qOn);
+    rebaseAudioAnchorQuarters(header.corrections.audio, fresh.qOn);
+  }
+  const loaded = JSON.parse(_loadedCorrectionsJson);
+  rebaseAnchorQuarters(loaded.a, fresh.qOn);
+  rebaseAudioAnchorQuarters(loaded.u, fresh.qOn);
+  _loadedCorrectionsJson = JSON.stringify(loaded);
+  if (header) {
+    header.rebased = {
+      at: new Date().toISOString(),
+      onsetsMoved: plan.onsetsMoved,
+      offsetsMoved: plan.offsetsMoved,
+      maxOnsetShiftQ: +plan.maxOnsetShiftQ.toFixed(4),
+      anchorsMoved,
+      audioAnchorsMoved,
+    };
+    if (liveSha) header.meiSha256 = liveSha;
+  }
+  bumpChangeCounter();
+  updateDirtyState();
+  console.info(
+    `fix mode: re-based onto the current score — ${plan.onsetsMoved} onsets ` +
+      `and ${plan.offsetsMoved} offsets moved, ${anchorsMoved} anchors and ` +
+      `${audioAnchorsMoved} audio-to-audio anchors followed`,
+  );
 }
 
 function _refuse(message, detail = null) {
@@ -808,6 +940,7 @@ function _derivedFitsPane(w, h) {
 export async function enterFixMode(entryFile) {
   if (_fix) return;
   _lastRefusal = null;
+  _lastRebase = null;
   const t0 = performance.now();
 
   const refFile = getReferenceAudioIx();
@@ -938,15 +1071,29 @@ export async function enterFixMode(entryFile) {
   }
 
   if (!_derived) {
-    // No (valid) prewarm: run the guard now. Refusal tears the skeleton down.
-    let fresh;
+    // No (valid) prewarm: run the guard now. Refusal tears the skeleton down,
+    // and so does declining a re-base onto an edited score.
+    let guard, liveSha;
     try {
-      fresh = _entryGuard();
+      liveSha = await _liveMeiSha256();
+      if (_fix !== f) return;
+      guard = _entryGuard(liveSha);
     } catch (e) {
       _teardownFixDom(f);
       await _refuse(e.message);
       return;
     }
+    if (guard.rebase) {
+      const accepted = await _offerRebase(guard.rebase, liveSha);
+      _lastRebase.accepted = accepted;
+      if (_fix !== f) return;
+      if (!accepted) {
+        _teardownFixDom(f);
+        return;
+      }
+      _applyRebase(guard.fresh, guard.rebase, liveSha);
+    }
+    const fresh = guard.fresh;
     _derived = {
       fresh,
       groups: _buildGroupsFrom(fresh.qOn),
@@ -1428,7 +1575,13 @@ function _runPrewarm() {
   const t0 = performance.now();
   let fresh;
   try {
-    fresh = _entryGuard();
+    const guard = _entryGuard();
+    if (guard.rebase) {
+      // A re-base is the user's call, asked at entry; the layout waits for it.
+      console.info("fix mode: prewarm skipped, the score has changed (entry offers a re-base)");
+      return;
+    }
+    fresh = guard.fresh;
   } catch (e) {
     // The guard would refuse entry; leave everything untouched so the entry
     // click raises the honest dialog itself.
@@ -9243,6 +9396,7 @@ export function fixTestState() {
     return {
       active: false,
       lastRefusal: _lastRefusal,
+      lastRebase: _lastRebase ? { ..._lastRebase } : null,
       prewarmReady: !!(_derived && _derived.pageCount),
       lastEntry: { ..._lastEntry },
       corrections,
@@ -9260,6 +9414,7 @@ export function fixTestState() {
       ? { ..._lastReplay, startT: _replayStartT(_lastReplay.t0, _lastReplay.fixedT) }
       : null,
     lastRefusal: _lastRefusal,
+    lastRebase: _lastRebase ? { ..._lastRebase } : null,
     prewarmReady: !!(_derived && _derived.pageCount),
     lastEntry: { ..._lastEntry },
     chooser,

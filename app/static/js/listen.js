@@ -29,6 +29,7 @@ import {
   synthToWav,
 } from "./engine/mei-synth.js";
 import { convertLegacySecondsTable } from "./engine/legacy-alignment.js";
+import { MAX_EVENT_SHIFT_Q } from "./engine/score-rebase.js";
 import {
   waveformViews,
   isWaveformRendered,
@@ -2444,12 +2445,6 @@ function _alignerEvents(notes) {
   events.sort((a, b) => a.s - b.s || a.e - b.e);
   return events;
 }
-
-/** Largest per-event onset shift, in quarters, that still counts as the same
- *  event. Verovio gives an unaccented grace note a fixed ~31 ms lead, so its
- *  quarter position moves with the tempo: 116 → 176 bpm moved Fledermaus's
- *  graces by 0.033 q; the whole lead is 0.125 q even at 240 bpm. */
-const MAX_EVENT_SHIFT_Q = 0.125;
 
 /**
  * Fallback for when exact quarter matching fails because the score was edited

@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.115.0 -- Correction mode re-bases an alignment onto an edited score
+
+* When the score has changed since the alignment was made, but only as far as an edit moves the same events (same event count, no neighbouring events reordered, every onset within 1/8 quarter), correction mode offers to re-base onto the current score instead of refusing: the score quarters and synth times come from the fresh render, score↔reference anchors and the score hints of audio-to-audio anchors follow their events, recording times are kept, and `header.rebased` records what moved; the change is unsaved until saved. Larger differences still refuse.
+* New alignments carry a SHA-256 of their MEI (`header.meiSha256`), renewed by a re-base; when it differs from the loaded score, the re-base offer and the refusal say that the score's MEI has changed.
+* Testing: 42.36–42.38 new; specs 39 (4), 42 (37), and 43 (65) pass, eight tests that timed out or misplaced a drag under load passing on a re-run; the full suite was not run.
+
 ### 0.114.0 -- Score-less correction: ticks can be added on the reference where none was detected
 
 * Where the reference's onset detector found nothing (a legato change, a soft entry), a click on the reference pane adds a tick, which drags on the recording like any other.

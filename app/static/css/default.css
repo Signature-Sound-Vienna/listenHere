@@ -119,6 +119,12 @@
   /* unplayed wave                */
   --color-waveform-progress: #2d5a7a;
   /* played / progress            */
+  /* Score-less correction's reference pane: a cool scheme per theme, each
+     colour chosen by measurement (CIEDE2000, worst case over normal vision
+     and the three dichromacies) against the theme's waveform, ticks, anchor,
+     selection, and the recording's playhead; >= 3:1 against the ground. */
+  --color-ref-waveform: #1f6b7a;
+  --color-ref-playhead: #169c91;
   --color-waveform-active: rgba(107, 140, 173, 0.10);
   /* active waveform bg */
   --color-waveform-border: #cbd5e1;
@@ -231,6 +237,8 @@
 
   --color-waveform: #4a90a4;
   --color-waveform-progress: #7cc0d0;
+  --color-ref-waveform: #86b6f9;
+  --color-ref-playhead: #2999a3;
   --color-waveform-active: rgba(74, 144, 164, 0.18);
   --color-waveform-border: #334155;
   --color-waveform-tick: #b4bece;
@@ -310,6 +318,8 @@
 
   --color-waveform: #2aa198;
   --color-waveform-progress: #187068;
+  --color-ref-waveform: #235c53;
+  --color-ref-playhead: #08916f;
   --color-waveform-active: rgba(42, 161, 152, 0.12);
   --color-waveform-border: #cdc9b8;
   --color-marker: #dc322f;
@@ -364,6 +374,8 @@
 
   --color-waveform: #8a7340;
   --color-waveform-progress: #5a4920;
+  --color-ref-waveform: #388c94;
+  --color-ref-playhead: #23585c;
   --color-waveform-active: rgba(138, 115, 64, 0.10);
   --color-waveform-border: #c8b99a;
   --color-marker: #b03020;
@@ -418,6 +430,8 @@
 
   --color-waveform: #c07848;
   --color-waveform-progress: #884820;
+  --color-ref-waveform: #089191;
+  --color-ref-playhead: #23585c;
   --color-waveform-active: rgba(192, 120, 72, 0.10);
   --color-waveform-border: #f5c49a;
   --color-marker: #b82020;
@@ -475,6 +489,8 @@
 
   --color-waveform: #50c878;
   --color-waveform-progress: #80e898;
+  --color-ref-waveform: #38948c;
+  --color-ref-playhead: #0df2b9;
   --color-waveform-active: rgba(80, 200, 120, 0.12);
   --color-waveform-border: #44475a;
   --color-waveform-tick: #b0b0d8;
@@ -544,6 +560,8 @@
 
   --color-waveform: #6ab858;
   --color-waveform-progress: #98de80;
+  --color-ref-waveform: #86f9f9;
+  --color-ref-playhead: #09aa9c;
   --color-waveform-active: rgba(106, 184, 88, 0.15);
   --color-waveform-border: #3d6048;
   --color-waveform-tick: #96c882;
@@ -613,6 +631,8 @@
 
   --color-waveform: #5e9ab0;
   --color-waveform-progress: #88c0d0;
+  --color-ref-waveform: #1dc99e;
+  --color-ref-playhead: #999fe5;
   --color-waveform-active: rgba(94, 154, 176, 0.15);
   --color-waveform-border: #4c566a;
   --color-waveform-tick: #aab8ce;
@@ -5164,6 +5184,18 @@ body.lh-v6-edit-active .waveform:not(.lh-v6-selected):hover::before {
   opacity: 1;
 }
 
+/* The synthesised score row can't be selected: no dimming, no selection hint,
+   so the score region it shows keeps its colour. */
+body.lh-v6-edit-active .waveform.lh-v6-unselectable {
+  filter: none;
+  opacity: 1;
+  cursor: default;
+}
+
+body.lh-v6-edit-active .waveform.lh-v6-unselectable::before {
+  content: none;
+}
+
 /* V6 selection indicator: small button at top-left of each waveform.
    Shown only when the file is in the active annotation's targets while the
    drawer is open in edit mode. Defaults to a tick; on hover swaps to a
@@ -6690,6 +6722,10 @@ body.fix-mode-open .lh-v6-pull-tab {
   font-weight: 600;
 }
 
+.lh-v6-access-status.is-error {
+  color: var(--color-warning-text);
+}
+
 .lh-v6-access-btn {
   margin-left: 6px;
   padding: 4px 10px;
@@ -6939,6 +6975,62 @@ body.lh-v6-drawer-open .drawer-btns {
   background: #fee2e2;
   border-color: #dc2626;
   color: #dc2626;
+}
+
+/* A score selection's region: dashed, as on the waveforms, and not removable. */
+.lh-v6-region-row--score {
+  border-style: dashed;
+}
+
+.lh-v6-region-trash--locked,
+.lh-v6-region-trash--locked:hover {
+  opacity: 0.4;
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+/* A recording picked while the score it is placed from is still loading. */
+.waveform.lh-v6-attach-waiting,
+.waveform.lh-v6-attach-waiting * {
+  cursor: progress !important;
+}
+
+.waveform.lh-v6-attach-waiting::after {
+  content: "Waiting for the score\2026";
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 5;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  pointer-events: none;
+}
+
+/* Why a plain drag of a score region did nothing. */
+.lh-v6-score-drag-note {
+  position: fixed;
+  z-index: 10000;
+  max-width: 360px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  transition: opacity 0.5s;
+}
+
+.lh-v6-score-drag-note.is-fading {
+  opacity: 0;
 }
 
 .lh-v6-section-subhead {
@@ -7826,6 +7918,165 @@ body.fix-mode-open #mark {
   flex: 0 0 var(--fix-strip-h);
   min-height: 0;
 }
+/* Score-less sessions: the reference recording's pane takes the score's slot
+   and splits the height 50/50 with the strip; a resized strip keeps a height
+   of its own, apart from score sessions' (_stripH). */
+#fix-mode.fix-scoreless .fix-score {
+  flex: 1 1 0;
+  min-height: 0;
+  background: none;
+}
+#fix-mode.fix-scoreless .fix-score-scroll {
+  display: none;
+}
+#fix-mode.fix-scoreless .fix-strip {
+  flex: 1 1 0;
+}
+#fix-mode.fix-scoreless .fix-strip.fix-strip-sized {
+  flex: 0 0 var(--fix-strip-h);
+}
+/* The reference pane: its lanes stop short of the bottom edge, as the strip's
+   do, leaving a gutter for the playhead's arrowhead and the connectors. */
+.fix-ref {
+  position: absolute;
+  inset: 0;
+}
+.fix-ref-lanes {
+  position: absolute;
+  inset: 0 0 12px 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Its lanes in the strip's proportions (10 : 10 : 4) and borders. */
+.fix-ref-wave,
+.fix-ref-spec,
+.fix-ref-onset {
+  display: block;
+  width: 100%;
+  flex: 10 1 0;
+  min-height: 0;
+}
+.fix-ref-spec,
+.fix-ref-onset {
+  border-top: 1px solid var(--color-waveform-border, #cbd5e1);
+}
+.fix-ref-onset {
+  flex: 4 1 0;
+}
+.fix-ref-lanes > canvas[hidden] {
+  display: none;
+}
+/* The reference's ticks over its lanes (the lane handles sit above them). */
+.fix-ref-ticks {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 3;
+  cursor: pointer;
+}
+.fix-ref-playhead,
+.fix-ref-guide {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 4;
+  pointer-events: none;
+}
+/* Add mode (Click to add, or Shift): a crosshair for placing precisely. */
+.fix-ref.fix-ref-adding .fix-ref-ticks {
+  cursor: crosshair;
+}
+/* The reference pane's click mode, on the gap between the panes; its own
+   pointer, since the gap around it is the resize handle. */
+#fix-mode.fix-scoreless .fix-gap {
+  position: relative;
+}
+/* Hung from the reference pane's frame, in its colour, open at the top. */
+.fix-ref-click {
+  position: absolute;
+  left: 8px;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 0.9em;
+  padding: 0 8px 1px 6px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--color-text, #1e293b);
+  background: color-mix(in srgb, var(--color-surface, #f8fafc) 70%, transparent);
+  border: 2px solid var(--color-ref-waveform);
+  border-top: none;
+  border-radius: 0 0 6px 6px;
+  cursor: default;
+}
+.fix-ref-click-arrow {
+  margin-right: -0.4em;
+  color: var(--color-ref-waveform);
+  font-weight: 600;
+}
+.fix-ref-click label {
+  display: flex;
+  align-items: center;
+  gap: 0.25em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fix-ref-click input {
+  margin: 0;
+}
+/* Two recordings on screen: each pane framed in its dominant colour and named
+   on a tab at its top-left, like a legend on the frame. Both sit above the
+   pane's canvases, change no layout, and let every click through. */
+#fix-mode.fix-scoreless .fix-ref {
+  --fix-pane-color: var(--color-ref-waveform);
+}
+#fix-mode.fix-scoreless .fix-strip {
+  --fix-pane-color: var(--color-waveform);
+}
+#fix-mode.fix-scoreless .fix-ref::after,
+#fix-mode.fix-scoreless .fix-strip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--fix-pane-color);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 6;
+}
+.fix-pane-tab {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 7;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 8px 1px 6px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--color-text, #1e293b);
+  /* See-through, so the add guide and ticks stay visible beneath. */
+  background: color-mix(in srgb, var(--color-surface, #f8fafc) 70%, transparent);
+  border: 2px solid var(--fix-pane-color);
+  border-radius: 4px 0 6px 0;
+  pointer-events: none;
+}
+.fix-pane-tab b {
+  font-weight: 600;
+}
+/* Every reference lane switched off: the pane closes, the strip fills. */
+#fix-mode.fix-scoreless.fix-ref-off .fix-score,
+#fix-mode.fix-scoreless.fix-ref-off .fix-gap {
+  display: none;
+}
+#fix-mode.fix-scoreless.fix-ref-off .fix-strip,
+#fix-mode.fix-scoreless.fix-ref-off .fix-strip.fix-strip-sized {
+  flex: 1 1 auto;
+}
 /* Handles on the boundaries between visible lanes, above the tick canvas. */
 .fix-lane-handle {
   position: absolute;
@@ -7863,6 +8114,15 @@ body.fix-mode-open #mark {
 .fix-spec-cfg[hidden] {
   display: none;
 }
+/* Score-less: the Lanes box's two groups, the recording's and the reference's. */
+.fix-nav-subhead {
+  margin: 0.3em 0 0.05em;
+  font-size: var(--font-size-small, 0.8em);
+  color: var(--color-text-muted, #64748b);
+}
+.fix-nav-subhead:first-child {
+  margin-top: 0;
+}
 /* The Correction region's fieldsets (the listening interface's collapsible
    shape): each body a column of rows, each row a flex line. */
 .fix-fs .fieldset-body > span,
@@ -7894,7 +8154,8 @@ body.fix-mode-open #mark {
 }
 
 /* A pending spectrogram RECOMPUTE: the lane dims and a badge spins on it. */
-.fix-lane-spec.fix-lane-busy {
+.fix-lane-spec.fix-lane-busy,
+.fix-ref-spec.fix-lane-busy {
   opacity: 0.35;
   transition: opacity 0.2s;
 }
@@ -8010,9 +8271,14 @@ body.fix-mode-open #mark {
   cursor: progress;
 }
 
+/* A positioned canvas with only insets keeps its bitmap's aspect ratio: as the
+   strip resized it shrank toward the left edge, carrying the drawing with it.
+   The strip's canvases take its size explicitly. */
 .fix-ticks {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   z-index: 3;
   cursor: pointer;
 }
@@ -8222,6 +8488,8 @@ body.fix-mode-open #mark {
 .fix-playhead {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   z-index: 4;
   pointer-events: none;
 }

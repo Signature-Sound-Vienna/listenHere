@@ -141,7 +141,7 @@
        x1="-1.736151"
        y1="183.3596"
        x2="198.26385"
-       y2="183.3596" /></defs><g
+       y2="183.3596" /><clipPath id="faviconCircle"><circle cx="112" cy="56" r="56" /></clipPath></defs><circle cx="112" cy="56" r="56" fill="#e8f0d0" /><g clip-path="url(#faviconCircle)"><g
      inkscape:label="Layer 1"
      inkscape:groupmode="layer"
      id="layer1"
@@ -177,4 +177,4 @@
        id="path2733" /><path
        style="fill:#96131c;fill-opacity:1;stroke:#96131c;stroke-width:3.04499;stroke-opacity:1"
        d="m 98.226393,26.014815 4.042667,8.259355"
-       id="path480" /></g></svg>
+       id="path480" /></g></g></svg>

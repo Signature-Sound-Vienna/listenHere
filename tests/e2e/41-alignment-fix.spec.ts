@@ -449,6 +449,55 @@ print(json.dumps({
 }))
 `;
 
+// Score-less sessions (B1): the reference alone, no MIDI. The synth only
+// MAKES the test audio here; the session never sees the score.
+const HARNESS_SCORELESS = `
+import base64, json, sys, types
+_js = types.ModuleType('js')
+_js.reportProgress = lambda *a, **k: None
+_js.reportStep = lambda *a, **k: None
+sys.modules['js'] = _js
+
+with open(sys.argv[2]) as f:
+    exec(compile(f.read(), 'align-worker-python', 'exec'))
+
+midi = base64.b64decode(sys.argv[1])
+tpq, tcs, notes = parse_midi(midi)
+end_tick = max(n[1] for n in notes)
+tcs_b = [(0, 500000), (960, 375000)]
+tcs_c = [(0, 666667), (960, 333333)]
+ref = synth_midi_audio(notes, tpq, tcs_b, _tick_to_sec(end_tick, tpq, tcs_b) + 0.5)
+tgt = synth_midi_audio(notes, tpq, tcs_c, _tick_to_sec(end_tick, tpq, tcs_c) + 0.5)
+kb = [_tick_to_sec(q * tpq, tpq, tcs_b) for q in range(17)]
+kc = [_tick_to_sec(q * tpq, tpq, tcs_c) for q in range(17)]
+
+def _raises(fn):
+    try:
+        fn()
+        return False
+    except Exception:
+        return True
+before_begin = _raises(lambda: fix_ref_onsets())
+ev = fix_begin_audio(ref)
+onsets = fix_ref_onsets()
+no_synth = 'synth' not in _fix
+info = fix_target_begin('target.wav', tgt)
+raster = np.arange(0, len(ref) / SR, ANNOTATION_STEP)
+ref_a, t_a, ref_b, t_b = kb[2], kc[2], kb[14], kc[14]
+ks = [float(r) for r in raster if ref_a < r < ref_b]
+prior = [t_a + (r - ref_a) * (t_b - t_a) / (ref_b - ref_a) for r in ks]
+res = fix_target_realign(ref_a, t_a, ref_b, t_b, ks, prior, 4.0, None)
+at_onsets = []
+for q in range(3, 14):
+    i = int(np.argmin([abs(r - kb[q]) for r in ks]))
+    at_onsets.append({'q': q, 'got': res['times'][i], 'true': kc[q]})
+print(json.dumps({
+    'beforeBegin': before_begin, 'events': ev, 'refDur': len(ref) / SR,
+    'hop': onsets['hop'], 'peaks': onsets['peaks'], 'pat': onsets['pat'], 'kb': kb,
+    'noSynth': no_synth, 'info': info, 'atOnsets': at_onsets,
+}))
+`;
+
 /** Run one python harness over align-worker.js's own PYTHON_CODE blob. */
 function execPython(harness: string, midiB64: string): any {
   const workerSrc = fs.readFileSync(
@@ -505,6 +554,12 @@ let scalesOut: any = null;
 function runScalesScenario(): any {
   if (!scalesOut) scalesOut = execPython(HARNESS_SCALES, buildMidiA().toString('base64'));
   return scalesOut;
+}
+
+let scorelessOut: any = null;
+function runScorelessScenario(): any {
+  if (!scorelessOut) scorelessOut = execPython(HARNESS_SCORELESS, buildMidiA().toString('base64'));
+  return scorelessOut;
 }
 
 let targetOut: any = null;
@@ -854,6 +909,105 @@ test.describe('41. alignment correction — model', () => {
     expect(r.emptyHasAudio).toBe(false);
     expect(r.legacyAudio).toEqual({});
     expect(r.malformed).toBe(true);
+  });
+
+  test('41.19 an anchor between raster samples is made exact: the nearer flanking sample moves, else the other, else both take its time; on a sample, already exact, or not editable, nothing changes; reference ticks serialise', async ({
+    page,
+  }) => {
+    await page.goto(MODULE_URL);
+    const r = await page.evaluate(async () => {
+      const m: any = await import('/static/js/engine/correction-model.js');
+      const lerp = (g: number[], rg: number[], x: number) => {
+        let k = rg.findIndex((v) => v >= x);
+        if (k <= 0) k = 1;
+        return g[k - 1] + ((x - rg[k - 1]) / (rg[k] - rg[k - 1])) * (g[k] - g[k - 1]);
+      };
+      const apply = (g: number[], edits: any[]) => {
+        const out = g.slice();
+        for (const e of edits) out[e.k] = e.value;
+        return out;
+      };
+      const mono = (g: number[]) => g.every((v, k) => k === 0 || v >= g[k - 1]);
+      // The case measured live: a run at the start of the refill after the
+      // anchor put the drawn tick 103 ms off it.
+      const rg = [8.62, 8.64, 8.66, 8.68];
+      const tg = [8.6168, 8.6411, 8.8045, 8.8245];
+      const refT = 8.654783681736541;
+      const t = 8.659095796745943;
+      const measured = m.anchorExactEdits(tg, rg, refT, t);
+      const fixed = apply(tg, measured);
+      // Nearer to the LEFT sample (u = 0.25): the left one moves.
+      const rg2 = [0, 1, 2, 3];
+      const tg2 = [0, 1, 2, 3];
+      const left = m.anchorExactEdits(tg2, rg2, 1.25, 1.4);
+      // Neither one move keeps the grid nondecreasing: both take t.
+      const tg3 = [0, 1, 1.05, 1.06];
+      const both = m.anchorExactEdits(tg3, rg2, 1.5, 1.055);
+      // Only the farther sample editable: it moves instead.
+      const farOnly = m.anchorExactEdits(tg2, rg2, 1.25, 1.4, (k: number) => k === 2);
+      // Refill cannot be honoured (nothing editable), on a sample, already exact.
+      const none = m.anchorExactEdits(tg2, rg2, 1.25, 1.4, () => false);
+      const onSample = m.anchorExactEdits(tg2, rg2, 2, 2.5);
+      const exact = m.anchorExactEdits(tg2, rg2, 1.5, 1.5);
+      // Reference ticks: added sorted, refused when doubled, serialised only when present.
+      const st = m.createCorrections();
+      m.addRefTick(st, 4.2);
+      m.addRefTick(st, 1.1);
+      let doubled = false;
+      try {
+        m.addRefTick(st, 4.2);
+      } catch {
+        doubled = true;
+      }
+      const rec = m.serialize(st, null);
+      const back = m.deserialize(rec).state.refTicks;
+      const removed = m.removeRefTick(st, 1.1);
+      const emptyRec = m.serialize(m.createCorrections(), null);
+      return {
+        measured,
+        fixedAt: lerp(fixed, rg, refT),
+        fixedMono: mono(fixed),
+        beforeAt: lerp(tg, rg, refT),
+        left,
+        leftAt: lerp(apply(tg2, left), rg2, 1.25),
+        both,
+        bothMono: mono(apply(tg3, both)),
+        farOnly,
+        farAt: lerp(apply(tg2, farOnly), rg2, 1.25),
+        none,
+        onSample,
+        exact,
+        ticks: rec.refTicks,
+        back,
+        doubled,
+        removed,
+        after: st.refTicks,
+        emptyHasTicks: 'refTicks' in emptyRec,
+      };
+    });
+    expect(Math.abs(r.beforeAt - 8.659095796745943)).toBeGreaterThan(0.1); // the bug, as measured
+    expect(r.measured).toHaveLength(1);
+    expect(r.measured[0].k).toBe(2); // u ≈ 0.74: the right sample is nearer
+    expect(r.fixedAt).toBeCloseTo(8.659095796745943, 9);
+    expect(r.fixedMono).toBe(true);
+    expect(r.left).toEqual([{ k: 1, value: expect.any(Number) }]);
+    expect(r.leftAt).toBeCloseTo(1.4, 9);
+    expect(r.both).toEqual([
+      { k: 1, value: 1.055 },
+      { k: 2, value: 1.055 },
+    ]);
+    expect(r.bothMono).toBe(true);
+    expect(r.farOnly.map((e: any) => e.k)).toEqual([2]);
+    expect(r.farAt).toBeCloseTo(1.4, 9);
+    expect(r.none).toEqual([]);
+    expect(r.onSample).toEqual([]);
+    expect(r.exact).toEqual([]);
+    expect(r.ticks).toEqual([1.1, 4.2]);
+    expect(r.back).toEqual([1.1, 4.2]);
+    expect(r.doubled).toBe(true);
+    expect(r.removed).toBe(true);
+    expect(r.after).toEqual([4.2]);
+    expect(r.emptyHasTicks).toBe(false);
   });
 });
 
@@ -1293,6 +1447,32 @@ test.describe('41. alignment correction — worker segment realign', () => {
     for (let k = 1; k < 16; k++) {
       const nearest = Math.min(...out.targetPeaks.map((p: number) => Math.abs(p - out.kc[k])));
       expect(nearest, `target onset ${k} at ${out.kc[k]}`).toBeLessThan(0.05);
+    }
+  });
+
+  test('41.18 score-less session: the reference alone without MIDI, its detected onsets with one perceived attack each, and the target refill on top', async () => {
+    test.setTimeout(120_000);
+    const out = runScorelessScenario();
+    expect(out.beforeBegin).toBe(true);
+    expect(out.events).toEqual({ n_events: 0, ref_duration: out.refDur });
+    expect(out.noSynth).toBe(true);
+    // The tick set: at the lanes' default hop, one attack per peak, each
+    // near its peak (usually before it, not always), and a peak at every
+    // onset of the ladder after the first (t = 0 is undetectable, as in 41.11).
+    expect(out.hop).toBe(512);
+    expect(out.pat).toHaveLength(out.peaks.length);
+    expectMonotonic(out.peaks);
+    out.pat.forEach((p: number, k: number) => {
+      expect(Math.abs(out.peaks[k] - p)).toBeLessThan(0.1);
+    });
+    for (let q = 1; q < 16; q++) {
+      const nearest = Math.min(...out.peaks.map((p: number) => Math.abs(p - out.kb[q])));
+      expect(nearest, `reference onset ${q} at ${out.kb[q]}`).toBeLessThan(0.05);
+    }
+    // The target ops need no score: the refill recovers the onsets.
+    expect(out.info.name).toBe('target.wav');
+    for (const o of out.atOnsets) {
+      expect(Math.abs(o.got - o.true), `quarter ${o.q}: got ${o.got}, true ${o.true}`).toBeLessThan(0.1);
     }
   });
 });

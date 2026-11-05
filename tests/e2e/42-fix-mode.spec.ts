@@ -7,15 +7,18 @@
 // fix_begin) — the worker JS fix-message plumbing spec 41 deferred to here.
 //
 // The worker is STUBBED via the _listenTest.fixWorkerFactory seam in every
-// test that enters fix mode: the real worker loads Pyodide from a CDN, which
-// a hermetic suite must never reach. The stub records the messages the app
-// posts (42.13 asserts the fix_begin payload shape) and replies like the real
+// test that enters fix mode: the real worker boots Pyodide (served from
+// tests/fixtures/ since 0.115.1, but still seconds per test). The stub
+// records the messages the app posts (42.13 asserts the fix_begin payload shape) and replies like the real
 // worker would. The real-worker path was verified manually end to end
 // (Pyodide boot → fix_begin → fix_ready) during the increment's build.
 import { test, expect } from '../support/fixtures';
-import { stubExternalMei } from '../support/helpers';
+import { stubExternalMei, FIXTURES_DIR } from '../support/helpers';
 import { env } from '../support/env';
 import type { Page } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
+import { createHash } from 'crypto';
 
 const SYNTH_ROW = 'Score (synthesised from MEI)';
 const REF_ROW = 'audio-b.mp3';
@@ -343,6 +346,184 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     expect(st.lastRefusal).toMatch(/1 of 725 score_onset quarters differ/);
     expect(st.lastRefusal).toContain('first at event 3');
     expect(st.lastRefusal).toContain('no Verovio version stamp');
+  });
+
+  // An edited score (a tempo mark over grace notes, a tie) moves events a
+  // little in quarters. Simulated by nudging the STORED tables instead: events
+  // 6 and 14 (both well clear of their neighbours) sit 0.05 q early, event 7's
+  // end 0.5 q late, and event 6's synth time is stale.
+  const STALE_SHA = '0'.repeat(64);
+  const nudge = (json: any) => {
+    const s = json.body.score;
+    const orig = {
+      on6: s.score_onset[6],
+      on10: s.score_onset[10],
+      on14: s.score_onset[14],
+      synth6: s.synth_onset[6],
+      ref: s.ref_onset.slice(),
+    };
+    s.score_onset[6] -= 0.05;
+    s.score_onset[14] -= 0.05;
+    s.score_offset[7] += 0.5;
+    s.synth_onset[6] += 1;
+    json.header.meiSha256 = STALE_SHA;
+    json.header.corrections = {
+      version: 1,
+      base: null,
+      anchors: [
+        { i: 6, q: s.score_onset[6], t: s.ref_onset[6], kind: 'approve', ts: null },
+        { i: 10, q: s.score_onset[10], t: s.ref_onset[10], kind: 'approve', ts: null },
+      ],
+      gaps: [],
+      // An audio-to-audio anchor laid on (nudged) event 14: its q is a hint.
+      audio: {
+        'audio-a.mp3': {
+          base: null,
+          anchors: [
+            {
+              refT: s.ref_onset[14],
+              t: s.ref_onset[14] + 0.3,
+              kind: 'drag',
+              ts: null,
+              i: 14,
+              q: s.score_onset[14],
+            },
+          ],
+        },
+      },
+    };
+    return orig;
+  };
+
+  test('42.36 a score edited since the alignment is offered a re-base: Cancel leaves it untouched, Re-base takes the fresh quarters, the anchors follow, recording times stay', async ({
+    page,
+  }) => {
+    let orig: any;
+    await gotoFixMode(page, (json) => {
+      orig = nudge(json);
+    });
+    await installWorkerStub(page);
+    await page.click('#fix-chooser-open');
+    await page.click('#fix-chooser-open-ref');
+    const dialog = page.locator('.lh-v6-confirm-dialog');
+    await expect(dialog).toContainText(
+      "The score's MEI has changed since this alignment was made: 2 events " +
+        'moved by at most 0.05 quarter; the end of 1 event moved. Re-base ' +
+        'onto the current score?',
+    );
+    let st = await fixState(page);
+    expect(st.lastRefusal).toBeNull();
+    expect(st.lastRebase.plan).toMatchObject({
+      onsetsMoved: 2,
+      offsetsMoved: 1,
+    });
+
+    // Cancel: no entry, nothing changed.
+    await page.click('.lh-v6-confirm-cancel');
+    await page.waitForFunction(
+      () => (window as any)._listenTest.fix.lastRebase?.accepted === false,
+    );
+    st = await fixState(page);
+    expect(st.active).toBe(false);
+    expect(await page.locator('#fix-mode').count()).toBe(0);
+    let json = await page.evaluate(() => (window as any)._listenTest.alignmentJSON);
+    expect(json.body.score.score_onset[6]).toBeCloseTo(orig.on6 - 0.05, 9);
+    expect(json.header.rebased).toBeUndefined();
+    expect(json.header.meiSha256).toBe(STALE_SHA);
+
+    // Re-base: the entry proceeds on the current score.
+    await page.click('#fix-chooser-open');
+    await page.click('#fix-chooser-open-ref');
+    await page.click('.lh-v6-confirm-ok');
+    await page.waitForFunction(() => (window as any)._listenTest.fix.active);
+    st = await fixState(page);
+    expect(st.lastRefusal).toBeNull();
+    expect(st.lastRebase.accepted).toBe(true);
+    expect(st.nEvents).toBe(725);
+
+    json = await page.evaluate(() => (window as any)._listenTest.alignmentJSON);
+    const s = json.body.score;
+    expect(s.score_onset[6]).toBeCloseTo(orig.on6, 9);
+    expect(s.score_onset[14]).toBeCloseTo(orig.on14, 9);
+    expect(s.synth_onset[6]).toBeCloseTo(orig.synth6, 3);
+    expect(s.ref_onset).toEqual(orig.ref);
+    // The anchor on a moved event follows it; the other was already right.
+    const anchors = json.header.corrections.anchors;
+    expect(anchors.find((a: any) => a.i === 6).q).toBeCloseTo(orig.on6, 9);
+    expect(anchors.find((a: any) => a.i === 10).q).toBeCloseTo(orig.on10, 9);
+    expect(
+      st.corrections.anchors.find((a: any) => a.i === 6).q,
+    ).toBeCloseTo(orig.on6, 9);
+    // The audio-to-audio anchor's q hint follows too; its times stay.
+    for (const target of [
+      json.header.corrections.audio['audio-a.mp3'].anchors[0],
+      st.corrections.audio['audio-a.mp3'].anchors[0],
+    ]) {
+      expect(target.q).toBeCloseTo(orig.on14, 9);
+      expect(target.refT).toBe(orig.ref[14]);
+      expect(target.t).toBe(orig.ref[14] + 0.3);
+      expect(target.kind).toBe('drag');
+    }
+    expect(json.header.rebased).toMatchObject({
+      onsetsMoved: 2,
+      offsetsMoved: 1,
+      maxOnsetShiftQ: 0.05,
+      anchorsMoved: 1,
+      audioAnchorsMoved: 1,
+    });
+    expect(Date.parse(json.header.rebased.at)).not.toBeNaN();
+    // 2c: the hash now names the MEI the tables were re-based onto.
+    const mei = fs.readFileSync(
+      path.join(FIXTURES_DIR, 'Schumann-Clara_Romanze-ohne-Opuszahl_a-Moll.mei'),
+    );
+    expect(json.header.meiSha256).toBe(
+      createHash('sha256').update(mei).digest('hex'),
+    );
+    // In memory only, so there is unsaved work to save.
+    expect(
+      await page.evaluate(() => (window as any)._listenTest.hasUnsavedWork),
+    ).toBe(true);
+  });
+
+  test('42.37 a shift beyond what an edit can move an event still refuses, naming the MEI change', async ({
+    page,
+  }) => {
+    await gotoFixMode(page, (json) => {
+      json.body.score.score_onset[6] -= 0.2;
+      json.header.meiSha256 = STALE_SHA;
+    });
+    await installWorkerStub(page);
+    await page.click('#fix-chooser-open');
+    await page.click('#fix-chooser-open-ref');
+    await page.waitForSelector('.lh-v6-confirm-dialog');
+    const st = await fixState(page);
+    expect(st.active).toBe(false);
+    expect(st.lastRebase).toBeNull();
+    expect(st.lastRefusal).toMatch(/1 of 725 score_onset quarters differ/);
+    expect(st.lastRefusal).toContain(
+      "the score's MEI has changed since this alignment was made",
+    );
+    expect(st.lastRefusal).toContain(
+      'too far to re-base onto the current score: event 6 moved 0.2 quarter',
+    );
+  });
+
+  test('42.38 a small shift that changes the order of neighbouring events still refuses', async ({
+    page,
+  }) => {
+    await gotoFixMode(page, (json) => {
+      // Events 3–5 share an onset: moving 4 alone off it could pair events
+      // with the wrong neighbours.
+      json.body.score.score_onset[4] += 0.05;
+    });
+    await installWorkerStub(page);
+    await page.click('#fix-chooser-open');
+    await page.click('#fix-chooser-open-ref');
+    await page.waitForSelector('.lh-v6-confirm-dialog');
+    const st = await fixState(page);
+    expect(st.active).toBe(false);
+    expect(st.lastRebase).toBeNull();
+    expect(st.lastRefusal).toContain('events 3 and 4 changed order');
   });
 
   test('42.6 entry replaces the content pane with the score over the strip', async ({
@@ -783,8 +964,8 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await expect(page.locator('#fix-mode > #fix-exit.fix-exit-corner')).toHaveCount(1);
     await expect(page.locator('#fix-exit')).toHaveAttribute('title', /returns to the listening mode/);
     for (const sel of [
-      '#fix-page-only',
-      '#fix-replay-off',
+      '#fix-auto-page',
+      '#fix-auto-replay',
       '.fix-speed',
       '.fix-balance',
       '.fix-title',
@@ -1653,5 +1834,29 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     await page.click('#fix-exit');
     await page.waitForFunction(() => !(window as any)._listenTest.fix.active);
     await expect(page.locator('.lh-v6-drawer.open')).toHaveCount(0);
+  });
+
+  test('42.35 a worker stub installed after the load-idle prewarm booted the real worker still takes over: the session talks to the stub', async ({
+    page,
+  }) => {
+    // The prewarm creates the worker ~2.2 s after navigation; a load slower
+    // than that used to leave a stubbed spec on the REAL engine. Force it:
+    // let the prewarm boot the real worker first, then install the stub.
+    await page.addInitScript(() => {
+      const W = window.Worker;
+      (window as any).__realWorkers = 0;
+      (window as any).Worker = function (url: string, opts: any) {
+        (window as any).__realWorkers++;
+        return new W(url, opts);
+      };
+    });
+    await gotoFixMode(page);
+    await page.waitForFunction(() => (window as any).__realWorkers > 0, undefined, { timeout: 15_000 });
+    await installWorkerStub(page);
+    await enterFix(page, REF_ROW);
+    await page.waitForFunction(() =>
+      ((window as any).__fixStub?.posted ?? []).some((p: any) => p.type === 'fix_begin'),
+    );
+    expect(await page.evaluate(() => (window as any).__realWorkers)).toBe(1);
   });
 });

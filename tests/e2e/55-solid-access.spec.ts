@@ -614,4 +614,37 @@ test.describe('55. Annotation folders and public access', () => {
       'https://primal.mdw.ac.at/?obj=' + encodeURIComponent(flat['oa/top']),
     );
   });
+
+  // Reported 2026-11-04 (on a train): a change that died with the connection
+  // left a greyed-out Make public whose tooltip was the network error, and only
+  // a reload brought the button back.
+  test('55.19 when the connection drops during a change, the card says access is unknown and Try again reads it afresh', async ({ loadedPage: page }) => {
+    const pod = await wacPod(page);
+    let offline = false;
+    await page.route(POD + '**', (route) => (offline ? route.abort('failed') : route.fallback()));
+    await page.locator('.lh-v6-pull-tab').click();
+    await expect(page.locator('.lh-v6-drawer')).toHaveClass(/open/);
+    await postAnnotation(page);
+    const bar = page.locator('.lh-v6-publish-bar');
+    await expect(bar.locator('.lh-v6-access-status')).toHaveText('Private');
+
+    offline = true;
+    const alerted = new Promise<string>((resolve) => page.once('dialog', (d) => { resolve(d.message()); d.accept(); }));
+    await bar.locator('.lh-v6-access-btn').click();
+    await page.getByRole('button', { name: 'Make public' }).last().click();
+    expect(await alerted).toMatch(/^Making public failed/);
+    // The read-back after the failure fails too: no dead button.
+    await expect(bar.locator('.lh-v6-access-status')).toHaveText('Access unknown');
+    const retry = bar.locator('.lh-v6-access-retry');
+    await expect(retry).toBeEnabled();
+    await expect(retry).toHaveText('Try again');
+
+    offline = false;
+    pod.log.length = 0;
+    await retry.click();
+    await expect(bar.locator('.lh-v6-access-status')).toHaveText('Private', { timeout: 15_000 });
+    await expect(bar.locator('.lh-v6-access-btn')).toHaveText('Make public');
+    await expect(bar.locator('.lh-v6-access-btn')).toBeEnabled();
+    expect(aclPuts(pod)).toEqual([]);
+  });
 });

@@ -237,4 +237,41 @@ test.describe('17. Alignment Wizard', () => {
     expect(values).not.toContain(accented.normalize('NFD'));
   });
 
+  // 17.23 The URI fields remember committed http(s) values across page loads,
+  // most recent first, as a datalist; the two prefix fields share one history.
+  test('17.23 URI fields offer earlier entries after a reload', async ({ page }) => {
+    const toUrisStep = async () => {
+      await page.goto('/?mode=align');
+      await page.waitForLoadState('networkidle');
+      await page.locator('#align-file-input').setInputFiles([
+        path.join(FIXTURES, 'audio-a.mp3'),
+        path.join(FIXTURES, 'audio-b.mp3'),
+      ]);
+      await filesListed(page);
+      await stepBy(page, '#align-next-btn'); // → Step 2
+      await stepBy(page, '#align-next-btn'); // → Step 3
+    };
+    const commit = async (selector: string, value: string) => {
+      await page.fill(selector, value);
+      await page.locator(selector).press('Tab'); // blur fires change
+    };
+    const options = (selector: string) =>
+      page.locator(selector).evaluate((el) =>
+        [...((el as HTMLInputElement).list?.options ?? [])].map((o) => o.value),
+      );
+
+    await toUrisStep();
+    await commit('#align-ld-uri-prefix', 'https://a.example/wav/');
+    await commit('#align-ld-uri-prefix', 'not a uri');
+    await commit('#align-ld-uri-prefix', 'https://b.example/wav/');
+    await commit('#align-mei-input', 'https://c.example/score.mei');
+
+    await toUrisStep();
+    expect(await options('#align-ld-uri-prefix')).toEqual([
+      'https://b.example/wav/',
+      'https://a.example/wav/',
+    ]);
+    expect(await options('#align-mei-input')).toEqual(['https://c.example/score.mei']);
+  });
+
 });

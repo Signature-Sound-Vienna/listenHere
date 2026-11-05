@@ -28,7 +28,31 @@ const ANCHOR_KINDS = ['drag', 'approve', 'gap'];
 /** Fresh empty correction state. `audio` holds the audio-to-audio anchors
  *  per target recording (see the TARGET ANCHOR block below). */
 export function createCorrections() {
-  return { anchors: [], gaps: [], audio: {} };
+  return { anchors: [], gaps: [], audio: {}, refTicks: [] };
+}
+
+/**
+ * Score-less sessions: ticks the user added on the reference where its onset
+ * detector found none — reference times, sorted, shared by every recording
+ * corrected against that reference. Adding one within REF_T_EPS of another
+ * is refused; removing one that is not there returns false.
+ */
+export function addRefTick(state, refT) {
+  if (!Number.isFinite(refT)) throw new Error("correction-model: a reference tick needs a finite time");
+  const ticks = (state.refTicks ||= []);
+  if (ticks.some((t) => Math.abs(t - refT) < REF_T_EPS)) {
+    throw new Error("correction-model: a reference tick is already there");
+  }
+  ticks.push(refT);
+  ticks.sort((a, b) => a - b);
+}
+
+export function removeRefTick(state, refT) {
+  const ticks = state.refTicks || [];
+  const k = ticks.findIndex((t) => Math.abs(t - refT) < REF_T_EPS);
+  if (k === -1) return false;
+  ticks.splice(k, 1);
+  return true;
 }
 
 /** The anchor pinning event i, or null. */
@@ -361,6 +385,51 @@ export function rasterBefore(refGrid, x) {
   return lo - 1;
 }
 
+/**
+ * The grid edits that make a target anchor BETWEEN raster samples exact: the
+ * grid's piecewise-linear value at refT must be t, but a refill only meets
+ * the anchor at its raster corners, and where its path starts with a run (the
+ * target moving while the reference holds) the interpolation across the two
+ * flanking samples missed it — by 103 ms, measured (2026-11-04). The NEARER
+ * flanking sample moves (the smaller change: |miss| / u against |miss| / (1 −
+ * u)), else the other, keeping the grid nondecreasing; failing both, both
+ * take t (a flat step, which the grids already carry in plenty). Only
+ * samples `editable(k)` allows are touched. Returns [{k, value}], empty when
+ * the anchor is on a sample (applyTargetAnchorValue owns it), already exact,
+ * outside the raster, or cannot be honoured.
+ */
+export function anchorExactEdits(grid, refGrid, refT, t, editable = () => true) {
+  if (rasterAt(refGrid, refT) !== -1) return [];
+  const right = rasterAfter(refGrid, refT);
+  const left = right - 1;
+  if (left < 0 || right >= refGrid.length) return [];
+  const u = (refT - refGrid[left]) / (refGrid[right] - refGrid[left]);
+  const a0 = grid[left];
+  const b0 = grid[right];
+  if (Math.abs(a0 + u * (b0 - a0) - t) <= 1e-9) return [];
+  const lo = left > 0 ? grid[left - 1] : -Infinity;
+  const hi = right < grid.length - 1 ? grid[right + 1] : Infinity;
+  const moveRight = () => {
+    if (!editable(right) || !(a0 <= t)) return null;
+    const b = a0 + (t - a0) / u;
+    return b <= hi ? [{ k: right, value: b }] : null;
+  };
+  const moveLeft = () => {
+    if (!editable(left) || !(t <= b0)) return null;
+    const a = (t - u * b0) / (1 - u);
+    return a >= lo ? [{ k: left, value: a }] : null;
+  };
+  const one = u >= 0.5 ? moveRight() || moveLeft() : moveLeft() || moveRight();
+  if (one) return one;
+  if (editable(left) && editable(right) && lo <= t && t <= hi) {
+    return [
+      { k: left, value: t },
+      { k: right, value: t },
+    ];
+  }
+  return [];
+}
+
 /** The raster index sitting ON refT (within eps), or -1. */
 export function rasterAt(refGrid, refT) {
   const k = rasterAfter(refGrid, refT) - 1;
@@ -499,6 +568,7 @@ export function serialize(state, base) {
     audio[name] = { base: slot.base || null, anchors: slot.anchors.map((a) => ({ ...a })) };
   }
   if (Object.keys(audio).length) out.audio = audio;
+  if (state.refTicks?.length) out.refTicks = state.refTicks.slice();
   return out;
 }
 
@@ -538,6 +608,12 @@ export function deserialize(record) {
     anchors.sort((x, y) => x.refT - y.refT);
     state.audio[name] = { anchors, base: slot?.base || null };
   }
+  // Additive since 0.114.0: ticks added on a score-less session's reference.
+  for (const t of record.refTicks || []) {
+    if (!Number.isFinite(t)) throw new Error("correction-model: malformed reference tick in corrections record");
+    state.refTicks.push(t);
+  }
+  state.refTicks.sort((a, b) => a - b);
   return { state, base: record.base || null };
 }
 

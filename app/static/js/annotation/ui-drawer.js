@@ -202,6 +202,9 @@ export function mountDrawer(parent) {
   // the editor's "Update to current view" gate, which is computed from a
   // live snapshot — re-render so it doesn't go stale.
   document.addEventListener("lh-grouping-changed", render);
+  // Post to Solid is refused until every selected recording has a Linked
+  // Data URI; Manage recordings sets them.
+  document.addEventListener("lh-linked-data-uris-changed", render);
   render();
   return drawer;
 }
@@ -403,6 +406,30 @@ function _renderAccessControl(bar, ann) {
   if (st.state === "foreign") {
     bar.appendChild(
       el("span", { class: "lh-v6-access-status", text: "Not in your pod", title: st.reason }),
+    );
+    return;
+  }
+  if (st.state === "error") {
+    // The read failed (a dropped connection, a pod that didn't answer): say
+    // so, and read again on request rather than leaving a dead button.
+    bar.appendChild(
+      el("span", {
+        class: "lh-v6-access-status is-error",
+        text: "Access unknown",
+        title: "Couldn't check who can read this annotation: " + st.reason,
+      }),
+    );
+    bar.appendChild(
+      el("button", {
+        class: "lh-v6-access-btn lh-v6-access-retry",
+        type: "button",
+        title: "Check again who can read this annotation (" + st.reason + ").",
+        text: "Try again",
+        onclick: () => {
+          _accessUi.delete(ann.id);
+          if (_rerenderPublishBar) _rerenderPublishBar();
+        },
+      }),
     );
     return;
   }

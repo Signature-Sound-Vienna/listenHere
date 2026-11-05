@@ -1,5 +1,101 @@
 # Listen Here! CHANGELOG.md
 
+### 0.115.2 -- Werkzeug 3.1.9
+
+* `requirements.txt`: Werkzeug 3.1.6 → 3.1.9 (GHSA-g6x2-hccm-hh4m: `safe_join` let Windows device names through, which only matters on Windows/NTFS).
+* `python-dotenv` stays at 1.0.0 (GHSA-mf9w-mj56-hr94 is in `set_key`/`unset_key`, which nothing calls, and 1.2.2 needs Python 3.10).
+* Testing: specs 01 and 04 pass (13, 2 skipped); a test-client probe of static files and the fixture route, including the origin rewrite and traversal or device-name paths (404), on a fresh Python 3.9.6 venv; the functional suite passes on top of 0.115.1 (670, 2 skipped), though its test venv still runs Werkzeug 3.0.6.
+
+### 0.115.1 -- Tests serve Pyodide locally
+
+* Testing: Pyodide 0.26.4 and its numpy (27 MB) are in `tests/fixtures/pyodide/`; the shared test fixture answers the worker's jsDelivr requests from there, so no spec downloads them. The app still loads Pyodide from jsDelivr.
+
+### 0.115.0 -- Correction mode re-bases an alignment onto an edited score
+
+* When the score has changed since the alignment was made, but only as far as an edit moves the same events (same event count, no neighbouring events reordered, every onset within 1/8 quarter), correction mode offers to re-base onto the current score instead of refusing: the score quarters and synth times come from the fresh render, score↔reference anchors and the score hints of audio-to-audio anchors follow their events, recording times are kept, and `header.rebased` records what moved; the change is unsaved until saved. Larger differences still refuse.
+* New alignments carry a SHA-256 of their MEI (`header.meiSha256`), renewed by a re-base; when it differs from the loaded score, the re-base offer and the refusal say that the score's MEI has changed.
+* Testing: 42.36–42.38 new; specs 39 (4), 42 (37), and 43 (65) pass, eight tests that timed out or misplaced a drag under load passing on a re-run; the full suite was not run.
+
+### 0.114.0 -- Score-less correction: ticks can be added on the reference where none was detected
+
+* Where the reference's onset detector found nothing (a legato change, a soft entry), a click on the reference pane adds a tick, which drags on the recording like any other.
+* "Click to seek" / "Click to add" on the gap between the panes sets what a plain click off a tick does; Shift+click adds in either mode.
+* With the Magnet on, an added tick lands on the onset curve's strongest peak within 60 ms, a peak too weak for the detector included; Alt places it exactly. A click within 50 ms of a tick selects that tick.
+* While a click would add, a guide in listening mode's alignment style runs down from the pointer and slants to where the tick will land, or stays straight when it lands where clicked.
+* Added ticks are saved with the alignment (header.corrections.refTicks), shared by every recording corrected against that reference; adding and removing are undoable, and Delete removes an added tick that holds no anchor.
+* "Magnet on drag" is now "Magnet", as it also places added ticks.
+* The click-mode switch hangs from the reference pane's frame, in its colour, with an ↑ to say which pane it rules.
+* The reference's spectrogram dims and shows the busy badge while a configuration change recomputes it, as the recording's does.
+* Score-less, the balance slider's right-ear icon is a bullseye (the reference) instead of a microphone.
+* Audio-to-audio anchors between the grid's 20 ms raster samples are now exact: a refill starting with a run past the anchor drew its tick up to 100 ms or more off where it was dropped (measured 103 ms), which looked like snapping with the Magnet off. The nearer flanking sample now moves so the grid passes through the anchor.
+* Resizing the panes or lanes no longer squeezes the strip's playhead and ticks toward the left edge until release.
+* The add guide is salient: bolder, cased so it reads on any ground, and the pane's full height whatever the pointer's; the pane tabs and the click-mode switch are translucent so it shows through them.
+* A plain click on empty strip, in both correction modes, jumps the playhead there as a click on the reference pane does; it still clears the selection, and a drag still draws a marquee.
+* A drag on the reference pane draws a marquee that selects the ticks it spans, as on the strip, in either click mode.
+* A test's worker stub installed after the load-idle prewarm has booted the real worker now replaces it: on a load slower than ~2.2 s, stubbed specs had been talking to the real engine.
+* In both correction modes "Page only" and "Replay off" are now "Auto-page" and "Auto-replay", on by default (as the old switches were off), and remembered across reloads.
+* Testing: 41.19, 43.70, and 43.71 new; 43.43's linear-refill check leaves out the two samples flanking the anchor and checks the anchor exact instead; 43.21 and 43.28 follow the renamed switches, 43.21 checks the choice survives a reload, 43.68 the strip click; 42.35 and 43.72 new; the functional suite passes (673, 2 skipped; 13 page-load timeouts late in a slow run passed together on a re-run).
+
+### 0.113.0 -- Score-less correction plays the reference, warped to the recording, in the right ear
+
+* The audition's right ear is the reference recording played through the alignment: the speed control's stretch worklet gives it its own pitch-preserving grain for each of the recording's, starting where the grids map that grain's centre.
+* A fix, undo, or revert hands the worklet the new grid, which it uses from its next grain; nothing is re-rendered.
+* Where the reference runs more than four times faster or slower than the recording over the surrounding 2 s (a gap, applause, a repeat only one has), the right ear fades out.
+* The right ear is level-matched to the recording, and the transport and balance tooltips name it.
+* Testing: spec 60 new (3: the worklet rendered offline), 43.69 new; the functional suite passes (668, 2 skipped), 0.112.0's changes included. Measured on the fixture's recordings, 77 of 81 reference onsets land in the warped ear within 100 ms of their projected time (median 5 ms); a fix reaches the warped ear about 120 ms after the drag, the realign's time.
+
+### 0.112.0 -- Score-less correction shows the reference recording above the one being corrected
+
+* The reference recording takes the score pane's place, unwarped, over the page's span of reference time: waveform, spectrogram, and onset curve, resizable like the strip's lanes, and split 50/50 with the strip, whose resized height is remembered apart from score sessions'.
+* Each pane is framed in its dominant colour and named on a tab at its corner: "Reference · file" above, "Recording · file" below.
+* The Lanes box gains a Reference group with a switch per lane, all on by default; with all three off the pane closes and the recording takes the height.
+* Ticks at the reference's onsets join the recording's ticks by connectors, as score notes do; a click on one selects its onset, a click between them seeks the recording to that moment.
+* A reference playhead follows the audition mapped back through the recording's grid, so it moves at warped speed.
+* The reference pane has its own colours per theme (a cool waveform and playhead, a viridis-like spectrogram), each measured against the theme's ticks, anchors, selection, playhead, and waveform, the three colour-vision deficiencies included.
+* The alignment worker runs lanes requests one at a time: two in flight overwrote each other's results, so a quick run of spectrogram settings could paint the wrong data.
+* Testing: 43.67 and 43.68 new, 43.63 updated; specs 41–43 pass (119; timeouts under load passed alone). The functional suite was not run: full runs are on hold while the machine is closed.
+
+### 0.111.1 -- A score edited since its alignment keeps a correct score row
+
+* When the score's MEI has changed since the alignment was made (a tempo mark over grace notes moves them in quarters), the score row's timing is matched to the fresh MIDI by event position, as long as every event is within 1/8 quarter of its stored onset, instead of falling back to the stored synth tables, which carry the old tempo map.
+* Correction mode's refusal names the likely cause when Verovio is unchanged (the score's encoding was edited), shows quarters to four decimals, and sets its two paragraphs apart.
+* Testing: 39.2 moved past the limit, 39.4 new; the functional suite passes (661, 2 skipped) but for 49.14, whose 60 s wizard wait a slow CDN outlasted with and without these changes.
+
+### 0.111.0 -- Score regions: mei-friend annotations load without recordings; the score row shows their region
+
+* Annotations loaded from Solid take the next palette colour, as a new annotation, instead of grey.
+* A mei-friend annotation loads with no recordings selected; picking a recording places its one score region there, from the earliest onset to the latest offset of its MEI elements in Verovio's timemap (a chord, measure, or slur stands for the notes it holds or joins).
+* Loading no longer needs the score: "Score-rendering toolkit not ready" is gone. Placing a score region waits up to a minute for the score, then says why it can't.
+* The synthesised score row shows a score selection's region, nailed to its elements' times, and nothing else; it is never selected or drawn on as a recording, nor dimmed as one in Edit mode.
+* The score region is dashed everywhere and can't be deleted. On a recording it moves for that recording only: its handles show a forbidden cursor until Shift is held, and a plain drag is refused with a note pointing to Correct alignment… and Shift+drag, gone at the next click or after six seconds.
+* On the pod the score region is position 1 of every audio Selection; a reload links it to the score Selection again and marks recordings moved off the projection as Shift-moved.
+* Regions are no longer added to a waveform before it knows its duration, which left stray copies at 0:00.
+* Post to Solid, refused while recordings lack Linked Data URIs, comes on as soon as Manage recordings closes with them set, not only after the drawer is reopened.
+* When an annotation's access can't be read (a dropped connection, say after a failed Make public), the card shows "Access unknown" with Try again, instead of a greyed-out button that only a reload revived.
+* Testing: spec 59 new (3), 13.2 and 55.19 new; 43.62's import updated; the functional suite passes (656, 2 skipped).
+
+### 0.110.3 -- The start page's URL field remembers earlier entries
+
+* "Open from the Web" is now a plain GET form with a named field instead of a scripted redirect, so the browser offers previously loaded alignment URLs; the resulting `/?align=` address is unchanged.
+* Testing: 1.11 new; spec 01 passes (7, 2 skipped).
+
+### 0.110.2 -- URI fields remember earlier entries
+
+* The wizard's MEI URI and audio URI prefix fields, and Manage recordings' global URI prefix, offer the last twelve http(s) values committed in them as a drop-down, most recent first; the two prefix fields share one history.
+* Testing: 17.23 new; the functional suite passes (655, 2 skipped; eleven timeouts under load passed on a re-run).
+
+### 0.110.1 -- The favicon stays visible in dark browsers
+
+* The favicon sits on a round badge in the dark theme's logo tint (`#e8f0d0`), clipped to the circle, so the dark bat no longer disappears against a dark tab strip.
+
+### 0.110.0 -- Alignments without a score can be corrected
+
+* A score-less alignment opens the correction screen on its recordings alone: the chooser has no score ↔ reference step, and each recording is corrected against the reference.
+* The ticks are the reference recording's detected onsets, or their perceived attacks when the snap toggle says so; an anchor stays on its tick whichever is shown. Pages are about 8 s of reference time, labelled by time instead of page number.
+* There is no score pane; the recording's waveform and lanes take its height. The audition plays the recording alone for now.
+* Anchors in a score-less alignment are stored by reference time only, without event indices.
+* Testing: 41.18 and 43.63–43.66 new, on the score-less fixture `alignment-noscore.json`; the functional suite passes (654, 2 skipped; six timeouts under load passed on a re-run).
+
 ### 0.109.0 -- Annotations in the older flat layout, such as mei-friend's, can be made public
 
 * An annotation whose resources sit directly in their type containers (everything mei-friend posts, and Listen Here's posts before the per-annotation folders) is no longer refused as "posted in the older flat layout": Make public and Make private set an ACL on each of its resources, including the score Selections of a mei-friend annotation, the MusicalMaterial's last when making public. Nothing is moved, so mei-friend still finds them at their addresses.

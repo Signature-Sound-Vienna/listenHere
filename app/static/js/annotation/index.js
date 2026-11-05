@@ -28,8 +28,8 @@ import {
   loadAnnotationFromMM,
   listAnnotationsForAudio,
   listAnnotationsForLoadedAudios,
-  projectedTimesFromScore,
 } from "./solid-load.js";
+import { projectedTimesFromScore } from "./score-projection.js";
 import { openLoadModal, consumeLoadIntent } from "./ui-ribbon.js";
 import { confirmLoadFromLink } from "./ui-common.js";
 import { solid } from "../solid.js";

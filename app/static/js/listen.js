@@ -3,6 +3,7 @@ export let versionString = window.versionString;
 export let versionDate = window.versionDate;
 
 import { initSolidAuth } from "./solid.js";
+import { rememberUriInput } from "./uri-history.js";
 import { alignmentJsonProblem } from "./alignment-validate.js";
 import { confirmDialog, el } from "./annotation/ui-common.js";
 import * as v6UiState from "./annotation/ui-state.js";
@@ -28,6 +29,7 @@ import {
   synthToWav,
 } from "./engine/mei-synth.js";
 import { convertLegacySecondsTable } from "./engine/legacy-alignment.js";
+import { MAX_EVENT_SHIFT_Q } from "./engine/score-rebase.js";
 import {
   waveformViews,
   isWaveformRendered,
@@ -2336,6 +2338,25 @@ let _meiLoadError = null;
 // runtime callback, and whoever touches `tk` first must not assume it has fired.
 let _verovioReady = null;
 
+// Settles true once the loaded alignment's score is in Verovio and the timemap
+// is filled, or false when there is none or it failed to load. Verovio's 7.3 MB
+// script can still be starting on a slow connection while an annotation is
+// already being placed, so score regions wait on this rather than on `tk`.
+// Replaced as each alignment starts loading; pending until the first.
+let _scoreReady = null;
+let _settleScoreReady = () => {};
+function _beginScoreLoad() {
+  _settleScoreReady(false); // anyone still waiting on the outgoing score
+  _scoreReady = new Promise((resolve) => {
+    _settleScoreReady = resolve;
+  });
+}
+_beginScoreLoad();
+/** @returns {Promise<boolean>} see _scoreReady. */
+export function whenScoreReady() {
+  return _scoreReady;
+}
+
 /**
  * Fetch the score MEI, failing loudly on anything that is not XML.
  *
@@ -2407,13 +2428,11 @@ function _matchScoreQuartersToSynthSecs(
 }
 
 /**
- * Last resort for ancient alignment JSONs with neither a usable score_onset
- * nor synth_onset: rebuild the aligner's event list from the MIDI. Alignment
- * events are the notes deduplicated per unique (start, end) tick pair, sorted
- * by that pair — NOT one per note, so indexing notes[i] directly (the old
- * fallback) drifted as soon as the first chord sounded.
+ * The aligner's event list from parsed MIDI notes: deduplicated per unique
+ * (start, end) tick pair, sorted by that pair — NOT one per note, so indexing
+ * notes[i] directly drifts as soon as the first chord sounds.
  */
-function _reconstructEventOnsetSecs(expectedLen, notes, tpq, tempoChanges) {
+function _alignerEvents(notes) {
   const seen = new Set();
   const events = [];
   for (const n of notes) {
@@ -2424,6 +2443,41 @@ function _reconstructEventOnsetSecs(expectedLen, notes, tpq, tempoChanges) {
     }
   }
   events.sort((a, b) => a.s - b.s || a.e - b.e);
+  return events;
+}
+
+/**
+ * Fallback for when exact quarter matching fails because the score was edited
+ * since the alignment was made (a tempo mark over grace notes, a tie added):
+ * if the fresh MIDI yields the same number of events, each within
+ * MAX_EVENT_SHIFT_Q of its stored onset, event i is still event i, so its
+ * synth seconds come from the fresh MIDI by position. Returns
+ * { onsets, offsets, moved } or null.
+ */
+function _matchScoreEventsByIndex(quarters, expectedLen, notes, tpq, tempoChanges) {
+  if (!quarters || quarters.length !== expectedLen || !notes.length || !tpq)
+    return null;
+  const events = _alignerEvents(notes);
+  if (events.length !== expectedLen) return null;
+  let moved = 0;
+  for (let i = 0; i < expectedLen; i++) {
+    const dq = Math.abs(events[i].s / tpq - quarters[i]);
+    if (dq > MAX_EVENT_SHIFT_Q) return null;
+    if (dq > 1e-6) moved++;
+  }
+  return {
+    onsets: events.map((e) => tickToSec(e.s, tpq, tempoChanges)),
+    offsets: events.map((e) => tickToSec(e.e, tpq, tempoChanges)),
+    moved,
+  };
+}
+
+/**
+ * Last resort for ancient alignment JSONs with neither a usable score_onset
+ * nor synth_onset: rebuild the aligner's event list from the MIDI.
+ */
+function _reconstructEventOnsetSecs(expectedLen, notes, tpq, tempoChanges) {
+  const events = _alignerEvents(notes);
   return Array.from({ length: expectedLen }, (_, i) => {
     if (!events.length) return 0;
     const ev = events[Math.min(i, events.length - 1)];
@@ -2513,11 +2567,12 @@ async function _buildAndPrepareSynthWaveform(
   // note ticks. Stored synth_onset is deliberately NOT preferred: alignment
   // JSONs generated before align-worker.js's tempo-sort fix carry a constant
   // skew wherever the MIDI opens with a real tempo event (the seeded 120 BPM
-  // default won the tick-0 tie), and regeneration cannot be assumed. Stored
-  // values remain the fallback for when matching fails (e.g. a Verovio
-  // upgrade changed the rendered MIDI since the alignment was made).
+  // default won the tick-0 tie), and regeneration cannot be assumed. When the
+  // score was edited since (a tempo change moves grace notes in quarters),
+  // events are matched by position instead; stored values remain the
+  // fallback only when that fails too, since they carry the old tempo map.
   const refOnsets = scoreData.ref_onset || [];
-  const derivedOnsets = _matchScoreQuartersToSynthSecs(
+  let derivedOnsets = _matchScoreQuartersToSynthSecs(
     scoreData.score_onset,
     refOnsets.length,
     notes,
@@ -2525,9 +2580,9 @@ async function _buildAndPrepareSynthWaveform(
     tpq,
     tempoChanges,
   );
+  let derivedOffsets = null;
   if (derivedOnsets) {
-    correctedSynthOnsets = derivedOnsets;
-    correctedSynthOffsets = _matchScoreQuartersToSynthSecs(
+    derivedOffsets = _matchScoreQuartersToSynthSecs(
       scoreData.score_offset,
       refOnsets.length,
       notes,
@@ -2535,6 +2590,26 @@ async function _buildAndPrepareSynthWaveform(
       tpq,
       tempoChanges,
     );
+  } else {
+    const byIndex = _matchScoreEventsByIndex(
+      scoreData.score_onset,
+      refOnsets.length,
+      notes,
+      tpq,
+      tempoChanges,
+    );
+    if (byIndex) {
+      derivedOnsets = byIndex.onsets;
+      derivedOffsets = byIndex.offsets;
+      console.info(
+        `score edited since alignment: ${byIndex.moved} event(s) moved ` +
+          `(≤ ${MAX_EVENT_SHIFT_Q} quarter); synth timing matched by position`,
+      );
+    }
+  }
+  if (derivedOnsets) {
+    correctedSynthOnsets = derivedOnsets;
+    correctedSynthOffsets = derivedOffsets;
     // Tempo curves computed against the stored tables are stale now.
     for (const k of Object.keys(_tempoRawCache)) delete _tempoRawCache[k];
   } else if (scoreData.score_onset) {
@@ -3554,6 +3629,7 @@ async function setGrids(grids) {
   }
   // After the guard, not before: the confirm dialog must not sit behind a spinner.
   showWaveformsPaneLoading("Loading alignment\u2026");
+  _beginScoreLoad();
   setLoadedAlignmentJSON(grids);
   // V6 hook: load any persisted V6 annotations out of the alignment JSON
   // into the in-memory state. No-op when V6 is inactive.
@@ -3612,6 +3688,7 @@ async function setGrids(grids) {
               delete _tempoRawCache[k];
             _tempoYRange = null;
             console.log("timemap set!", timemap, mei);
+            _settleScoreReady(true);
           } catch (e) {
             // Record WHY, so the score waveform can say so instead of blaming
             // synthesis. Without this the failure surfaced as "synthesis
@@ -3639,6 +3716,7 @@ async function setGrids(grids) {
     // old version of alignment json
     setAlignmentGrids(grids);
   }
+  _settleScoreReady(false); // a no-op once the score has loaded
   console.log("setting grids: ", grids);
 
   // Any waveform the new alignment doesn't mention must go before anything
@@ -4344,6 +4422,7 @@ document.addEventListener("DOMContentLoaded", () => {
       case "fix-gap":
       case "fix-grid-anchor":
       case "fix-unanchor":
+      case "fix-ref-tick":
       case "fix-realign": {
         // Snapshot semantics: the entry carries its before/after values, so
         // fix-mode applies the hop without the alignment worker; the same
@@ -4418,6 +4497,7 @@ document.addEventListener("DOMContentLoaded", () => {
       case "fix-gap":
       case "fix-grid-anchor":
       case "fix-unanchor":
+      case "fix-ref-tick":
       case "fix-realign": {
         applyFixCorrectionRedo(entry);
         _undoStack.push(entry);
@@ -4466,6 +4546,8 @@ document.addEventListener("DOMContentLoaded", () => {
         return `alignment anchors (${entry.count})`;
       case "fix-gap":
         return "unscored-audio gap";
+      case "fix-ref-tick":
+        return entry.op === "add" ? "add reference tick" : "remove reference tick";
       case "fix-unanchor":
         return "remove alignment anchor";
       case "fix-realign":
@@ -5385,6 +5467,8 @@ function initFilePicker() {
   const labelRow = document.getElementById("file-picker-label-row");
   const labelInput = document.getElementById("file-picker-label");
 
+  rememberUriInput(document.getElementById("ld-uri-prefix"), "ldPrefix");
+
   // The session label lives in the alignment's header, so it travels with the
   // file and is prefilled from it next time. Editing it is not an edit of the
   // work: it rides along with the next save rather than marking anything dirty.
@@ -5633,8 +5717,8 @@ function initFilePicker() {
 
 /**
  * Close Manage recordings: persist the LD config, and apply an alignment
- * picked from a local file. The V6 publish bar re-reads its enable conditions
- * on each render, so LD URI edits need no imperative refresh.
+ * picked from a local file. Persisting announces the change, so the V6
+ * drawer re-renders its Post to Solid gate.
  */
 function _closeManageRecordings() {
   if (populateLdUriSection._persist) populateLdUriSection._persist();
@@ -5909,6 +5993,8 @@ function populateLdUriSection() {
     } else {
       delete loadedAlignmentJSON.header.linkedDataUris;
     }
+    // Post to Solid is gated on every recording having one.
+    document.dispatchEvent(new CustomEvent("lh-linked-data-uris-changed"));
   }
 
   // Expose so the modal-close handler can call it

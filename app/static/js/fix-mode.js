@@ -32,7 +32,9 @@
 // stamps must be compatible with the live toolkit, and a freshly rendered
 // MIDI's event quarters must match the stored score_onset exactly — anchors
 // laid on a skewed quarters basis are poisoned data, so a mismatch refuses
-// entry with an error naming the stamp.
+// entry with an error naming the stamp. A small mismatch from an edited score
+// (every event still recognisably itself: engine/score-rebase.js) is offered
+// as a re-base onto the current score instead.
 
 import {
   tk,
@@ -51,6 +53,9 @@ import {
   pushFixUndoEntry,
   refreshSynthAlignmentGrid,
   refreshRecordingGrid,
+  parseCssColor,
+  bumpChangeCounter,
+  updateDirtyState,
 } from "./listen.js";
 import {
   verifyQuarters,
@@ -74,11 +79,21 @@ import {
   applyTargetAnchorValue,
   rasterAfter,
   rasterBefore,
+  anchorExactEdits,
   REF_T_EPS,
+  addRefTick,
+  removeRefTick,
   serialize as serializeCorrections,
   deserialize as deserializeCorrections,
 } from "./engine/correction-model.js";
-import { parseMidi } from "./engine/mei-synth.js";
+import { parseMidi, tickToSec } from "./engine/mei-synth.js";
+import {
+  planRebase,
+  rebaseScoreTable,
+  rebaseAnchorQuarters,
+  rebaseAudioAnchorQuarters,
+  meiSha256,
+} from "./engine/score-rebase.js";
 import { updateTransportIcons } from "./engine/transport.js";
 import { confirmDialog } from "./annotation/ui-common.js";
 import { recastAnnotationsToAlignment } from "./annotation/index.js";
@@ -222,9 +237,15 @@ const qKey = (q) => Math.round(q * 1e6);
 let _fix = null;
 /** The last entry refusal message (test surface; cleared per attempt). */
 let _lastRefusal = null;
+/** The last re-base offer: { offered, accepted, plan } (test surface; cleared
+ *  per attempt). */
+let _lastRebase = null;
+/** The live MEI text's SHA-256, cached per text: { text, sha }. */
+let _meiShaCache = { text: null, sha: null };
 /** The correction worker. Outlives a fix session (Pyodide is expensive to
  *  boot), disposed of its audio state on exit, terminated on piece reset. */
 let _worker = null;
+let _workerFactory = null; // the test factory _worker came from, or null
 let _workerHasSession = false;
 /**
  * Piece-derived state that outlives a fix session: the guard's fresh event
@@ -253,7 +274,7 @@ const _dirtyGridFiles = new Set();
 let _correctionsBase = null;
 /** The as-loaded correction record, for Revert and dirtiness (JSON of
  *  {a: anchors, g: gaps}; "no record" is the empty pair, not null). */
-let _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {} });
+let _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {}, r: [] });
 /** The one in-flight fix_realign request, or null (the worker is serial). */
 let _pendingRealign = null;
 /** Bumped on every change to the correction record or the tables it governs;
@@ -268,19 +289,49 @@ let _announceTimer = null;
 /** Audition L/R balance, −1 (recording only) … +1 (synth only); 0 = even.
  *  A listening-ergonomics preference, so it survives sessions and pieces. */
 let _audBalance = 0;
+/** A remembered switch (localStorage), or `dflt` when unset or unavailable. */
+function _prefBool(key, dflt) {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? dflt : v === "true";
+  } catch (_) {
+    return dflt;
+  }
+}
+
+function _savePrefBool(key, on) {
+  try {
+    localStorage.setItem(key, String(on));
+  } catch (_) {}
+}
+
 /** Page-only playback: the audition stops at the current page's boundary
- *  instead of turning it (sticky across fix sessions, like the balance). */
-let _pageOnly = false;
-/** Suppress the AUTO-replay after a commit (sticky, like _pageOnly). The
- *  commit itself always happens: it is being dragged back through the span
- *  that gets in the way in a tight cluster, not the anchoring. A sticky mode
+ *  instead of turning it. Offered as its inverse, "Auto-page" (on by
+ *  default), and remembered across reloads (user, 2026-11-04). */
+let _pageOnly = !_prefBool("fix-auto-page", true);
+/** Suppress the AUTO-replay after a commit — offered as its inverse,
+ *  "Auto-replay" (on by default), remembered like Auto-page. The commit
+ *  itself always happens: it is being dragged back through the span that
+ *  gets in the way in a tight cluster, not the anchoring. A sticky mode
  *  rather than a held modifier, because the nudge already owns Shift and
  *  Shift+Alt and commits on the keyup that leaves no nudge key down. */
-let _replaySuppressed = false;
+let _replaySuppressed = !_prefBool("fix-auto-replay", true);
 /** The v2 lanes and snap-to-onset: sticky across fix sessions, like the two
  *  above. The lane switches also size the strip (see _stripClassName). */
 let _laneSpec = true;
 let _laneOnset = true;
+/** The score-less reference pane's lanes (sticky; all three on by default,
+ *  user 2026-11-04). All three off hides the pane: the strip takes the height. */
+let _refLaneOn = { wave: true, spec: true, onset: true };
+/** What a plain click off a tick does on the reference pane: "seek" or
+ *  "add" a tick (sticky; Shift+click adds either way — user, 2026-11-04). */
+let _refClickMode = "seek";
+/** An added tick snaps (Magnet on, no Alt) to the strongest local peak of the
+ *  reference's onset curve within this many seconds of the click... */
+const REF_ADD_SNAP_SEC = 0.06;
+/** ...and a click that would land within this of an existing tick selects
+ *  that tick instead (the detector's own minimum spacing). */
+const REF_ADD_MIN_GAP_SEC = 0.05;
 let _snapOnsets = true;
 /** Spectrogram configuration (sticky): FFT size, window, overlap, mel bands. */
 let _specCfg = {
@@ -327,6 +378,21 @@ let _autoAnchor = true;
  *  sticky, and both part of what the prewarm probe must reproduce. */
 let _stripHeightPx = null;
 let _laneWeights = null;
+/** The score-less reference pane's lane weights, sticky like the strip's. */
+let _refLaneWeights = null;
+/** Score-less sessions keep their own strip height: there the strip shares
+ *  the pane 50/50 with the reference, not 15 % with a score. */
+let _scorelessStripHeightPx = null;
+
+/** The sticky strip height of the session kind that is open. */
+function _stripH() {
+  return _fix?.scoreless ? _scorelessStripHeightPx : _stripHeightPx;
+}
+
+function _setStripH(px) {
+  if (_fix?.scoreless) _scorelessStripHeightPx = px;
+  else _stripHeightPx = px;
+}
 /** A running "move to nearest onset" batch: its commits collect into ONE
  *  history entry and replay once at the end. */
 let _batch = null;
@@ -376,9 +442,22 @@ let _scoreRefReviewed = false;
 /** The open chooser's overlay, or null. */
 let _chooserEl = null;
 
-/** Whether the loaded alignment can be corrected here at all. This increment
- *  renders the score pane in both modes, so a score is required. */
+/** A score-less alignment (no score table): its sessions are audio-to-audio
+ *  only, ticked by the reference's own detected onsets (plan 2026-11-03). */
+function _scoreless() {
+  return !scoreAlignment?.score_onset?.length;
+}
+
+/** Whether the loaded alignment can be corrected here at all: with a score,
+ *  the score tables and a reference grid; score-less, a reference grid and
+ *  one recording with a grid on its raster. */
 function _entryUsable() {
+  if (_scoreless()) {
+    return (
+      Array.isArray(alignmentGrids?.[getReferenceAudioIx()]) &&
+      _targetCandidates().some((k) => _targetGridUsable(k))
+    );
+  }
   return (
     !!scoreAlignment?.score_onset?.length &&
     !!scoreAlignment?.ref_onset?.length &&
@@ -450,7 +529,9 @@ function _closeChooser() {
 
 function _renderChooser(card) {
   const ref = getReferenceAudioIx();
-  const reviewed = _scoreRefReviewed;
+  // Score-less, there is no step 1 to review: the recordings stand alone.
+  const scoreless = _scoreless();
+  const reviewed = scoreless || _scoreRefReviewed;
   const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
   card.innerHTML = "";
 
@@ -506,7 +587,9 @@ function _renderChooser(card) {
   s2.className = "fix-chooser-step" + (reviewed ? "" : " fix-chooser-locked");
   s2.dataset.step = "2";
   const h2 = document.createElement("h3");
-  h2.textContent = "2 · Recordings against the reference";
+  h2.textContent = scoreless
+    ? `Recordings against the reference (${ref})`
+    : "2 · Recordings against the reference";
   s2.appendChild(h2);
   if (!reviewed) {
     const note = document.createElement("p");
@@ -570,7 +653,8 @@ function _renderChooser(card) {
     list.appendChild(none);
   }
   s2.appendChild(list);
-  card.append(head, s1, s2);
+  if (scoreless) card.append(head, s2);
+  else card.append(head, s1, s2);
 }
 
 // ---------------------------------------------------------------------------
@@ -580,7 +664,9 @@ function _renderChooser(card) {
 /**
  * Render a fresh MIDI from the loaded MEI and build the aligner's event table
  * from it: notes deduplicated per unique (start, end) tick pair, sorted by
- * that pair — the same construction as score_align and fix_begin.
+ * that pair — the same construction as score_align and fix_begin. sOn/sOff
+ * are the events' synth seconds over the same MIDI's tempo map (a re-base's
+ * synth_onset/synth_offset).
  */
 function _freshEventTable() {
   const midiB64 = tk.renderToMIDI();
@@ -588,7 +674,7 @@ function _freshEventTable() {
   const bin = atob(midiB64);
   const midiBytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) midiBytes[i] = bin.charCodeAt(i);
-  const { tpq, notes } = parseMidi(midiBytes);
+  const { tpq, tempoChanges, notes } = parseMidi(midiBytes);
   const seen = new Set();
   const events = [];
   for (const n of notes) {
@@ -602,8 +688,24 @@ function _freshEventTable() {
   return {
     qOn: events.map((e) => e.s / tpq),
     qOff: events.map((e) => e.e / tpq),
+    sOn: events.map((e) => tickToSec(e.s, tpq, tempoChanges)),
+    sOff: events.map((e) => tickToSec(e.e, tpq, tempoChanges)),
     midiBytes,
   };
+}
+
+/** The live MEI's SHA-256 (null where Web Crypto is unavailable). */
+async function _liveMeiSha256() {
+  const text = getMeiXml();
+  if (_meiShaCache.text !== text) {
+    _meiShaCache = { text, sha: await meiSha256(text) };
+  }
+  return _meiShaCache.sha;
+}
+
+/** Whether the alignment's stamped MEI hash and the live one tell an edit. */
+function _meiHashDiffers(header, liveSha) {
+  return !!(header?.meiSha256 && liveSha && header.meiSha256 !== liveSha);
 }
 
 /** The stamp half of the guard: null when compatible, else the refusal text. */
@@ -630,19 +732,38 @@ function _stampCheck(header) {
 }
 
 /**
- * Run the full entry guard. Returns the fresh event table on success; throws
- * with the honest refusal message otherwise.
+ * Run the full entry guard. Returns { fresh, rebase }: the fresh event table,
+ * and — when the stored quarters differ from it only as far as an edited
+ * score can move the same events — the re-base plan to offer (else null).
+ * Throws with the honest refusal message otherwise. `liveSha` is the live
+ * MEI's SHA-256, which names the cause when the alignment stamped one too.
  */
-function _entryGuard() {
+function _entryGuard(liveSha = null) {
   if (!tk) throw new Error("the score renderer (Verovio) is unavailable");
   if (!getMeiXml()) throw new Error("the score MEI is not loaded");
   const header = loadedAlignmentJSON?.header;
   const stampProblem = _stampCheck(header);
   if (stampProblem) throw new Error(stampProblem);
   const fresh = _freshEventTable();
-  const stampNote = header?.verovioVersion
-    ? `both stamped and rendered under Verovio ${header.verovioVersion}`
-    : "the alignment carries no Verovio version stamp";
+  // With the stamp matching the live toolkit (the stamp check passed), the
+  // renderer is ruled out: the MEI itself changed, typically under a moving
+  // URI such as a branch head. The MEI hash, where both sides have one, says
+  // so outright.
+  const editCauses =
+    "a tempo mark over grace notes (Verovio times them in milliseconds, so " +
+    "their positions in quarters follow the tempo), or an edited rhythm or tie";
+  const stampNote = _meiHashDiffers(header, liveSha)
+    ? "the score's MEI has changed since this alignment was made (its " +
+      `SHA-256 differs from the one stamped then): ${editCauses}`
+    : header?.meiSha256 && liveSha
+      ? "the score's MEI is the one this alignment was made against (same " +
+        "SHA-256), so the rendering differs for a reason this check cannot name"
+      : header?.verovioVersion
+        ? `Verovio is the same (${header.verovioVersion}) as when the ` +
+          "alignment was made, so the score's encoding has changed since: " +
+          editCauses
+        : "the alignment carries no Verovio version stamp";
+  const fmtQ = (q) => +q.toFixed(4);
   for (const [name, stored, freshQ] of [
     ["score_onset", scoreAlignment.score_onset, fresh.qOn],
     ["score_offset", scoreAlignment.score_offset, fresh.qOff],
@@ -650,6 +771,8 @@ function _entryGuard() {
     if (!Array.isArray(stored)) continue; // ancient JSONs may lack offsets
     const v = verifyQuarters(stored, freshQ);
     if (v.ok) continue;
+    const plan = planRebase(scoreAlignment, fresh);
+    if (plan.ok) return { fresh, rebase: plan };
     if (v.lengthMismatch) {
       throw new Error(
         `the freshly rendered score MIDI has ${freshQ.length} events but ` +
@@ -661,23 +784,115 @@ function _entryGuard() {
     throw new Error(
       `${v.mismatchCount} of ${stored.length} ${name} quarters differ from ` +
         `the freshly rendered score MIDI (first at event ${f.index}: stored ` +
-        `${f.stored}, fresh ${f.fresh}); ${stampNote}`,
+        `${fmtQ(f.stored)}, fresh ${fmtQ(f.fresh)}); ${stampNote}; too far ` +
+        `to re-base onto the current score: ${plan.reason}`,
     );
   }
-  return fresh;
+  return { fresh, rebase: null };
+}
+
+/**
+ * Offer to re-base the alignment onto the current score. Resolves true when
+ * the user accepts.
+ */
+function _offerRebase(plan, liveSha) {
+  _lastRebase = { offered: true, accepted: null, plan: { ...plan } };
+  const header = loadedAlignmentJSON?.header;
+  const para = (text) => {
+    const p = document.createElement("p");
+    p.textContent = text;
+    return p;
+  };
+  const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const changes = [];
+  if (plan.onsetsMoved) {
+    changes.push(
+      `${plural(plan.onsetsMoved, "event")} moved by at most ` +
+        `${+plan.maxOnsetShiftQ.toFixed(4)} quarter`,
+    );
+  }
+  if (plan.offsetsMoved) {
+    changes.push(`the end of ${plural(plan.offsetsMoved, "event")} moved`);
+  }
+  const what = _meiHashDiffers(header, liveSha)
+    ? "The score's MEI has changed since this alignment was made"
+    : "The score has changed since this alignment was made";
+  return confirmDialog({
+    title: "Re-base onto the current score?",
+    body: [
+      para(`${what}: ${changes.join("; ")}. Re-base onto the current score?`),
+      para(
+        "Re-basing takes every event's score position from the current " +
+          "score; the recording times and the corrections laid so far stay " +
+          "as they are. It changes the alignment in memory only: save it " +
+          "to keep it.",
+      ),
+    ],
+    icon: "↻",
+    confirmLabel: "Re-base",
+    cancelLabel: "Cancel",
+  });
+}
+
+/**
+ * Re-base the loaded alignment onto the fresh event table, in memory: the
+ * score tables, the anchors' quarters — score↔ref and the audio-to-audio
+ * anchors' q hints — (live, durable, and Revert's baseline: Revert undoes
+ * corrections, not the re-base), and the header's provenance. Recording times
+ * are not touched.
+ */
+function _applyRebase(fresh, plan, liveSha) {
+  rebaseScoreTable(scoreAlignment, fresh);
+  const anchorsMoved = rebaseAnchorQuarters(_corrections.anchors, fresh.qOn);
+  const audioAnchorsMoved = rebaseAudioAnchorQuarters(_corrections.audio, fresh.qOn);
+  const header = loadedAlignmentJSON?.header;
+  if (header?.corrections) {
+    rebaseAnchorQuarters(header.corrections.anchors, fresh.qOn);
+    rebaseAudioAnchorQuarters(header.corrections.audio, fresh.qOn);
+  }
+  const loaded = JSON.parse(_loadedCorrectionsJson);
+  rebaseAnchorQuarters(loaded.a, fresh.qOn);
+  rebaseAudioAnchorQuarters(loaded.u, fresh.qOn);
+  _loadedCorrectionsJson = JSON.stringify(loaded);
+  if (header) {
+    header.rebased = {
+      at: new Date().toISOString(),
+      onsetsMoved: plan.onsetsMoved,
+      offsetsMoved: plan.offsetsMoved,
+      maxOnsetShiftQ: +plan.maxOnsetShiftQ.toFixed(4),
+      anchorsMoved,
+      audioAnchorsMoved,
+    };
+    if (liveSha) header.meiSha256 = liveSha;
+  }
+  bumpChangeCounter();
+  updateDirtyState();
+  console.info(
+    `fix mode: re-based onto the current score — ${plan.onsetsMoved} onsets ` +
+      `and ${plan.offsetsMoved} offsets moved, ${anchorsMoved} anchors and ` +
+      `${audioAnchorsMoved} audio-to-audio anchors followed`,
+  );
 }
 
 function _refuse(message, detail = null) {
   _lastRefusal = message;
   console.warn("fix mode refused:", message);
+  // One paragraph each: bare strings would run together as adjacent text.
+  const para = (text) => {
+    const p = document.createElement("p");
+    p.textContent = text;
+    return p;
+  };
   return confirmDialog({
     title: "Cannot correct this alignment",
     body: [
-      `Correction mode refused: ${message}.`,
-      detail ??
-        "Corrections made against a score rendering that differs from the " +
-          "one the aligner saw would silently corrupt the alignment, so fix " +
-          "mode only opens when the two match exactly.",
+      para(`Correction mode refused: ${message}.`),
+      para(
+        detail ??
+          "Corrections made against a score rendering that differs from the " +
+            "one the aligner saw would silently corrupt the alignment, so fix " +
+            "mode only opens when the two match exactly.",
+      ),
     ],
     confirmLabel: "Close",
     cancelLabel: null,
@@ -725,6 +940,7 @@ function _derivedFitsPane(w, h) {
 export async function enterFixMode(entryFile) {
   if (_fix) return;
   _lastRefusal = null;
+  _lastRebase = null;
   const t0 = performance.now();
 
   const refFile = getReferenceAudioIx();
@@ -736,6 +952,15 @@ export async function enterFixMode(entryFile) {
   // ref_onset; any other recording edits THAT recording's grid against the
   // reference, on the same score pane with every onset projected through
   // the composed map into the recording's timeline.
+  const scoreless = _scoreless();
+  if (scoreless && (entryFile === refFile || entryFile === SYNTH_MEI_KEY)) {
+    await _refuse(
+      "this alignment has no score",
+      "Without a score there is no score ↔ reference alignment to correct; open " +
+        "a recording to correct it against the reference.",
+    );
+    return;
+  }
   const audioMode = entryFile !== SYNTH_MEI_KEY && entryFile !== refFile;
   if (audioMode && !_targetGridUsable(entryFile)) {
     await _refuse(
@@ -756,6 +981,10 @@ export async function enterFixMode(entryFile) {
 
   _fix = {
     mode: audioMode ? "audio" : "score-ref",
+    /** No score: the ticks are the reference's detected onsets (refOnsets). */
+    scoreless,
+    refDetected: null, // score-less: { peaks, pat } from the worker, index-aligned
+    refOnsets: null, // ...plus the added ticks: the tick table (_buildRefTickTable)
     drawerWasOpen,
     drawerScroll,
     entryFile,
@@ -825,6 +1054,10 @@ export async function enterFixMode(entryFile) {
   // so a slow entry looks like loading instead of a hang; one painted frame
   // is yielded for it. The prewarmed path removes the overlay ~instantly.
   _buildDom(contentEl, waveformsEl);
+  if (f.scoreless) {
+    _enterScoreless(f, t0);
+    return;
+  }
   const w = f.els.scoreEl.clientWidth;
   const h = f.els.scoreEl.clientHeight;
   const usePrewarm = _derivedFitsPane(w, h);
@@ -838,15 +1071,29 @@ export async function enterFixMode(entryFile) {
   }
 
   if (!_derived) {
-    // No (valid) prewarm: run the guard now. Refusal tears the skeleton down.
-    let fresh;
+    // No (valid) prewarm: run the guard now. Refusal tears the skeleton down,
+    // and so does declining a re-base onto an edited score.
+    let guard, liveSha;
     try {
-      fresh = _entryGuard();
+      liveSha = await _liveMeiSha256();
+      if (_fix !== f) return;
+      guard = _entryGuard(liveSha);
     } catch (e) {
       _teardownFixDom(f);
       await _refuse(e.message);
       return;
     }
+    if (guard.rebase) {
+      const accepted = await _offerRebase(guard.rebase, liveSha);
+      _lastRebase.accepted = accepted;
+      if (_fix !== f) return;
+      if (!accepted) {
+        _teardownFixDom(f);
+        return;
+      }
+      _applyRebase(guard.fresh, guard.rebase, liveSha);
+    }
+    const fresh = guard.fresh;
     _derived = {
       fresh,
       groups: _buildGroupsFrom(fresh.qOn),
@@ -885,7 +1132,163 @@ export async function enterFixMode(entryFile) {
     `fix mode: entered in ${_lastEntry.ms} ms` +
       (_lastEntry.usedPrewarm ? " (prewarmed)" : " (cold: layout + guard ran now)"),
   );
+  _finishEntry(f);
+  // The engine bootstrap (decode + fix_begin) runs in the background; the
+  // screen is usable for inspection while it loads, and the loop's realign
+  // and audition wait on it.
+  _startBootstrap();
+}
 
+/**
+ * Score-less entry: no score to lay out, and no ticks until the worker has
+ * found the reference's onsets — so the bootstrap starts at once, behind the
+ * loading overlay, and the ticks, pages, and selection follow its reply. A
+ * re-entry on the same reference takes them from the cache.
+ */
+async function _enterScoreless(f, t0) {
+  _lastEntry = { usedPrewarm: false, spinnerShown: true, ms: 0 };
+  _showFixLoading("Finding the reference's onsets…");
+  _buildStrip(_stripSource());
+  f.refPeaks = _peaksSource(f.refFile); // the decode upgrades it (_bootstrap)
+  const cached = _refOnsetCache?.file === f.refFile ? _refOnsetCache : null;
+  if (cached) f.refDetected = { peaks: cached.peaks, pat: cached.pat };
+  else f.refOnsetsWait = _deferred();
+  _startBootstrap();
+  if (!cached) {
+    try {
+      await f.refOnsetsWait.promise;
+    } catch (e) {
+      if (_fix !== f) return;
+      _teardownFixDom(f);
+      await _refuse(`the reference's onsets could not be found (${e.message})`);
+      return;
+    }
+  }
+  if (_fix !== f) return; // exited while waiting
+  _buildRefTickTable(f);
+  const n = f.refOnsets.peaks.length;
+  if (!n) {
+    _teardownFixDom(f);
+    await _refuse("no onsets were detected in the reference recording");
+    return;
+  }
+  _buildScorelessGroups(f);
+  _renderPage(1);
+  _select(0);
+  _hideFixLoading();
+  _lastEntry.ms = Math.round(performance.now() - t0);
+  console.log(
+    `fix mode: entered score-less in ${_lastEntry.ms} ms ` +
+      `(${n} reference onsets on ${f.pageCount} pages${cached ? ", cached" : ""})`,
+  );
+  _finishEntry(f);
+}
+
+/**
+ * Score-less: the tick table — the reference's detected onsets plus the ticks
+ * the user added where the detector found none (header.corrections.refTicks)
+ * — in time order, as index-aligned peaks/pat lists with an `added` flag. An
+ * added tick has one time under both estimators: there is no detected peak
+ * to take a perceived attack from.
+ */
+function _buildRefTickTable(f) {
+  const det = f.refDetected;
+  const add = _corrections.refTicks || [];
+  const n = det.peaks.length + add.length;
+  const peaks = new Float64Array(n);
+  const pat = new Float64Array(n);
+  const added = new Uint8Array(n);
+  let i = 0;
+  let j = 0;
+  for (let k = 0; k < n; k++) {
+    if (j < add.length && (i >= det.peaks.length || add[j] < det.peaks[i])) {
+      peaks[k] = pat[k] = add[j++];
+      added[k] = 1;
+    } else {
+      peaks[k] = det.peaks[i];
+      pat[k] = det.pat[i++];
+    }
+  }
+  f.refOnsets = { peaks, pat, added };
+}
+
+/** Score-less: one group per tick, time pages, and the projection. */
+function _buildScorelessGroups(f) {
+  const n = f.refOnsets.peaks.length;
+  f.nEvents = n;
+  f.groups = Array.from({ length: n }, (_, k) => ({ eventIxs: [k], ids: [], page: 1 }));
+  f.pageCount = _assignTimePages(f.groups);
+  _recomputeProjection(f);
+}
+
+/**
+ * Score-less, after a tick was added or removed: rebuild the table and the
+ * groups, and select the tick at `refT` (or the nearest), turning to its
+ * page. Group indices shift, so whatever held one starts afresh.
+ */
+function _rebuildScorelessTicks(f, refT) {
+  _buildRefTickTable(f);
+  _buildScorelessGroups(f);
+  f.multiSel.clear();
+  f.followFloor = null;
+  let best = 0;
+  for (let k = 1; k < f.groups.length; k++) {
+    if (Math.abs(_groupRefT(f.groups[k]) - refT) < Math.abs(_groupRefT(f.groups[best]) - refT)) best = k;
+  }
+  if (f.groups.length) _select(best, { seek: false });
+  _renderPage(f.groups[best]?.page ?? 1);
+}
+
+/** A promise with its resolve/reject exposed. */
+function _deferred() {
+  const d = {};
+  d.promise = new Promise((resolve, reject) => {
+    d.resolve = resolve;
+    d.reject = reject;
+  });
+  return d;
+}
+
+function _startBootstrap() {
+  _bootstrap().catch((e) => {
+    console.error("fix-mode bootstrap failed:", e);
+    _setChip("error", `Correction engine unavailable: ${e.message}`);
+    _fix?.refOnsetsWait?.reject(e);
+  });
+}
+
+/** The reference onsets of the last score-less session, per reference file:
+ *  a re-entry (another recording, same reference) need not wait for them. */
+let _refOnsetCache = null;
+
+/** Score-less pages: about PAGE_SEC of reference time each, every page break
+ *  at the first onset past the mark, so a page never splits a tick from its
+ *  window. Returns the page count. */
+const SCORELESS_PAGE_SEC = 8;
+function _assignTimePages(groups) {
+  const on = _fix.refOnsets.peaks;
+  let page = 1;
+  let pageStart = on[0];
+  for (let k = 0; k < groups.length; k++) {
+    if (on[k] - pageStart >= SCORELESS_PAGE_SEC) {
+      page++;
+      pageStart = on[k];
+    }
+    groups[k].page = page;
+  }
+  return page;
+}
+
+/** Seconds as "m:ss.s" — a score-less session's stand-in for bar numbers. */
+function _fmtClock(s) {
+  if (!Number.isFinite(s)) return "?";
+  const m = Math.floor(s / 60);
+  const rest = (s - m * 60).toFixed(1).padStart(4, "0");
+  return `${m}:${rest}`;
+}
+
+/** The shared tail of both entries: resize tracking and the keyboard. */
+function _finishEntry(f) {
   // The score pane can resize without a window resize — the nav collapsing,
   // the annotation drawer pushing, the pane becoming visible at all — and
   // every one of those invalidates the page-fit geometry wholesale.
@@ -909,8 +1312,9 @@ export async function enterFixMode(entryFile) {
       // One system per page with the page box tracking content: the pane's
       // HEIGHT never changes the page model, only the on-screen scale (the
       // CSS fit) — so a height-only change takes the light re-fit, and only
-      // a width change pays for a relayout.
-      if (widthChanged) _onResize();
+      // a width change pays for a relayout. Score-less, only the strip refits.
+      if (f.scoreless) _refitStrip();
+      else if (widthChanged) _onResize();
       else _refitScorePane();
     }, 150);
   });
@@ -921,26 +1325,24 @@ export async function enterFixMode(entryFile) {
   // stands down via isFixModeActive() (the conscious resolution of the
   // increment-2 deferral), and this document-level handler takes over.
   // Ctrl+Z / Ctrl+Shift+Z stay with listen.js — undo is GLOBAL by ruling.
-  f.keydownHandler = (e) => _onFixKeydown(e);
+  f.keydownHandler = (e) => {
+    _onRefModifierKey(e); // Shift / Alt redraw the reference's add guide
+    _onFixKeydown(e);
+  };
   document.addEventListener("keydown", f.keydownHandler);
   // A floating keyboard nudge commits on full release (see _onFixKeyup); a
   // window blur can eat that keyup, so it commits the nudge instead — a
   // pending nudge is never silently abandoned.
-  f.keyupHandler = (e) => _onFixKeyup(e);
+  f.keyupHandler = (e) => {
+    _onRefModifierKey(e);
+    _onFixKeyup(e);
+  };
   document.addEventListener("keyup", f.keyupHandler);
   f.blurHandler = () => {
     _heldArrows.clear();
     _commitPendingNudge();
   };
   window.addEventListener("blur", f.blurHandler);
-
-  // The engine bootstrap (decode + fix_begin) runs in the background; the
-  // screen is usable for inspection while it loads, and the loop's realign
-  // and audition wait on it.
-  _bootstrap().catch((e) => {
-    console.error("fix-mode bootstrap failed:", e);
-    _setChip("error", `Correction engine unavailable: ${e.message}`);
-  });
 }
 
 /** Remove a session's DOM and renderer without any toolkit work. */
@@ -964,6 +1366,11 @@ function _teardownFixDom(f) {
   _heldArrows.clear();
   _endDrag(f);
   _endMarquee(f);
+  if (f.refMarquee) {
+    window.removeEventListener("mousemove", f.refMarquee.onMove);
+    window.removeEventListener("mouseup", f.refMarquee.onUp);
+    f.refMarquee = null;
+  }
   _endResize(f);
   _auditionDispose(f);
   if (_pendingRealign) {
@@ -1058,6 +1465,7 @@ export function fixModeOnPieceReset() {
   exitFixMode({ discardPending: true });
   _closeChooser();
   _derived = null;
+  _refOnsetCache = null;
   clearTimeout(_prewarmTimer);
   if (_worker) {
     try {
@@ -1082,6 +1490,7 @@ export function fixModeOnPieceReset() {
  */
 export function fixModePrewarm() {
   _derived = null;
+  _refOnsetCache = null;
   // A (re)loaded piece invalidates the piece-scoped correction state too.
   _corrections = createCorrections();
   _pristine = null;
@@ -1090,7 +1499,7 @@ export function fixModePrewarm() {
   _dirtyGridFiles.clear();
   _scoreRefReviewed = false;
   _closeChooser();
-  _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {} });
+  _loadedCorrectionsJson = JSON.stringify({ a: [], g: [], u: {}, r: [] });
   if (_pendingRealign) {
     _pendingRealign.reject(new Error("piece replaced"));
     _pendingRealign = null;
@@ -1108,6 +1517,7 @@ export function fixModePrewarm() {
         a: _corrections.anchors,
         g: _corrections.gaps,
         u: _corrections.audio,
+        r: _corrections.refTicks,
       });
       const targets = Object.values(state.audio || {}).reduce(
         (n, s) => n + s.anchors.length,
@@ -1154,13 +1564,24 @@ function _schedulePrewarm(delayMs, retries) {
 
 function _runPrewarm() {
   if (_fix || _derived) return; // entered already, or a prewarm landed
+  // Score-less: no layout to prepare; only the engine's runtime is worth warming.
+  if (_scoreless()) {
+    if (_entryUsable()) _warmRuntime();
+    return;
+  }
   if (!tk || !getMeiXml()) return;
   if (!scoreAlignment?.score_onset?.length || !scoreAlignment?.ref_onset?.length)
     return;
   const t0 = performance.now();
   let fresh;
   try {
-    fresh = _entryGuard();
+    const guard = _entryGuard();
+    if (guard.rebase) {
+      // A re-base is the user's call, asked at entry; the layout waits for it.
+      console.info("fix mode: prewarm skipped, the score has changed (entry offers a re-base)");
+      return;
+    }
+    fresh = guard.fresh;
   } catch (e) {
     // The guard would refuse entry; leave everything untouched so the entry
     // click raises the honest dialog itself.
@@ -1355,13 +1776,15 @@ let _lastGroupStats = null;
 
 /**
  * The reference-time table the events are indexed into: the score's live
- * ref_onset. A group's identity in audio mode is its event's entry here (target
- * anchors are keyed by it), so every such read goes through these accessors —
- * the one place a score-less session will supply the reference's own detected
- * onsets instead. Read live, never cached on the group: score↔ref edits move
- * ref_onset in place.
+ * ref_onset, or — score-less — the reference's own detected onsets, as flux
+ * peaks or perceived attacks after the snap toggle. A group's identity in audio
+ * mode is its event's entry here (target anchors are keyed by it), so every
+ * such read goes through these accessors. Read live, never cached on the
+ * group: score↔ref edits move ref_onset in place.
  */
 function _refOnsetTable() {
+  const r = _fix?.refOnsets;
+  if (r) return _snapTarget === "perceived" && r.pat.length ? r.pat : r.peaks;
   return scoreAlignment.ref_onset;
 }
 
@@ -1371,6 +1794,28 @@ function _eventRefT(i) {
 
 function _groupRefT(group) {
   return _eventRefT(group.eventIxs[0]);
+}
+
+/**
+ * Score-less: the target anchor on a group, laid under EITHER of its onset's
+ * times (peak or perceived attack — the lists are index-aligned), so flipping
+ * the snap toggle never detaches an anchor from its tick. Elsewhere the plain
+ * lookup by the group's reference time.
+ */
+function _groupTargetAnchor(group) {
+  const f = _fix;
+  const a = findTargetAnchor(_corrections, f.targetFile, _groupRefT(group));
+  if (a || !f.refOnsets) return a;
+  const i = group.eventIxs[0];
+  const alt = _refOnsetTable() === f.refOnsets.pat ? f.refOnsets.peaks : f.refOnsets.pat;
+  return Number.isFinite(alt[i]) ? findTargetAnchor(_corrections, f.targetFile, alt[i]) : null;
+}
+
+/** The reference time a group's anchor is (or will be) stored under: its
+ *  existing anchor's, so a re-commit or a neighbour search never splits it. */
+function _groupKeyRefT(group) {
+  if (!_fix?.refOnsets) return _groupRefT(group);
+  return _groupTargetAnchor(group)?.refT ?? _groupRefT(group);
 }
 
 /**
@@ -1392,7 +1837,7 @@ function _eventStripTime(i) {
 
 function _eventStripOff(i) {
   const f = _fix;
-  const off = scoreAlignment.ref_offset;
+  const off = scoreAlignment?.ref_offset;
   if (!Array.isArray(off)) return undefined;
   if (f?.mode === "audio") return f.projOff ? f.projOff[i] : _refToTarget(off[i]);
   return off[i];
@@ -1419,6 +1864,28 @@ function _refToTarget(refT) {
 }
 
 /**
+ * Target time → reference time through the target's LIVE grid: the inverse of
+ * _refToTarget. A binary search finds the raster interval, the reference
+ * raster is interpolated across it, and beyond the grid the edge slope
+ * extrapolates. A flat stretch of the target grid (the recording holding
+ * still while the reference moves on) maps to its FIRST sample. The
+ * score-less reference playhead reads this; C's right ear will too.
+ */
+function _targetToRef(t) {
+  const f = _fix;
+  if (!Number.isFinite(t) || !f?.targetFile) return t;
+  const rg = alignmentGrids[f.refFile];
+  const tg = alignmentGrids[f.targetFile];
+  if (!rg || !tg || rg.length !== tg.length || rg.length < 2) return t;
+  let k = _lowerBound(tg, t); // first raster index with tg[k] >= t
+  if (k <= 0) k = 1;
+  if (k >= tg.length) k = tg.length - 1;
+  const d = tg[k] - tg[k - 1];
+  if (!(d > 1e-9)) return rg[k - 1]; // flat at an edge: nothing to extrapolate by
+  return rg[k - 1] + ((t - tg[k - 1]) / d) * (rg[k] - rg[k - 1]);
+}
+
+/**
  * Audio mode: every event's onset and offset projected into the target's
  * timeline, refreshed after any change to the target's grid (commit, undo,
  * redo, revert). The audition renders from these tables and the ticks read
@@ -1427,7 +1894,7 @@ function _refToTarget(refT) {
 function _recomputeProjection(f) {
   if (f.mode !== "audio") return;
   const on = _refOnsetTable();
-  const off = scoreAlignment.ref_offset;
+  const off = scoreAlignment?.ref_offset;
   const n = on.length;
   const pOn = new Array(n);
   const pOff = new Array(n);
@@ -1437,12 +1904,55 @@ function _recomputeProjection(f) {
   }
   f.projOn = pOn;
   f.projOff = pOff;
+  // Score-less: the warped right ear follows the same grids from its next grain.
+  const a = f.aud;
+  if (f.scoreless && a?.warp && a.stretch) {
+    a.stretch.port.postMessage({ type: "warpGrid", ..._warpGrids(f), sentAt: a.ctx.currentTime });
+    a.warp.gridPosts++; // test surface
+    a.warp.lastPostAt = performance.now();
+  }
+}
+
+/** The grids the warped right ear maps through, as copies for the worklet. */
+function _warpGrids(f) {
+  return {
+    rg: Float64Array.from(alignmentGrids[f.refFile] || []),
+    tg: Float64Array.from(alignmentGrids[f.targetFile] || []),
+  };
+}
+
+/**
+ * Score-less: the right ear is the reference recording itself, which the
+ * stretch worklet warps onto the recording's time through the live grids
+ * (pitch kept, its own WSOLA grain per channel-0 grain). Level-matched to the
+ * recording by median frame RMS — both ears are recordings, so the gain is
+ * near 1 — and never past the peak clamp. The worklet takes the samples.
+ */
+function _loadWarp(f, a, node) {
+  const ref = f.refEarPcm;
+  f.refEarPcm = null;
+  const recLevel = _medianFrameRms(a.buffer.getChannelData(0));
+  const refLevel = _medianFrameRms(ref);
+  let peak = 0;
+  for (let i = 0; i < ref.length; i++) {
+    const v = ref[i] < 0 ? -ref[i] : ref[i];
+    if (v > peak) peak = v;
+  }
+  const peakGain = peak > 1e-6 ? 0.98 / peak : 1;
+  const gain = refLevel > 0 ? Math.min(peakGain, recLevel / refLevel) : 1;
+  a.warp = { gain, levels: { rec: recLevel, ref: refLevel, peakGain }, gridPosts: 0 };
+  node.port.postMessage({ type: "warp", ref, ..._warpGrids(f), gain }, [ref.buffer]);
+  console.log(
+    `fix mode: warped reference ear — reference ${refLevel.toFixed(4)} RMS, ` +
+      `recording ${recLevel.toFixed(4)} → gain ${gain.toFixed(4)}`,
+  );
 }
 
 /** The onset/offset tables the audition renders from: the live ref tables
  *  (score↔ref) or the projection into the target (audio-to-audio). */
 function _audTables(f) {
   if (f.mode === "audio" && f.projOn) return { on: f.projOn, off: f.projOff };
+  if (f.scoreless) return { on: [], off: [] }; // no projection yet, and no synth to render
   return { on: scoreAlignment.ref_onset, off: scoreAlignment.ref_offset };
 }
 
@@ -1550,6 +2060,8 @@ function _buildDom(contentEl, waveformsEl) {
 
   const root = document.createElement("div");
   root.id = "fix-mode";
+  // Score-less: no score pane; the strip and its lanes take the height.
+  if (_fix.scoreless) root.classList.add("fix-scoreless");
 
   // The correction controls live in the LEFT NAV, not in a header strip over
   // the score. Neither of the nav's own regions means anything while
@@ -1594,28 +2106,32 @@ function _buildDom(contentEl, waveformsEl) {
   // back at exit).
   const playBtn = document.getElementById("playpause");
 
-  // Page-only playback toggle: play stops at the current page's boundary.
+  // Auto-page (remembered): playback turns the page at its end; off, it
+  // stops at the page boundary.
   const [pageOnlyRow, pageOnlyBtn] = _navCheckbox(
-    "fix-page-only",
-    "Page only",
-    "Play only the current page — playback stops at the page boundary",
-    _pageOnly,
+    "fix-auto-page",
+    "Auto-page",
+    "Turn the page when playback reaches its end — off: play only the current " +
+      "page, stopping at its boundary",
+    !_pageOnly,
     (on) => {
-      _pageOnly = on;
+      _pageOnly = !on;
+      _savePrefBool("fix-auto-page", on);
       if (_fix) _fix.pageOnlyPassUntilT = null;
     },
   );
 
-  // Auto-replay suppression (sticky). Checked = no replay after a commit;
-  // R replays the last fix on demand.
+  // Auto-replay (remembered): each fix replays its span; off, R replays the
+  // last fix on demand.
   const [replayRow, replayBtn] = _navCheckbox(
-    "fix-replay-off",
-    "Replay off",
-    "Suppress the automatic replay after each fix (the fix is still " +
-      "committed) — R replays the last fix on demand",
-    _replaySuppressed,
+    "fix-auto-replay",
+    "Auto-replay",
+    "Replay the span around each fix once it is committed — off: the fix is " +
+      "still committed, and R replays the last fix on demand",
+    !_replaySuppressed,
     (on) => {
-      _replaySuppressed = on;
+      _replaySuppressed = !on;
+      _savePrefBool("fix-auto-replay", on);
     },
   );
 
@@ -1623,12 +2139,16 @@ function _buildDom(contentEl, waveformsEl) {
   // in the recording within a few pixels; Alt while dragging places freely.
   const [snapRow] = _navCheckbox(
     "fix-snap-onsets",
-    "Magnet on drag",
-    "A dragged onset snaps to the nearest detected onset within a few pixels — " +
-      "hold Alt while dragging to place freely",
+    "Magnet",
+    "A dragged onset snaps to the nearest detected onset within a few pixels" +
+      (f.scoreless
+        ? ", and a tick added on the reference lands on the onset curve's nearest peak"
+        : "") +
+      " — hold Alt to place freely",
     _snapOnsets,
     (on) => {
       _snapOnsets = on;
+      _paintRefGuide();
     },
   );
 
@@ -1697,6 +2217,8 @@ function _buildDom(contentEl, waveformsEl) {
       if (!r.checked) return;
       _snapTarget = v;
       r.blur();
+      // Score-less, the ticks themselves follow the toggle.
+      if (_fix?.refOnsets) _recomputeProjection(_fix);
       _scheduleRedraw();
     });
     const l = document.createElement("label");
@@ -1729,7 +2251,7 @@ function _buildDom(contentEl, waveformsEl) {
   // shown only while the lane is).
   const specCfg = document.createElement("div");
   specCfg.className = "fix-spec-cfg";
-  specCfg.hidden = !_laneSpec;
+  specCfg.hidden = !(_laneSpec || (f.scoreless && _refLaneOn.spec));
   const cfgRow1 = document.createElement("span");
   const cfgRow2 = document.createElement("span");
   cfgRow1.append(
@@ -1846,7 +2368,7 @@ function _buildDom(contentEl, waveformsEl) {
   const balance = document.createElement("span");
   balance.className = "fix-balance";
   balance.title =
-    "Audition balance — left ear: the recording, right ear: the aligned synth";
+    `Audition balance — left ear: the recording, right ear: ${_rightEar()}`;
   const balanceL = _sliderIcon("\u{1F3BB}", "Left ear: the recording");
   const balanceInput = document.createElement("input");
   balanceInput.type = "range";
@@ -1855,7 +2377,8 @@ function _buildDom(contentEl, waveformsEl) {
   balanceInput.step = "5";
   balanceInput.value = String(Math.round(_audBalance * 100));
   balanceInput.setAttribute("aria-label", "Audition balance (recording ↔ synth)");
-  const balanceR = _sliderIcon("\u{1F4BB}", "Right ear: the aligned synth");
+  // The synth is a computer; score-less, the right ear is the reference — the target.
+  const balanceR = _sliderIcon(f.scoreless ? "\u{1F3AF}" : "\u{1F4BB}", `Right ear: ${_rightEar()}`);
   balanceInput.addEventListener("input", () => {
     _audBalance = Number(balanceInput.value) / 100;
     if (_fix?.aud) _applyAudBalance(_fix.aud);
@@ -1900,7 +2423,8 @@ function _buildDom(contentEl, waveformsEl) {
       else _setScoreZoom("pct", Number(v));
     },
   );
-  pageCtl.append(pageLabel, zoomSel);
+  if (f.scoreless) pageCtl.append(pageLabel); // no score to zoom
+  else pageCtl.append(pageLabel, zoomSel);
 
   const chip = document.createElement("span");
   chip.className = "fix-chip";
@@ -1932,14 +2456,46 @@ function _buildDom(contentEl, waveformsEl) {
     } catch (_) {}
     return { fs, body };
   };
-  const fsScore = fieldset("fix-fs-score", "Score", "Collapse / expand the score controls");
+  const fsScore = f.scoreless
+    ? fieldset("fix-fs-score", "Pages", "Collapse / expand the page readout")
+    : fieldset("fix-fs-score", "Score", "Collapse / expand the score controls");
   fsScore.body.append(pageCtl);
   const fsPlayback = fieldset("fix-fs-playback", "Playback", "Collapse / expand playback options");
   fsPlayback.body.append(pageOnlyRow, replayRow, speed, balance);
   const fsSnap = fieldset("fix-fs-snap", "Snap to onsets", "Collapse / expand the snap-to-onset controls");
   fsSnap.body.append(snapRow, snapTargetRow);
   const fsLanes = fieldset("fix-fs-lanes", "Lanes", "Collapse / expand the strip's lanes");
-  fsLanes.body.append(specRow, specCfg, onsetRow);
+  if (f.scoreless) {
+    // Two panes, two sets of switches: the recording's (the strip, whose
+    // waveform always shows) and the reference's, any of whose lanes may go.
+    const subhead = (text) => {
+      const d = document.createElement("div");
+      d.className = "fix-nav-subhead";
+      d.textContent = text;
+      return d;
+    };
+    const refRow = (k, label, what) =>
+      _navCheckbox(
+        `fix-ref-lane-${k}`,
+        label,
+        `Show the reference recording's ${what} in the upper pane — with all ` +
+          "three off the pane closes and the recording takes the height",
+        _refLaneOn[k],
+        (on) => _setRefLane(k, on),
+      )[0];
+    fsLanes.body.append(
+      subhead("Recording"),
+      specRow,
+      onsetRow,
+      subhead("Reference"),
+      refRow("wave", "Waveform", "waveform"),
+      refRow("spec", "Spectrogram", "mel spectrogram"),
+      refRow("onset", "Onset curve", "onset-strength curve"),
+      specCfg, // one configuration for both panes' spectrograms
+    );
+  } else {
+    fsLanes.body.append(specRow, specCfg, onsetRow);
+  }
   // Undo, redo, revert, and Save data are NOT listen-mode controls that
   // happen to sit in the nav — a correction session needs every one of them
   // (undo is unified onto listen.js's stack by ruling, and an unsaveable
@@ -2060,13 +2616,105 @@ function _buildDom(contentEl, waveformsEl) {
   score.appendChild(scoreScroll);
   scoreSvg.addEventListener("click", (e) => _onScoreClick(e));
   scoreScroll.addEventListener("scroll", () => _onScoreScroll(), { passive: true });
+  // Score-less: the reference recording's own lanes take the score's slot,
+  // unwarped, over the page's reference-time window (canvases only — the pane
+  // never scrolls on its own, so it needs no WaveSurfer).
+  let refEls = {};
+  if (f.scoreless) {
+    const ref = document.createElement("div");
+    ref.className = "fix-ref";
+    const refLanes = document.createElement("div");
+    refLanes.className = "fix-ref-lanes";
+    const refWave = document.createElement("canvas");
+    refWave.className = "fix-ref-wave";
+    const refSpec = document.createElement("canvas");
+    refSpec.className = "fix-ref-spec";
+    const refOnset = document.createElement("canvas");
+    refOnset.className = "fix-ref-onset";
+    refLanes.append(refWave, refSpec, refOnset);
+    // Ticks at the reference onsets, over the lanes. They select, never
+    // drag (that is the recording's); a click off them seeks.
+    const refTicks = document.createElement("canvas");
+    refTicks.className = "fix-ref-ticks";
+    refTicks.addEventListener("mousedown", (e) => _onRefMouseDown(e));
+    refTicks.addEventListener("click", (e) => _onRefClick(e));
+    refTicks.addEventListener("mousemove", (e) => _onRefHover(e));
+    refTicks.addEventListener("mouseleave", (e) => _onRefHover(e));
+    const refPlayhead = document.createElement("canvas");
+    refPlayhead.className = "fix-ref-playhead";
+    // Where a click would add a tick (_paintRefGuide).
+    const refGuide = document.createElement("canvas");
+    refGuide.className = "fix-ref-guide";
+    // The strip's busy badge, for this pane's spectrogram recompute.
+    const refBadge = document.createElement("div");
+    refBadge.className = "fix-lane-badge";
+    refBadge.hidden = true;
+    const refSpin = document.createElement("span");
+    refSpin.className = "fix-spin";
+    refSpin.textContent = "⟳";
+    refBadge.append(refSpin, " spectrogram…");
+    ref.append(refLanes, refTicks, refPlayhead, refGuide, refBadge);
+    // The same handles as the strip's, between neighbouring visible lanes.
+    const refLaneHandles = [0, 1].map(() => {
+      const h = document.createElement("div");
+      h.className = "fix-lane-handle";
+      h.dataset.stack = "ref";
+      h.title = "Drag to resize the reference's lanes; double-click to reset";
+      h.addEventListener("pointerdown", (e) => _onLaneHandlePointerDown(e, h));
+      h.addEventListener("dblclick", () => _resetLaneWeights("ref"));
+      ref.append(h);
+      return h;
+    });
+    score.append(ref);
+    refEls = { ref, refLanes, refWave, refSpec, refOnset, refTicks, refPlayhead, refGuide, refBadge, refLaneHandles };
+    _applyRefLaneSwitches(root, refEls);
+    _applyLaneWeights(refEls, "ref");
+  }
 
   // The gap doubles as the handle that drags the lane stack against the score.
   const gap = document.createElement("div");
   gap.className = "fix-gap";
-  gap.title = "Drag to resize the lanes against the score; double-click to reset";
+  gap.title = `Drag to resize the lanes against the ${f.scoreless ? "reference" : "score"}; double-click to reset`;
   gap.addEventListener("pointerdown", (e) => _onGapPointerDown(e));
   gap.addEventListener("dblclick", () => _resetStripHeight());
+  // Score-less: what a click on the reference does, where the eye already is.
+  if (f.scoreless) {
+    const modes = document.createElement("div");
+    modes.className = "fix-ref-click";
+    modes.title =
+      "A click on the reference pane, off its ticks: seek the audition there, or add a tick " +
+      "where the detector found none (the Magnet places it on the onset curve's nearest peak; " +
+      "Alt, exactly). Shift+click adds in either mode.";
+    const arrow = document.createElement("span");
+    arrow.className = "fix-ref-click-arrow";
+    arrow.textContent = "↑"; // it applies to the pane above
+    arrow.setAttribute("aria-hidden", "true");
+    modes.append(arrow);
+    for (const [value, label] of [
+      ["seek", "Click to seek"],
+      ["add", "Click to add"],
+    ]) {
+      const lab = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "fix-ref-click";
+      input.id = `fix-ref-click-${value}`;
+      input.value = value;
+      input.checked = _refClickMode === value;
+      input.addEventListener("change", () => {
+        _refClickMode = value;
+        input.blur();
+        _paintRefGuide();
+      });
+      lab.append(input, ` ${label}`);
+      modes.append(lab);
+    }
+    // The gap is the resize handle: its controls must not start a resize.
+    for (const type of ["pointerdown", "dblclick"]) {
+      modes.addEventListener(type, (e) => e.stopPropagation());
+    }
+    gap.append(modes);
+  }
 
   const strip = document.createElement("div");
   _applyStripSizing(strip);
@@ -2128,6 +2776,24 @@ function _buildDom(contentEl, waveformsEl) {
   skipPrev.addEventListener("click", () => _skipOnset(-1));
   skipNext.addEventListener("click", () => _skipOnset(1));
   strip.append(lanes, ticks, playhead, handleA, handleB, skipPrev, skipNext);
+  // Score-less: two recordings on screen, each framed in its own colour and
+  // named on a tab, so the one being aligned and its reference never blur.
+  if (f.scoreless) {
+    const tab = (role, file) => {
+      const t = document.createElement("div");
+      t.className = "fix-pane-tab";
+      const b = document.createElement("b");
+      b.textContent = role;
+      t.append(b, ` · ${file}`);
+      t.title =
+        role === "Reference"
+          ? `The reference recording, ${file}, unwarped: the recording below is aligned to it`
+          : `The recording being aligned, ${file}: drag its ticks onto the onsets they belong to`;
+      return t;
+    };
+    refEls.ref.append(tab("Reference", f.refFile));
+    strip.append(tab("Recording", f.targetFile));
+  }
 
   // Connector overlay spans the whole fix container so a polyline can run
   // from a note in the score pane down across the gap into the strip.
@@ -2157,6 +2823,7 @@ function _buildDom(contentEl, waveformsEl) {
     navRegion,
     scoreEl: score,
     scoreSvg,
+    ...refEls,
     gap,
     scoreScroll,
     zoomSel,
@@ -2210,6 +2877,12 @@ const FIX_TRANSPORT_TITLES = {
   "skip-end": "Next page (Down arrow)",
 };
 
+/** What the audition's right ear carries: the synth, or score-less the
+ *  reference itself, warped to the recording by the stretch worklet. */
+function _rightEar() {
+  return _fix?.scoreless ? "the reference, warped to this recording" : "the aligned synth";
+}
+
 /** Titles displaced by the takeover, restored verbatim at exit. */
 let _transportTitles = null;
 
@@ -2219,7 +2892,7 @@ function _takeOverTransport() {
     const el = document.getElementById(id);
     if (!el) continue;
     _transportTitles[id] = el.title;
-    el.title = title;
+    el.title = id === "playpause" ? title.replace("the aligned synth", _rightEar()) : title;
   }
   // The audition is not playable until its buffers exist; _updatePlayBtn
   // releases the button when they do.
@@ -2432,6 +3105,18 @@ function _renderPage(page) {
   const f = _fix;
   page = Math.min(Math.max(1, page), f.pageCount);
   f.page = page;
+  if (f.scoreless) {
+    // No score page to draw: the page is a stretch of reference time.
+    const on = _groupsOnPage(page).map((g) => _groupRefT(g));
+    f.els.pageLabel.textContent = on.length
+      ? `${_fmtClock(Math.min(...on))}–${_fmtClock(Math.max(...on))} · ${page} / ${f.pageCount}`
+      : `${page} / ${f.pageCount}`;
+    f.refWindow = _refPageWindow();
+    _updateStripWindow();
+    _scheduleRedraw();
+    _schedulePlayheadFrame();
+    return;
+  }
   let svg = f.pageSvgCache.get(page);
   if (!svg) {
     svg = tk.renderToSVG(page, {});
@@ -2583,13 +3268,19 @@ function _turnPage(delta) {
 // The strip (peaks-only WaveSurfer, the exhibit's proven pattern)
 // ---------------------------------------------------------------------------
 
-/** Best available peaks + duration for the reference recording. */
+/** Best available peaks + duration for the strip's recording. */
 function _stripSource() {
-  const pk = waveformPeaks[_fix.stripFile];
+  return _peaksSource(_fix.stripFile);
+}
+
+/** Best available peaks + duration for a recording before its decode: the
+ *  stored envelope, else its listening WaveSurfer's. */
+function _peaksSource(file) {
+  const pk = waveformPeaks[file];
   if (pk?.peaks?.length && pk?.duration) {
     return { peaks: pk.peaks, duration: pk.duration };
   }
-  const ws = wavesurfers[_fix.stripFile];
+  const ws = wavesurfers[file];
   if (ws) {
     try {
       const duration = ws.getDuration();
@@ -2677,17 +3368,33 @@ function _pageTimes(page) {
  * page's last bar on the next).
  */
 function _pageWindow() {
+  return _paddedPageWindow(_pageTimes, _fix.stripSource?.duration || 0);
+}
+
+/**
+ * Score-less: the same window in REFERENCE time, for the reference pane. Set
+ * once per page (_renderPage) and held: the reference is never warped, so
+ * nothing on it moves out of the window while the page is open.
+ */
+function _refPageWindow() {
+  const refTimes = (page) =>
+    _groupsOnPage(page)
+      .map((g) => _groupRefT(g))
+      .filter((t) => Number.isFinite(t));
+  return _paddedPageWindow(refTimes, _fix.refPeaks?.duration || 0);
+}
+
+function _paddedPageWindow(timesOf, duration) {
   const f = _fix;
-  const times = _pageTimes(f.page);
-  const duration = f.stripSource?.duration || 0;
+  const times = timesOf(f.page);
   if (!times.length) return { t0: 0, t1: duration || 1 };
   let t0 = Math.min(...times);
   let t1 = Math.max(...times);
   const pad = Math.max(STRIP_PAD_SEC, (t1 - t0) * STRIP_PAD_FRAC);
   t0 -= pad;
   t1 += pad;
-  const prev = f.page > 1 ? _pageTimes(f.page - 1) : [];
-  const next = f.page < f.pageCount ? _pageTimes(f.page + 1) : [];
+  const prev = f.page > 1 ? timesOf(f.page - 1) : [];
+  const next = f.page < f.pageCount ? timesOf(f.page + 1) : [];
   if (prev.length) t0 = Math.min(t0, Math.max(...prev) - STRIP_NEIGHBOUR_SEC);
   if (next.length) t1 = Math.max(t1, Math.min(...next) + STRIP_NEIGHBOUR_SEC);
   return { t0, t1 };
@@ -2826,8 +3533,37 @@ function _setLane(which, on) {
   _applyStripSizing(f.els.strip);
   f.els.laneSpec.hidden = !_laneSpec;
   f.els.laneOnset.hidden = !_laneOnset;
-  f.els.specCfg.hidden = !_laneSpec;
+  _syncSpecCfgShown(f);
   _buildStrip(f.stripSource);
+  _scheduleRedraw();
+}
+
+/** The spectrogram settings show while any spectrogram lane does. */
+function _syncSpecCfgShown(f) {
+  f.els.specCfg.hidden = !(_laneSpec || (f.scoreless && _refLaneOn.spec));
+}
+
+/** The reference pane's lane switches onto its elements; with all three off
+ *  the pane (and the gap handle) goes and the strip takes the height. */
+function _applyRefLaneSwitches(root, els) {
+  for (const [el, k] of _stackLanes(els, "ref")) el.hidden = !_refLaneOn[k];
+  root.classList.toggle("fix-ref-off", !Object.values(_refLaneOn).some(Boolean));
+}
+
+/** A reference-pane lane switch (score-less sessions). */
+function _setRefLane(which, on) {
+  _refLaneOn = { ..._refLaneOn, [which]: on };
+  const f = _fix;
+  if (!f?.els.ref) return;
+  const paneWas = !f.els.root.classList.contains("fix-ref-off");
+  _applyRefLaneSwitches(f.els.root, f.els);
+  _syncSpecCfgShown(f);
+  if (paneWas !== !f.els.root.classList.contains("fix-ref-off")) {
+    // The strip's height changed with the pane: its WaveSurfer sizes itself
+    // at creation (the observer stands down on a zero-sized pane).
+    _buildStrip(f.stripSource);
+    _refitStrip();
+  }
   _scheduleRedraw();
 }
 
@@ -2839,7 +3575,7 @@ function _setSpecCfg(patch) {
   if (!f) return;
   const displayOnly = Object.keys(patch).every((k) => k === "labels");
   if (displayOnly) {
-    if (f.lanes) f.lanes.lastKey = null; // repaint the lane, no recompute
+    for (const L of [f.lanes, f.refLanes]) if (L) L.lastKey = null; // repaint, no recompute
     _scheduleRedraw();
   } else if (f.engineReady) {
     _requestLanes(f, "mel");
@@ -2857,17 +3593,31 @@ function _melHop() {
 function _requestLanes(f, what) {
   f.lanesPending = true;
   _scheduleRedraw(); // the spectrogram shows its busy state
-  _ensureWorker().postMessage({
-    type: "fix_lanes",
-    what,
-    which: f.mode === "audio" ? "target" : "ref", // the audio on the strip
-    hop: LANE_HOP,
-    nMels: _specCfg.nMels,
-    nFft: _specCfg.nFft,
-    window: _specCfg.window,
-    scale: _specCfg.scale,
-    melHop: _melHop(),
-  });
+  const post = (which) =>
+    _ensureWorker().postMessage({
+      type: "fix_lanes",
+      what,
+      which,
+      hop: LANE_HOP,
+      nMels: _specCfg.nMels,
+      nFft: _specCfg.nFft,
+      window: _specCfg.window,
+      scale: _specCfg.scale,
+      melHop: _melHop(),
+    });
+  post(f.mode === "audio" ? "target" : "ref"); // the audio on the strip
+  // Score-less: the reference pane's lanes too, whichever are showing, so a
+  // lane switched on later has its data at once.
+  if (f.scoreless) {
+    f.refLanesPending = true;
+    post("ref");
+  }
+}
+
+/** Whether a fix_lanes reply (or its error) is the score-less reference
+ *  pane's rather than the strip's. */
+function _isRefLanesReply(f, d) {
+  return f.mode === "audio" && d.which === "ref";
 }
 
 // --- Score zoom-and-scroll (fit | fill width | fill height | percent) ---
@@ -2922,7 +3672,7 @@ function _effectiveZoomPct() {
 function _setScoreZoom(mode, pct) {
   _scoreZoom = { mode, pct: mode === "pct" ? pct : mode === "fit" ? 100 : _scoreZoom.pct };
   const f = _fix;
-  if (!f) return;
+  if (!f || f.scoreless) return;
   _applyScoreZoom();
   _scrollScoreToSelection();
   _updateScoreX();
@@ -3025,25 +3775,35 @@ function _warmRuntime() {
 /** The strip's classes and (when the user resized it) its fixed height. Both
  *  _buildDom and the prewarm probe go through here — see _stripClassName. */
 function _applyStripSizing(el) {
-  el.className = _stripClassName() + (_stripHeightPx ? " fix-strip-sized" : "");
-  if (_stripHeightPx) el.style.setProperty("--fix-strip-h", `${Math.round(_stripHeightPx)}px`);
+  const px = _stripH();
+  el.className = _stripClassName() + (px ? " fix-strip-sized" : "");
+  if (px) el.style.setProperty("--fix-strip-h", `${Math.round(px)}px`);
   else el.style.removeProperty("--fix-strip-h");
 }
 
-/** User lane weights as inline flex-grow (px-proportional); none = CSS. */
-function _applyLaneWeights(els) {
-  const w = _laneWeights;
-  els.stripWs.style.flexGrow = w ? String(w.wave) : "";
-  els.laneSpec.style.flexGrow = w ? String(w.spec) : "";
-  els.laneOnset.style.flexGrow = w ? String(w.onset) : "";
+/** User lane weights as inline flex-grow (px-proportional); none = CSS. A
+ *  stack is the strip's lanes or the score-less reference pane's. */
+function _applyLaneWeights(els, stack = "strip") {
+  const w = stack === "ref" ? _refLaneWeights : _laneWeights;
+  for (const [el, k] of _stackLanes(els, stack)) el.style.flexGrow = w ? String(w[k]) : "";
 }
 
-function _visibleLanes(f) {
-  return [
-    [f.els.stripWs, "wave"],
-    [f.els.laneSpec, "spec"],
-    [f.els.laneOnset, "onset"],
-  ].filter(([el]) => !el.hidden);
+function _stackLanes(els, stack = "strip") {
+  return stack === "ref"
+    ? [
+        [els.refWave, "wave"],
+        [els.refSpec, "spec"],
+        [els.refOnset, "onset"],
+      ]
+    : [
+        [els.stripWs, "wave"],
+        [els.laneSpec, "spec"],
+        [els.laneOnset, "onset"],
+      ];
+}
+
+function _visibleLanes(f, stack = "strip") {
+  return _stackLanes(f.els, stack).filter(([el]) => !el.hidden);
 }
 
 /** The spectrogram's busy state: a pending RECOMPUTE (a configuration change)
@@ -3073,9 +3833,9 @@ function _setRealignBusy(f, on) {
 }
 
 /** One handle per boundary between visible lanes, on that boundary. */
-function _layoutLaneHandles(f) {
-  const vis = _visibleLanes(f);
-  f.els.laneHandles.forEach((h, k) => {
+function _layoutLaneHandles(f, stack = "strip") {
+  const vis = _visibleLanes(f, stack);
+  (stack === "ref" ? f.els.refLaneHandles : f.els.laneHandles).forEach((h, k) => {
     const upper = vis[k];
     const lower = vis[k + 1];
     if (!upper || !lower) {
@@ -3114,16 +3874,19 @@ function _onLaneHandlePointerDown(e, h) {
   const f = _fix;
   if (!f || e.button !== 0 || h.hidden || f.resizing) return;
   e.preventDefault();
+  const stack = h.dataset.stack || "strip";
   const heights = {};
-  for (const [el, k] of _visibleLanes(f)) heights[k] = el.clientHeight;
+  for (const [el, k] of _visibleLanes(f, stack)) heights[k] = el.clientHeight;
   if (!(h.dataset.upper in heights) || !(h.dataset.lower in heights)) return;
   f.resizing = {
     kind: "lanes",
+    stack,
     startY: e.clientY,
     upper: h.dataset.upper,
     lower: h.dataset.lower,
     heights,
-    ..._wsHostAtDragStart(f),
+    // The reference pane is canvases only: no WaveSurfer to scale and rebuild.
+    ...(stack === "ref" ? {} : _wsHostAtDragStart(f)),
     moved: false,
     onMove: (ev) => _onResizeMove(ev),
     onUp: (ev) => _onResizeUp(ev),
@@ -3139,21 +3902,23 @@ function _onResizeMove(e) {
   const dy = e.clientY - r.startY;
   if (Math.abs(dy) >= 1) r.moved = true;
   if (r.kind === "strip") {
-    _stripHeightPx = Math.min(r.maxH, Math.max(r.minH, r.startH - dy));
+    _setStripH(Math.min(r.maxH, Math.max(r.minH, r.startH - dy)));
     _applyStripSizing(f.els.strip);
   } else {
     const total = r.heights[r.upper] + r.heights[r.lower];
     const up = Math.min(total - LANE_MIN_PX, Math.max(LANE_MIN_PX, r.heights[r.upper] + dy));
     // Pixels as weights: every visible lane keeps its height, the two
     // neighbours trade; a hidden lane keeps a default-proportioned weight.
-    const w = { ...(_laneWeights || {}) };
+    const ref = r.stack === "ref";
+    const w = { ...((ref ? _refLaneWeights : _laneWeights) || {}) };
     for (const k of Object.keys(r.heights)) w[k] = r.heights[k];
     w[r.upper] = up;
     w[r.lower] = total - up;
     const def = { wave: 10, spec: 10, onset: 4 };
     for (const k of Object.keys(def)) if (w[k] == null) w[k] = (def[k] * total) / 24;
-    _laneWeights = w;
-    _applyLaneWeights(f.els);
+    if (ref) _refLaneWeights = w;
+    else _laneWeights = w;
+    _applyLaneWeights(f.els, r.stack);
   }
   // The lanes are canvases repainted per frame; the WaveSurfer is sized at
   // creation and rebuilt on release. Until then, scale its host to the
@@ -3166,6 +3931,9 @@ function _onResizeMove(e) {
       h > 0 && Math.abs(h - r.wsH0) >= 1 ? `scaleY(${(h / r.wsH0).toFixed(4)})` : "";
   }
   _scheduleRedraw();
+  // The playhead repaints only while playing; a paused one must follow the
+  // new size too, or its bitmap is stretched to it until the next play.
+  _schedulePlayheadFrame();
 }
 
 /** The WaveSurfer's host element and the waveform lane's height at a drag's start. */
@@ -3182,7 +3950,7 @@ function _onResizeUp() {
   if (!r) return;
   _endResize(f);
   if (!r.moved) return;
-  _buildStrip(f.stripSource); // a WaveSurfer sizes itself at creation
+  if (r.stack !== "ref") _buildStrip(f.stripSource); // a WaveSurfer sizes itself at creation
   // The score pane moved: the LIGHT re-fit (the observer stood down during
   // the drag, and the CSS fit has already sized the page — no relayout).
   if (r.kind === "strip") _refitScorePane();
@@ -3198,7 +3966,7 @@ function _endResize(f) {
 }
 
 function _resetStripHeight() {
-  _stripHeightPx = null;
+  _setStripH(null);
   const f = _fix;
   if (!f) return;
   _applyStripSizing(f.els.strip);
@@ -3206,17 +3974,20 @@ function _resetStripHeight() {
   _refitScorePane();
 }
 
-function _resetLaneWeights() {
-  _laneWeights = null;
+function _resetLaneWeights(stack = "strip") {
+  if (stack === "ref") _refLaneWeights = null;
+  else _laneWeights = null;
   const f = _fix;
   if (!f) return;
-  _applyLaneWeights(f.els);
-  _buildStrip(f.stripSource);
+  _applyLaneWeights(f.els, stack);
+  if (stack !== "ref") _buildStrip(f.stripSource);
   _scheduleRedraw();
 }
 
-/** Keep the worker's lanes for the session, derive the display curve, paint. */
+/** Keep the worker's lanes for the session, derive the display curve, paint.
+ *  Score-less sessions keep the reference pane's apart, in f.refLanes. */
 function _installLanes(f, d) {
+  const slot = _isRefLanesReply(f, d) ? "refLanes" : "lanes";
   const melPart = {
     sr: d.sr,
     nMels: d.n_mels,
@@ -3233,12 +4004,12 @@ function _installLanes(f, d) {
     scratch: null,
     lastKey: null,
   };
-  if (d.what === "mel" && f.lanes) {
+  if (d.what === "mel" && f[slot]) {
     // A configuration change: the onset lane and its peaks are kept.
-    f.lanes = { ...f.lanes, ...melPart };
+    f[slot] = { ...f[slot], ...melPart };
   } else {
     const onset = d.onset || new Float32Array(0);
-    f.lanes = {
+    f[slot] = {
       ...melPart,
       onsetHop: d.onset_hop,
       onsetFrames: d.onset_frames ?? onset.length,
@@ -3252,8 +4023,13 @@ function _installLanes(f, d) {
       pat: Float64Array.from(d.pat || []),
     };
   }
-  f.lanesError = null;
-  f.lanesPending = false;
+  if (slot === "refLanes") {
+    f.refLanesError = null;
+    f.refLanesPending = false;
+  } else {
+    f.lanesError = null;
+    f.lanesPending = false;
+  }
   _scheduleRedraw();
 }
 
@@ -3276,8 +4052,7 @@ let _melLutCache = null;
 /** A 256-entry RGBA ramp (inferno-like), fading to transparent below the knee
  *  so the theme's ground shows through the quiet parts, light or dark. */
 function _melLut() {
-  if (_melLutCache) return _melLutCache;
-  const stops = [
+  _melLutCache ||= _rampLut([
     [0.0, 0, 0, 4],
     [0.13, 31, 12, 72],
     [0.25, 85, 15, 109],
@@ -3287,7 +4062,29 @@ function _melLut() {
     [0.75, 249, 140, 10],
     [0.88, 249, 201, 50],
     [1.0, 252, 255, 164],
-  ];
+  ]);
+  return _melLutCache;
+}
+
+let _refMelLutCache = null;
+/** The score-less reference pane's ramp: viridis-like, the cool counterpart
+ *  of the recording's, with the same fade to transparent. */
+function _refMelLut() {
+  _refMelLutCache ||= _rampLut([
+    [0.0, 68, 1, 84],
+    [0.125, 71, 44, 122],
+    [0.25, 59, 82, 139],
+    [0.375, 44, 113, 142],
+    [0.5, 33, 145, 140],
+    [0.625, 39, 173, 129],
+    [0.75, 92, 200, 99],
+    [0.875, 170, 220, 50],
+    [1.0, 253, 231, 37],
+  ]);
+  return _refMelLutCache;
+}
+
+function _rampLut(stops) {
   const lut = new Uint8ClampedArray(256 * 4);
   for (let v = 0; v < 256; v++) {
     const x = v / 255;
@@ -3301,7 +4098,6 @@ function _melLut() {
     lut[v * 4 + 2] = b0 + (b1 - b0) * u;
     lut[v * 4 + 3] = Math.min(1, x / LANE_ALPHA_KNEE) * 255;
   }
-  _melLutCache = lut;
   return lut;
 }
 
@@ -3324,14 +4120,493 @@ function _paintLanes() {
     if (el.width !== w) el.width = w;
     if (el.height !== h) el.height = h;
     const ctx = el.getContext("2d");
-    if (!L || !f.stripWS || !f.stripPps) {
+    const view = L ? _stripView() : null;
+    if (!view) {
       ctx.clearRect(0, 0, w, h);
       _paintLanePlaceholder(ctx, w, h, kind, f.lanesError);
       continue;
     }
-    if (kind === "spec") _paintSpectrogram(ctx, L, w, h);
-    else _paintOnsetLane(ctx, L, w, h);
+    if (kind === "spec") _paintSpectrogram(ctx, L, w, h, view);
+    else _paintOnsetLane(ctx, L, w, h, view);
   }
+}
+
+/**
+ * What a lane painter draws through: the time ↔ x mapping, the repaint key
+ * that mapping implies, and what the lane overlays. The strip's view reads
+ * its WaveSurfer's zoom and scroll; the score-less reference pane builds its
+ * own over a fixed window, so one set of painters serves both.
+ */
+function _laneView(left, pps, extra) {
+  return {
+    xToTime: (x) => (x + left) / pps,
+    timeToX: (t) => t * pps - left,
+    key: `${left}|${pps}`,
+    marks: [], // onset marks hanging from the onset lane's top
+    snapT: null, // the onset a drag is snapped to, ringed
+    specEl: null, // the spectrogram canvas (its Hz labels dodge avoidEl)
+    avoidEl: null,
+    fill: null, // the onset curve's fill; null = the theme's waveform colour
+    lut: null, // the spectrogram's ramp; null = the recording's (_melLut)
+    ...extra,
+  };
+}
+
+/** The strip's view, or null before its WaveSurfer has a zoom. */
+function _stripView() {
+  const f = _fix;
+  if (!f.stripWS || !f.stripPps) return null;
+  const scrollEl = f.stripWS.getWrapper().parentElement;
+  return _laneView(scrollEl.scrollLeft, f.stripPps, {
+    marks: _snapTargetList() || [],
+    snapT: f.drag?.snapT ?? null,
+    specEl: f.els.laneSpec,
+    avoidEl: f.els.strip.querySelector(".fix-onset-prev"),
+  });
+}
+
+/** The score-less reference pane's view: the page's reference window across
+ *  the pane's width, or null before the page has one. */
+function _refView() {
+  const f = _fix;
+  const win = f.refWindow;
+  const w = f.els.ref?.clientWidth;
+  if (!win || !w) return null;
+  const pps = w / Math.max(win.t1 - win.t0, 0.5);
+  return _laneView(win.t0 * pps, pps, {
+    specEl: f.els.refSpec,
+    fill: _refWaveColor(),
+    lut: _refMelLut(),
+  });
+}
+
+function _refWaveColor() {
+  return (
+    getComputedStyle(document.documentElement).getPropertyValue("--color-ref-waveform").trim() ||
+    "#2a9d9f"
+  );
+}
+
+/** Paint the score-less reference pane's lanes through its view. The onset
+ *  lane carries no marks: the pane's ticks stand at those very onsets. */
+function _paintRefPane() {
+  const f = _fix;
+  if (!f?.els.ref) return;
+  _layoutLaneHandles(f, "ref");
+  // A spectrogram recompute dims the lane and badges it, as on the strip; the
+  // first computation has the lane's own "computing…" placeholder instead.
+  const busy = !!(f.refLanesPending && f.refLanes && !f.els.refSpec.hidden);
+  f.els.refSpec.classList.toggle("fix-lane-busy", busy);
+  f.els.refBadge.hidden = !busy;
+  if (busy) f.els.refBadge.style.top = `${f.els.refSpec.offsetTop + 3}px`;
+  const view = _refView();
+  const L = f.refLanes;
+  for (const [el, kind] of _visibleLanes(f, "ref")) {
+    const w = el.clientWidth;
+    const h = el.clientHeight;
+    if (!w || !h) continue;
+    if (el.width !== w) el.width = w;
+    if (el.height !== h) el.height = h;
+    const ctx = el.getContext("2d");
+    if (kind === "wave") {
+      ctx.clearRect(0, 0, w, h);
+      if (view && f.refPeaks) _paintPeaksLane(ctx, f.refPeaks, w, h, view, view.fill);
+    } else if (!L || !view) {
+      ctx.clearRect(0, 0, w, h);
+      _paintLanePlaceholder(ctx, w, h, kind, f.refLanesError);
+    } else if (kind === "spec") {
+      _paintSpectrogram(ctx, L, w, h, view);
+    } else {
+      _paintOnsetLane(ctx, L, w, h, view);
+    }
+  }
+  _paintRefTicks(f, view);
+  _paintRefGuide();
+}
+
+/**
+ * The reference pane's ticks: one per onset of the page at its reference time
+ * (the snap toggle's estimator), in the strip's colours — anchored, active,
+ * multi-selected — but without the anchor glyphs, which are laid and lifted on
+ * the recording. Each page group's xScore (root coordinates) is set here: the
+ * connector to its strip tick starts there, as a score note's does.
+ */
+function _paintRefTicks(f, view) {
+  const c = f.els.refTicks;
+  // The pane's size, not the canvas's own: a positioned canvas keeps its
+  // intrinsic width whatever its insets say.
+  const w = f.els.ref.clientWidth;
+  const h = f.els.ref.clientHeight;
+  if (c.width !== w) c.width = w;
+  if (c.height !== h) c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  for (const g of f.groups) g.xScore = null;
+  f.refTicksDrawn = 0; // test surface
+  if (!view || !w || f.els.root.classList.contains("fix-ref-off")) return;
+  const lb = f.els.refLanes.offsetHeight; // the ticks stop where the lanes do
+  const rootX = c.getBoundingClientRect().x - f.els.root.getBoundingClientRect().x;
+  const style = getComputedStyle(document.documentElement);
+  const tickColor = style.getPropertyValue("--color-alignment").trim() || "rgb(140,90,90)";
+  const anchorColor = style.getPropertyValue("--color-alignment-anchor").trim() || "#4e1ca8";
+  const selColor = style.getPropertyValue("--color-alignment-selected").trim() || "#ffa500";
+  const selGroup = f.groups[f.selGroupIx] || null;
+  const dragGroup = f.drag?.moved ? f.groups[f.drag.groupIx] : null;
+  for (const g of _groupsOnPage(f.page)) {
+    const x = view.timeToX(_groupRefT(g));
+    if (!Number.isFinite(x) || x < -1 || x > w + 1) continue;
+    g.xScore = rootX + x;
+    const active = g === selGroup || g === dragGroup;
+    const multi = f.multiSel.size > 0 && f.multiSel.has(f.groups.indexOf(g));
+    const anchored = !!_groupTargetAnchor(g);
+    const col = anchored ? anchorColor : tickColor;
+    if (active) {
+      // Cased, as on the strip: orange alone vanishes over the warm ramp.
+      ctx.beginPath();
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = "#000";
+      ctx.globalAlpha = 0.7;
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, lb);
+      ctx.stroke();
+    }
+    ctx.beginPath();
+    ctx.lineWidth = active ? 2.5 : anchored || multi ? 2 : 1;
+    ctx.strokeStyle = active ? selColor : col;
+    ctx.globalAlpha = active || multi ? 0.95 : anchored ? 0.8 : 0.35;
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, lb);
+    ctx.stroke();
+    if (g === selGroup) {
+      ctx.globalAlpha = 0.95;
+      ctx.fillStyle = selColor;
+      ctx.fillRect(x - 5, 0, 10, 3);
+    } else if (multi) {
+      ctx.globalAlpha = 0.95;
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = col;
+      ctx.strokeRect(x - 4.5, 0.75, 9, 2.5);
+    }
+    f.refTicksDrawn++;
+  }
+  // A marquee in progress: the span it will select, as on the strip.
+  const m = f.refMarquee;
+  if (m?.moved) {
+    const a = Math.min(m.x0, m.x1);
+    const b = Math.max(m.x0, m.x1);
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = tickColor;
+    ctx.fillRect(a, 0, b - a, lb);
+    ctx.globalAlpha = 0.7;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = tickColor;
+    ctx.strokeRect(a + 0.5, 0.5, Math.max(0, b - a - 1), lb - 1);
+  }
+  ctx.globalAlpha = 1;
+}
+
+/**
+ * A click on the reference pane. On a tick (within the strip's hit radius) it
+ * selects that onset, as a click on a score note does. Elsewhere it seeks the
+ * audition to where that reference moment falls in the recording — or, in
+ * "Click to add" mode or with Shift, adds a tick there (_refAddPoint says
+ * where; a click that would crowd an existing tick selects that one).
+ */
+function _onRefClick(e) {
+  const f = _fix;
+  if (!f) return;
+  if (f.refClickSwallow) {
+    f.refClickSwallow = false; // the click that ends a marquee drag
+    return;
+  }
+  _commitPendingNudge();
+  const view = _refView();
+  if (!view) return;
+  const x = e.clientX - f.els.refTicks.getBoundingClientRect().x;
+  const hit = _refTickHit(view, x);
+  if (hit !== -1) {
+    _clickGroup(hit, e.shiftKey);
+    return;
+  }
+  if (_refAddMode(e.shiftKey)) {
+    const p = _refAddPoint(view, x, e.altKey);
+    if (p.dupIx !== -1) {
+      _select(p.dupIx, { seek: false });
+      _announce("A tick is already there: selected it.");
+    } else {
+      _addRefTickAt(p.refT);
+    }
+    return;
+  }
+  f.lastRefSeek = { refT: view.xToTime(x), t: _refToTarget(view.xToTime(x)) }; // test surface
+  _audSeek(f.lastRefSeek.t);
+  _schedulePlayheadFrame();
+}
+
+/**
+ * A press off a tick on the reference pane may start a marquee, as on the
+ * strip: dragged past DRAG_THRESHOLD_PX it selects the page ticks whose
+ * reference times it spans, and the click that follows is swallowed; a press
+ * that does not move stays a click (seek or add, _onRefClick).
+ */
+function _onRefMouseDown(e) {
+  const f = _fix;
+  const view = f && _refView();
+  if (!view || e.button !== 0) return;
+  const x = e.clientX - f.els.refTicks.getBoundingClientRect().x;
+  if (_refTickHit(view, x) !== -1) return; // a tick: the click selects it
+  e.preventDefault();
+  f.refMarquee = {
+    x0: x,
+    x1: x,
+    startX: e.clientX,
+    moved: false,
+    onMove: (ev) => {
+      const m = f.refMarquee;
+      if (!m) return;
+      m.x1 = ev.clientX - f.els.refTicks.getBoundingClientRect().x;
+      if (Math.abs(ev.clientX - m.startX) >= DRAG_THRESHOLD_PX) m.moved = true;
+      _scheduleRedraw();
+    },
+    onUp: () => _onRefMarqueeUp(f),
+  };
+  window.addEventListener("mousemove", f.refMarquee.onMove);
+  window.addEventListener("mouseup", f.refMarquee.onUp);
+}
+
+function _onRefMarqueeUp(f) {
+  const m = f.refMarquee;
+  if (!m) return;
+  window.removeEventListener("mousemove", m.onMove);
+  window.removeEventListener("mouseup", m.onUp);
+  f.refMarquee = null;
+  if (!m.moved) {
+    _scheduleRedraw();
+    return; // a click: _onRefClick has it
+  }
+  // The click event that follows on the pane is this drag's end, not a click;
+  // released elsewhere there is none, so the swallow lapses at once.
+  f.refClickSwallow = true;
+  setTimeout(() => (f.refClickSwallow = false), 0);
+  const view = _refView();
+  const a = Math.min(m.x0, m.x1);
+  const b = Math.max(m.x0, m.x1);
+  const picked = [];
+  if (view) {
+    for (const g of _groupsOnPage(f.page)) {
+      const gx = view.timeToX(_groupRefT(g));
+      if (gx >= a && gx <= b) picked.push(f.groups.indexOf(g));
+    }
+  }
+  f.multiSel = new Set(picked);
+  if (picked.length && !f.multiSel.has(f.selGroupIx)) _select(picked[0], { seek: false });
+  _scheduleRedraw();
+}
+
+/** Whether a click off a tick adds one (Shift adds in either mode). */
+function _refAddMode(shift) {
+  return _refClickMode === "add" || !!shift;
+}
+
+/** The page tick within the hit radius of pane x, or -1. */
+function _refTickHit(view, x) {
+  const f = _fix;
+  let best = -1;
+  let bestDist = TICK_HIT_PX + 1;
+  for (const g of _groupsOnPage(f.page)) {
+    const d = Math.abs(view.timeToX(_groupRefT(g)) - x);
+    if (d < bestDist) {
+      bestDist = d;
+      best = f.groups.indexOf(g);
+    }
+  }
+  return best;
+}
+
+/**
+ * Where a click at pane x would add a tick: with the Magnet on and no Alt, on
+ * the strongest local peak of the reference's onset curve within
+ * REF_ADD_SNAP_SEC — a peak too weak for the detector is exactly what this is
+ * for — else where clicked. `dupIx` is the tick within REF_ADD_MIN_GAP_SEC of
+ * that place, which the click selects instead, or -1.
+ */
+function _refAddPoint(view, x, alt) {
+  const f = _fix;
+  const clicked = view.xToTime(x);
+  const peak = _snapOnsets && !alt ? _refCurvePeakNear(clicked) : null;
+  const refT = peak ?? clicked;
+  let dupIx = -1;
+  let bestD = REF_ADD_MIN_GAP_SEC;
+  const table = _refOnsetTable();
+  for (let k = _lowerBound(table, refT - REF_ADD_MIN_GAP_SEC); k < table.length && table[k] <= refT + REF_ADD_MIN_GAP_SEC; k++) {
+    const d = Math.abs(table[k] - refT);
+    if (d <= bestD) {
+      bestD = d;
+      dupIx = f.groups.findIndex((g) => g.eventIxs[0] === k);
+    }
+  }
+  return { refT, snapped: peak != null, dupIx };
+}
+
+/** The strongest local maximum of the reference's onset curve within
+ *  REF_ADD_SNAP_SEC of t, refined by a parabola, or null. */
+function _refCurvePeakNear(t) {
+  const L = _fix?.refLanes;
+  if (!L?.onsetFrames) return null;
+  const fr = L.sr / L.onsetHop;
+  const c = Math.round((t - L.onsetT0) * fr);
+  const r = Math.max(1, Math.round(REF_ADD_SNAP_SEC * fr));
+  const env = L.onset;
+  let best = -1;
+  for (let i = Math.max(1, c - r); i <= Math.min(L.onsetFrames - 2, c + r); i++) {
+    if (env[i] >= env[i - 1] && env[i] > env[i + 1] && (best === -1 || env[i] > env[best])) best = i;
+  }
+  if (best === -1) return null;
+  const a = env[best - 1];
+  const b = env[best];
+  const d = env[best + 1];
+  const den = a - 2 * b + d;
+  const off = den < 0 ? Math.max(-0.5, Math.min(0.5, (0.5 * (a - d)) / den)) : 0;
+  return (best + off) / fr + L.onsetT0;
+}
+
+/**
+ * The add-mode guide (while the pointer is over the pane and a click would
+ * add): listening mode's alignment line — dashed straight down from the
+ * pointer, then a solid slant to where the tick would land, straight when it
+ * lands where clicked. Over a tick, or where it would select a crowded one,
+ * the slant goes to that tick.
+ */
+function _paintRefGuide() {
+  const f = _fix;
+  const c = f?.els.refGuide;
+  if (!c) return;
+  const w = f.els.ref.clientWidth;
+  const h = f.els.ref.clientHeight;
+  if (c.width !== w) c.width = w;
+  if (c.height !== h) c.height = h;
+  const ctx = c.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  const hv = f.refHover;
+  const adding = !!hv && _refAddMode(hv.shift) && !f.refMarquee?.moved; // not mid-marquee
+  f.els.ref.classList.toggle("fix-ref-adding", adding);
+  f.refGuide = null; // test surface
+  const view = adding ? _refView() : null;
+  if (!view || _refTickHit(view, hv.x) !== -1) return;
+  const p = _refAddPoint(view, hv.x, hv.alt);
+  const xs = view.timeToX(p.dupIx !== -1 ? _groupRefT(f.groups[p.dupIx]) : p.refT);
+  // The full height of the pane, whatever the pointer's y: only its x means
+  // anything, and a line starting at the pointer suggested otherwise.
+  const lb = f.els.refLanes.offsetHeight;
+  const y0 = 0;
+  const yK = (lb * 5) / 6;
+  const rgb = parseCssColor(
+    getComputedStyle(document.documentElement).getPropertyValue("--color-alignment").trim(),
+  ) || { r: 140, g: 90, b: 90 };
+  const col = `${rgb.r},${rgb.g},${rgb.b}`;
+  // Salient, not subtle (user, 2026-11-04): where the click lands must be
+  // obvious. Each stroke is CASED — a dark line under the colour — so it
+  // reads over the spectrogram's ramp and on light and dark grounds alike.
+  const cased = (path, width, alpha, dash = []) => {
+    ctx.setLineDash(dash);
+    ctx.lineWidth = width + 2;
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    path();
+    ctx.stroke();
+    ctx.lineWidth = width;
+    ctx.strokeStyle = `rgba(${col},${alpha})`;
+    path();
+    ctx.stroke();
+    ctx.setLineDash([]);
+  };
+  // The pointer's line: dashed straight down, then the slant to the landing.
+  cased(
+    () => {
+      ctx.beginPath();
+      ctx.moveTo(hv.x, y0);
+      ctx.lineTo(hv.x, yK);
+    },
+    1.5,
+    0.8,
+    [4, 3],
+  );
+  cased(
+    () => {
+      ctx.beginPath();
+      ctx.moveTo(hv.x, yK);
+      ctx.lineTo(xs, lb);
+    },
+    2,
+    0.95,
+  );
+  f.refGuide = { x: hv.x, xs, refT: p.refT, snapped: p.snapped, selects: p.dupIx !== -1 };
+}
+
+/** Pointer and modifier tracking for the guide. */
+function _onRefHover(e) {
+  const f = _fix;
+  if (!f) return;
+  if (e.type === "mouseleave") {
+    f.refHover = null;
+  } else {
+    const r = f.els.refTicks.getBoundingClientRect();
+    f.refHover = { x: e.clientX - r.x, y: e.clientY - r.y, shift: e.shiftKey, alt: e.altKey };
+  }
+  _paintRefGuide();
+}
+
+function _onRefModifierKey(e) {
+  const f = _fix;
+  if (!f?.refHover || (e.key !== "Shift" && e.key !== "Alt")) return;
+  f.refHover.shift = e.shiftKey;
+  f.refHover.alt = e.altKey;
+  _paintRefGuide();
+}
+
+/**
+ * A peaks envelope mirrored about the lane's middle, one column per pixel, at
+ * the strip WaveSurfer's unnormalised scale (amplitude 1 fills half the
+ * height) so the two waveforms read alike. Zoomed in past a pixel per peak
+ * the envelope runs through the peak centres, as WaveSurfer's line does,
+ * rather than stepping. Stored peaks may be signed.
+ */
+function _paintPeaksLane(ctx, src, w, h, view, color) {
+  const { peaks, duration } = src;
+  const n = peaks.length;
+  if (!n || !duration) return;
+  const perSec = n / duration;
+  const mid = h / 2;
+  const xs = [];
+  const amp = [];
+  const pxPerPeak = (view.timeToX(1) - view.timeToX(0)) / perSec;
+  if (pxPerPeak > 1) {
+    const a = Math.max(0, Math.floor(view.xToTime(0) * perSec) - 1);
+    const b = Math.min(n, Math.ceil(view.xToTime(w) * perSec) + 1);
+    for (let i = a; i < b; i++) {
+      xs.push(view.timeToX((i + 0.5) / perSec));
+      amp.push(Math.min(1, Math.abs(peaks[i])) * mid);
+    }
+  } else {
+    for (let x = 0; x < w; x++) {
+      const a = Math.max(0, Math.floor(view.xToTime(x) * perSec));
+      const b = Math.min(n, Math.max(a + 1, Math.floor(view.xToTime(x + 1) * perSec)));
+      let m = 0;
+      for (let i = a; i < b; i++) {
+        const v = Math.abs(peaks[i]);
+        if (v > m) m = v;
+      }
+      xs.push(x);
+      amp.push(Math.min(1, m) * mid);
+    }
+  }
+  if (!xs.length) return;
+  ctx.beginPath();
+  ctx.moveTo(xs[0], mid - amp[0]);
+  for (let k = 1; k < xs.length; k++) ctx.lineTo(xs[k], mid - amp[k]);
+  for (let k = xs.length - 1; k >= 0; k--) ctx.lineTo(xs[k], mid + amp[k]);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
 }
 
 function _paintLanePlaceholder(ctx, w, h, kind, error) {
@@ -3352,19 +4627,17 @@ function _paintLanePlaceholder(ctx, w, h, kind, error) {
  * the lane with a fractional source rectangle so frame edges land exactly on
  * the waveform's time→x. The whole recording is never rasterised at once: a
  * ten-minute piece is ~26k columns, past what a canvas may be wide. Cached on
- * the (scroll, zoom, size) key — a selection or drag redraw costs nothing.
+ * the view's (scroll, zoom) key plus the size — a selection or drag redraw
+ * costs nothing. The cache lives on L, so each pane's lanes keep their own.
  */
-function _paintSpectrogram(ctx, L, w, h) {
-  const f = _fix;
-  const scrollEl = f.stripWS.getWrapper().parentElement;
-  const key = `${scrollEl.scrollLeft}|${f.stripPps}|${w}|${h}|${_specCfg.labels ? 1 : 0}`;
+function _paintSpectrogram(ctx, L, w, h, view) {
+  const key = `${view.key}|${w}|${h}|${_specCfg.labels ? 1 : 0}`;
   if (L.lastKey === key) return;
   L.lastKey = key;
   ctx.clearRect(0, 0, w, h);
   L.labelsDrawn = 0;
-  const t0 = _stripXToTime(0);
-  const t1 = _stripXToTime(w);
-  if (t0 === null || t1 === null) return;
+  const t0 = view.xToTime(0);
+  const t1 = view.xToTime(w);
   const fr = L.sr / L.melHop;
   // Frame i is centred at i / fr + melT0 and owns the cell [i − ½, i + ½).
   const F0 = Math.max(0, Math.floor((t0 - L.melT0) * fr - 0.5));
@@ -3374,7 +4647,7 @@ function _paintSpectrogram(ctx, L, w, h) {
   const nM = L.nMels;
   if (!L.img || L.img.width !== nF) L.img = new ImageData(nF, nM);
   const data = L.img.data;
-  const lut = _melLut();
+  const lut = view.lut || _melLut();
   const mel = L.mel;
   const stride = L.melFrames;
   for (let m = 0; m < nM; m++) {
@@ -3397,23 +4670,22 @@ function _paintSpectrogram(ctx, L, w, h) {
   const sx1 = (t1 - L.melT0) * fr + 0.5 - F0;
   ctx.imageSmoothingEnabled = true;
   ctx.drawImage(sc, sx0, 0, sx1 - sx0, nM, 0, 0, w, h);
-  if (_specCfg.labels && L.bandHz?.length) L.labelsDrawn = _drawHzLabels(ctx, L, w, h);
+  if (_specCfg.labels && L.bandHz?.length) L.labelsDrawn = _drawHzLabels(ctx, L, w, h, view);
 }
 
 /** Frequency labels on the lane's left edge: round values that have a band
  *  near them, spaced to stay legible, kept clear of the ◀ onset-skip button. */
-function _drawHzLabels(ctx, L, w, h) {
-  const f = _fix;
+function _drawHzLabels(ctx, L, w, h, view) {
   const nB = L.bandHz.length;
   const yOf = (m) => h * (1 - (m + 0.5) / nB);
   // The ◀ onset-skip button sits over the strip's middle, i.e. over this lane
   // in the default stack: labels start just right of it then (a vertical
   // exclusion zone starved a 49 px lane of every label but one).
   let x0 = 2;
-  const btn = f.els.strip.querySelector(".fix-onset-prev");
-  if (btn) {
+  const btn = view.avoidEl;
+  if (btn && view.specEl) {
     const br = btn.getBoundingClientRect();
-    const lr = f.els.laneSpec.getBoundingClientRect();
+    const lr = view.specEl.getBoundingClientRect();
     if (br.bottom > lr.top && br.top < lr.bottom) x0 = Math.max(2, br.right - lr.left + 4);
   }
   const wanted = [50, 100, 200, 500, 1000, 2000, 5000, 10000];
@@ -3455,42 +4727,42 @@ function _drawHzLabels(ctx, L, w, h) {
  * detected onsets as marks hanging from the lane's top (they are the snap
  * targets), and a ring on the one a drag is currently snapped to.
  */
-function _paintOnsetLane(ctx, L, w, h) {
+function _paintOnsetLane(ctx, L, w, h, view) {
   const f = _fix;
   ctx.clearRect(0, 0, w, h);
-  const t0 = _stripXToTime(0);
-  const t1 = _stripXToTime(w);
-  if (t0 === null || t1 === null) return;
+  const t0 = view.xToTime(0);
+  const t1 = view.xToTime(w);
   if (!L.onsetFrames) return;
   const fr = L.sr / L.onsetHop;
   const F0 = Math.max(0, Math.floor((t0 - L.onsetT0) * fr) - 1);
   const F1 = Math.min(L.onsetFrames, Math.ceil((t1 - L.onsetT0) * fr) + 2);
   if (F1 <= F0) return;
   const style = getComputedStyle(document.documentElement);
-  const fill = style.getPropertyValue("--color-waveform").trim() || "violet";
+  const fill = view.fill || style.getPropertyValue("--color-waveform").trim() || "violet";
   const tickColor =
     style.getPropertyValue("--color-alignment").trim() || "rgb(140,90,90)";
   const top = LANE_PEAK_MARK_H + 1; // the curve keeps below the marks' row
+  const toX = view.timeToX;
   ctx.beginPath();
-  ctx.moveTo(_timeToStripX(F0 / fr + L.onsetT0), h);
+  ctx.moveTo(toX(F0 / fr + L.onsetT0), h);
   for (let i = F0; i < F1; i++) {
-    ctx.lineTo(_timeToStripX(i / fr + L.onsetT0), h - L.onsetNorm[i] * (h - top));
+    ctx.lineTo(toX(i / fr + L.onsetT0), h - L.onsetNorm[i] * (h - top));
   }
-  ctx.lineTo(_timeToStripX((F1 - 1) / fr + L.onsetT0), h);
+  ctx.lineTo(toX((F1 - 1) / fr + L.onsetT0), h);
   ctx.closePath();
   ctx.globalAlpha = 0.55;
   ctx.fillStyle = fill;
   ctx.fill();
   ctx.globalAlpha = 0.85;
   ctx.fillStyle = tickColor;
-  const pk = _snapTargetList() || [];
+  const pk = view.marks;
   for (let k = _lowerBound(pk, t0 - 1); k < pk.length && pk[k] <= t1 + 1; k++) {
-    const x = _timeToStripX(pk[k]);
+    const x = toX(pk[k]);
     ctx.fillRect(Math.round(x) - 1, 0, 2, LANE_PEAK_MARK_H);
   }
-  const snapT = f.drag?.snapT;
+  const snapT = view.snapT;
   if (snapT != null) {
-    const x = _timeToStripX(snapT);
+    const x = toX(snapT);
     ctx.globalAlpha = 0.95;
     ctx.fillStyle = f.playheadColor;
     ctx.beginPath();
@@ -3529,7 +4801,7 @@ function _occupiedTimes(groupIxOrSet) {
     const ownRef = new Set();
     for (const ix of ixs) {
       const g = f.groups[ix];
-      if (g) ownRef.add(Math.round(_groupRefT(g) * 1e6));
+      if (g) ownRef.add(Math.round(_groupKeyRefT(g) * 1e6));
     }
     return targetAnchors(_corrections, f.targetFile)
       .filter((a) => !ownRef.has(Math.round(a.refT * 1e6)))
@@ -3582,18 +4854,20 @@ function _targetsWithin(pk, t, radius, occupied) {
  * slope over that window was 3× off on the fixture (the window straddles a
  * tempo change), and a median also shrugs off the piled-up pairs the
  * dispersal exists to separate (they have Δt ≈ 0 and are skipped).
+ * Score-less, positions are reference seconds (_eventPos), so the same median
+ * is the local slope — target seconds per reference second — near 1.
  */
 function _localSecondsPerQuarter(iLo, iHi) {
   const f = _fix;
-  const refOn = scoreAlignment?.ref_onset;
-  if (!f || !refOn) return 0.5;
+  const fallback = f?.scoreless ? 1 : 0.5;
+  if (!f || !(f.scoreless || scoreAlignment?.ref_onset)) return fallback;
   const lo = Math.max(0, iLo - 8);
   const hi = Math.min(f.nEvents - 1, iHi + 8);
   const rates = [];
   let prevQ = null;
   let prevT = null;
   for (let i = lo; i <= hi; i++) {
-    const q = f.qOn[i];
+    const q = _eventPos(i);
     const t = _eventStripTime(i); // the STRIP recording's tempo
     if (!Number.isFinite(q) || !Number.isFinite(t)) continue;
     if (prevQ !== null && q > prevQ + 1e-6 && t > prevT + 0.02) {
@@ -3602,11 +4876,17 @@ function _localSecondsPerQuarter(iLo, iHi) {
     prevQ = q;
     prevT = t;
   }
-  if (!rates.length) return 0.5;
+  if (!rates.length) return fallback;
   rates.sort((a, b) => a - b);
   const mid = rates.length >> 1;
   const med = rates.length % 2 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
-  return med > 0.05 ? med : 0.5;
+  return med > 0.05 ? med : fallback;
+}
+
+/** An event's musical position for spacing heuristics: its score quarter, or —
+ *  score-less — its reference time in seconds. */
+function _eventPos(i) {
+  return _fix.qOn ? _fix.qOn[i] : _eventRefT(i);
 }
 
 /**
@@ -3702,13 +4982,17 @@ function _redrawOverlays() {
   ctx.clearRect(0, 0, w, h);
 
   _paintLanes();
+  _paintRefPane();
 
   const rootRect = f.els.root.getBoundingClientRect();
   const stripRect = strip.getBoundingClientRect();
   const stripTopY = stripRect.y - rootRect.y;
   const scoreRect = f.els.scoreEl.getBoundingClientRect();
   const scoreBottomY = scoreRect.bottom - rootRect.y;
-  const _cbs = _scoreContentBottomScreen();
+  // Score-less, a connector starts where the reference pane's ticks end.
+  const _cbs = f.scoreless
+    ? (f.els.refLanes?.getBoundingClientRect().bottom ?? null)
+    : _scoreContentBottomScreen();
   const contentBottomY = _cbs === null ? null : _cbs - rootRect.y;
 
   const style = getComputedStyle(document.documentElement);
@@ -3852,7 +5136,7 @@ function _redrawOverlays() {
     const multi = f.multiSel.size > 0 && f.multiSel.has(f.groups.indexOf(g));
     const anchor =
       f.mode === "audio"
-        ? findTargetAnchor(_corrections, f.targetFile, _groupRefT(g))
+        ? _groupTargetAnchor(g)
         : findAnchor(_corrections, _anchorEventOf(g));
     // Tick: the vertical line on the strip — the loop's drag handle.
     if (x >= -1 && x <= w + 1) {
@@ -3948,7 +5232,7 @@ function _redrawOverlays() {
     // (the underlay, beneath the score elements); this polyline takes over at
     // the rendered content's bottom edge, drops to the pane bottom, and bends
     // across the gap onto the strip tick (faint, selected emphasised).
-    if (g.xScore !== null) {
+    if (g.xScore != null) {
       const xt = stripRect.x - rootRect.x + x;
       if (xt < -40 || xt > f.els.root.clientWidth + 40) continue;
       // A zoomed page: a note scrolled out of the pane has no connector, and
@@ -3978,7 +5262,7 @@ function _redrawOverlays() {
   let freeAnchors = 0;
   if (f.mode === "audio") {
     const onTicks = new Set(
-      pageGroups.map((g) => Math.round(_groupRefT(g) * 1e6)),
+      pageGroups.map((g) => Math.round(_groupKeyRefT(g) * 1e6)),
     );
     for (const a of targetAnchors(_corrections, f.targetFile)) {
       if (onTicks.has(Math.round(a.refT * 1e6))) continue;
@@ -4046,8 +5330,8 @@ function _select(ix, { seek = false } = {}) {
     const el = f.pageIndex.get(id);
     if (el) el.classList.add("fix-note-sel");
   }
-  _applyUnderlaySelection();
-  if (_scoreZoom.mode !== "fit") {
+  if (!f.scoreless) _applyUnderlaySelection();
+  if (!f.scoreless && _scoreZoom.mode !== "fit") {
     _scrollScoreToSelection();
     _updateScoreX();
   }
@@ -4164,7 +5448,7 @@ function _dragBounds(groupIx) {
     // Neighbouring TARGET anchors (strict by reference time, so the group's
     // own anchor is never its own neighbour); the corners are the grid's
     // first and last samples, frozen.
-    const refT = _groupRefT(f.groups[groupIx]);
+    const refT = _groupKeyRefT(f.groups[groupIx]);
     const { prev, next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
     const tg = _targetGrid();
     let lo = Math.max(prev ? prev.t : tg[0], _pushFloor(groupIx, tg[0]));
@@ -4197,7 +5481,8 @@ function _onTickMouseDown(e) {
   const x = e.clientX - rect.x;
   const hit = _tickHit(x);
   if (hit === -1) {
-    // Empty strip: a marquee selects the ticks it spans; a plain click clears.
+    // Empty strip: a marquee selects the ticks it spans; a plain click clears
+    // the selection and seeks there.
     e.preventDefault();
     f.marquee = {
       x0: x,
@@ -4349,7 +5634,15 @@ function _onMarqueeUp(e) {
   const rect = f.els.ticks.getBoundingClientRect();
   const x1 = e.clientX - rect.x;
   if (Math.abs(e.clientX - m.startX) < DRAG_THRESHOLD_PX) {
-    f.multiSel.clear(); // a plain click on empty strip deselects
+    // A plain click on empty strip deselects, and jumps the playhead there —
+    // as a click on the reference pane does (user, 2026-11-04).
+    f.multiSel.clear();
+    const t = _stripXToTime(x1);
+    if (t !== null && f.aud?.ready) {
+      f.lastStripSeek = { t }; // test surface
+      _audSeek(t);
+      _schedulePlayheadFrame();
+    }
     _scheduleRedraw();
     return;
   }
@@ -4481,8 +5774,19 @@ function _cancelPendingNudge() {
 function _refitScorePane() {
   const f = _fix;
   if (!f) return;
+  if (f.scoreless) return _refitStrip();
   _applyScoreZoom();
   _buildPageGeometry(f.page);
+  f.refits = (f.refits || 0) + 1;
+  _updateStripWindow();
+  _scheduleRedraw();
+  _schedulePlayheadFrame();
+}
+
+/** Score-less: a pane change only refits the strip to the page window. */
+function _refitStrip() {
+  const f = _fix;
+  if (!f) return;
   f.refits = (f.refits || 0) + 1;
   _updateStripWindow();
   _scheduleRedraw();
@@ -4492,6 +5796,7 @@ function _refitScorePane() {
 async function _onResize() {
   const f = _fix;
   if (!f) return;
+  if (f.scoreless) return _refitStrip();
   // A pane resize (window, nav collapse, drawer) changes the page geometry
   // wholesale: re-lay-out, re-derive the page model, and re-render around the
   // current selection. On a large score that is seconds of synchronous wasm,
@@ -4536,6 +5841,9 @@ async function _onResize() {
  * chunks so a large score never freezes the screen.
  */
 function _buildAudition(f, refSamples) {
+  // Score-less: no synth. The right ear is the reference, warped by the
+  // stretch worklet (_loadWarp); without the worklet it stays silent.
+  if (f.scoreless) return _buildAuditionBuffer(f, refSamples, []);
   const refOff = scoreAlignment.ref_offset;
   if (!Array.isArray(refOff)) {
     console.warn("fix mode: no ref_offset table — audition disabled");
@@ -4568,7 +5876,12 @@ function _buildAudition(f, refSamples) {
     v: n.v,
     ix: ixByKey.get(n.s + ":" + n.e),
   }));
+  return _buildAuditionBuffer(f, refSamples, audNotes);
+}
 
+/** The audition's stereo buffer and gain graph around `refSamples` (the left
+ *  ear), with the synth's notes (none, score-less) for the right. */
+function _buildAuditionBuffer(f, refSamples, audNotes) {
   // A default-rate context resamples on output; the buffer itself lives at
   // FIX_SR so positions stay sample-locked to the aligner's timeline.
   const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -4706,6 +6019,9 @@ async function _attachStretch(f, a) {
       const m = e.data;
       if (m.type === "pos") {
         a.workletPos = m.pos;
+        if (m.refPos != null) a.workletWarp = { refPos: m.refPos, gain: m.warpGain };
+      } else if (m.type === "warpAck") {
+        a.warpAck = { deliverMs: m.deliverMs, waitMs: m.waitMs, at: performance.now() }; // test surface
       } else if (m.type === "probe") {
         // What the worklet holds IS what the ear hears; the AudioBuffer beside
         // it can be right while this copy is stale.
@@ -4726,6 +6042,7 @@ async function _attachStretch(f, a) {
       ch0.buffer,
       ch1.buffer,
     ]);
+    if (f.scoreless && f.refEarPcm) _loadWarp(f, a, node);
     node.connect(a.splitter);
     a.stretch = node;
     f.els.speedInput.disabled = false;
@@ -4735,6 +6052,7 @@ async function _attachStretch(f, a) {
       "fix mode: time-stretch worklet unavailable — speed control disabled:",
       err,
     );
+    f.refEarPcm = null; // no warped ear without the worklet
     if (f.els.speedWrap) f.els.speedWrap.hidden = true;
   }
 }
@@ -5116,12 +6434,43 @@ function _paintPlayhead() {
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, w, h);
   const a = f.aud;
+  _paintRefPlayhead(a?.ready ? _audPos() : null);
   if (!a?.ready) return;
   const x = _timeToStripX(_audPos());
   if (x === null || x < -PH_ARROW_HALF_W || x > w + PH_ARROW_HALF_W) return;
   // The bracket: one arrowhead just inside the top edge pointing down, one in
   // the gutter beneath the waveform pointing up, and nothing between them.
   ctx.fillStyle = f.playheadColor;
+  ctx.globalAlpha = 0.95;
+  _fillArrowhead(ctx, x, 1, 1);
+  _fillArrowhead(ctx, x, h - 1, -1);
+}
+
+/**
+ * Score-less: the reference pane's playhead, the same bracket as the strip's,
+ * at the audition position mapped back through the recording's grid — so it
+ * moves at warped speed, where the reference is at the moment heard.
+ */
+function _paintRefPlayhead(t) {
+  const f = _fix;
+  const canvas = f.els.refPlayhead;
+  if (!canvas) return;
+  const w = f.els.ref.clientWidth;
+  const h = f.els.ref.clientHeight;
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, w, h);
+  f.refPlayhead = null; // test surface
+  const view = t === null ? null : _refView();
+  if (!view || !w) return;
+  const refT = _targetToRef(t);
+  const x = view.timeToX(refT);
+  f.refPlayhead = { t, refT, x };
+  if (!Number.isFinite(x) || x < -PH_ARROW_HALF_W || x > w + PH_ARROW_HALF_W) return;
+  ctx.fillStyle =
+    getComputedStyle(document.documentElement).getPropertyValue("--color-ref-playhead").trim() ||
+    "#0d9488";
   ctx.globalAlpha = 0.95;
   _fillArrowhead(ctx, x, 1, 1);
   _fillArrowhead(ctx, x, h - 1, -1);
@@ -5202,7 +6551,7 @@ function _followPlayback() {
   if (ix !== f.selGroupIx) _select(ix, { seek: false });
   const g = f.groups[ix];
   let offEnd = Infinity;
-  if (Array.isArray(scoreAlignment.ref_offset)) {
+  if (Array.isArray(scoreAlignment?.ref_offset)) {
     offEnd = -Infinity;
     for (const e of g.eventIxs) {
       const v = _eventStripOff(e);
@@ -5338,7 +6687,7 @@ const BEND_REACH_SIGMAS = 4;
 function _groupAnchored(g) {
   const f = _fix;
   if (f.mode === "audio") {
-    return !!findTargetAnchor(_corrections, f.targetFile, _groupRefT(g));
+    return !!_groupTargetAnchor(g);
   }
   return g.eventIxs.some((e) => findAnchor(_corrections, e));
 }
@@ -5410,7 +6759,7 @@ function _bendTargets(gix, t0, t, wall) {
  */
 function _pushPlan(gix, t) {
   const f = _fix;
-  const wall = _pushWall(_groupRefT(f.groups[gix]));
+  const wall = _pushWall(_groupKeyRefT(f.groups[gix]));
   const t0 = _groupStripTime(f.groups[gix]);
   const bent = _bendTargets(gix, t0, t, wall);
   const moves = [];
@@ -5439,7 +6788,7 @@ function _pushPlan(gix, t) {
  */
 function _pushFloor(gix, floor) {
   const f = _fix;
-  const wall = _pushWall(_groupRefT(f.groups[gix]));
+  const wall = _pushWall(_groupKeyRefT(f.groups[gix]));
   let acc = 0;
   let nextOld = _groupStripTime(f.groups[gix]);
   for (let j = gix - 1; j >= 0; j--) {
@@ -5577,7 +6926,7 @@ function _leftGridSpan(groupIx, refT, t) {
   const grid = _targetGrid();
   const prevG = f.groups[groupIx - 1];
   const { prev } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
-  let refPrev = prevG ? _groupRefT(prevG) : refGrid[0];
+  let refPrev = prevG ? _groupKeyRefT(prevG) : refGrid[0];
   if (prev && prev.refT > refPrev) refPrev = prev.refT;
   const k0 = rasterAfter(refGrid, refPrev);
   const kHi = rasterBefore(refGrid, refT);
@@ -5644,7 +6993,7 @@ function _nextLocalGridSpan(groupIx, refT, t) {
   const last = refGrid.length - 1;
   const nextG = f.groups[groupIx + 1];
   const { next } = neighbourTargetAnchors(_corrections, f.targetFile, refT);
-  let refNext = nextG ? _groupRefT(nextG) : refGrid[last];
+  let refNext = nextG ? _groupKeyRefT(nextG) : refGrid[last];
   if (next && next.refT < refNext) refNext = next.refT;
   const k1 = rasterBefore(refGrid, refNext);
   const kLo = rasterAfter(refGrid, refT);
@@ -6074,7 +7423,7 @@ async function _commitGridAnchor(groupIx, t, kind) {
     return;
   }
   const i = g.eventIxs[0];
-  const refT = _eventRefT(i);
+  const refT = _groupKeyRefT(g);
   if (!Number.isFinite(refT)) return;
   const tBefore = _eventStripTime(i); // for the trail: the projection is recomputed below
   const ctx = {
@@ -6093,10 +7442,11 @@ async function _commitGridAnchor(groupIx, t, kind) {
     file,
     refT,
     i,
-    q: f.qOn[i],
+    q: f.qOn ? f.qOn[i] : undefined,
     t,
     kind,
-    barHint: _barOfQuarter(f.qOn[i]),
+    barHint: f.qOn ? _barOfQuarter(f.qOn[i]) : null,
+    clockHint: f.scoreless ? _fmtClock(refT) : null,
     prevAnchor: prevRecord ? { ...prevRecord } : null,
     own: null, // {k, before, after} when refT sits ON a raster sample
     segments: [], // {kLo, kHi, interiorCount, before[], after[]}
@@ -6120,7 +7470,7 @@ async function _commitGridAnchor(groupIx, t, kind) {
     setTargetAnchor(
       _corrections,
       file,
-      { refT, t, kind, ts: Date.now(), i, q: entry.q },
+      { refT, t, kind, ts: Date.now(), i: f.scoreless ? undefined : i, q: entry.q },
       ctx,
     );
     segs = [
@@ -6205,6 +7555,7 @@ async function _commitGridAnchor(groupIx, t, kind) {
     }
     return;
   }
+  f.lastExactEdits = _exactAnchorsInGrid(grid, refGrid, file, entry.segments, { refT, t });
   _dirtyGridFiles.add(file);
   _recomputeProjection(f);
   // The changed span in the TARGET's time, out to the furthest offset of any
@@ -6213,7 +7564,7 @@ async function _commitGridAnchor(groupIx, t, kind) {
   let t1 = segs[segs.length - 1].tB;
   const refA = segs[0].refA;
   const refB = segs[segs.length - 1].refB;
-  const refOn = scoreAlignment.ref_onset;
+  const refOn = _refOnsetTable();
   const { on: pOn, off: pOff } = _audTables(f);
   const iLo = Math.max(0, _lowerBound(refOn, refA) - 1);
   for (let k = iLo; k < f.nEvents && refOn[k] <= refB + 1e-9; k++) {
@@ -6296,8 +7647,8 @@ async function _realignPending() {
   if (!(await _whenIdle(f))) return false;
   const audio = f.mode === "audio";
   const file = f.targetFile;
-  const refOn = scoreAlignment.ref_onset;
-  const refOff = scoreAlignment.ref_offset;
+  const refOn = scoreAlignment?.ref_onset;
+  const refOff = scoreAlignment?.ref_offset;
   const grid = audio ? _targetGrid() : null;
   const refGrid = audio ? alignmentGrids[f.refFile] : null;
   const items = f.pending
@@ -6396,6 +7747,7 @@ async function _realignPending() {
     }
     return false;
   }
+  if (audio) f.lastExactEdits = _exactAnchorsInGrid(grid, refGrid, file, entry.spans);
   _setRealignBusy(f, false);
   f.pending = [];
   f.lastRealign = { spans: entry.spans.length, realigned, linear: linearFilled };
@@ -6426,7 +7778,7 @@ async function _realignPending() {
  *  in [refA, refB]). */
 function _renderEndOf(t1, refA, refB) {
   const f = _fix;
-  const refOn = scoreAlignment.ref_onset;
+  const refOn = _refOnsetTable();
   let end = t1;
   if (f.mode === "audio") {
     const { on: pOn, off: pOff } = _audTables(f);
@@ -6595,6 +7947,88 @@ function _pushCommitEntry(entry) {
 }
 
 /**
+ * After a refill: make every target anchor that sits between raster samples
+ * exact in the grid (anchorExactEdits), touching only the samples just
+ * refilled — `parts` are the entry's segments or spans, whose `after` values
+ * take the edits too, so redo replays them and undo's `before` still holds.
+ * `extra` is the anchor just committed, which a floating drag (auto-anchor
+ * off) does not leave in the record. Returns the number of samples edited.
+ */
+function _exactAnchorsInGrid(grid, refGrid, file, parts, extra = null) {
+  const owner = (k) => parts.find((p) => k >= p.kLo && k < p.kLo + p.interiorCount) || null;
+  const anchors = targetAnchors(_corrections, file).map((a) => ({ refT: a.refT, t: a.t }));
+  if (extra && !anchors.some((a) => Math.abs(a.refT - extra.refT) <= REF_T_EPS)) anchors.push(extra);
+  let edited = 0;
+  for (const a of anchors) {
+    for (const { k, value } of anchorExactEdits(grid, refGrid, a.refT, a.t, (k) => !!owner(k))) {
+      const p = owner(k);
+      grid[k] = value;
+      p.after[k - p.kLo] = value;
+      edited++;
+    }
+  }
+  return edited;
+}
+
+/** Score-less: a tick added at reference time `refT` (one undo step). */
+function _addRefTickAt(refT) {
+  const f = _fix;
+  if (!f?.scoreless || f.drag || f.realignBusy) return false;
+  try {
+    addRefTick(_corrections, refT);
+  } catch (err) {
+    _announce(`Cannot add a tick there: ${err.message.replace(/^correction-model: /, "")}.`);
+    return false;
+  }
+  _syncCorrectionsHeader();
+  pushFixUndoEntry({ type: "fix-ref-tick", op: "add", refT, clockHint: _fmtClock(refT) });
+  _rebuildScorelessTicks(f, refT);
+  f.lastRefTick = { op: "add", refT }; // test surface
+  _announce(`Added a tick at ${_fmtClock(refT)} on the reference.`);
+  return true;
+}
+
+/** Score-less: an added tick removed again — only while it holds no anchor. */
+function _removeRefTick(groupIx) {
+  const f = _fix;
+  const g = f?.groups[groupIx];
+  if (!g || !f.refOnsets?.added[g.eventIxs[0]]) return false;
+  if (_groupTargetAnchor(g)) {
+    _announce("Unanchor the tick before removing it.");
+    return true;
+  }
+  const refT = _groupRefT(g);
+  removeRefTick(_corrections, refT);
+  _syncCorrectionsHeader();
+  pushFixUndoEntry({ type: "fix-ref-tick", op: "remove", refT, clockHint: _fmtClock(refT) });
+  _rebuildScorelessTicks(f, refT);
+  f.lastRefTick = { op: "remove", refT };
+  _announce(`Removed the added tick at ${_fmtClock(refT)}.`);
+  return true;
+}
+
+/** Undo (or redo) an added/removed reference tick: the record changes, and an
+ *  open score-less session rebuilds its ticks around it. */
+function _refTickHop(entry, undo) {
+  const adds = (entry.op === "add") !== undo;
+  if (adds) {
+    try {
+      addRefTick(_corrections, entry.refT);
+    } catch (_) {
+      /* already there */
+    }
+  } else {
+    removeRefTick(_corrections, entry.refT);
+  }
+  _syncCorrectionsHeader();
+  const f = _fix;
+  if (f?.scoreless) _rebuildScorelessTicks(f, entry.refT);
+  _announce(
+    `${undo ? "Undid" : "Redid"} ${entry.op === "add" ? "adding" : "removing"} the tick at ${entry.clockHint}.`,
+  );
+}
+
+/**
  * Unanchor a tick (Enter on an anchored tick, Backspace / Delete, or a click
  * on its base square; the user's ruling, 2026-10-28): the anchor goes, the
  * times stay, and the tick is free again for a later fix's bend, push, or
@@ -6611,7 +8045,7 @@ function _unanchorGroup(groupIx) {
   const audio = f.mode === "audio";
   const i = audio ? g.eventIxs[0] : _anchorEventOf(g);
   const a = audio
-    ? findTargetAnchor(_corrections, f.targetFile, _eventRefT(i))
+    ? _groupTargetAnchor(g)
     : findAnchor(_corrections, i);
   if (!a) {
     _announce("This onset is not anchored.");
@@ -6627,7 +8061,8 @@ function _unanchorGroup(groupIx) {
     file: audio ? f.targetFile : null,
     i,
     refT: audio ? a.refT : null,
-    barHint: _barOfQuarter(f.qOn[i]),
+    barHint: f.qOn ? _barOfQuarter(f.qOn[i]) : null,
+    clockHint: f.scoreless ? _fmtClock(a.refT) : null,
     removed: { ...a },
     pendingAhead: false,
     window: null,
@@ -6643,7 +8078,7 @@ function _unanchorGroup(groupIx) {
   _syncRealignUi();
   _scheduleRedraw();
   _announce(
-    `Unanchored near bar ${entry.barHint ?? "?"}: it keeps its time, and later fixes may move it.`,
+    `Unanchored ${_placeOf(entry)}: it keeps its time, and later fixes may move it.`,
   );
   return true;
 }
@@ -7001,7 +8436,7 @@ async function _snapSelectionToOnsets() {
     if (!g) continue;
     const t = _groupStripTime(g);
     if (!Number.isFinite(t)) continue;
-    marks.push({ ix, t, q: f.qOn[g.eventIxs[0]], i: g.eventIxs[0] });
+    marks.push({ ix, t, q: _eventPos(g.eventIxs[0]), i: g.eventIxs[0] });
   }
   marks.sort((a, b) => a.t - b.t);
   const cands = marks.map((m) =>
@@ -7198,7 +8633,8 @@ function _syncCorrectionsHeader() {
   if (
     !_corrections.anchors.length &&
     !_corrections.gaps.length &&
-    !hasTargetAnchors(_corrections)
+    !hasTargetAnchors(_corrections) &&
+    !_corrections.refTicks?.length
   ) {
     delete header.corrections;
     return;
@@ -7211,6 +8647,13 @@ function _syncCorrectionsHeader() {
     };
   }
   header.corrections = serializeCorrections(_corrections, _correctionsBase);
+}
+
+/** Where an entry happened, for announcements: near its bar, or — score-less —
+ *  at its reference time. */
+function _placeOf(entry) {
+  if (entry.clockHint) return `at ${entry.clockHint}`;
+  return `near bar ${entry.barHint ?? "?"}`;
 }
 
 /** Rough bar number for a quarter position (announcement copy only). */
@@ -7236,6 +8679,10 @@ function _barOfQuarter(q) {
  * off-screen (the cluster-B nicety).
  */
 export function applyFixCorrectionUndo(entry) {
+  if (entry.type === "fix-ref-tick") {
+    _refTickHop(entry, true);
+    return;
+  }
   if (entry.type === "fix-unanchor") {
     _unanchorHop(entry, true);
     _afterHistoryHop(entry, "Undid");
@@ -7291,6 +8738,10 @@ function _undoEntryData(entry) {
 
 /** Apply the REDO of a fix-anchor entry: the after-values and the anchor. */
 export function applyFixCorrectionRedo(entry) {
+  if (entry.type === "fix-ref-tick") {
+    _refTickHop(entry, false);
+    return;
+  }
   if (entry.type === "fix-unanchor") {
     _unanchorHop(entry, false);
     _afterHistoryHop(entry, "Redid");
@@ -7375,7 +8826,9 @@ function _afterHistoryHop(entry, verb, count = 1, win = null) {
   const visible = f && (!gridEntry || (f.mode === "audio" && f.targetFile === entry.file));
   if (visible) {
     if (gridEntry) _recomputeProjection(f);
-    const ix = f.groups.findIndex((g) => g.eventIxs.includes(entry.i));
+    const ix = f.scoreless
+      ? f.groups.findIndex((g) => Math.abs(_groupKeyRefT(g) - entry.refT) <= REF_T_EPS)
+      : f.groups.findIndex((g) => g.eventIxs.includes(entry.i));
     if (ix !== -1) _select(ix, { seek: false });
     const w =
       win || (entry.window ? { t0: entry.window.t0, t1: entry.renderT1 ?? entry.window.t1 } : null);
@@ -7383,7 +8836,7 @@ function _afterHistoryHop(entry, verb, count = 1, win = null) {
     f.growPending = true;
     _scheduleRedraw();
   } else {
-    const where = entry.barHint ? `near bar ${entry.barHint}` : `at event ${entry.i}`;
+    const where = entry.barHint || entry.clockHint ? _placeOf(entry) : `at event ${entry.i}`;
     const what =
       entry.type === "fix-gap"
         ? "unscored-audio gap"
@@ -7433,8 +8886,12 @@ export function fixCorrectionsDirty() {
   // The grids themselves are listen.js's to compare (its as-loaded copies
   // cover every recording); the record is this module's.
   return (
-    JSON.stringify({ a: _corrections.anchors, g: _corrections.gaps, u: _corrections.audio }) !==
-    _loadedCorrectionsJson
+    JSON.stringify({
+      a: _corrections.anchors,
+      g: _corrections.gaps,
+      u: _corrections.audio,
+      r: _corrections.refTicks || [],
+    }) !== _loadedCorrectionsJson
   );
 }
 
@@ -7457,8 +8914,8 @@ export function fixRevertCorrections() {
   }
   const loaded = _loadedCorrectionsJson
     ? JSON.parse(_loadedCorrectionsJson)
-    : { a: [], g: [], u: {} };
-  _corrections = { anchors: loaded.a, gaps: loaded.g, audio: loaded.u || {} };
+    : { a: [], g: [], u: {}, r: [] };
+  _corrections = { anchors: loaded.a, gaps: loaded.g, audio: loaded.u || {}, refTicks: loaded.r || [] };
   _syncCorrectionsHeader();
   // The grids: listen.js's "Revert all" has already put every recording's
   // as-loaded grid back (it owns those copies), so this module only has to
@@ -7466,6 +8923,10 @@ export function fixRevertCorrections() {
   _dirtyGridFiles.clear();
   const f = _fix;
   if (f) {
+    if (f.scoreless) {
+      const sel = f.groups[f.selGroupIx];
+      _rebuildScorelessTicks(f, sel ? _groupRefT(sel) : 0);
+    }
     _recomputeProjection(f);
     if (f.aud?.ready) _auditionRerender(0, f.aud.duration);
     _scheduleRedraw();
@@ -7554,8 +9015,10 @@ function _onFixKeydown(e) {
         break;
       }
       // A floating nudge is the move in hand: it is dropped, nothing else.
+      // Score-less, an added tick with no anchor goes; an anchored one is
+      // unanchored first, as any tick is.
       if (hadPendingNudge) _cancelPendingNudge();
-      else if (f.groups[f.selGroupIx]) _unanchorGroup(f.selGroupIx);
+      else if (f.groups[f.selGroupIx] && !_removeRefTick(f.selGroupIx)) _unanchorGroup(f.selGroupIx);
       break;
     case "KeyR":
       if (e.altKey) {
@@ -7709,11 +9172,24 @@ function _peaksFromSamples(samples, count = STRIP_PEAK_COUNT) {
   return peaks;
 }
 
+/**
+ * The alignment worker, created on first use. A test's worker factory that
+ * arrives AFTER the load-idle prewarm already booted the real worker (the
+ * prewarm fires ~2.2 s after navigation, so a load slower than that — 6.5 s
+ * measured — left every stubbed spec talking to the real engine) replaces it
+ * at the next use. Production never sets a factory, so this never fires there.
+ */
 function _ensureWorker() {
-  if (_worker) return _worker;
-  const factory =
-    window._listenTest?.fixWorkerFactory || ((url) => new Worker(url));
-  _worker = factory(window.root + "js/align-worker.js");
+  const factory = window._listenTest?.fixWorkerFactory || null;
+  if (_worker && _workerFactory === factory) return _worker;
+  if (_worker) {
+    try {
+      _worker.terminate?.();
+    } catch (_) {}
+    _workerHasSession = false;
+  }
+  _workerFactory = factory;
+  _worker = (factory || ((url) => new Worker(url)))(window.root + "js/align-worker.js");
   return _worker;
 }
 
@@ -7733,6 +9209,14 @@ async function _bootstrap() {
   _syncReadyAffordance();
   const refSamples = await _decodeRefAudio(f.refFile);
   if (!_fix || _fix !== f) return; // exited while decoding
+  // Score-less: the reference pane's waveform at the strip's density, taken
+  // now — the transfer to the worker below detaches the samples.
+  if (f.scoreless) {
+    f.refPeaks = { peaks: _peaksFromSamples(refSamples), duration: refSamples.length / FIX_SR };
+    // A copy for the warped right ear, which the stretch worklet then takes.
+    f.refEarPcm = refSamples.slice();
+    _scheduleRedraw();
+  }
   // Audio mode: the TARGET recording decodes too — it is the strip, the
   // audition's left ear, and the worker's second resident PCM. Sequential,
   // not parallel: two whole-recording decodes in flight double the peak.
@@ -7787,17 +9271,28 @@ async function _bootstrap() {
     if (!_fix || _fix !== f) return;
     if (d.type === "fix_lanes") {
       _installLanes(f, d);
-      // The arming trail closes on the FIRST, full reply; a spectrogram
-      // re-request (what: "mel") is not part of arming.
-      if (d.what !== "mel" && f.timing.readyAt && f.timing.lanesMs == null) {
+      // The arming trail closes on the strip's FIRST, full reply; a
+      // spectrogram re-request (what: "mel") is not part of arming, nor is
+      // the score-less reference pane's.
+      if (
+        d.what !== "mel" &&
+        !_isRefLanesReply(f, d) &&
+        f.timing.readyAt &&
+        f.timing.lanesMs == null
+      ) {
         f.timing.lanesMs = Math.round(performance.now() - f.timing.readyAt);
         _logArmingTrail(f);
       }
     } else if (d.type === "fix_lanes_error") {
       // The lanes are a comfort, not the engine: the session stays live.
       console.warn("fix mode: lanes unavailable:", d.message);
-      f.lanesError = d.message;
-      f.lanesPending = false;
+      if (_isRefLanesReply(f, d)) {
+        f.refLanesError = d.message;
+        f.refLanesPending = false;
+      } else {
+        f.lanesError = d.message;
+        f.lanesPending = false;
+      }
       _scheduleRedraw();
     } else if (d.type === "progress" && !f.engineReady) {
       // fix_begin's one progress message is the score synth. Shortened to
@@ -7808,6 +9303,20 @@ async function _bootstrap() {
         `Step 3/4: ${short}`,
         `Preparing correction engine: ${d.message}`,
       );
+    } else if (d.type === "fix_ref_onsets") {
+      // Score-less: the reference's detected onsets — the session's ticks.
+      f.refDetected = { peaks: Float64Array.from(d.peaks), pat: Float64Array.from(d.pat) };
+      _refOnsetCache = { file: f.refFile, ...f.refDetected };
+      f.refOnsetsWait?.resolve();
+    } else if (d.type === "fix_ref_onsets_error") {
+      f.refOnsetsWait?.reject(new Error(d.message));
+    } else if (d.type === "fix_ready" && f.scoreless) {
+      _workerHasSession = true;
+      if (!f.refDetected) worker.postMessage({ type: "fix_ref_onsets" });
+      f.workerEvents = d.events;
+      f.fixReady = true;
+      f.timing.worker = d.timing || null;
+      _maybeArm(f, T0);
     } else if (d.type === "fix_ready") {
       _workerHasSession = true;
       if (d.events?.n_events !== f.nEvents) {
@@ -7887,6 +9396,7 @@ export function fixTestState() {
     return {
       active: false,
       lastRefusal: _lastRefusal,
+      lastRebase: _lastRebase ? { ..._lastRebase } : null,
       prewarmReady: !!(_derived && _derived.pageCount),
       lastEntry: { ..._lastEntry },
       corrections,
@@ -7904,6 +9414,7 @@ export function fixTestState() {
       ? { ..._lastReplay, startT: _replayStartT(_lastReplay.t0, _lastReplay.fixedT) }
       : null,
     lastRefusal: _lastRefusal,
+    lastRebase: _lastRebase ? { ..._lastRebase } : null,
     prewarmReady: !!(_derived && _derived.pageCount),
     lastEntry: { ..._lastEntry },
     chooser,
@@ -8024,8 +9535,34 @@ export function fixTestState() {
         q: g.q,
         t,
         x: Number.isFinite(t) ? _timeToStripX(t) : null,
+        refT: f.mode === "audio" ? _groupRefT(g) : null,
+        anchored: f.mode === "audio" ? !!_groupTargetAnchor(g) : null,
+        added: f.refOnsets ? !!f.refOnsets.added?.[g.eventIxs[0]] : null,
       };
     }),
+    scoreless: !!f.scoreless,
+    refOnsetCount: f.refOnsets ? f.refOnsets.peaks.length : null,
+    refWindow: f.refWindow ? { ...f.refWindow } : null,
+    refPeakCount: f.refPeaks ? f.refPeaks.peaks.length : 0,
+    refLanes: f.refLanes
+      ? { melFrames: f.refLanes.melFrames, onsetFrames: f.refLanes.onsetFrames, labelsDrawn: f.refLanes.labelsDrawn }
+      : null,
+    refLanesPending: !!f.refLanesPending,
+    refTicksDrawn: f.refTicksDrawn ?? 0,
+    refClickMode: _refClickMode,
+    refGuide: f.refGuide ? { ...f.refGuide } : null,
+    lastRefTick: f.lastRefTick ? { ...f.lastRefTick } : null,
+    addedRefTicks: [...(_corrections.refTicks || [])],
+    lastRefSeek: f.lastRefSeek ? { ...f.lastRefSeek } : null,
+    lastStripSeek: f.lastStripSeek ? { ...f.lastStripSeek } : null,
+    refPlayhead: f.refPlayhead ? { ...f.refPlayhead } : null,
+    refLanesError: f.refLanesError ?? null,
+    refLaneOn: { ..._refLaneOn },
+    refLaneWeights: _refLaneWeights ? { ..._refLaneWeights } : null,
+    refLaneHeights: f.els.ref
+      ? Object.fromEntries(_stackLanes(f.els, "ref").map(([el, k]) => [k, el.hidden ? 0 : el.clientHeight]))
+      : null,
+    scorelessStripHeightPx: _scorelessStripHeightPx,
     specCfg: { ..._specCfg },
     snapTarget: _snapTarget,
     stripHeightPx: _stripHeightPx,
@@ -8057,6 +9594,16 @@ export function fixTestState() {
           rate: f.aud.rate,
           stretch: !!f.aud.stretch,
           workletPos: f.aud.workletPos,
+          warp: f.aud.warp
+            ? {
+                gain: f.aud.warp.gain,
+                gridPosts: f.aud.warp.gridPosts,
+                lastPostAt: f.aud.warp.lastPostAt ?? null,
+                levels: { ...f.aud.warp.levels },
+              }
+            : null,
+          warpAck: f.aud.warpAck ? { ...f.aud.warpAck } : null,
+          workletWarp: f.aud.workletWarp ? { ...f.aud.workletWarp } : null,
           gainL: f.aud.gainL.gain.value,
           gainR: f.aud.gainR.gain.value,
           levels: f.aud.levels ? { ...f.aud.levels } : null,

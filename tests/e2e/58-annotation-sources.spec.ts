@@ -68,7 +68,8 @@ test.describe('58. Annotation region sources', () => {
     expect(st.times[AUDIO_B]).toEqual({ start: 3.5, end: 4, local: true });
     expect(st.times[AUDIO_A]).toEqual({ start: 1.1, end: 2 });
 
-    // A score-sourced region dragged normally becomes recording-sourced.
+    // In state, a propagated edit makes a score-sourced region recording-sourced
+    // (the waveforms never send one for a score region: spec 59).
     await v6(page, (a, { annId, rid }) => a.state.setRegionSourceScore(annId, rid, ['n1', 'n2']), { annId, rid });
     expect((await regionState(page, annId, rid)).sourceScore).toEqual(['n1', 'n2']);
     await v6(page, (a, { annId, rid, A, B }) =>

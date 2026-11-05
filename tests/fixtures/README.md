@@ -23,6 +23,10 @@ Place the following files in this directory before running the test suite.
 |---|---|
 | `Schumann-Clara_Romanze-ohne-Opuszahl_a-Moll.mei` | MEI score for the test corpus. Sourced from a pinned Git commit for reproducibility: [`trompamusic-encodings/Schumann-Clara_Romanze-in-a-Moll@b58c300`](https://raw.githubusercontent.com/trompamusic-encodings/Schumann-Clara_Romanze-in-a-Moll/b58c300/Schumann-Clara_Romanze-ohne-Opuszahl_a-Moll.mei). A local copy is stored in this fixtures directory. |
 
+## Pyodide
+
+`pyodide/v0.26.4/` holds the files the alignment worker fetches from `https://cdn.jsdelivr.net/pyodide/v0.26.4/full/`: `pyodide.js`, `pyodide.asm.js`, `pyodide.asm.wasm`, `python_stdlib.zip`, `pyodide-lock.json`, and the numpy wheel named in the lock file (check its `sha256`). `tests/support/fixtures.ts` serves them in place of the CDN. When the worker's Pyodide version changes, add the new version's folder from the same CDN path. Committed to the repo.
+
 ## Already provided
 
 | File | Description |

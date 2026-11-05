@@ -31,16 +31,14 @@ import {
 import { removeEmptiedAnnotationFolders } from "./solid-access.js";
 import { parseAnnotationResourceUri } from "./solid-layout.js";
 import {
-  correctedSynthOffsets,
-  correctedSynthOnsets,
+  projectScoreRegion,
+  scoreElementIdsFromSelections,
+  scoreReadyWithin,
+} from "./score-projection.js";
+import {
   getAudioLinkedDataUri,
-  getClosestAlignmentIx,
-  getCorrespondingTime,
-  getReferenceAudioIx,
   loadedAlignmentJSON,
   meiUri,
-  scoreAlignment,
-  tk,
 } from "../listen.js";
 
 // The MusicalMaterials being deleted in this page. A delete's tidy-up runs on
@@ -263,45 +261,43 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
 
   const { graph, selUris, uniqueAudios } = await _fetchChainAsGraph(mmUri, onProgress);
 
-  // Branch on Selection shape: if every Selection's schema:about points
-  // at the reference MEI URI, this is a score annotation. Otherwise the
-  // existing audio-annotation path applies.
   const localUriToFile = _buildReverseAudioMap();
   const normalisedMeiUri = (typeof meiUri === "string" && meiUri) ? _normaliseIri(meiUri) : null;
-  const isScoreAnnotation =
-    !!normalisedMeiUri &&
-    uniqueAudios.length > 0 &&
-    uniqueAudios.every((u) => u === normalisedMeiUri);
-  let scoreElementIds = null;
+  // The score Selections (mei-friend's, schema:about the reference MEI): their
+  // elements make the annotation's score region, one span from the earliest
+  // onset to the latest offset. Nothing is projected here, so the score and
+  // Verovio needn't be ready yet — placing the region onto a recording waits
+  // for them (waveform-interactions.js).
+  const scoreSelUris = normalisedMeiUri
+    ? selUris.filter(
+        (u) => _normaliseIri(_firstId(_asArray(graph[u] && graph[u][nsp.SCHEMA + "about"]))) === normalisedMeiUri,
+      )
+    : [];
+  const scoreElementIds = scoreElementIdsFromSelections(graph, scoreSelUris);
 
-  if (isScoreAnnotation) {
-    // Score annotations from mei-friend reference MEI element IDs in
-    // frbr:part. We project those onto every currently-loaded recording
-    // via Verovio's timemap + the alignment grids, and synthesize an
-    // audio-shaped chain in memory so adapter.deserialize stays simple.
-    onProgress("Projecting score regions onto loaded recordings");
-    scoreElementIds = _rewriteScoreChainAsAudio(graph, selUris, localUriToFile);
-  } else {
-    // Mixed (score + audio) or audio-only annotation: refuse to load if
-    // any audio Selection's URI isn't locally loaded. Selections whose
-    // schema:about IS the reference MEI URI are valid as-is (they round-
-    // trip via preservedSelections), so we exclude them from the missing
-    // check rather than treating the MEI URI as an absent recording.
-    const missing = uniqueAudios.filter(
-      (u) => u !== normalisedMeiUri && !localUriToFile.has(u),
+  // Refuse to load if any audio Selection's URI isn't locally loaded.
+  // Selections whose schema:about IS the reference MEI URI are valid as-is
+  // (they round-trip via preservedSelections), so we exclude them from the
+  // missing check rather than treating the MEI URI as an absent recording.
+  const missing = uniqueAudios.filter(
+    (u) => u !== normalisedMeiUri && !localUriToFile.has(u),
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      "Refusing to load: this annotation references " +
+        missing.length +
+        " recording(s) that aren't loaded locally:\n\n" +
+        missing.map((m) => "  • " + m).join("\n") +
+        "\n\nLoad these audio files (and set their Linked Data URIs in Manage recordings) before loading the annotation.",
     );
-    if (missing.length > 0) {
-      throw new Error(
-        "Refusing to load: this annotation references " +
-          missing.length +
-          " recording(s) that aren't loaded locally:\n\n" +
-          missing.map((m) => "  • " + m).join("\n") +
-          "\n\nLoad these audio files (and set their Linked Data URIs in Manage recordings) before loading the annotation.",
-      );
-    }
   }
 
   onProgress("Reconstructing");
+  // The score Selections can't resolve to a recording, so the deserializer
+  // keeps them as preservedSelections and the next Update writes them back:
+  // the score Selections and their mei-friend OAs keep their place in the
+  // chain. A score annotation comes out with no recordings: the user picks
+  // them, as with a new annotation.
   const annotation = adapter.deserialize(graph, {
     musicalMaterialUri: mmUri,
     resolveFileFromAudioUri: (uri) => localUriToFile.get(_normaliseIri(uri)) || null,
@@ -320,36 +316,56 @@ export async function loadAnnotationFromMM(mmUri, opts = {}) {
   // correctly. This avoids reconstructing local-shape canonical bodies
   // here just to seed the hash map.
   annotation.lastPostedHashes = null;
+  // The pod keeps no colour, and the adapter's grey all but vanishes on a
+  // waveform: state gives it the next one, as a new annotation.
+  delete annotation.color;
 
-  if (isScoreAnnotation) {
-    // The projection synthesised audio Selections in-memory; their
-    // `local:score-projected/...` URIs landed in lastPostedUris via the
-    // normal deserialize indexing. On the next Update we want those
-    // treated as NEW resources to mint at fresh pod URIs (PUT-replacing
-    // a local: URI would otherwise fail in solid.fetch).
-    //
-    // The original score Selections are preserved separately, via
-    // annotation.preservedSelections (populated by the deserializer
-    // when a Selection's schema:about doesn't resolve to a loaded
-    // audio). The Update path's adapter.serialize appends them back
-    // into Extract.frbr:embodiment so the chain stays additive: the
-    // score Selections + their mei-friend OAs keep their place, the
-    // user's newly-created audio Selections + OAs get added.
-    annotation.lastPostedUris = {
-      mm: annotation.lastPostedUris.mm,
-      extract: annotation.lastPostedUris.extract,
-    };
+  if (scoreElementIds.length > 0) {
+    // The pod doesn't record which audio region a score Selection's is: by
+    // convention it is the one at position 1, written there when the score
+    // region was first placed (it can't be deleted). A score annotation has
+    // no audio regions yet, so it is made here.
+    if (annotation.regions.length === 0) {
+      annotation.regions.push({ id: "rgn_score_" + Date.now().toString(36), label: "" });
+    }
+    annotation.regions[0].sourceFile = null;
+    annotation.regions[0].sourceScore = scoreElementIds;
   }
 
   state.addAnnotation(annotation);
-  // The projection made ONE region from every element: its source is the
-  // score, so an alignment correction can project it again.
-  const added = state.getById(annotation.id);
-  if (scoreElementIds && added && added.regions.length === 1) {
-    state.setRegionSourceScore(annotation.id, added.regions[0].id, scoreElementIds);
-  }
   state.setActiveAnnotation(annotation.id);
+  if (scoreElementIds.length > 0 && annotation.targets.length > 0) {
+    _markShiftedScoreTimes(annotation.id); // when the score is ready; not awaited
+  }
   return annotation.id;
+}
+
+/** Further from the score's projection than this, a recording's score-region
+ *  times were moved there by hand (a `#t=` fragment keeps milliseconds). */
+const SHIFTED_EPS_SEC = 0.05;
+
+/**
+ * The pod keeps a Shift+drag of the score region as that recording's times
+ * but not that it was one: a recording whose times differ from the score's
+ * projection is marked local again, so an alignment correction leaves it.
+ */
+async function _markShiftedScoreTimes(annId) {
+  if ((await scoreReadyWithin()) !== true) return;
+  const ann = state.getById(annId);
+  const region = ann && ann.regions[0];
+  if (!region || !region.sourceScore) return;
+  const shifted = ann.targets
+    .filter((t) => {
+      const cur = t.regionTimes[region.id];
+      const p = projectScoreRegion(region.sourceScore, t.file);
+      return (
+        cur && p &&
+        (Math.abs(cur.start - p.start) > SHIFTED_EPS_SEC ||
+          Math.abs(cur.end - p.end) > SHIFTED_EPS_SEC)
+      );
+    })
+    .map((t) => t.file);
+  if (shifted.length) state.markRegionTimesLocal(annId, region.id, shifted);
 }
 
 /**
@@ -660,227 +676,6 @@ function _isMissingResourceError(err) {
  * the assembled graph plus a few intermediate values callers also use.
  * Shared by load and delete.
  */
-/**
- * Rewrite a score-annotation chain into an audio-annotation chain in
- * place. Replaces each score-Selection (one whose schema:about is the
- * reference MEI URI) with one synthetic Selection per locally-loaded
- * recording. Each new Selection's frbr:part list is computed by:
- *   1. Parsing MEI element IDs from the original Selection's frbr:part
- *      (each part being a URI like `${meiUri}#elementId`).
- *   2. Asking Verovio for each element's MIDI onset / offset.
- *   3. Mapping those ref-audio times to the alignment grid for the
- *      reference recording, then projecting to every other loaded
- *      recording via getCorrespondingTime.
- *
- * The original score Selection URIs are removed from the graph and the
- * Extract's frbr:embodiment list is replaced. After this rewrite the
- * graph looks like a normal audio annotation, so the rest of the load
- * path (adapter.deserialize) handles it unchanged. Trade-off: a future
- * Update of this annotation will post audio-Selections, losing the
- * original score reference. That matches the legacy projection-on-load
- * behaviour.
- */
-function _rewriteScoreChainAsAudio(graph, scoreSelUris, audioUriToFile) {
-  const refFile = (typeof getReferenceAudioIx === "function") ? getReferenceAudioIx() : null;
-  if (!refFile) {
-    throw new Error("No reference recording is set; cannot project score regions onto audio.");
-  }
-  if (!tk || typeof tk.getTimesForElement !== "function") {
-    throw new Error("Score-rendering toolkit not ready; cannot project score regions.");
-  }
-  if (!scoreAlignment) {
-    throw new Error("Score alignment is missing from the loaded session; cannot project.");
-  }
-  const audios = [...audioUriToFile.entries()]; // [[audioUri, file], ...]
-  if (audios.length === 0) {
-    throw new Error("No audio recordings are loaded; cannot project score regions.");
-  }
-
-  // Replacement Selection URIs are synthesized so they're stable in the
-  // graph but don't collide with anything else; they're never used as
-  // identifiers on the pod (this rewrite is purely in-memory).
-  const newSelUris = [];
-  const { onsetTimes, offsetTimes } = _scoreTimeTables();
-  if (!Array.isArray(onsetTimes) || !Array.isArray(offsetTimes)) {
-    throw new Error("Score alignment doesn't expose synth_onset/synth_offset.");
-  }
-
-  // Pull the original score Selections so we can mine their frbr:part lists.
-  const origScoreSels = scoreSelUris.map((u) => graph[u]).filter(Boolean);
-  if (origScoreSels.length === 0) {
-    throw new Error("No score Selections found in the fetched chain.");
-  }
-  // Every MEI element id in this annotation, in order, once each: each part
-  // is a URI like `${meiUri}#elementId`.
-  const elementIds = [];
-  for (const origSel of origScoreSels) {
-    for (const p of origSel[nsp.FRBR + "part"] || []) {
-      const partUri = p && p["@id"];
-      if (!partUri) continue;
-      const hashIx = partUri.lastIndexOf("#");
-      const elementId = hashIx >= 0 ? partUri.slice(hashIx + 1) : null;
-      if (elementId && !elementIds.includes(elementId)) elementIds.push(elementId);
-    }
-  }
-
-  // For each loaded recording, build a synthetic Selection with ONE
-  // projected region spanning every MEI element's onset/offset in this
-  // annotation. mei-friend annotations that mark a phrase of N notes
-  // would otherwise come through as N adjacent micro-regions, which
-  // reads as noise rather than as the intended span. We collapse to
-  // [min(onsets), max(offsets)] across every part of every Selection;
-  // if no element projects successfully, the Selection has zero parts
-  // (whole-audio semantic, matching the V6 no-regions case).
-  for (const [audioUri, file] of audios) {
-    const synthUri = "local:score-projected/" + encodeURIComponent(file);
-    const span = _projectElementsSpan(elementIds, file, onsetTimes, offsetTimes);
-    const parts = span
-      ? [{ "@id": audioUri + "#t=" + _fmtSec(span.start) + "," + _fmtSec(span.end) }]
-      : [];
-    graph[synthUri] = {
-      "@id": synthUri,
-      "@type": [nsp.MAO + "Selection", nsp.SCHEMA + "Dataset"],
-      [nsp.SCHEMA + "about"]: [{ "@id": audioUri }],
-      [nsp.FRBR + "part"]: parts,
-    };
-    newSelUris.push(synthUri);
-  }
-
-  // ADDITIVE: keep the original score Selections in the Extract's
-  // embodiment list. The deserializer recognises them as preserved (its
-  // resolveFileFromAudioUri returns null for the score's MEI URI) and
-  // they round-trip through ann.preservedSelections so the next Update
-  // keeps them in the chain. New audio Selections are appended after
-  // the originals.
-  let extractUri = null;
-  for (const uri of Object.keys(graph)) {
-    const node = graph[uri];
-    const types = _asArray(node && node["@type"]);
-    if (types.includes(nsp.MAO + "Extract")) {
-      extractUri = uri;
-      break;
-    }
-  }
-  if (extractUri) {
-    const existing = _asArray(graph[extractUri][nsp.FRBR + "embodiment"]);
-    graph[extractUri][nsp.FRBR + "embodiment"] = [
-      ...existing,
-      ...newSelUris.map((u) => ({ "@id": u })),
-    ];
-  }
-  // Original score Selections + their referencing OAs stay on the pod
-  // untouched. Their body text isn't surfaced in V6's drawer (the
-  // existing OAs target the score Selection, not an audio Selection,
-  // so V6's track-OA heuristic doesn't pick them up). The user can
-  // still add new OAs in V6 that target the audio Selections; those
-  // are pure additions to the chain when the user clicks Update.
-  return elementIds;
-}
-
-/** The score-time tables Verovio's element times are matched against. Prefer
- *  the corrected synth tables (derived from the MIDI Verovio actually
- *  rendered): the stored synth_onset/synth_offset may carry the pre-fix
- *  tempo skew. */
-function _scoreTimeTables() {
-  return {
-    onsetTimes:
-      correctedSynthOnsets || scoreAlignment.synth_onset || scoreAlignment.score_onset,
-    offsetTimes:
-      correctedSynthOffsets || scoreAlignment.synth_offset || scoreAlignment.score_offset,
-  };
-}
-
-/** One span over every element's projection onto `file`: [min onset, max
- *  offset], or null when none projects. */
-function _projectElementsSpan(elementIds, file, onsetTimes, offsetTimes) {
-  let minStart = Infinity;
-  let maxEnd = -Infinity;
-  for (const elementId of elementIds) {
-    const times = _projectMeiElementToTimes(elementId, file, onsetTimes, offsetTimes);
-    if (!times) continue;
-    if (times.start < minStart) minStart = times.start;
-    if (times.end > maxEnd) maxEnd = times.end;
-  }
-  return Number.isFinite(minStart) && Number.isFinite(maxEnd) && maxEnd >= minStart
-    ? { start: minStart, end: maxEnd }
-    : null;
-}
-
-/**
- * A score-sourced region's times on every target, projected again from its
- * cached MEI element ids through the current score alignment and grids (the
- * load-time projection, rerun); null when the score side isn't ready.
- */
-export function projectedTimesFromScore(ann, region) {
-  if (!region.sourceScore || !scoreAlignment || !getReferenceAudioIx()) return null;
-  if (!tk || typeof tk.getTimesForElement !== "function") return null;
-  const { onsetTimes, offsetTimes } = _scoreTimeTables();
-  if (!Array.isArray(onsetTimes) || !Array.isArray(offsetTimes)) return null;
-  const out = {};
-  for (const t of ann.targets) {
-    const span = _projectElementsSpan(region.sourceScore, t.file, onsetTimes, offsetTimes);
-    if (span) out[t.file] = span;
-  }
-  return out;
-}
-
-/**
- * Project a single MEI element ID to an audio media-fragment URI on the
- * given audio. Falls back to a zero-length fragment at 0s if Verovio
- * can't resolve the element (so the row still renders rather than
- * dropping silently). Uses the first MIDI expansion.
- */
-/**
- * Project a single MEI element ID onto an audio file's timeline.
- * Returns `{ start, end }` in seconds, or null if Verovio can't resolve
- * the element. The caller is responsible for collapsing multiple
- * elements' spans if it wants a single coalesced region.
- */
-function _projectMeiElementToTimes(elementId, file, onsetTimes, offsetTimes) {
-  if (!elementId) return null;
-  let times;
-  try { times = tk.getTimesForElement(elementId); } catch (_) { times = null; }
-  if (!times || !Array.isArray(times.tstampOn) || times.tstampOn.length === 0) {
-    return null;
-  }
-  // Verovio returns milliseconds; the alignment tables are in seconds.
-  const onsetS = times.tstampOn[0] / 1000;
-  const offsetS =
-    Array.isArray(times.tstampOff) && times.tstampOff.length > 0
-      ? times.tstampOff[0] / 1000
-      : onsetS;
-  // Score time → corresponding time on the REFERENCE recording.
-  const refStart = scoreAlignment.ref_onset[_closestIx(onsetS, onsetTimes)];
-  const refEnd = scoreAlignment.ref_offset[_closestIx(offsetS, offsetTimes)];
-  const refFile = getReferenceAudioIx();
-  if (file === refFile) return { start: refStart, end: refEnd };
-  // Ref → this file: ref-time → alignment index on the ref grid →
-  // corresponding time on this file's grid.
-  try {
-    const ixStart = getClosestAlignmentIx(refStart, refFile);
-    const ixEnd = getClosestAlignmentIx(refEnd, refFile);
-    const a = getCorrespondingTime(file, ixStart);
-    const b = getCorrespondingTime(file, ixEnd);
-    if (Number.isFinite(a) && Number.isFinite(b)) return { start: a, end: b };
-  } catch (_) { /* fall through */ }
-  return { start: refStart, end: refEnd };
-}
-
-function _closestIx(t, table) {
-  if (!Array.isArray(table) || table.length === 0) return 0;
-  let bestIx = 0;
-  let bestDist = Math.abs(table[0] - t);
-  for (let i = 1; i < table.length; i++) {
-    const d = Math.abs(table[i] - t);
-    if (d < bestDist) { bestDist = d; bestIx = i; }
-  }
-  return bestIx;
-}
-
-function _fmtSec(t) {
-  return (Math.round(t * 1000) / 1000).toString();
-}
-
 async function _fetchChainAsGraph(mmUri, onProgress) {
   onProgress("Fetching MusicalMaterial");
   const mm = await _fetchJsonLd(mmUri);

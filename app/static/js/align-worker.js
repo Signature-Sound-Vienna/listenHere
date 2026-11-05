@@ -1574,6 +1574,31 @@ def fix_begin(ref_audio, midi_bytes_py):
         'midi_duration': midi_dur,
     }
 
+def fix_begin_audio(ref_audio):
+    """Bootstrap a SCORE-LESS correction session: the reference alone, no MIDI
+    and no synth. The target ops (fix_target_*) and the lanes work on top of it
+    unchanged; the tick set comes from fix_ref_onsets."""
+    global _fix
+    ref = np.asarray(ref_audio, dtype=np.float32)
+    _fix = {'ref': ref, 'ref_dur': len(ref) / SR}
+    return {'n_events': 0, 'ref_duration': _fix['ref_dur']}
+
+def fix_ref_onsets():
+    """The reference's detected onsets — the tick set of a score-less session —
+    with one perceived attack per onset (index-aligned). Always at LANE_HOP,
+    never the lane display's configurable hop, so the ticks (and the anchors
+    keyed by their times) do not move when the user re-configures the lanes."""
+    if _fix is None:
+        raise RuntimeError('fix_ref_onsets before fix_begin')
+    ref = _fix['ref']
+    onset = compute_onset_strength(ref, hop=LANE_HOP)
+    peaks = pick_onset_peaks(onset, LANE_HOP)
+    return {
+        'hop': LANE_HOP,
+        'peaks': [float(t) for t in peaks],
+        'pat': [float(t) for t in perceptual_attack_times(ref, peaks, LANE_HOP)],
+    }
+
 def _fix_features(audio, lo_sec, hi_sec, hop):
     """Per-frame L2-normalised chroma for one audio slice at the segment's hop."""
     lo = max(0, int(lo_sec * SR))
@@ -2023,6 +2048,50 @@ let pyodideReady = null;
 /** How long the three boot stages took (ms), for the fix-mode arming trail. */
 let bootTiming = null;
 
+/** fix_lanes requests run one at a time: each passes its arguments and its
+ *  result through Python globals across awaits, so a second request in flight
+ *  (the score-less reference's, or a quick run of spectrogram settings) would
+ *  overwrite the first's arrays — the first reply then carried the second's
+ *  data, and the second failed with a NameError. */
+let lanesQueue = Promise.resolve();
+
+/** One fix_lanes request, start to finish; never rejects (the queue goes on). */
+async function runFixLanes(data) {
+  try {
+    const pyodide = await pyodideReady;
+    const { hop, nMels, nFft, window: win, melHop, what, scale, which } = data;
+    pyodide.globals.set("_lanes_hop", hop ?? 512);
+    pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
+    pyodide.globals.set("_lanes_n_fft", nFft ?? 2048);
+    pyodide.globals.set("_lanes_window", win || "hann");
+    pyodide.globals.set("_lanes_mel_hop", melHop ?? hop ?? 512);
+    pyodide.globals.set("_lanes_what", what || "all");
+    pyodide.globals.set("_lanes_scale", scale || "mel");
+    pyodide.globals.set("_lanes_which", which || "ref");
+    const metaJson = await pyodide.runPythonAsync(`
+import json
+_lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels), int(_lanes_n_fft),
+                   str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what),
+                   str(_lanes_scale), str(_lanes_which))
+_lanes_mel = _lanes.pop('mel')
+_lanes_onset = _lanes.pop('onset')
+json.dumps(_lanes)
+`);
+    const meta = JSON.parse(metaJson);
+    const mel = takeBuffer(pyodide, "_lanes_mel", "u8", Uint8Array);
+    const onset =
+      meta.what === "mel"
+        ? null
+        : takeBuffer(pyodide, "_lanes_onset", "f32", Float32Array);
+    await pyodide.runPythonAsync("del _lanes, _lanes_mel, _lanes_onset");
+    const transfer = [mel.buffer];
+    if (onset) transfer.push(onset.buffer);
+    self.postMessage({ type: "fix_lanes", ...meta, mel, onset }, transfer);
+  } catch (err) {
+    self.postMessage({ type: "fix_lanes_error", which: data.which || "ref", message: err.toString() });
+  }
+}
+
 async function initPyodide() {
   const t0 = performance.now();
   reportProgress("Loading Python runtime...", 0);
@@ -2086,6 +2155,11 @@ async function initPyodide() {
  *   worker → main: "fix_target_segment" { result: { times, hop } }
  *   main → worker: "fix_target_dispose"   →   worker → main: "fix_target_disposed"
  *   "fix_lanes" takes which: "ref" | "target" for the audio on the strip.
+ *
+ *   Score-less sessions: "fix_begin" with meiMidi null holds the reference
+ *   alone (fix_ready's events: { n_events: 0, ref_duration }); the tick set is
+ *   main → worker: "fix_ref_onsets"
+ *   worker → main: "fix_ref_onsets" { hop, peaks, pat } | "fix_ref_onsets_error" { message }
  *
  *   (errors at any point) worker → main: "error" { message }
  *
@@ -2262,9 +2336,11 @@ json.dumps(_added)
 import json
 _apply_options()
 _fix_ref_arr = np.frombuffer(_fix_ref_data.to_py(), dtype=np.float32).copy()
-_fix_midi_bytes = bytes(_fix_midi_arg.to_py())
-_fix_events = fix_begin(_fix_ref_arr, _fix_midi_bytes)
-del _fix_ref_arr, _fix_midi_bytes
+if _fix_midi_arg is None:
+    _fix_events = fix_begin_audio(_fix_ref_arr)
+else:
+    _fix_events = fix_begin(_fix_ref_arr, bytes(_fix_midi_arg.to_py()))
+del _fix_ref_arr
 del globals()['_fix_ref_data']
 import gc
 gc.collect()
@@ -2303,43 +2379,30 @@ json.dumps(fix_realign_segment(
       return;
     }
 
+    if (e.data.type === "fix_ref_onsets") {
+      // A score-less session's tick set. Own error type, like the lanes: a
+      // generic "error" would be claimed by a pending realign.
+      try {
+        const pyodide = await pyodideReady;
+        const json = await pyodide.runPythonAsync(`
+import json
+json.dumps(fix_ref_onsets())
+`);
+        self.postMessage({ type: "fix_ref_onsets", ...JSON.parse(json) });
+      } catch (err) {
+        self.postMessage({ type: "fix_ref_onsets_error", message: err.toString() });
+      }
+      return;
+    }
+
     if (e.data.type === "fix_lanes") {
       // The v2 lanes (mel spectrogram, onset curve, onset peaks) for the
       // resident session. Failures post under their OWN type: a generic
       // "error" would be claimed by whatever realign the client has pending.
-      try {
-        const pyodide = await pyodideReady;
-        const { hop, nMels, nFft, window: win, melHop, what, scale, which } = e.data;
-        pyodide.globals.set("_lanes_hop", hop ?? 512);
-        pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
-        pyodide.globals.set("_lanes_n_fft", nFft ?? 2048);
-        pyodide.globals.set("_lanes_window", win || "hann");
-        pyodide.globals.set("_lanes_mel_hop", melHop ?? hop ?? 512);
-        pyodide.globals.set("_lanes_what", what || "all");
-        pyodide.globals.set("_lanes_scale", scale || "mel");
-        pyodide.globals.set("_lanes_which", which || "ref");
-        const metaJson = await pyodide.runPythonAsync(`
-import json
-_lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels), int(_lanes_n_fft),
-                   str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what),
-                   str(_lanes_scale), str(_lanes_which))
-_lanes_mel = _lanes.pop('mel')
-_lanes_onset = _lanes.pop('onset')
-json.dumps(_lanes)
-`);
-        const meta = JSON.parse(metaJson);
-        const mel = takeBuffer(pyodide, "_lanes_mel", "u8", Uint8Array);
-        const onset =
-          meta.what === "mel"
-            ? null
-            : takeBuffer(pyodide, "_lanes_onset", "f32", Float32Array);
-        await pyodide.runPythonAsync("del _lanes, _lanes_mel, _lanes_onset");
-        const transfer = [mel.buffer];
-        if (onset) transfer.push(onset.buffer);
-        self.postMessage({ type: "fix_lanes", ...meta, mel, onset }, transfer);
-      } catch (err) {
-        self.postMessage({ type: "fix_lanes_error", message: err.toString() });
-      }
+      // Queued behind any request still running (see lanesQueue).
+      const run = lanesQueue.then(() => runFixLanes(e.data));
+      lanesQueue = run;
+      await run;
       return;
     }
 
@@ -2349,7 +2412,6 @@ json.dumps(_lanes)
       self.postMessage({ type: "fix_disposed" });
       return;
     }
-
     if (e.data.type === "fix_target_begin") {
       // The audio-to-audio TARGET: a second recording resident beside the
       // reference. Failures post under their own type — a pending realign

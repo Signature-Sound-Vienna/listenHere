@@ -702,8 +702,8 @@ def apply_overrides(annotations, overrides, warnings, corrections=None):
     corrected = (corrections or {}).get("audio") or {}
     index = {a["id"]: a for a in annotations}
     for ann_id, regions in (overrides or {}).items():
-        if ann_id.startswith("_"):
-            continue  # a note key, not data
+        if ann_id.startswith("_") or ann_id == "reveal":
+            continue  # a note key, or the reveal list (apply_reveal), not times
         ann = index.get(ann_id)
         if ann is None:
             warnings.add("override-unknown-annotation", f"overrides name {ann_id}, which is absent")
@@ -734,6 +734,24 @@ def apply_overrides(annotations, overrides, warnings, corrections=None):
     else:
         log("  no overrides applied (none authored yet)")
     return applied
+
+
+def apply_reveal(annotations, overrides, warnings):
+    """Flag the annotations whose per-recording notes ANSWER the annotation's
+    question ("Which recording has just the bell?" — "Here you hear the flutes
+    as well"), so the exhibit can cover them until the reader asks (?reveal).
+    An editorial list in the overrides file (`"reveal": [annotationId, ...]`),
+    not the authoring tool's: the user, 2026-10-20 — a simple flag for now."""
+    ids = (overrides or {}).get("reveal") or []
+    index = {a["id"]: a for a in annotations}
+    for ann_id in ids:
+        ann = index.get(ann_id)
+        if ann is None:
+            warnings.add("reveal-unknown-annotation", f"reveal names {ann_id}, which is absent")
+            continue
+        ann["reveal"] = True
+    if ids:
+        log(f"  reveal: {sum(1 for a in annotations if a.get('reveal'))} annotation(s) answer behind a card")
 
 
 def pending_hand_placement(annotations, warnings):
@@ -843,6 +861,7 @@ def step_payload(args, sets, warnings):
             seed_overrides(overrides_path)
         overrides = load_overrides(overrides_path, warnings)
         apply_overrides(annotations, overrides, warnings, corrections)
+        apply_reveal(annotations, overrides, warnings)
         pending_hand_placement(annotations, warnings)
     else:
         # Nothing to hand-place without annotations; seeding the D-or-E slot for

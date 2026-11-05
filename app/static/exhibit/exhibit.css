@@ -1108,6 +1108,72 @@ html, body {
   color: var(--ex-text-body);
 }
 
+/* ?reveal=peel — an answer under a peel-off card (peel.js). While covered the
+ * box has ONE height whatever the note's length (a taller card would give the
+ * answer away), and the note's block lets the turned-over flap hang past its
+ * edge rather than clipping the fold. */
+.ann-note-box { position: relative; }
+.ann-target.is-covered { overflow: visible; }
+.ann-note-box.is-covered { flex: 0 0 auto; height: 2.6rem; }
+.ann-note-box.is-covered .ann-target-note {
+  display: block;
+  height: 100%;
+  overflow: hidden;
+}
+.peel {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  cursor: grab;
+  /* A drag is a peel, never a scroll of the panel around it. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  outline-offset: 2px;
+}
+.peel.is-peeling { cursor: grabbing; }
+.peel-face {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  background: var(--ex-card, #fbf6ea);
+  border: 1px solid var(--ex-border-strong);
+  box-shadow: 0 1px 2px rgba(40, 25, 10, 0.18);
+}
+.peel-label {
+  font-size: 0.86rem;
+  letter-spacing: 0.04em;
+  color: var(--ex-accent);
+  pointer-events: none;
+}
+.peel-flap-wrap {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  filter: drop-shadow(-1px -1px 2px rgba(40, 25, 10, 0.35));
+}
+.peel-flap-wrap[hidden] { display: none; }
+/* The card's back: the same paper, darker away from the fold. */
+.peel-flap {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  border-radius: 3px;
+  background:
+    linear-gradient(var(--peel-shade-angle, 135deg),
+      rgba(255, 255, 255, 0.35), rgba(60, 40, 15, 0.22)),
+    var(--ex-card, #fbf6ea);
+}
+.peel-probe {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
 .ann-detail::-webkit-scrollbar { width: 6px; }
 .ann-detail::-webkit-scrollbar-thumb { background: var(--ex-border-strong); border-radius: 3px; }
 /* Auto margins, not align-self: the detail now lives in the .ann-text column,

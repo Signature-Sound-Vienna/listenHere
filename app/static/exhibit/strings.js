@@ -95,6 +95,13 @@ const CATALOGUE = {
   // no chrome invites a visitor to try to DRAG it, and the draggable one is the
   // object on the hook. PROVISIONAL wording, like the jump beside it.
   "panel.markAnnotation": { en: "Mark" },
+  // The peel-off card over a per-recording ANSWER (?reveal=peel, peel.js): a
+  // tap or a drag peels it. PROVISIONAL wording (the user, 2026-10-20: "maybe
+  // just labeled 'show answer'").
+  "panel.showAnswer": { en: "Show answer" },
+  "panel.showAnswerLong": {
+    en: "Show the answer for this recording — tap, or peel the card back",
+  },
   "panel.markAnnotationLong": {
     en: "Place my marker at the start of this annotation",
   },

@@ -1648,3 +1648,157 @@ test.describe('37. Demo feedback — the per-recording note', () => {
     ).toBe('18px');
   });
 });
+
+test.describe('37. Museum feedback — answers behind a card', () => {
+  // The museum stage: the study preset's rotated landscape framebuffer, with
+  // the annotation text in the side slot — the layout the card was built for,
+  // and the one where a drag must be mapped through two rotations (the stage's
+  // 90° and the far reader's extra 180°).
+  test.use({ viewport: { width: 1920, height: 1080 } });
+  const STAGE = 'debug=1&stageRotation=90&sideSlot=annotations&bandOrientation=mirrored';
+
+  /** From the payload: a flagged annotation with two noted recordings, and an
+   *  UNflagged one that has a note — read, not hardcoded (the 37.28 rule). */
+  async function pickFixtures(page: Page) {
+    await boot(page, STAGE);
+    return page.evaluate(() => {
+      const T = (window as any)._exhibitTest;
+      const text = (d: any) => (typeof d === 'string' ? d : d?.en || '');
+      const noted = (a: any) =>
+        a.targets.filter((t: any) => text(t.description).trim()).map((t: any) => t.file);
+      const flagged = T.exhibit.annotations.find((a: any) => a.reveal && noted(a).length >= 2);
+      const plain = T.exhibit.annotations.find((a: any) => !a.reveal && noted(a).length >= 1);
+      return {
+        flagged: { id: flagged.id, audience: flagged.audience, files: noted(flagged) as string[] },
+        plain: { id: plain.id, audience: plain.audience, file: noted(plain)[0] as string },
+      };
+    });
+  }
+
+  /** Focus `annId` in viewport `vp` and make `file` audible. */
+  const show = (page: Page, vp: number, annId: string, file: string) =>
+    page.evaluate(
+      async ({ vp, annId, file }) => {
+        const T = (window as any)._exhibitTest;
+        const chip = document.querySelector(
+          `.vp[data-viewport="${vp}"] .ann-chip[data-ann="${annId}"]`,
+        ) as HTMLElement;
+        if (!chip.classList.contains('is-pinned')) chip.click();
+        await T.transport.select(file, 5, false);
+        await new Promise((r) => setTimeout(r, 80));
+      },
+      { vp, annId, file },
+    );
+
+  const card = (page: Page, vp: number) =>
+    page.evaluate((vp) => {
+      const v = document.querySelector(`.vp[data-viewport="${vp}"]`)!;
+      const box = v.querySelector('.ann-note-box') as HTMLElement;
+      return {
+        covered: !!v.querySelector('.peel'),
+        boxHeight: box.offsetHeight,
+        note: v.querySelector('.ann-target-note')!.textContent,
+        clip: (v.querySelector('.peel-face') as HTMLElement | null)?.style.clipPath ?? null,
+      };
+    }, vp);
+
+  /** A point on viewport `vp`'s card, given as fractions of its LOCAL box, in
+   *  client coordinates — mapped through the card's own probes, so the test
+   *  makes no assumption about the rotations either. */
+  const cardPoint = (page: Page, vp: number, fx: number, fy: number) =>
+    page.evaluate(
+      ({ vp, fx, fy }) => {
+        const el = document.querySelector(`.vp[data-viewport="${vp}"] .peel`)!;
+        const [o, a, b] = [...el.querySelectorAll('.peel-probe')].map((p) => {
+          const r = p.getBoundingClientRect();
+          return { x: r.left, y: r.top };
+        });
+        return {
+          x: o.x + fx * (a.x - o.x) + fy * (b.x - o.x),
+          y: o.y + fx * (a.y - o.y) + fy * (b.y - o.y),
+        };
+      },
+      { vp, fx, fy },
+    );
+
+  // 37.32 ?reveal=peel covers a flagged annotation's per-recording note — the
+  // answer — with a card of ONE height whatever the answer's length; a tap
+  // peels it; it stays peeled for that recording and comes back covered on
+  // another; an annotation not on the reveal list shows its note as before.
+  test('37.32 a flagged note lies under a card a tap peels, per recording; unflagged notes are bare', async ({
+    page,
+  }) => {
+    const fx = await pickFixtures(page);
+    await boot(page, `${STAGE}&reveal=peel&audiences=${fx.flagged.audience},${fx.plain.audience}`);
+    const [first, second] = fx.flagged.files;
+
+    await show(page, 0, fx.flagged.id, first);
+    const a = await card(page, 0);
+    expect(a.covered, 'the answer starts under a card').toBe(true);
+    expect(a.clip, 'the resting card shows its dog-ear').toMatch(/^polygon/);
+    await show(page, 0, fx.flagged.id, second);
+    const b = await card(page, 0);
+    expect(b.covered).toBe(true);
+    expect(b.boxHeight, 'a covered answer never tells its length').toBe(a.boxHeight);
+
+    // Tap: the card comes off by itself and the note is readable.
+    await page.locator('.vp[data-viewport="0"] .peel').click({ force: true });
+    await expect(page.locator('.vp[data-viewport="0"] .peel')).toHaveCount(0);
+    expect((await card(page, 0)).note!.length).toBeGreaterThan(0);
+
+    // Peeled for THAT recording: the first is still covered, the second stays open.
+    await show(page, 0, fx.flagged.id, first);
+    expect((await card(page, 0)).covered).toBe(true);
+    await show(page, 0, fx.flagged.id, second);
+    expect((await card(page, 0)).covered, 'a peeled answer stays peeled').toBe(false);
+
+    // Not on the reveal list: the note shows bare, as before this landed.
+    await show(page, 1, fx.plain.id, fx.plain.file);
+    expect((await card(page, 1)).covered).toBe(false);
+  });
+
+  // 37.33 A drag peels the card UNDER THE FINGER, in both readers' halves (the
+  // far one turned a further 180°): released short of the finish it springs
+  // back to its dog-ear and the trailing click does not finish it; dragged far
+  // enough it comes off.
+  test('37.33 a drag peels under the finger in both halves; a short one springs back', async ({ page }) => {
+    const fx = await pickFixtures(page);
+    const aud = fx.flagged.audience;
+    await boot(page, `${STAGE}&reveal=peel&audiences=${aud},${aud}`);
+    for (const vp of [0, 1]) {
+      await show(page, vp, fx.flagged.id, fx.flagged.files[0]);
+      const rest = (await card(page, vp)).clip;
+
+      // Short: 15% of the width, then let go.
+      let from = await cardPoint(page, vp, 0.97, 0.8);
+      let to = await cardPoint(page, vp, 0.82, 0.6);
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(to.x, to.y, { steps: 6 });
+      const mid = (await card(page, vp)).clip;
+      expect(mid, 'mid-drag the fold follows the finger').not.toBe(rest);
+      await page.mouse.up();
+      await expect.poll(async () => (await card(page, vp)).clip).toBe(rest);
+      expect((await card(page, vp)).covered, 'a short drag springs back').toBe(true);
+
+      // Far: past the card's middle.
+      from = await cardPoint(page, vp, 0.97, 0.8);
+      to = await cardPoint(page, vp, 0.3, -0.5);
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(to.x, to.y, { steps: 10 });
+      await page.mouse.up();
+      await expect(page.locator(`.vp[data-viewport="${vp}"] .peel`)).toHaveCount(0);
+    }
+  });
+
+  // 37.34 The A/B rule: without ?reveal the flagged notes show bare.
+  test('37.34 reveal is off by default: flagged notes show as before', async ({ page }) => {
+    const fx = await pickFixtures(page);
+    await boot(page, `${STAGE}&audiences=${fx.flagged.audience},${fx.flagged.audience}`);
+    await show(page, 0, fx.flagged.id, fx.flagged.files[0]);
+    const c = await card(page, 0);
+    expect(c.covered).toBe(false);
+    expect(c.note!.length).toBeGreaterThan(0);
+  });
+});

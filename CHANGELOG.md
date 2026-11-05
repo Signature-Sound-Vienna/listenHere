@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.116.0 -- Answers behind a card: a quiz's per-recording notes peel off
+* `?reveal=peel`: a flagged annotation's per-recording note, its answer, lies under a "Show answer" card. A tap peels it off; a drag peels it under the finger, in either reader's half. Released short of the finish, it springs back.
+* A covered answer keeps one height whatever its length. Peeled stays peeled for that recording, and the attract loop's sweep covers every answer again.
+* Which annotations: a `reveal` list in the piece's overrides file, carried into the payload by `tools/prep_exhibit_data.py`. Four in Die Fledermaus, seven in the Pizzicato-Polka.
+* Off by default; the study panel has the switch.
+* Testing: 37.32 a tap peels a flagged note per recording, and unflagged notes stay bare; 37.33 a drag peels under the finger in both halves, and a short one springs back; 37.34 off by default.
+
 ### 0.115.0 -- Correction mode re-bases an alignment onto an edited score
 
 * When the score has changed since the alignment was made, but only as far as an edit moves the same events (same event count, no neighbouring events reordered, every onset within 1/8 quarter), correction mode offers to re-base onto the current score instead of refusing: the score quarters and synth times come from the fresh render, score↔reference anchors and the score hints of audio-to-audio anchors follow their events, recording times are kept, and `header.rebased` records what moved; the change is unsaved until saved. Larger differences still refuse.

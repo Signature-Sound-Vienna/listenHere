@@ -37,6 +37,7 @@
 
 import { resolveText, t } from "./strings.js";
 import { resolveGroupFor, safeColor, groupTextColor } from "../js/engine/grouping-core.js";
+import { createPeel } from "./peel.js";
 
 /**
  * @param {object} opts
@@ -71,6 +72,10 @@ import { resolveGroupFor, safeColor, groupTextColor } from "../js/engine/groupin
  *   first region. Same division of labour as the jump — this component only
  *   reports the tap with the shown annotation's id.
  * @param {(annId: string) => void} [opts.onMarkTap]
+ * @param {boolean} [opts.reveal]  ?reveal=peel: an annotation flagged
+ *   `reveal` (its per-recording notes ANSWER its question) shows each note
+ *   behind a peel-off card until the reader peels it (peel.js). Peeled per
+ *   (annotation, recording), remembered until resetReveals().
  * @returns {{el: HTMLElement, chipsEl: HTMLElement, bodyEl: HTMLElement,
  *   update: (annotations: object[], focus: object|null, opts?: object) => void}}
  */
@@ -84,6 +89,7 @@ export function createAnnotationList({
   onJumpTap,
   showMark = false,
   onMarkTap,
+  reveal = false,
 }) {
   const el = document.createElement("div");
   el.className = "ann-panel";
@@ -171,7 +177,13 @@ export function createAnnotationList({
   targetWho.className = "ann-target-who";
   const targetNote = document.createElement("span");
   targetNote.className = "ann-target-note";
-  target.append(targetWho, targetNote);
+  // The note's box: where a peel-off card lies over an answer (?reveal=peel).
+  // While covered it keeps ONE fixed height whatever the note's length — a
+  // longer card would tell "Yes! This is the one! …" from "Not here".
+  const noteBox = document.createElement("div");
+  noteBox.className = "ann-note-box";
+  noteBox.appendChild(targetNote);
+  target.append(targetWho, noteBox);
   const groups = document.createElement("div");
   groups.className = "ann-groups";
   textCol.append(head, detail, target);
@@ -191,6 +203,22 @@ export function createAnnotationList({
   // racing tap's target legitimately vanished with the list it belonged to.
   const chipById = new Map();
   let lastShownId = null;
+
+  // ?reveal=peel: the (annotation | recording) pairs this reader has peeled,
+  // and the card lying over the note now, keyed the same way. The card is kept
+  // across re-renders of the same pair — renders are frequent (every wash
+  // entry, every resize), and replacing the card mid-drag would drop the fold
+  // out from under the finger.
+  const revealed = new Set();
+  let peel = null;
+  let peelKey = null;
+  const dropPeel = () => {
+    peel?.destroy();
+    peel = null;
+    peelKey = null;
+    noteBox.classList.remove("is-covered");
+    target.classList.remove("is-covered");
+  };
 
   /**
    * @param {object[]} annotations
@@ -334,6 +362,29 @@ export function createAnnotationList({
       targetWho.textContent = "";
       targetNote.textContent = "";
     }
+    const key = noteText && reveal && shown.reveal ? `${shown.id}|${targetFile}` : null;
+    if (!key || revealed.has(key)) {
+      if (peel) dropPeel();
+    } else if (key !== peelKey) {
+      dropPeel();
+      peelKey = key;
+      noteBox.classList.add("is-covered");
+      target.classList.add("is-covered");
+      peel = createPeel({
+        label: t("panel.showAnswer", language),
+        ariaLabel: t("panel.showAnswerLong", language),
+        onReveal: () => {
+          revealed.add(key);
+          peel = null;
+          peelKey = null;
+          noteBox.classList.remove("is-covered");
+          target.classList.remove("is-covered");
+        },
+      });
+      noteBox.appendChild(peel.el);
+      // The dog-ear needs the card's size, which it has now that it is placed.
+      peel.refit();
+    }
 
     renderGroups(shown);
   }
@@ -419,7 +470,14 @@ export function createAnnotationList({
   // chipsEl and bodyEl are the two mountable halves: below the strips they
   // stay together inside `el`; the side-slot layout moves bodyEl into the
   // panel while chipsEl (inside `el`) keeps the below-content row.
-  return { el, chipsEl: chips, bodyEl: body, update };
+  /** Cover every answer again (the attract loop's sweep: a new visitor). The
+   *  caller re-renders, which lays the cards back down. */
+  function resetReveals() {
+    revealed.clear();
+    dropPeel();
+  }
+
+  return { el, chipsEl: chips, bodyEl: body, update, resetReveals };
 }
 
 /** A non-empty authored text value — plain string or language map. */

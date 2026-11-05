@@ -429,6 +429,14 @@ const TABS = [
         hint:
           "The annotator's note about the RECORDING you are hearing, below the shared description, plus a dot on every strip the shown annotation has a note for. 31 of the 61 targets in the shown set carry one and none were rendered before 2026-09-01. Off is the comparator, not a fallback.",
       },
+      // Museum feedback (2026-10-20): quiz answers behind a peel-off card.
+      {
+        key: "reveal",
+        label: "Answers behind a card",
+        options: ["off", "peel"],
+        hint:
+          "For annotations that ask a question (an editorial list in the piece's overrides file), the per-recording note — the answer — lies under a “Show answer” card until the reader taps it or peels it back by dragging. Peeled cards stay off for that recording until the attract loop tidies the table.",
+      },
       // Feedback item 4: the audience switch's union position.
       {
         key: "audienceAll",

@@ -1425,6 +1425,9 @@ async function boot() {
       // does for a drag or a tap-placement: a placed glass plays there, by
       // ruling, and a marker that arrived silently would be the odd one out.
       showMark: config.marker === "glass",
+      // ?reveal=peel: flagged annotations' per-recording answers lie under a
+      // peel-off card (annotation-list.js, peel.js).
+      reveal: config.reveal === "peel",
       onMarkTap: (annId) => {
         if (!vp.marker) return;
         const ann = vp.currentAnnotations?.find((a) => a.id === annId);
@@ -2120,6 +2123,8 @@ async function boot() {
         cancelPinExpiry(vp);
         cancelDetailFade(vp);
         setPanelOpen(vp, false);
+        // A new visitor finds every answer covered again.
+        vp.annList?.resetReveals();
         renderAnnotations(vp, store);
       }
       if (config.marker === "glass") syncGhosts();

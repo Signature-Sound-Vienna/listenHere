@@ -392,6 +392,18 @@ const DEFAULTS = {
   // cannot absorb the long text (Q13). See the marks note in main.js.
   targetNotes: "on",
 
+  // ANSWERS BEHIND A CARD (museum feedback, the user, 2026-10-20). Where an
+  // annotation asks a question ("Which recording has just the bell?") its
+  // per-recording notes are the answers, and showing them beside the question
+  // gives the game away. Which annotations: an editorial `reveal` list in the
+  // piece's overrides file, carried into the payload by prep_exhibit_data.py.
+  //
+  //   "off"  — the notes show as they always have.
+  //   "peel" — each flagged note lies under a peel-off card ("Show answer"):
+  //            a tap peels it off, a drag peels it under the finger. Peeled
+  //            per (annotation, recording), until the attract loop's sweep.
+  reveal: "off",
+
   // --- tap semantics (alpha-tester feedback, 2026-08-26) ---
   // What a tap on a NON-ACTIVE waveform means:
   //   "aligned" — the shipped behaviour: switch to that recording and carry

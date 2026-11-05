@@ -1,4 +1,6 @@
-import { test as base, expect, type Page } from '@playwright/test';
+import { test as base, expect, type BrowserContext, type Page } from '@playwright/test';
+import * as fs from 'fs';
+import * as path from 'path';
 import { loadLocalAlignment, showWaveform, waitForWaveformsReady } from './helpers';
 
 export { expect };
@@ -55,7 +57,51 @@ async function waitForAppLoad(page: Page) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Pyodide from tests/fixtures/pyodide/ instead of jsDelivr
+// ---------------------------------------------------------------------------
+
+/**
+ * The alignment worker loads Pyodide (runtime + numpy, ~27 MB) from jsDelivr.
+ * Every test gets a fresh context with an empty HTTP cache, so each boot would
+ * fetch it all again. Serve the copies in tests/fixtures/pyodide/<version>/
+ * instead; the context route covers the worker's requests too. Production keeps
+ * the CDN, where the browser cache does this job. A file missing here answers
+ * 404 at once rather than reaching the CDN: vendor it from the same folder.
+ */
+const PYODIDE_CDN = /^https:\/\/cdn\.jsdelivr\.net\/pyodide\/(v[^/]+)\/full\/([^?#]+)/;
+const PYODIDE_FIXTURES = path.resolve(__dirname, '../fixtures/pyodide');
+const PYODIDE_TYPES: Record<string, string> = {
+  '.js': 'text/javascript',
+  '.json': 'application/json',
+  '.wasm': 'application/wasm',
+  '.zip': 'application/zip',
+  '.whl': 'application/octet-stream',
+};
+
+async function routePyodideToFixtures(context: BrowserContext) {
+  await context.route(PYODIDE_CDN, async (route) => {
+    const [, version, file] = route.request().url().match(PYODIDE_CDN)!;
+    const local = path.join(PYODIDE_FIXTURES, version, file);
+    const headers = { 'Access-Control-Allow-Origin': '*' };
+    if (!fs.existsSync(local)) {
+      await route.fulfill({ status: 404, headers, body: `not in tests/fixtures/pyodide/: ${version}/${file}` });
+      return;
+    }
+    await route.fulfill({
+      path: local,
+      headers,
+      contentType: PYODIDE_TYPES[path.extname(file)] ?? 'application/octet-stream',
+    });
+  });
+}
+
 export const test = base.extend<AppFixtures>({
+  context: async ({ context }, use) => {
+    await routePyodideToFixtures(context);
+    await use(context);
+  },
+
   listenPage: async ({ page }, use) => {
     await loadLocalAlignment(page, ALIGNMENT_JSON);
     await waitForAppLoad(page);

@@ -7,9 +7,9 @@
 // fix_begin) — the worker JS fix-message plumbing spec 41 deferred to here.
 //
 // The worker is STUBBED via the _listenTest.fixWorkerFactory seam in every
-// test that enters fix mode: the real worker loads Pyodide from a CDN, which
-// a hermetic suite must never reach. The stub records the messages the app
-// posts (42.13 asserts the fix_begin payload shape) and replies like the real
+// test that enters fix mode: the real worker boots Pyodide (served from
+// tests/fixtures/ since 0.115.1, but still seconds per test). The stub
+// records the messages the app posts (42.13 asserts the fix_begin payload shape) and replies like the real
 // worker would. The real-worker path was verified manually end to end
 // (Pyodide boot → fix_begin → fix_ready) during the increment's build.
 import { test, expect } from '../support/fixtures';

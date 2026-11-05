@@ -1,5 +1,9 @@
 # Listen Here! CHANGELOG.md
 
+### 0.115.1 -- Tests serve Pyodide locally
+
+* Testing: Pyodide 0.26.4 and its numpy (27 MB) are in `tests/fixtures/pyodide/`; the shared test fixture answers the worker's jsDelivr requests from there, so no spec downloads them. The app still loads Pyodide from jsDelivr.
+
 ### 0.115.0 -- Correction mode re-bases an alignment onto an edited score
 
 * When the score has changed since the alignment was made, but only as far as an edit moves the same events (same event count, no neighbouring events reordered, every onset within 1/8 quarter), correction mode offers to re-base onto the current score instead of refusing: the score quarters and synth times come from the fresh render, score↔reference anchors and the score hints of audio-to-audio anchors follow their events, recording times are kept, and `header.rebased` records what moved; the change is unsaved until saved. Larger differences still refuse.

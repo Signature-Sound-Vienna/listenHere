@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.115.2 -- Werkzeug 3.1.9
+
+* `requirements.txt`: Werkzeug 3.1.6 → 3.1.9 (GHSA-g6x2-hccm-hh4m: `safe_join` let Windows device names through, which only matters on Windows/NTFS).
+* `python-dotenv` stays at 1.0.0 (GHSA-mf9w-mj56-hr94 is in `set_key`/`unset_key`, which nothing calls, and 1.2.2 needs Python 3.10).
+* Testing: specs 01 and 04 pass (13, 2 skipped); a test-client probe of static files and the fixture route, including the origin rewrite and traversal or device-name paths (404), on a fresh Python 3.9.6 venv; the functional suite passes on top of 0.115.1 (670, 2 skipped), though its test venv still runs Werkzeug 3.0.6.
+
 ### 0.115.1 -- Tests serve Pyodide locally
 
 * Testing: Pyodide 0.26.4 and its numpy (27 MB) are in `tests/fixtures/pyodide/`; the shared test fixture answers the worker's jsDelivr requests from there, so no spec downloads them. The app still loads Pyodide from jsDelivr.

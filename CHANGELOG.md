@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.120.0 -- Die Fledermaus on the corrected alignment: reference VPO-2022, Chanda's regions re-anchored
+* The exhibit's Fledermaus spine is `ExhibitAnnots/Alignment_Fledermaus_HQ.2026-11-10.json`: the corrected score alignment re-based onto Eulenburg 2f44c21, with the grids of the eleven recordings it lacked spliced in from `Fledermaus-all-fixed.json`. `Alignment_Fledermaus_HQ.json` is left in place for checkouts on the September table.
+* The reference is VPO-2022 (26,844 frames; was VPO-2010, 29,121), so the exhibit starts on Barenboim 2022. The wall's recording order is unchanged.
+* Chanda's three sets are re-anchored onto it (`exhibit_annots_on_hq.py --reanchor`, into `ExhibitAnnots/on-hq-2026-11-10/`) and are now prep's audience sources; `AUTHORED` names her originals. The twelve index pairs are re-voted; six are flagged for an ear check.
+* Clapping Detective cannot be placed by a pair on VPO-1989: its applause lies past the end of the VPO-2022 grid, so it shows 7:46.8–7:51.5 until a time is hand-placed.
+* The payload carries all 26 sections of the sectioned MEI.
+* Testing: 34.2 asserts grid length against the reference's own grid; 37.26 rests on a recording the data allows; 47.15 ends whatever recording a pending switch point moved the pass to. Specs 34–38, 45–48, and 50: 211 of 212 passed on Chromium, with 38.14 failing once on an intermittent "execution context destroyed" and passing alone 3 of 3.
+
 ### 0.118.0 -- The exhibit payload carries the score's sections; the MEI is pinned to the alignment's commit
 * `tools/prep_exhibit_data.py` writes the MEI's `<section>` tree into the payload (`sections`): id, parent, level, bars, a label from the overrides file's `sectionLabels` or the MEI's `@label`, and an index pair on the reference grid, as regions have.
 * Bar times come from `tools/mei_measure_times.mjs`: Verovio's measure quarters mapped to reference seconds by `engine/time-map.js`. It refuses an MEI whose onset quarters differ from the alignment's score.

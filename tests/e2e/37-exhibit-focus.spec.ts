@@ -1125,11 +1125,14 @@ test.describe('37. Playhead-driven focus', () => {
   }) => {
     await boot(page, 'debug=1'); // manual mode: the button is on by default
     // Expected landings, from the payload itself: one annotation that targets
-    // the resting reference (jump must NOT switch), and one that does not
-    // (jump must switch to its first targeted recording in stack order).
+    // the resting recording (jump must NOT switch), and one that does not
+    // (jump must switch to its first targeted recording in stack order). The
+    // resting recording is the reference when the data allows it, else the
+    // first in stack order that does: on the VPO-2022 spine (2026-11-10)
+    // every adults annotation targets the reference.
     const picks = await page.evaluate(() => {
       const T = (window as any)._exhibitTest;
-      const ref = T.transport.activeFile as string;
+      const active = T.transport.activeFile as string;
       const earliest = (ann: any, f: string) => {
         const tg = (ann.targets || []).find((t: any) => t.file === f);
         if (!tg) return null;
@@ -1141,8 +1144,20 @@ test.describe('37. Playhead-driven focus', () => {
         return s;
       };
       const anns = T.exhibit.byAudience['adults'] || [];
-      const stayAnn = anns.find((a: any) => earliest(a, ref) != null);
-      const awayAnn = anns.find((a: any) => !(a.targets || []).some((t: any) => t.file === ref));
+      const order = T.exhibit.order as string[];
+      let ref = active;
+      let stayAnn: any = null;
+      let awayAnn: any = null;
+      for (const f of [active, ...order.filter((o) => o !== active)]) {
+        const s = anns.find((a: any) => earliest(a, f) != null);
+        const w = anns.find((a: any) => !(a.targets || []).some((t: any) => t.file === f));
+        if (s && w) {
+          ref = f;
+          stayAnn = s;
+          awayAnn = w;
+          break;
+        }
+      }
       let away = null;
       if (awayAnn) {
         const f = (T.exhibit.order as string[]).find((f) =>
@@ -1169,6 +1184,10 @@ test.describe('37. Playhead-driven focus', () => {
         const T = (window as any)._exhibitTest;
         return { file: T.transport.activeFile as string, time: T.transport.time as number };
       });
+    if ((await state()).file !== picks.ref) {
+      await page.evaluate((f) => (window as any)._exhibitTest.transport.select(f, 0), picks.ref);
+      await expect.poll(async () => (await state()).file).toBe(picks.ref);
+    }
 
     // Targeted recording already audible: jump seeks, does not switch.
     await page.click(`.vp[data-viewport="0"] .ann-chip[data-ann="${picks.stay!.id}"]`);

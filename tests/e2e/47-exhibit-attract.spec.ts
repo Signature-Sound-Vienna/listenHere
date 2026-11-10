@@ -610,8 +610,20 @@ test.describe('47. The attract loop', () => {
     expect((await attract(pageB)).started).toBe(false);
     // A's music ends: the room's gap, then the leader's pass from the top.
     await pageA.evaluate(() => ((window as any)._playing = false));
-    await pageA.evaluate((t) => (window as any)._exhibitTest.transport.seek(t), durations[order[1]] - 0.1);
-    await expect.poll(async () => (await attract(pageA))?.phase).toBe('gap');
+    // The jump to the end fires every switch point still ahead, and the last one
+    // may move the pass to another recording at the same musical moment, short
+    // of THAT recording's end (on the VPO-2022 spine, 2026-11-10: VPO-1951-1954's
+    // end is 516 s into VPO-2022, whose grid runs to 537 s). Real playback would
+    // play on to it; the quiet transport does not advance, so end whatever is
+    // audible until the pass is over.
+    await expect
+      .poll(async () => {
+        if ((await attract(pageA))?.phase === 'gap') return 'gap';
+        const f = await pageA.evaluate(() => (window as any)._exhibitTest.transport.activeFile as string);
+        await pageA.evaluate((t) => (window as any)._exhibitTest.transport.seek(t), durations[f] - 0.1);
+        return (await attract(pageA))?.phase;
+      })
+      .toBe('gap');
     await expect.poll(async () => (await attract(pageB))?.phase, { timeout: 3_000 }).toBe('gap');
     const [leader, follower] = (await attract(pageA)).leader ? [pageA, pageB] : [pageB, pageA];
     await expect.poll(async () => (await attract(leader)).started, { timeout: 8_000 }).toBe(true);

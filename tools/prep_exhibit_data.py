@@ -21,9 +21,10 @@ WHAT THIS ENCODES, and why — every one of these is a decision recorded in
 docs/exhibit-prototype-plan.md, not a preference:
 
 * **Times are RE-DERIVED from the HQ grid through canonical index PAIRS, never
-  copied.** Alignment indices are portable across re-alignments and times are not:
-  every grid is 29,121 entries whatever the preset, because the length is
-  score-determined (§5.2c). Only ONE time per region was ever authored — the rest
+  copied.** Alignment indices are portable across re-alignments ON ONE REFERENCE
+  and times are not: every grid is as long as the reference's frames (29,121 on
+  VPO-2010 until 2026-11-10; 26,844 on VPO-2022 since), whatever the preset
+  (§5.2c). A new reference needs `exhibit_annots_on_hq.py --reanchor`. Only ONE time per region was ever authored — the rest
   were mirrored through the grid — so re-deriving *improves* 15–18 times per
   region rather than damaging hand-work.
 * **Hand corrections travel INSIDE the HQ alignment, never beside it.** Fix mode
@@ -101,8 +102,23 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PIECE = "fledermaus"
 SCHEMA = "lh-exhibit-payload/1"
 
+# The spine since 2026-11-10: the corrected score alignment re-based onto Eulenburg
+# 2f44c21 (the sectioned MEI), reference VPO-2022, with the audio-to-audio grids of
+# the eleven recordings it lacked spliced in from Fledermaus-all-fixed.json (same
+# reference, identical reference grid; see its header.additions[].splicedFrom). A
+# new reference makes every old index meaningless, so the audience sources are
+# Chanda's sets RE-ANCHORED onto it (tools/exhibit_annots_on_hq.py --reanchor
+# --out-dir ExhibitAnnots/on-hq-2026-11-10), as for the Pizzicato-Polka; AUTHORED
+# names her originals, which that tool reads. Its own name, not a replacement of
+# Alignment_Fledermaus_HQ.json: ExhibitAnnots/ is shared with checkouts whose
+# pairs table still describes the September spine (VPO-2010, 29,121 frames).
 SOURCES = {
-    "hq": "Alignment_Fledermaus_HQ.json",
+    "hq": "Alignment_Fledermaus_HQ.2026-11-10.json",
+    "kids": "on-hq-2026-11-10/Fledermaus_Kids_on_HQ.json",
+    "adults": "on-hq-2026-11-10/Fledermaus_Adults_on_HQ.json",
+    "expert": "on-hq-2026-11-10/Fledermaus_Expert_on_HQ.json",
+}
+AUTHORED = {
     "kids": "Alignment_Fledermaus_Kids.json",
     "adults": "Alignment_Fledermaus_Adults.json",
     "expert": "Alignment_Fledermaus_Expert.json",
@@ -122,7 +138,7 @@ AUDIENCES = ["kids", "adults", "expert"]
 #                  (Q3): 239 characters that had nowhere to appear.
 # TEN IS A CAP, NOT A TARGET. Adding an eleventh needs the author, not this file.
 CURATED = [
-    "VPO-2010.wav",  # the reference, and the slowest
+    "VPO-2010.wav",  # the slowest; the reference until 2026-11-10 (now VPO-2022), kept first so the wall's order holds
     "VPO-1951-1954.wav",
     "VPO-1987.wav",  # NB: the plain file is the 48 kHz one; both alternate 1987 releases are 44.1
     "VPO-1989.wav",
@@ -135,19 +151,27 @@ CURATED = [
 ]
 
 # plan §5.2c — the durable artifact of the re-alignment analysis. Asserted below.
+# On the VPO-2022 grid (26,844 frames), voted by --reanchor 2026-11-10 from the
+# authored seconds; the vote and every residual are in
+# ExhibitAnnots/on-hq-2026-11-10/annots-on-hq-report.md. FLAG = some target lands
+# more than 0.5 s from its authored time: an ear check, not yet a correction.
+# The September table (VPO-2010 grid, 29,121 frames) is in git history.
 CANONICAL_PAIRS = {
-    "rgn_ms4sh8ta_2": (2755, 3450),   # Adults, "Die Glocke"
-    "rgn_ms4su3uj_4": (5266, 7805),   # Adults, Keeping time
-    "rgn_msu6vl9p_2": (8835, 9794),   # Adults, The Viennese Lilt
-    "rgn_msvors30_2": (705, 711),     # Expert, D or E? (a) — NEEDS HAND-PLACEMENT (§5.2d)
-    "rgn_msvos2fy_3": (432, 894),     # Expert, D or E? (b)
-    "rgn_msvpcupp_5": (12772, 13933),  # Expert, Oboe Solos (a)
-    "rgn_msvpd6fv_6": (14990, 15582),  # Expert, Oboe Solos (b)
-    "rgn_msvqekba_8": (8564, 9414),   # Expert, Agogic and "Schwung"
-    "rgn_mrxebibu_3": (26315, 29120),  # Kids, Clapping Detective
-    "rgn_mrxej01r_5": (2843, 2866),   # Kids, Lonely Bell (a)
-    "rgn_mrxeqqiz_6": (2755, 3420),   # Kids, Lonely Bell (b)
-    "rgn_ms4gs23a_2": (25280, 26589),  # Kids, Rollercoaster Ending
+    "rgn_ms4sh8ta_2": (3068, 3717),    # Adults, "Die Glocke" — FLAG 0.65 s
+    "rgn_ms4su3uj_4": (5425, 7771),    # Adults, Keeping time
+    "rgn_msu6vl9p_2": (8734, 9673),    # Adults, The Viennese Lilt
+    "rgn_msvors30_2": (990, 1005),     # Expert, D or E? (a) — NEEDS HAND-PLACEMENT (§5.2d)
+    "rgn_msvos2fy_3": (747, 1175),     # Expert, D or E? (b) — FLAG 1.05 s
+    "rgn_msvpcupp_5": (12468, 13663),  # Expert, Oboe Solos (a) — FLAG 1.28 s
+    "rgn_msvpd6fv_6": (14622, 15235),  # Expert, Oboe Solos (b)
+    "rgn_msvqekba_8": (8481, 9296),    # Expert, Agogic and "Schwung"
+    # Its one target, VPO-1989, claps from 7:46.8 to 8:44.4: past the music, so
+    # past the end of the VPO-2022 grid, whose last frame reaches only 7:51.5 of
+    # it. No pair can say this; it needs a hand-placed override.
+    "rgn_mrxebibu_3": (25366, 26843),  # Kids, Clapping Detective — FLAG 52.85 s
+    "rgn_mrxej01r_5": (3133, 3181),    # Kids, Lonely Bell (a) — FLAG 0.66 s
+    "rgn_mrxeqqiz_6": (3068, 3691),    # Kids, Lonely Bell (b)
+    "rgn_ms4gs23a_2": (24265, 25797),  # Kids, Rollercoaster Ending — FLAG 0.81 s
 }
 
 # Zero-length regions: a re-derive cannot repair one, and drawing it would put an
@@ -323,7 +347,7 @@ PIECES = {
 
 def apply_piece(name):
     """Rebind the module's piece constants to PIECES[name]; the default stays put."""
-    global PIECE, SOURCES, AUDIENCES, CURATED, CANONICAL_PAIRS, NEEDS_HAND_PLACEMENT
+    global PIECE, SOURCES, AUTHORED, AUDIENCES, CURATED, CANONICAL_PAIRS, NEEDS_HAND_PLACEMENT
     global WAV_DIR, AUDIO_SUBDIR, PIECE_TITLE, PIECE_COMPOSER, PIECE_OPUS
     global DEFAULT_SRC_DIR, ALIGNMENT_IS_HQ, DEGENERATE_REGIONS, OVERRIDES_FILE
     spec = PIECES[name]
@@ -334,6 +358,7 @@ def apply_piece(name):
     # across pieces, so sharing it would only produce "unknown annotation" noise.
     OVERRIDES_FILE = f"{name}-overrides.json"
     SOURCES = dict(spec["sources"])
+    AUTHORED = dict(spec.get("authored", {}))
     AUDIENCES = list(spec["audiences"])
     CURATED = list(spec["curated"])
     CANONICAL_PAIRS = dict(spec["pairs"])

@@ -495,7 +495,7 @@ def main():
 
     # A piece whose audience sources ARE this tool's output names its authored
     # originals separately, so a re-run reads Chanda's files, not its own.
-    authored = (prep.PIECES.get(args.piece) or {}).get("authored") or {}
+    authored = prep.AUTHORED
     out_dir = args.out_dir or os.path.join(args.src_dir, "on-hq")
     os.makedirs(out_dir, exist_ok=True)
     notes = []

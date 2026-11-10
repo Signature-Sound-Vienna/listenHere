@@ -112,18 +112,25 @@ test.describe('34. The exhibit loader', () => {
 
   // 34.2 The grids that align-core needs are exactly the payload's own times
   // arrays — nothing resampled, nothing re-keyed on the way into `data.grids`.
-  test('34.2 populates data.grids from the payload, one 29,121-entry array per recording', async ({
+  // A grid is as long as the reference's frames (29,121 on VPO-2010 until
+  // 2026-11-10, 26,844 on VPO-2022 since), so the length is asserted against
+  // the reference's own grid rather than a constant.
+  test('34.2 populates data.grids from the payload, one array per recording, as long as the reference grid', async ({
     page,
   }) => {
     const { order } = await boot(page);
-    const grids = await page.evaluate(() => {
+    const { grids, refLen } = await page.evaluate(() => {
       const T = (window as any)._exhibitTest;
-      return Object.fromEntries(
-        Object.entries(T.data.grids).map(([k, v]: [string, any]) => [k, v.length]),
-      );
+      return {
+        grids: Object.fromEntries(
+          Object.entries(T.data.grids).map(([k, v]: [string, any]) => [k, v.length]),
+        ),
+        refLen: T.data.grids[T.exhibit.piece.ref]?.length,
+      };
     });
     expect(Object.keys(grids).sort()).toEqual([...order].sort());
-    for (const len of Object.values(grids)) expect(len).toBe(29121);
+    expect(refLen).toBeGreaterThan(20000);
+    for (const len of Object.values(grids)) expect(len).toBe(refLen);
   });
 
   // 34.3 THE REGRESSION TEST — see the file header. A collapsed region has

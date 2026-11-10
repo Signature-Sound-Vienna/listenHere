@@ -39,6 +39,9 @@ const CATEGORY_LABELS = {
 /** Panel labels for the views, the toolbar switch's own wording (strings.js `view.*`). */
 const VIEW_LABELS = { listen: "Listen", years: "Year by year", conductors: "Conductors" };
 
+/** Panel labels for the pieces (the payloads' own titles). */
+const PIECE_LABELS = { fledermaus: "Die Fledermaus", kaiserwalzer: "Kaiser-Walzer", pizzicato: "Pizzicato-Polka" };
+
 // Every param carries a `hint` — the 1–2-sentence explanation behind its
 // header (user, 2026-08-27). Rendered as a title tooltip for a desktop hover
 // AND as a tap-to-toggle line under the row, because the panel's real home is
@@ -402,8 +405,17 @@ const TABS = [
   {
     id: "misc",
     label: "Misc",
-    hint: "Focus and reading behaviour, tap semantics, the marker, and kiosk readiness.",
+    hint: "The piece, focus and reading behaviour, tap semantics, the marker, and kiosk readiness.",
     params: [
+      // The prepped payloads in data/ (tools/prep_exhibit_data.py --piece); a new
+      // piece is one more option here.
+      {
+        key: "piece",
+        label: "Piece",
+        options: ["fledermaus", "kaiserwalzer", "pizzicato"],
+        display: (v) => PIECE_LABELS[v] || String(v),
+        hint: "Which piece the table loads: its recordings, annotations, and score. The attract loop's cycle between pieces is ?attractPieces= in the URL, not a row here.",
+      },
       // The tour (roadmap 27; museum feedback 2026-09-22: the interface is
       // still confusing for anyone who has not lived in it).
       {

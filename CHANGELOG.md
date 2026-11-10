@@ -1,5 +1,9 @@
 # Listen Here! CHANGELOG.md
 
+### 0.123.0 -- A Piece toggle in the study panel
+* The study panel's Misc tab starts with a Piece row (Die Fledermaus, Kaiser-Walzer, Pizzicato-Polka), which sets `?piece=` and reloads like every other row.
+* Testing: spec 35 passed 30 of 30 on Chromium; the toggle was checked in the browser, booting Kaiser-Walzer with no console errors.
+
 ### 0.122.0 -- The Kaiser-Walzer carries Chanda's nine annotations
 * The exhibit's Kaiserwalzer spine is the body Chanda authored her three sets on (reference VPO-2021, balanced preset, open ends), and the sets are prep's audience sources. Every region is a clean projection on it, so its nine index pairs are hers, without re-anchoring.
 * The score, sections, and MEI are borrowed from `alignment-fast.json` (`SOURCES["score"]`), which shares the reference grid exactly; prep asserts that. The 20 sections are unchanged.

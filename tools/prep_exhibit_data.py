@@ -702,8 +702,8 @@ def apply_overrides(annotations, overrides, warnings, corrections=None):
     corrected = (corrections or {}).get("audio") or {}
     index = {a["id"]: a for a in annotations}
     for ann_id, regions in (overrides or {}).items():
-        if ann_id.startswith("_") or ann_id == "reveal":
-            continue  # a note key, or the reveal list (apply_reveal), not times
+        if ann_id.startswith("_") or ann_id in ("reveal", "sectionLabels"):
+            continue  # a note key, the reveal list, or the section labels — not times
         ann = index.get(ann_id)
         if ann is None:
             warnings.add("override-unknown-annotation", f"overrides name {ann_id}, which is absent")
@@ -842,6 +842,129 @@ def describe_corrections(summary):
     return text
 
 
+# ------------------------------------------------------------------------ sections
+# The MEI's <section> tree, placed on the HQ grid (roadmap 28: the section
+# ribbon). Two halves, joined by measure xml:id:
+#   * the TREE comes from the pinned MEI, read here — ids, nesting, bar numbers,
+#     and a label from the overrides file's `sectionLabels` or the MEI's @label;
+#   * the TIMES come from tools/mei_measure_times.mjs — Verovio's measure
+#     quarters mapped to reference seconds by engine/time-map.js — because this
+#     script has no Verovio and a second copy of that chain is how two consumers
+#     start disagreeing about when a bar begins. The tool also REFUSES an MEI
+#     whose onset quarters differ from the alignment's score, which is the
+#     guard against a pinned MEI that drifted from the alignment.
+# Each section becomes an index PAIR on the reference grid, like a region: the
+# exhibit reads recordings[file].times[ix], so every recording's section times
+# come from the same grids as everything else on the wall. A section ends where
+# the next measure in document order starts; the last one at the alignment's
+# latest note-off.
+MEI_NS = "{http://www.music-encoding.org/ns/mei}"
+XML_ID = "{http://www.w3.org/XML/1998/namespace}id"
+
+
+def read_section_tree(mei_path):
+    """[(section element, depth, parent id)] in document order, plus every
+    measure id in document order. Endings count as sections (a volta is a span
+    a reader may want to see), with their own nesting."""
+    import xml.etree.ElementTree as ET
+
+    root = ET.parse(mei_path).getroot()
+    body = next(root.iter(MEI_NS + "body"), None)
+    if body is None:
+        return [], []
+    found = []
+
+    def walk(el, depth, parent):
+        for child in el:
+            tag = child.tag if isinstance(child.tag, str) else ""
+            if tag in (MEI_NS + "section", MEI_NS + "ending"):
+                found.append((child, depth, parent))
+                walk(child, depth + 1, child.get(XML_ID))
+            elif tag != MEI_NS + "measure":
+                walk(child, depth, parent)
+
+    walk(body, 0, None)
+    measure_ids = [m.get(XML_ID) for m in body.iter(MEI_NS + "measure")]
+    return found, measure_ids
+
+
+def measure_times(alignment_path, mei_path, warnings):
+    """Run tools/mei_measure_times.mjs; None (with a warning) when it cannot."""
+    if not shutil.which("node"):
+        warnings.add("no-node", "node is not on PATH; the payload gets no sections")
+        return None
+    r = subprocess.run(
+        ["node", "--no-warnings", os.path.join(REPO, "tools/mei_measure_times.mjs"),
+         "--alignment", alignment_path, "--mei", mei_path],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        # Verovio's own chatter goes to stderr too; the refusal is its last lines.
+        tail = " | ".join(r.stderr.strip().splitlines()[-4:])
+        warnings.add("sections-failed", f"mei_measure_times.mjs refused: {tail}")
+        return None
+    return json.loads(r.stdout)
+
+
+def build_sections(args, sets, overrides, warnings):
+    hq = sets["hq"]
+    if not (hq["body"].get("score") or {}).get("score_onset"):
+        log("  sections: none — the alignment is not score-aligned")
+        return None
+    mei_path = os.path.join(args.data_dir, f"{PIECE}.mei")
+    if not os.path.exists(mei_path):
+        warnings.add("no-sections", f"{mei_path} is not pinned yet; run --steps mei")
+        return None
+    tree, measure_ids = read_section_tree(mei_path)
+    if not tree:
+        log("  sections: none — the MEI has no <section>")
+        return None
+    timed = measure_times(os.path.join(args.src_dir, SOURCES["hq"]), mei_path, warnings)
+    if timed is None:
+        return None
+    ref_sec = {m["id"]: m["refSec"] for m in timed["measures"]}
+    missing = [mid for mid in measure_ids if mid not in ref_sec]
+    if missing:
+        warnings.add("sections-measure-untimed",
+                     f"{len(missing)} measure(s) have no timemap entry, e.g. {missing[:3]}")
+        return None
+    position = {mid: i for i, mid in enumerate(measure_ids)}
+    ref_grid = hq["body"]["audio"][hq["header"]["ref"]]["times"]
+    labels = (overrides or {}).get("sectionLabels") or {}
+
+    out, unlabelled = [], []
+    for el, depth, parent in tree:
+        sid = el.get(XML_ID)
+        bars = [m for m in el.iter(MEI_NS + "measure")]
+        if not bars:
+            warnings.add("section-empty", f"section {sid} holds no measure")
+            continue
+        first, last = bars[0].get(XML_ID), bars[-1].get(XML_ID)
+        after = position[last] + 1
+        start = ref_sec[first]
+        end = ref_sec[measure_ids[after]] if after < len(measure_ids) else timed["end"]["refSec"]
+        label = lang_map(labels.get(sid)) or lang_map(el.get("label"))
+        if label is None:
+            unlabelled.append(sid)
+        out.append({
+            "id": sid,
+            "parent": parent,
+            "level": depth,
+            "label": label,
+            "bars": [bars[0].get("n"), bars[-1].get("n")],
+            "indexPair": [closest_ix(ref_grid, start), closest_ix(ref_grid, end)],
+        })
+    if unlabelled:
+        warnings.add("section-labels-missing",
+                     f"{len(unlabelled)} of {len(out)} section(s) have no label (overrides "
+                     f"`sectionLabels` or MEI @label); the exhibit falls back to the xml:id",
+                     sections=unlabelled)
+    by_level = Counter(s["level"] for s in out)
+    log(f"  sections: {len(out)} ({', '.join(f'level {k}: {v}' for k, v in sorted(by_level.items()))}); "
+        f"quarters {timed['quarters']['rendered']}/{timed['quarters']['aligned']} match; "
+        f"Verovio {timed['toolkit']}")
+    return {"toolkit": timed["toolkit"], "list": out}
+
+
 def step_payload(args, sets, warnings):
     log("payload:")
     verify_pairs(sets, warnings)
@@ -853,8 +976,8 @@ def step_payload(args, sets, warnings):
     os.makedirs(args.data_dir, exist_ok=True)
     hq_header = sets["hq"]["header"]
     corrections = summarise_corrections(hq_header.get("corrections"))
+    overrides_path = os.path.join(args.data_dir, OVERRIDES_FILE)
     if AUDIENCES:
-        overrides_path = os.path.join(args.data_dir, OVERRIDES_FILE)
         if NEEDS_HAND_PLACEMENT:
             # The seed documents the D-or-E slot; another piece gets no template
             # until it has a region that needs one.
@@ -865,8 +988,14 @@ def step_payload(args, sets, warnings):
         pending_hand_placement(annotations, warnings)
     else:
         # Nothing to hand-place without annotations; seeding the D-or-E slot for
-        # a piece that has no "D or E?" would be a lie in a committed file.
+        # a piece that has no "D or E?" would be a lie in a committed file. An
+        # existing file may still carry section labels.
+        overrides = load_overrides(overrides_path, warnings)
         log("  overrides: none — this piece has no annotation sets")
+    sections = build_sections(args, sets, overrides, warnings)
+    mei_path = os.path.join(args.data_dir, f"{PIECE}.mei")
+    mei_sha = sha256_file(mei_path) if os.path.exists(mei_path) else None
+    pin = mei_pin(hq_header)
     log(f"  corrections: {describe_corrections(corrections)}")
     if not ALIGNMENT_IS_HQ:
         warnings.add("alignment-not-hq",
@@ -883,7 +1012,9 @@ def step_payload(args, sets, warnings):
             "opus": PIECE_OPUS,  # None is a fact for Die Fledermaus — see PIECE_OPUS
             "ref": hq_header.get("ref"),
             "meiUri": f"./{PIECE}.mei",
-            "meiSource": hq_header.get("meiUri"),
+            "meiSource": pin["uri"],
+            "meiCommit": pin["commit"],
+            "meiSha256": mei_sha,
         },
         "source": {
             "generatedBy": f"tools/prep_exhibit_data.py ({os.path.basename(__file__)})",
@@ -896,6 +1027,7 @@ def step_payload(args, sets, warnings):
         },
         "recordings": recordings,
         "annotations": annotations,
+        "sections": sections,
         "score": sets["hq"]["body"].get("score") if args.with_score else None,
         "warnings": list(warnings),
     }
@@ -908,16 +1040,56 @@ def step_payload(args, sets, warnings):
 
 
 # ---------------------------------------------------------------------------- mei
+def sha256_file(path):
+    import hashlib
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def mei_pin(header):
+    """Which MEI the alignment was made against, as precisely as the header says.
+
+    `meiUri` names a BRANCH (raw …/main/… or …/refs/heads/main/…), and a branch
+    moves: Eulenburg's Fledermaus gained sections, meter signatures, and a tempo
+    reset in November 2026, after the HQ alignment of September was made against
+    6b6f774. A correcting session that re-bases the alignment (0.115.0) records
+    the commit it re-based onto in `header.rebased.ontoMei.commit`; when present,
+    the raw URL is rewritten to that commit, so a re-run fetches the score the
+    alignment matches rather than whatever the branch holds today. `meiSha256`
+    (0.115.0's stamp) is checked when present.
+    """
+    uri = header.get("meiUri")
+    commit = ((header.get("rebased") or {}).get("ontoMei") or {}).get("commit")
+    m = re.match(r"(https://raw\.githubusercontent\.com/[^/]+/[^/]+/)(refs/heads/[^/]+|[^/]+)/(.+)$",
+                 uri or "")
+    if commit and m:
+        uri = f"{m.group(1)}{commit}/{m.group(3)}"
+    return {"uri": uri, "commit": commit if (commit and m) else None,
+            "sha256": header.get("meiSha256")}
+
+
 def step_mei(args, sets, warnings):
     log("mei:")
-    uri = sets["hq"]["header"].get("meiUri")
+    pin = mei_pin(sets["hq"]["header"])
+    uri = pin["uri"]
     out = os.path.join(args.data_dir, f"{PIECE}.mei")
     if not uri:
         warnings.add("no-mei-uri", "the HQ alignment has no header.meiUri")
         return
+    pinned = bool(pin["commit"] or pin["sha256"])
+    if not pinned:
+        warnings.add("mei-unpinned",
+                     f"the alignment names {uri}, a branch, with no commit or meiSha256; "
+                     f"the pinned MEI is trusted on the quarters check alone")
     if os.path.exists(out) and not args.force:
-        log(f"  {out} exists; --force to refetch")
-        return
+        if pin["sha256"] and sha256_file(out) == pin["sha256"]:
+            log(f"  {out} matches the alignment's meiSha256")
+            return
+        if not pinned:
+            log(f"  {out} exists; --force to refetch")
+            return
+        # A pinned alignment refetches every run: 5 MB is cheaper than finding
+        # out at the wall that the local file predates a re-based alignment.
     os.makedirs(args.data_dir, exist_ok=True)
     # The kiosk has no network, so the MEI must be a local file, not a URL.
     import urllib.request
@@ -930,6 +1102,19 @@ def step_mei(args, sets, warnings):
     if b"<mei" not in body[:4000] and b"<music" not in body[:4000]:
         warnings.add("mei-not-mei", f"{uri} returned {len(body)} bytes with no MEI root")
         return
+    if pin["sha256"]:
+        import hashlib
+        got = hashlib.sha256(body).hexdigest()
+        if got != pin["sha256"]:
+            warnings.add("mei-sha-mismatch",
+                         f"{uri} hashes to {got[:12]}…, the alignment stamps "
+                         f"{pin['sha256'][:12]}…; not written")
+            return
+    if os.path.exists(out):
+        with open(out, "rb") as fh:
+            if fh.read() == body:
+                log(f"  {out} already holds {uri}")
+                return
     with open(out, "wb") as fh:
         fh.write(body)
     log(f"  pinned {uri} -> {out} ({len(body) / 1024:.0f} KB)")
@@ -1020,10 +1205,11 @@ def main():
     log(f"reading {args.src_dir}")
     sets = load_sources(args.src_dir)
 
-    if "payload" in args.steps:
-        step_payload(args, sets, warnings)
+    # mei BEFORE payload: the payload's sections are read from the pinned MEI.
     if "mei" in args.steps:
         step_mei(args, sets, warnings)
+    if "payload" in args.steps:
+        step_payload(args, sets, warnings)
     if "audio" in args.steps:
         step_audio(args, sets, warnings)
 

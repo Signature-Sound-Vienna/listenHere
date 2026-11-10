@@ -68,7 +68,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
@@ -76,10 +75,10 @@ import {
   tickToSec,
   synthToWav,
 } from "../app/static/js/engine/mei-synth.js";
-import { buildTimeMap, dedupePairs } from "../app/static/js/engine/time-map.js";
+import { buildTimeMap } from "../app/static/js/engine/time-map.js";
+import { initVerovio, applyProvenance, checkOnsetQuarters } from "./verovio_node.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const VEROVIO_PATH = path.join(ROOT, "app/static/js/verovio-toolkit-wasm.js");
 const MAX_TEMPO = 0xffffff; // 24-bit µs per quarter ≈ 16.777 s
 const CLAMP_REPORT_S = 0.001; // residual beyond this marks a catch-up zone
 
@@ -145,63 +144,7 @@ function usage() {
   console.log(header);
 }
 
-// ---------------------------------------------------------------------------
-// Verovio (vendored toolkit, native in Node: require + construct-poll — 6.x
-// exposes no calledRun, so readiness is probed by constructing the toolkit)
-// ---------------------------------------------------------------------------
-
-async function initVerovio() {
-  const require = createRequire(import.meta.url);
-  const verovio = require(VEROVIO_PATH);
-  const started = Date.now();
-  for (;;) {
-    try {
-      return new verovio.toolkit();
-    } catch (_) {
-      if (Date.now() - started > 30000)
-        throw new Error("Verovio failed to initialise within 30 s");
-      await new Promise((r) => setTimeout(r, 50));
-    }
-  }
-}
-
-/**
- * Honour the alignment's Verovio provenance stamps: configure the live
- * toolkit to the stamped semantics and report what was decided. An absent
- * options stamp reads as pre-Verovio-6 no-expansion semantics (pinned via
- * expandNever); a stamped expansion is applied verbatim. The version stamp
- * is advisory — the behavioural quarters check below is decisive.
- */
-function applyProvenance(header, tk) {
-  const notes = [];
-  const stampVer = header.verovioVersion || null;
-  const stampOpts = header.verovioOptions || null;
-  let options = { expandNever: true };
-  if (stampOpts && (stampOpts.expand || stampOpts.expandAlways)) {
-    options = {};
-    if (stampOpts.expand) options.expand = stampOpts.expand;
-    if (stampOpts.expandAlways) options.expandAlways = true;
-    notes.push(
-      `alignment was rendered WITH an expansion (${JSON.stringify(stampOpts)}) — applying it`,
-    );
-  } else if (!stampOpts) {
-    notes.push(
-      "no verovioOptions stamp — reading as pre-6 no-expansion semantics (expandNever)",
-    );
-  }
-  tk.setOptions(options);
-  const liveVer = tk.getVersion();
-  if (stampVer && !liveVer.startsWith(stampVer.split("-")[0])) {
-    notes.push(
-      `version stamp ${stampVer} differs from live toolkit ${liveVer} — relying on the quarters check`,
-    );
-  } else if (!stampVer) {
-    notes.push(
-      `no verovioVersion stamp (pre-0.37.0 alignment) — relying on the quarters check (live: ${liveVer})`,
-    );
-  }
-  return { notes, liveVersion: liveVer, appliedOptions: options };
-}
+// Verovio loading, provenance, and the quarters check: tools/verovio_node.mjs.
 
 // ---------------------------------------------------------------------------
 // SMF read/write (event-level pass-through; parseMidi only extracts notes and
@@ -633,36 +576,21 @@ async function main() {
   console.log(`  toolkit: ${prov.liveVersion}`);
 
   if (!tk.loadData(meiText)) throw new Error("Verovio could not parse the MEI");
-  const midiBase64 = tk.renderToMIDI();
-  if (!midiBase64) throw new Error("Verovio produced empty MIDI output");
-  const midiBytes = Uint8Array.from(Buffer.from(midiBase64, "base64"));
-  const { tpq, notes } = parseMidi(midiBytes);
+  // THE decisive provenance check: the fresh render's unique onset quarters
+  // must equal the alignment's deduplicated score_onset set.
+  const check = checkOnsetQuarters(tk, score);
+  const { midiBytes, tpq, notes, onsetTicks, misses } = check;
   const smf = readSmf(midiBytes);
   console.log(
     `Rendered MIDI: format ${smf.format}, ${smf.tracks.length} tracks, tpq ${tpq}, ${notes.length} notes`,
   );
-
-  // THE decisive provenance check: the fresh render's unique onset quarters
-  // must equal the alignment's deduplicated score_onset set.
-  const onsetTicks = [...new Set(notes.map((n) => n.s))].sort((a, b) => a - b);
-  const renderedQ = onsetTicks.map((t) => t / tpq);
-  const alignQ = dedupePairs(score.score_onset, score.ref_onset).xs;
-  const misses = [];
-  if (renderedQ.length !== alignQ.length)
-    misses.push(`count ${renderedQ.length} vs alignment ${alignQ.length}`);
-  else
-    for (let i = 0; i < renderedQ.length; i++)
-      if (Math.abs(renderedQ[i] - alignQ[i]) > 1e-9) {
-        misses.push(`index ${i}: rendered ${renderedQ[i]} vs ${alignQ[i]}`);
-        if (misses.length >= 5) break;
-      }
   if (misses.length) {
     const msg = `onset quarters do NOT match the alignment's score_onset set:\n  ${misses.join("\n  ")}`;
     if (!args.force) throw new Error(msg + "\n(--force to proceed anyway)");
     console.warn(`WARNING (forced past): ${msg}`);
   } else {
     console.log(
-      `Quarters check: ${renderedQ.length}/${alignQ.length} onset quarters match the alignment exactly`,
+      `Quarters check: ${check.rendered}/${check.aligned} onset quarters match the alignment exactly`,
     );
   }
 
@@ -722,7 +650,7 @@ async function main() {
     gaps: gapTicks.length,
     tpq,
     notes: notes.length,
-    onsets: renderedQ.length,
+    onsets: check.rendered,
     recordings: {},
   };
 

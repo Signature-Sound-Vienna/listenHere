@@ -1,5 +1,13 @@
 # Listen Here! CHANGELOG.md
 
+### 0.118.0 -- The exhibit payload carries the score's sections; the MEI is pinned to the alignment's commit
+* `tools/prep_exhibit_data.py` writes the MEI's `<section>` tree into the payload (`sections`): id, parent, level, bars, a label from the overrides file's `sectionLabels` or the MEI's `@label`, and an index pair on the reference grid, as regions have.
+* Bar times come from `tools/mei_measure_times.mjs`: Verovio's measure quarters mapped to reference seconds by `engine/time-map.js`. It refuses an MEI whose onset quarters differ from the alignment's score.
+* The MEI step fetches the commit a re-based alignment names (`header.rebased.ontoMei.commit`) rather than the branch, checks `header.meiSha256` when present, refetches on every run when pinned, and warns when only a branch is known. It now runs before the payload step.
+* The payload records `meiCommit` and `meiSha256`.
+* `tools/verovio_node.mjs`: Verovio loading, provenance, and the quarters check, moved out of `make_standins.mjs` and shared.
+* Testing: 41.15 passes; a payload rebuilt from the current sources matches the live one in recordings, annotations, and score.
+
 ### 0.116.0 -- Answers behind a card: a quiz's per-recording notes peel off
 * `?reveal=peel`: a flagged annotation's per-recording note, its answer, lies under a "Show answer" card. A tap peels it off; a drag peels it under the finger, in either reader's half. Released short of the finish, it springs back.
 * A covered answer keeps one height whatever its length. Peeled stays peeled for that recording, and the attract loop's sweep covers every answer again.

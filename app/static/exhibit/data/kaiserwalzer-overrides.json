@@ -1,0 +1,93 @@
+{
+  "_README": [
+    "Editorial overrides for the Kaiser-Walzer. AUTHORITY: this file wins over the author's sets,",
+    "and tools/prep_exhibit_data.py applies it LAST and never rewrites it.",
+    "'texts' (2026-11-10): Chanda's fixes to her own texts, kept here because her sets are",
+    "gitignored and a hand edit there is lost on re-export. Shape: { annotationId: { 'label':",
+    "[[find, replace], ...], 'description': [...], 'targets': { 'recording.wav': [...] } } },",
+    "each a substring replace on the English text, in order. A find that no longer matches",
+    "warns (text-override-unmatched): the source is fixed, so retire that line. Fixes on targets",
+    "outside the curated ten are kept, noted, and skipped, in case the curation changes.",
+    "Times, if any are ever hand-placed: { annotationId: { regionId: { 'recording.wav': {start, end} } } }."
+  ],
+  "texts": {
+    "ann_mw0kxmyl_3": {
+      "_note": "Expert / cello solo. The (?) is deliberate: the trend is not 1-to-1 by year (Chanda).",
+      "label": [["The lengthening (?) cello solo NB: ADD 1946 VPO to this!!!", "The lengthening (?) cello solo"]],
+      "targets": {
+        "VPO-1963-1979 (DVD 1).wav": [["it could still can be conducted through", "it could still be conducted through"]],
+        "VPO-2008.wav": [["under Pretre", "under Prêtre"]]
+      }
+    },
+    "ann_mw0lt7a6_5": {
+      "_note": "Expert / Waltz 2 repeat. Option A drops VPO-2008: three concerts, not four.",
+      "label": [["Which recording stake the second waltz's repeat?", "Which recordings take the second waltz's repeat?"]],
+      "description": [["Compare the four most recent iterations.", "Compare these three recent concerts."]],
+      "targets": {
+        "VPO-2003.wav": [["one only two recordings", "one of only two recordings"]],
+        "VPO-2008.wav": [["Pretre does not need", "Prêtre does not need"]]
+      }
+    },
+    "ann_mw0k1nne_1": {
+      "_note": "Expert / Prussian boots.",
+      "description": [
+        ["bein less jackbooted", "being less jackbooted"],
+        ["listen carefully to Berlin Philharmonic", "listen carefully to the Berlin Philharmonic"]
+      ],
+      "targets": {
+        "VPO-1963-1979 (DVD 1).wav": [["one of the  most thunderous version of", "one of the most thunderous versions of"]],
+        "VPO-2016.wav": [["agressive", "aggressive"], ["Janson's 2016", "Jansons's 2016"]]
+      }
+    },
+    "ann_mw0qafkk_7": {
+      "_note": "Adults / 41 years apart.",
+      "targets": {
+        "VPO-1987.wav": [["begininning", "beginning"]]
+      }
+    },
+    "ann_mw0qwjtm_11": {
+      "_note": "Adults / the dancer's shortcut.",
+      "targets": {
+        "Furtwängler_VPO_1950-01-24.wav": [["Furtfängler", "Furtwängler"]]
+      }
+    },
+    "ann_mw0qlgql_9": {
+      "_note": "Adults / who tunes higher. Option A drops Falk: two recordings, not three.",
+      "description": [[
+        "Listen to these three recordings made within the same six years: Which one sounds less high and bright than the others?",
+        "Listen to these two recordings made two years apart: Which one sounds less high and bright than the other?"
+      ]],
+      "targets": {
+        "1984_Berliner Philharmoniker, Karajan (Kaiser–Walzer).wav": [["sounds brighter than one of the others in this list", "sounds brighter than the other recording"]]
+      }
+    },
+    "ann_mw0rz3z3_14": {
+      "_note": "Kids / tip-toeing king. Option A drops Aebi and Eschwé: four versions, Böhm the one quick one.",
+      "description": [
+        ["In the other it moves like", "In others it moves like"],
+        ["Of the six versions of this march here, can you figure out which ones are the quicker ones?", "Of the four versions of this march here, can you figure out which one is the quickest?"]
+      ],
+      "targets": {
+        "VPO-2003.wav": [["at least two that are quite a bit quicker", "one that is quite a bit quicker"]],
+        "SächsischeStaatskapelleDresden_KarlBöhm_1939.wav": [
+          ["This emporer is very quiet", "This emperor is very quiet"],
+          [" Can you find the other emperor that is almost as quick?", ""]
+        ],
+        "New York Philharmonic, Leonard Bernstein (1982).wav": [[
+          "Oh, I think this actually one of the slowest emporers.. Keep trying, there are two who are MUCH quicker indeed!",
+          "Oh, I think this is actually one of the slowest emperors.. Keep trying, there is one who is MUCH quicker indeed!"
+        ]],
+        "VPO-1987.wav": [["This emporer actually", "This emperor actually"], ["quicker-stepping ones", "quicker-stepping one"]],
+        "ext-WJSO_2018_Eschwé.wav": [["emporer", "emperor"]]
+      }
+    },
+    "ann_mw0skuw9_16": {
+      "_note": "Kids / bells. 'Das Grosse Neujahrskonzert' IS Rieu's 2012 recording (the user, 2026-11-10).",
+      "targets": {
+        "Das Grosse Neujahrskonzert, mixed.wav": [["Rieu's 2013 orchestra", "Rieu's 2012 orchestra"]],
+        "K&K Philharmoniker, Kendlinger (2010).wav": [["orhcestra", "orchestra"]],
+        "Orchester der Wiener Volksoper, Peter Falk (1988), Vol. 2.wav": [["that Strauss wrote the piece!", "that Strauss wrote the piece for!"]]
+      }
+    }
+  }
+}

@@ -1,5 +1,12 @@
 # Listen Here! CHANGELOG.md
 
+### 0.122.0 -- The Kaiser-Walzer carries Chanda's nine annotations
+* The exhibit's Kaiserwalzer spine is the body Chanda authored her three sets on (reference VPO-2021, balanced preset, open ends), and the sets are prep's audience sources. Every region is a clean projection on it, so its nine index pairs are hers, without re-anchoring.
+* The score, sections, and MEI are borrowed from `alignment-fast.json` (`SOURCES["score"]`), which shares the reference grid exactly; prep asserts that. The 20 sections are unchanged.
+* The ten recordings are Chanda's choice: VPO 1987, 2003, 2016, and 2021, Karajan 1946, Böhm 1939, Das Grosse Neujahrskonzert (Rieu 2012), Kendlinger, Bernstein 1982, and Karajan 1984. Every question shows its answers.
+* A new `texts` key in the overrides file fixes annotation texts by find and replace, so the fixes survive a re-export of her sets; a find that no longer matches warns. `kaiserwalzer-overrides.json` carries her typo fixes and the three rewordings the new ten need.
+* Testing: 47.17 expects nine annotations. Specs 34–38, 45–48, and 50: 210 of 212 passed on Chromium; 38.6 and 38.8 failed on the intermittent "execution context destroyed" and spec 38 then passed alone 40 of 40. After the curation and texts, specs 34 and 47 passed 47 of 47. The Fledermaus payload rebuilds unchanged.
+
 ### 0.120.0 -- Die Fledermaus on the corrected alignment: reference VPO-2022, Chanda's regions re-anchored
 * The exhibit's Fledermaus spine is `ExhibitAnnots/Alignment_Fledermaus_HQ.2026-11-10.json`: the corrected score alignment re-based onto Eulenburg 2f44c21, with the grids of the eleven recordings it lacked spliced in from `Fledermaus-all-fixed.json`. `Alignment_Fledermaus_HQ.json` is left in place for checkouts on the September table.
 * The reference is VPO-2022 (26,844 frames; was VPO-2010, 29,121), so the exhibit starts on Barenboim 2022. The wall's recording order is unchanged.

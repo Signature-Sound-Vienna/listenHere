@@ -664,8 +664,8 @@ test.describe('47. The attract loop', () => {
   // 47.17 THE SECOND PIECE (ruling R6; 0.60.0). `?piece=kaiserwalzer` boots the
   // Kaiserwalzer payload (tools/prep_exhibit_data.py --piece kaiserwalzer — a
   // GENERATED, gitignored file like fledermaus.json and concerts.json, so a
-  // tree that runs this spec needs it built or copied): ten recordings, no
-  // annotations, and the band names the piece WITH its opus for the first
+  // tree that runs this spec needs it built or copied): ten recordings, Chanda's
+  // nine annotations (0.122.0), and the band names the piece WITH its opus for the first
   // time. With `attractPieces` the reload in the silence moves to the next piece.
   // 47.18 THE ROOM MACHINE, increment 1 (plan §4.4, planned 2026-09-11): under
   // ?room=shared the mirror is UNIVERSAL. A LIVE table — no loop configured, no
@@ -1106,7 +1106,7 @@ test.describe('47. The attract loop', () => {
     const piece = await page.evaluate(() => (window as any)._exhibitTest.exhibit.piece);
     expect(piece.id).toBe('kaiserwalzer');
     expect(piece.opus).toBe('op. 437');
-    expect(await page.evaluate(() => (window as any)._exhibitTest.exhibit.annotations.length)).toBe(0);
+    expect(await page.evaluate(() => (window as any)._exhibitTest.exhibit.annotations.length)).toBe(9);
     await expect(page.locator('.mb-piece-title').first()).toHaveText('Kaiser-Walzer, op. 437');
     // A recording the metadata sidecar has never met still gets a strip and a strap button.
     await expect(page.locator('.vp').first().locator('.strip')).toHaveCount(10);

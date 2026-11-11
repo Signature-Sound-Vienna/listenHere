@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.125.0 -- Firefox: the alignment worker no longer waits behind the recordings
+
+* Correction mode in Firefox on a plain-HTTP server (Flask's dev server) could hang at "Step 2/4: align runtime…" on an alignment with many recordings: the recordings held all 6 of Firefox's connections to the server, and the worker script's request waited for one indefinitely. It happened when the load-time prewarm was skipped, as for an alignment offered a re-base.
+* The worker script is now fetched once, as the page loads and before any recording, and correction mode, Add recordings, and the alignment wizard start their workers from that copy in memory.
+* Testing: 42.39 new; 17, 42, 52, and 57 pass (67); correction mode reaches ready on Fledermaus's re-base path in Chromium, and in Firefox at its default 6 connections (by hand: Playwright's Firefox cannot launch on macOS 27); the functional suite passes (671, 2 skipped).
+
 ### 0.115.2 -- Werkzeug 3.1.9
 
 * `requirements.txt`: Werkzeug 3.1.6 → 3.1.9 (GHSA-g6x2-hccm-hh4m: `safe_join` let Windows device names through, which only matters on Windows/NTFS).

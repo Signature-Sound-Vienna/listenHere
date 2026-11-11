@@ -12,6 +12,7 @@ import {
 } from "./engine/session-recovery.js";
 import { rememberUriInput } from "./uri-history.js";
 import { meiSha256 } from "./engine/score-rebase.js";
+import { alignWorkerSourceReady, createAlignWorker } from "./engine/align-worker-source.js";
 
 const TARGET_SR = 22050;
 
@@ -429,14 +430,11 @@ function updatePeakSizeEstimate() {
 /**
  * Called by the listen.js integration to supply the onComplete callback.
  * @param {Object} opts
- * @param {string}   opts.workerUrl  — URL to align-worker.js
  * @param {Function} opts.onComplete — called with (alignmentResult, selectedFiles)
  */
-let _workerUrl = "";
 let _onComplete = null;
 
-export function configure({ workerUrl, onComplete }) {
-  _workerUrl = workerUrl;
+export function configure({ onComplete }) {
   _onComplete = onComplete;
 }
 
@@ -518,7 +516,8 @@ async function startAlignment() {
   const currentOptions = readAdvancedParams();
   const meiUri = document.getElementById("align-mei-input").value.trim();
   const scoreMode = !!meiUri;
-  const worker = new Worker(_workerUrl);
+  await alignWorkerSourceReady();
+  const worker = createAlignWorker();
   const activeSteps = {};
   const pendingWaiters = new Map();
   let workerFailed = false;

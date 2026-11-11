@@ -18,6 +18,7 @@ import {
   peakCountOf,
   refSpanOf,
 } from "./engine/additions.js";
+import { alignWorkerSourceReady, createAlignWorker } from "./engine/align-worker-source.js";
 
 const AUDIO_EXTS = /\.(mp3|wav|ogg|flac|m4a|aac|wma|opus)$/i;
 const PARAM_KEYS = ["coarse", "slack", "featureRate"];
@@ -47,7 +48,6 @@ function _nfcFile(f) {
 
 /**
  * @param {object} deps
- * @param {string}   deps.workerUrl
  * @param {string}   deps.synthKey     body.audio key of the synthesised score
  * @param {Function} deps.getAlignment () => the loaded alignment JSON or null
  * @param {Function} deps.refSource    () => "session" | "fetch" | "pick":
@@ -284,7 +284,8 @@ async function _run() {
   const refName = json.header.ref;
   const params = _readParams();
   const openEndsByFile = Object.fromEntries(todo.map((p) => [p.file.name, p.openEnds]));
-  const worker = new Worker(_deps.workerUrl);
+  await alignWorkerSourceReady();
+  const worker = createAlignWorker();
   const waiters = new Map();
   const waitFor = (key) => new Promise((resolve, reject) => waiters.set(key, { resolve, reject }));
   let failed = null;

@@ -1859,4 +1859,37 @@ test.describe('42: alignment-correction fix mode (increment 2)', () => {
     );
     expect(await page.evaluate(() => (window as any).__realWorkers)).toBe(1);
   });
+
+  test('42.39 the worker script is fetched once, before any recording, and the worker starts from it in memory', async ({
+    page,
+  }) => {
+    // Firefox on an HTTP/1.1 server gives a host 6 connections, and the
+    // recordings' <audio> elements keep theirs: a worker script requested
+    // after them waited forever ("Step 2/4: align runtime…"). Chromium cannot
+    // reproduce the starvation, so this pins the order that prevents it.
+    const order: string[] = [];
+    page.on('request', (r) => {
+      const p = new URL(r.url()).pathname;
+      if (p.endsWith('/js/align-worker.js')) order.push('worker');
+      else if (/\.(mp3|wav|m4a|aac|ogg|flac)$/i.test(p)) order.push('audio');
+    });
+    await page.addInitScript(() => {
+      const W = window.Worker;
+      (window as any).__workerUrls = [];
+      (window as any).Worker = function (url: string, opts: any) {
+        (window as any).__workerUrls.push(String(url));
+        return new W(url, opts);
+      };
+    });
+    await gotoFixMode(page);
+    await page.waitForFunction(() => (window as any).__workerUrls.length > 0, undefined, {
+      timeout: 15_000,
+    });
+    expect(order).toContain('audio');
+    expect(order[0]).toBe('worker');
+    expect(order.filter((x) => x === 'worker')).toHaveLength(1);
+    expect(await page.evaluate(() => (window as any).__workerUrls)).toEqual([
+      expect.stringMatching(/^blob:/),
+    ]);
+  });
 });

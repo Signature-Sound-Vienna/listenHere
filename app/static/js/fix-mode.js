@@ -95,6 +95,7 @@ import {
   meiSha256,
 } from "./engine/score-rebase.js";
 import { updateTransportIcons } from "./engine/transport.js";
+import { alignWorkerUrl, createAlignWorker } from "./engine/align-worker-source.js";
 import { confirmDialog } from "./annotation/ui-common.js";
 import { recastAnnotationsToAlignment } from "./annotation/index.js";
 import * as v6UiState from "./annotation/ui-state.js";
@@ -9189,7 +9190,7 @@ function _ensureWorker() {
     _workerHasSession = false;
   }
   _workerFactory = factory;
-  _worker = (factory || ((url) => new Worker(url)))(window.root + "js/align-worker.js");
+  _worker = factory ? factory(alignWorkerUrl()) : createAlignWorker();
   return _worker;
 }
 

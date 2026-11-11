@@ -4169,7 +4169,6 @@ document.addEventListener("DOMContentLoaded", () => {
     if (alignPanel) {
       alignPanel.style.display = "flex";
       configureAlign({
-        workerUrl: root + "js/align-worker.js",
         onComplete: onAlignmentComplete,
       });
       initAlignPanel();
@@ -4178,7 +4177,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   // Manage recordings → Add Recordings (0.97.0)
   initAddRecordings({
-    workerUrl: root + "js/align-worker.js",
     synthKey: SYNTH_MEI_KEY,
     getAlignment: () => loadedAlignmentJSON,
     // In local-files mode the reference has no URL to fall back on: if its

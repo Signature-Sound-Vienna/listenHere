@@ -3,8 +3,8 @@ from flask import Flask
 
 app = Flask(__name__)
 
-app.config['VERSION'] = '0.125.0'
-app.config['VERSION_DATE'] = '5 November 2026'
+app.config['VERSION'] = '0.126.0'
+app.config['VERSION_DATE'] = '11 November 2026'
 app.config['VERSION_DATE_ISO'] = datetime.strptime(app.config['VERSION_DATE'], '%d %B %Y').strftime('%Y-%m-%d')
 
 @app.context_processor

@@ -102,6 +102,7 @@ SCORE_HOP  = SR // SCORE_FEATURE_RATE
 SCORE_N_FFT = 4096
 SCORE_DOWNSAMPLE = 2     # pool by this factor => coarse at 5 Hz
 ONSET_N_FFT = 1024       # short window (46 ms) for sharp onset detection
+ONSET_SMOOTH = 5         # moving-average width (frames) over the onset curve; 1 = off
 # (An ONSET_WEIGHT constant lived here until 0.59.0: build_score_features scaled
 # each chroma frame by 1 + weight × onset strength and L2-renormalised the
 # frame — which the per-frame normalisation cancelled exactly. Measured on
@@ -211,10 +212,14 @@ def compute_chroma_score(audio):
     return compute_chroma(audio, n_fft=SCORE_N_FFT, hop=SCORE_HOP)
 
 
-def compute_onset_strength(audio, hop=None):
+def compute_onset_strength(audio, hop=None, smooth=None):
     """Spectral-flux onset strength — fully streaming.
     Uses ONSET_N_FFT short window for temporal resolution; hop defaults to
     SCORE_HOP, overridable (the fix-mode lanes pass their own fine hop).
+    smooth: the centred moving average's width in frames (ONSET_SMOOTH;
+    1 = none). The average delays a peak, since an onset's flux rises
+    sharply and tails off: 5 frames at hop 512 put piano onsets ~25 ms late
+    against ~1 ms for 1 frame at hop 256 (measured 2026-11-11).
     Peak extra memory: 2 * ONSET_N_FFT/2 floats (current + prev frame).
     """
     n_fft = ONSET_N_FFT
@@ -247,8 +252,12 @@ def compute_onset_strength(audio, hop=None):
                 flux[cs + 1:ce] = diff.mean(axis=1)
         prev_frame = mag[-1].copy()
         del mag
-    kernel = np.ones(5, dtype=np.float32) / np.float32(5.0)
-    flux = np.convolve(flux, kernel, mode='same').astype(np.float32)
+    if smooth is None:
+        smooth = ONSET_SMOOTH
+    smooth = int(smooth)
+    if smooth > 1:
+        kernel = np.ones(smooth, dtype=np.float32) / np.float32(smooth)
+        flux = np.convolve(flux, kernel, mode='same').astype(np.float32)
     mx = flux.max()
     if mx > 1e-8:
         flux /= mx
@@ -1583,20 +1592,25 @@ def fix_begin_audio(ref_audio):
     _fix = {'ref': ref, 'ref_dur': len(ref) / SR}
     return {'n_events': 0, 'ref_duration': _fix['ref_dur']}
 
-def fix_ref_onsets():
+def fix_ref_onsets(hop=None, smooth=None):
     """The reference's detected onsets — the tick set of a score-less session —
-    with one perceived attack per onset (index-aligned). Always at LANE_HOP,
-    never the lane display's configurable hop, so the ticks (and the anchors
-    keyed by their times) do not move when the user re-configures the lanes."""
+    with one perceived attack per onset (index-aligned). At LANE_HOP and
+    ONSET_SMOOTH unless the client passes the onset-detector trial's values
+    (which it does only for a session with no saved anchors), never the lane
+    display's configurable hop, so the ticks (and the anchors keyed by them)
+    do not move when the user re-configures the lanes."""
     if _fix is None:
         raise RuntimeError('fix_ref_onsets before fix_begin')
+    hop = LANE_HOP if hop is None else int(hop)
+    smooth = ONSET_SMOOTH if smooth is None else int(smooth)
     ref = _fix['ref']
-    onset = compute_onset_strength(ref, hop=LANE_HOP)
-    peaks = pick_onset_peaks(onset, LANE_HOP)
+    onset = compute_onset_strength(ref, hop=hop, smooth=smooth)
+    peaks = pick_onset_peaks(onset, hop)
     return {
-        'hop': LANE_HOP,
+        'hop': hop,
+        'smooth': smooth,
         'peaks': [float(t) for t in peaks],
-        'pat': [float(t) for t in perceptual_attack_times(ref, peaks, LANE_HOP)],
+        'pat': [float(t) for t in perceptual_attack_times(ref, peaks, hop)],
     }
 
 def _fix_features(audio, lo_sec, hi_sec, hop):
@@ -1978,7 +1992,7 @@ def perceptual_attack_times(audio, peaks, hop):
         out.append(float(centres[k] + frac * (centres[k + 1] - centres[k])))
     return out
 
-def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, what='all', scale='mel', which='ref'):
+def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, what='all', scale='mel', which='ref', smooth=None):
     """The v2 lanes for the current correction session: the band spectrogram
     (user-configurable FFT size, window, hop, bands, frequency scale) and —
     unless what == 'mel', a configuration change — the fine-hop onset curve of
@@ -1996,6 +2010,7 @@ def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, wh
     else:
         ref = _fix['ref']
     onset_hop = LANE_HOP if hop is None else int(hop)
+    smooth = ONSET_SMOOTH if smooth is None else int(smooth)
     n_mels = LANE_N_MELS if n_mels is None else int(n_mels)
     n_fft = LANE_N_FFT if n_fft is None else int(n_fft)
     mel_hop = onset_hop if mel_hop is None else int(mel_hop)
@@ -2008,11 +2023,11 @@ def fix_lanes(hop=None, n_mels=None, n_fft=None, window='hann', mel_hop=None, wh
         'band_hz': [float(c) for c in _band_centres(scale, n_mels, LANE_FMIN, SR / 2.0)],
         'mel_hop': mel_hop, 'mel_frames': int(mel.shape[1]), 'mel_t0': n_fft / 2.0 / SR,
         'mel': np.ascontiguousarray(mel),
-        'onset_hop': onset_hop, 'onset_t0': ONSET_N_FFT / 2.0 / SR,
+        'onset_hop': onset_hop, 'onset_smooth': smooth, 'onset_t0': ONSET_N_FFT / 2.0 / SR,
         'onset_frames': 0, 'onset': None, 'peaks': None, 'pat': None,
     }
     if what != 'mel':
-        onset = compute_onset_strength(ref, hop=onset_hop)
+        onset = compute_onset_strength(ref, hop=onset_hop, smooth=smooth)
         peaks = pick_onset_peaks(onset, onset_hop)
         out['onset_frames'] = int(len(onset))
         out['onset'] = np.ascontiguousarray(onset, dtype=np.float32)
@@ -2059,8 +2074,9 @@ let lanesQueue = Promise.resolve();
 async function runFixLanes(data) {
   try {
     const pyodide = await pyodideReady;
-    const { hop, nMels, nFft, window: win, melHop, what, scale, which } = data;
+    const { hop, nMels, nFft, window: win, melHop, what, scale, which, smooth } = data;
     pyodide.globals.set("_lanes_hop", hop ?? 512);
+    pyodide.globals.set("_lanes_smooth", smooth ?? 5);
     pyodide.globals.set("_lanes_n_mels", nMels ?? 64);
     pyodide.globals.set("_lanes_n_fft", nFft ?? 2048);
     pyodide.globals.set("_lanes_window", win || "hann");
@@ -2072,7 +2088,7 @@ async function runFixLanes(data) {
 import json
 _lanes = fix_lanes(int(_lanes_hop), int(_lanes_n_mels), int(_lanes_n_fft),
                    str(_lanes_window), int(_lanes_mel_hop), str(_lanes_what),
-                   str(_lanes_scale), str(_lanes_which))
+                   str(_lanes_scale), str(_lanes_which), int(_lanes_smooth))
 _lanes_mel = _lanes.pop('mel')
 _lanes_onset = _lanes.pop('onset')
 json.dumps(_lanes)
@@ -2154,12 +2170,13 @@ async function initPyodide() {
  *                                         slackSec?, maxFrames? }
  *   worker → main: "fix_target_segment" { result: { times, hop } }
  *   main → worker: "fix_target_dispose"   →   worker → main: "fix_target_disposed"
- *   "fix_lanes" takes which: "ref" | "target" for the audio on the strip.
+ *   "fix_lanes" takes which: "ref" | "target" for the audio on the strip, and
+ *   smooth: the onset curve's moving-average width (frames; default 5).
  *
  *   Score-less sessions: "fix_begin" with meiMidi null holds the reference
  *   alone (fix_ready's events: { n_events: 0, ref_duration }); the tick set is
- *   main → worker: "fix_ref_onsets"
- *   worker → main: "fix_ref_onsets" { hop, peaks, pat } | "fix_ref_onsets_error" { message }
+ *   main → worker: "fix_ref_onsets" { hop?, smooth? }   (absent = 512 / 5)
+ *   worker → main: "fix_ref_onsets" { hop, smooth, peaks, pat } | "fix_ref_onsets_error" { message }
  *
  *   (errors at any point) worker → main: "error" { message }
  *
@@ -2384,9 +2401,12 @@ json.dumps(fix_realign_segment(
       // generic "error" would be claimed by a pending realign.
       try {
         const pyodide = await pyodideReady;
+        // 0 = the shipped default (a JS null would cross as jsnull, not None).
+        pyodide.globals.set("_ref_onsets_hop", e.data.hop || 0);
+        pyodide.globals.set("_ref_onsets_smooth", e.data.smooth || 0);
         const json = await pyodide.runPythonAsync(`
 import json
-json.dumps(fix_ref_onsets())
+json.dumps(fix_ref_onsets(_ref_onsets_hop or None, _ref_onsets_smooth or None))
 `);
         self.postMessage({ type: "fix_ref_onsets", ...JSON.parse(json) });
       } catch (err) {

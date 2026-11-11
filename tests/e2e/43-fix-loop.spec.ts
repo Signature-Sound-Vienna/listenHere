@@ -27,6 +27,7 @@ async function gotoFixMode(
   page: Page,
   patch?: (json: any) => void,
   fixture = 'alignment.json',
+  extraParams = '',
 ) {
   await stubExternalMei(page);
   if (patch) {
@@ -45,7 +46,7 @@ async function gotoFixMode(
   }
   const params =
     `?align=${env.baseUrl}/static/test/${fixture}` +
-    `&useLocal=${env.baseUrl}/static/test&fixMode`;
+    `&useLocal=${env.baseUrl}/static/test&fixMode${extraParams}`;
   await page.goto(`/${params}`);
   await page.waitForFunction(
     () => ((window as any)._listenTest?.loadGeneration ?? 0) > 0,
@@ -139,6 +140,10 @@ async function installWorkerStub(
       w.postMessage = (msg: any) => {
         const rec: any = { type: msg.type };
         if (msg.type === 'fix_begin') rec.hasMidi = msg.meiMidi != null;
+        if (msg.type === 'fix_ref_onsets' || msg.type === 'fix_lanes') {
+          rec.hop = msg.hop;
+          rec.smooth = msg.smooth;
+        }
         if (msg.type === 'fix_realign') {
           rec.iA = msg.iA;
           rec.tA = msg.tA;
@@ -3635,12 +3640,16 @@ test.describe('43: alignment-correction fix mode (increment 3 — the loop)', ()
 // stub supplies — every 0.5 s from 2.0 s, so 16 to a page of ~8 s.
 const REF_ONSETS = Array.from({ length: 120 }, (_, k) => 2 + k * 0.5);
 
-async function gotoScoreless(page: Page, errors: string[]) {
+async function gotoScoreless(
+  page: Page,
+  errors: string[],
+  { patch, extraParams = '' }: { patch?: (json: any) => void; extraParams?: string } = {},
+) {
   page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
   page.on('console', (m) => {
     if (m.type() === 'error') errors.push(`console: ${m.text()}`);
   });
-  await gotoFixMode(page, undefined, 'alignment-noscore.json');
+  await gotoFixMode(page, patch, 'alignment-noscore.json', extraParams);
   await installWorkerStub(page, { refOnsets: { peaks: REF_ONSETS } });
 }
 
@@ -4088,6 +4097,52 @@ test.describe('43: score-less correction (B1)', () => {
     st = await fixState(page);
     expect(st.groupCount).toBe(REF_ONSETS.length + 1);
     expect(st.selRefT).toBeCloseTo(st.addedRefTicks[0], 9);
+    expect(errors).toEqual([]);
+  });
+
+  test('43.73 the onset-detector trial (?onsetHop, ?onsetSmooth) reaches the lanes and a fresh tick set; anchors laid on the trial’s ticks save the detector, and a saved session reopens on the detector it was saved with, whatever the URL', async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    const posted = () => page.evaluate(() => (window as any).__fixStub.posted);
+    const refOnsetsReq = async () => (await posted()).filter((p: any) => p.type === 'fix_ref_onsets');
+    // Fresh session, trial on: the lanes and the tick set both ask for it.
+    await gotoScoreless(page, errors, { extraParams: '&onsetHop=256&onsetSmooth=1' });
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    expect(await refOnsetsReq()).toEqual([expect.objectContaining({ hop: 256, smooth: 1 })]);
+    const lanes = (await posted()).filter((p: any) => p.type === 'fix_lanes');
+    expect(lanes.length).toBeGreaterThan(0);
+    for (const p of lanes) expect(p).toMatchObject({ hop: 256, smooth: 1 });
+    // An anchor on the trial's ticks: the record names the detector.
+    await page.click('#fix-auto-replay');
+    await page.keyboard.press('ArrowRight');
+    await page.evaluate(() => (window as any)._listenTest.fixCtl.pause());
+    await dragSelectedTick(page, 30);
+    expect((await fixState(page)).gridAnchors).toHaveLength(1);
+    const saved = await page.evaluate(() =>
+      JSON.parse(JSON.stringify((window as any)._listenTest.session.loadedAlignmentJSON.header.corrections)),
+    );
+    expect(saved.refTickDetector).toEqual({ hop: 256, smooth: 1 });
+    // Reopened WITHOUT the trial in the URL: the saved detector holds.
+    await gotoScoreless(page, errors, { patch: (json) => (json.header.corrections = saved) });
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    expect(await refOnsetsReq()).toEqual([expect.objectContaining({ hop: 256, smooth: 1 })]);
+    // A session saved on the shipped detector, reopened WITH the trial: shipped
+    // ticks; the lanes follow the URL.
+    const shipped = { ...saved };
+    delete shipped.refTickDetector;
+    await gotoScoreless(page, errors, {
+      patch: (json) => (json.header.corrections = shipped),
+      extraParams: '&onsetHop=256&onsetSmooth=1',
+    });
+    await enterFixOn(page, TARGET_ROW);
+    await waitLoopReady(page);
+    expect(await refOnsetsReq()).toEqual([expect.objectContaining({ hop: 512, smooth: 5 })]);
+    for (const p of (await posted()).filter((p: any) => p.type === 'fix_lanes')) {
+      expect(p).toMatchObject({ hop: 256, smooth: 1 });
+    }
     expect(errors).toEqual([]);
   });
 });

@@ -1,5 +1,11 @@
 # Listen Here! CHANGELOG.md
 
+### 0.126.0 -- Onset-detector trial in correction mode
+
+* Opt-in `?onsetHop=256` (or 128) and `?onsetSmooth=1` (any odd width up to 9) set the onset curve's hop and moving-average width for the lanes, the snap targets, and a score-less session's ticks. Without them nothing changes (hop 512, width 5). Measured: piano onsets +25 ms late against about +1 ms; Vienna 4x22 first onsets +37–40 ms against +4 ms; Fledermaus VPO-2022, 73 % of the score's onsets found within 100 ms against 28 %, at 85 % precision against 97 %.
+* A score-less session saved with anchors on the trial's ticks records the detector (`header.corrections.refTickDetector`). Its anchors find their ticks by reference time, so it reopens on the detector it was saved with, whatever the URL. Versions before 0.126.0 ignore the key.
+* Testing: 43.73 new; specs 41, 42, and 43 pass (129, Chromium); a live entry with the real worker moved the test recording's onsets a median 32 ms earlier (64 onsets either way); the functional suite passes on top of 0.125.0 (678, 2 skipped).
+
 ### 0.125.0 -- Firefox: the alignment worker no longer waits behind the recordings
 
 * Correction mode in Firefox on a plain-HTTP server (Flask's dev server) could hang at "Step 2/4: align runtime…" on an alignment with many recordings: the recordings held all 6 of Firefox's connections to the server, and the worker script's request waited for one indefinitely. It happened when the load-time prewarm was skipped, as for an alignment offered a re-base.

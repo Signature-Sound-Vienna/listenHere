@@ -190,6 +190,56 @@ const ANCHOR_EPS_SEC = 0.01;
 // resident reference audio AFTER fix_ready, so arming never waits for them.
 /** Lane resolution: samples per column at FIX_SR (~23 ms). */
 const LANE_HOP = 512;
+/** The onset curve's moving-average width in frames (1 = none). */
+const ONSET_SMOOTH = 5;
+/** The onset-detector trial (opt-in, 2026-11-11): ?onsetHop=256 or 128 and
+ *  ?onsetSmooth=1, 3, … set the onset curve's hop and smoothing. The shipped
+ *  512 / 5 put piano onsets ~25 ms late; 256 / 1 ~1 ms, and on Fledermaus
+ *  it finds 73 % of the score's onsets within 100 ms against 28 %, at 85 %
+ *  precision against 97 %. Read once per page. */
+let _onsetCfgCache = null;
+function _onsetCfg() {
+  if (!_onsetCfgCache) {
+    const p = new URLSearchParams(window.location.search);
+    const hop = Number(p.get("onsetHop"));
+    const smooth = Number(p.get("onsetSmooth"));
+    _onsetCfgCache = {
+      hop: [128, 256, 512].includes(hop) ? hop : LANE_HOP,
+      smooth: Number.isInteger(smooth) && smooth >= 1 && smooth <= 9 && smooth % 2 ? smooth : ONSET_SMOOTH,
+    };
+  }
+  return _onsetCfgCache;
+}
+/** The detector a score-less tick set was made with, when not the shipped
+ *  one: saved as header.corrections.refTickDetector, because that session's
+ *  anchors find their ticks by reference time (REF_T_EPS) and another
+ *  detector's ticks would leave every one of them stranded. null = the
+ *  shipped LANE_HOP / ONSET_SMOOTH. */
+let _refTickDetector = null;
+function _validDetector(d) {
+  return d && [128, 256, 512].includes(d.hop) && Number.isInteger(d.smooth) && d.smooth >= 1
+    ? { hop: d.hop, smooth: d.smooth }
+    : null;
+}
+/** Score-less ticks: a session with saved anchors keeps the detector it was
+ *  saved with, whatever the URL says; otherwise the trial's. */
+function _refTickCfg() {
+  const saved = hasTargetAnchors(_corrections);
+  const cfg = _onsetCfg();
+  if (saved) {
+    const kept = _refTickDetector || { hop: LANE_HOP, smooth: ONSET_SMOOTH };
+    if (cfg.hop !== kept.hop || cfg.smooth !== kept.smooth) {
+      console.warn(
+        `fix mode: this session's anchors were saved on ticks at hop ${kept.hop} / smooth ` +
+          `${kept.smooth}; its ticks stay there (the lanes follow the URL)`,
+      );
+    }
+    return kept;
+  }
+  const shipped = cfg.hop === LANE_HOP && cfg.smooth === ONSET_SMOOTH;
+  _refTickDetector = shipped ? null : { ...cfg };
+  return cfg;
+}
 const LANE_N_MELS = 64;
 /** The onset curve is drawn relative to its running maximum over ±this many
  *  seconds (floored), so a quiet passage's onsets read at full height. */
@@ -1151,7 +1201,11 @@ async function _enterScoreless(f, t0) {
   _showFixLoading("Finding the reference's onsets…");
   _buildStrip(_stripSource());
   f.refPeaks = _peaksSource(f.refFile); // the decode upgrades it (_bootstrap)
-  const cached = _refOnsetCache?.file === f.refFile ? _refOnsetCache : null;
+  const tickCfg = _refTickCfg();
+  const cached =
+    _refOnsetCache?.file === f.refFile && _refOnsetCache.cfg === `${tickCfg.hop}/${tickCfg.smooth}`
+      ? _refOnsetCache
+      : null;
   if (cached) f.refDetected = { peaks: cached.peaks, pat: cached.pat };
   else f.refOnsetsWait = _deferred();
   _startBootstrap();
@@ -1494,6 +1548,7 @@ export function fixModePrewarm() {
   _refOnsetCache = null;
   // A (re)loaded piece invalidates the piece-scoped correction state too.
   _corrections = createCorrections();
+  _refTickDetector = null;
   _pristine = null;
   _lastAnnounce = null;
   _correctionsBase = null;
@@ -1514,6 +1569,7 @@ export function fixModePrewarm() {
       const { state, base } = deserializeCorrections(record);
       _corrections = state;
       _correctionsBase = base;
+      _refTickDetector = _validDetector(record.refTickDetector);
       _loadedCorrectionsJson = JSON.stringify({
         a: _corrections.anchors,
         g: _corrections.gaps,
@@ -3599,7 +3655,8 @@ function _requestLanes(f, what) {
       type: "fix_lanes",
       what,
       which,
-      hop: LANE_HOP,
+      hop: _onsetCfg().hop,
+      smooth: _onsetCfg().smooth,
       nMels: _specCfg.nMels,
       nFft: _specCfg.nFft,
       window: _specCfg.window,
@@ -4013,6 +4070,7 @@ function _installLanes(f, d) {
     f[slot] = {
       ...melPart,
       onsetHop: d.onset_hop,
+      onsetSmooth: d.onset_smooth,
       onsetFrames: d.onset_frames ?? onset.length,
       onsetT0: d.onset_t0,
       onset,
@@ -8648,6 +8706,7 @@ function _syncCorrectionsHeader() {
     };
   }
   header.corrections = serializeCorrections(_corrections, _correctionsBase);
+  if (_refTickDetector) header.corrections.refTickDetector = { ..._refTickDetector };
 }
 
 /** Where an entry happened, for announcements: near its bar, or — score-less —
@@ -9307,13 +9366,14 @@ async function _bootstrap() {
     } else if (d.type === "fix_ref_onsets") {
       // Score-less: the reference's detected onsets — the session's ticks.
       f.refDetected = { peaks: Float64Array.from(d.peaks), pat: Float64Array.from(d.pat) };
-      _refOnsetCache = { file: f.refFile, ...f.refDetected };
+      const cfg = `${d.hop ?? LANE_HOP}/${d.smooth ?? ONSET_SMOOTH}`;
+      _refOnsetCache = { file: f.refFile, cfg, ...f.refDetected };
       f.refOnsetsWait?.resolve();
     } else if (d.type === "fix_ref_onsets_error") {
       f.refOnsetsWait?.reject(new Error(d.message));
     } else if (d.type === "fix_ready" && f.scoreless) {
       _workerHasSession = true;
-      if (!f.refDetected) worker.postMessage({ type: "fix_ref_onsets" });
+      if (!f.refDetected) worker.postMessage({ type: "fix_ref_onsets", ..._refTickCfg() });
       f.workerEvents = d.events;
       f.fixReady = true;
       f.timing.worker = d.timing || null;
@@ -9494,6 +9554,7 @@ export function fixTestState() {
     lanes: f.lanes
       ? {
           hop: f.lanes.onsetHop,
+          smooth: f.lanes.onsetSmooth,
           sr: f.lanes.sr,
           nMels: f.lanes.nMels,
           nFft: f.lanes.nFft,

@@ -18,7 +18,9 @@
 // (main.js mounts it as an absolutely positioned layer): the listening machinery
 // underneath keeps running untouched, so the other half of the table hears no
 // difference, and switching back costs nothing — no renderer is rebuilt, no
-// canvas re-measured, no transition frozen by a hidden pane.
+// canvas re-measured, no transition frozen by a hidden pane. That is the
+// OVERLAY layout, still the default; under `?explorers=zone` the grid lives in
+// the explorer zone and the card in the side slot instead (explorer-shell.js).
 //
 // READS ONLY the concerts sidecar (concerts.js) plus two facts from the payload
 // — the piece's title and which files are playable. It knows nothing about how
@@ -33,7 +35,8 @@
 
 import { portraitAbout, resolveText, t } from "./strings.js";
 import { acknowledgeThen, initials } from "./middle-band.js";
-import { createDyk, pulseStoryHint } from "./dyk.js";
+import { createDyk } from "./dyk.js";
+import { createExplorerShell, pulseShellHint, removeShell } from "./explorer-shell.js";
 
 /**
  * @param {object} opts
@@ -52,15 +55,15 @@ import { createDyk, pulseStoryHint } from "./dyk.js";
  * @param {(file: string) => void} opts.onListen
  * @param {(view: string, at: object) => void} [opts.onExplore]  the OTHER explorer, on a fact
  * @param {number|null} [opts.initialYear]
+ * @param {"overlay"|"split"} [opts.layout]  one root over the half, or chooser + card apart (explorer-shell.js)
  */
 export function createYearsView({
   viewport, language, concerts, piece, portraitUrl, onListen, onExplore = null,
   initialYear = null, dyk = null, audienceStore = null, dykImages = true, dykFont = "print", dykSkin = "pad", dykWidth = 94, dykTilt = 1.3,
+  layout = "overlay",
 }) {
-  const el = document.createElement("div");
-  el.className = "vp-view";
-  el.dataset.view = "years";
-  el.dataset.viewport = String(viewport);
+  const shell = createExplorerShell({ view: "years", viewport, layout });
+  const { el, chooserEl, cardEl } = shell;
 
   const about = document.createElement("p");
   about.className = "yv-about";
@@ -72,8 +75,12 @@ export function createYearsView({
     msg.className = "yv-unavailable";
     msg.dataset.state = "unavailable";
     msg.textContent = t("years.unavailable", language);
-    el.append(msg, about);
-    return { el, select() {}, refit() {}, state: () => ({ year: null, available: false }), destroy() {} };
+    shell.mountUnavailable(msg, about);
+    return {
+      el, chooserEl, cardEl, select() {}, refit() {},
+      state: () => ({ year: null, available: false }),
+      destroy() {},
+    };
   }
 
   const heading = document.createElement("h2");
@@ -102,10 +109,10 @@ export function createYearsView({
     story.refresh();
     // …and say what the switch was FOR, whether or not this card has a story to
     // re-tell in the new register (dyk.js pulseStoryHint says why).
-    pulseStoryHint(el);
+    pulseShellHint(shell);
   });
 
-  el.append(heading, grid.el, detail, about);
+  shell.mount({ heading, chooser: grid.el, card: [detail, about] });
 
   let selected = null;
   const pieceTitle = resolveText(piece?.title, { language }) || piece?.id || "";
@@ -134,6 +141,8 @@ export function createYearsView({
 
   return {
     el,
+    chooserEl,
+    cardEl,
     select,
     state: () => ({ year: selected, available: true }),
     // Re-measure the programme's fit once the overlay is actually in the
@@ -147,7 +156,7 @@ export function createYearsView({
     },
     destroy: () => {
       unsubscribe?.();
-      el.remove();
+      removeShell(shell);
     },
   };
 }

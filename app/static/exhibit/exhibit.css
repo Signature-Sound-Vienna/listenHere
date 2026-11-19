@@ -2625,10 +2625,16 @@ html, body {
  * thing the hint is actually about.
  *
  * Two beats rather than one: a single pulse on a 14 px shape at the edge of
- * vision is easy to miss, and this fires only on a deliberate tap. */
+ * vision is easy to miss, and this fires only on a deliberate tap.
+ *
+ * The split layout (`?explorers=zone`, explorer-shell.js) keeps the cells in a
+ * `.vp-chooser` and the story in a `.vp-card`, two roots that pulse together. */
 .vp-view[data-dyk-hint="1"] .yv-cell[data-dyk="1"]::before,
 .vp-view[data-dyk-hint="1"] .cv-entry[data-dyk="1"]::before,
-.vp-view[data-dyk-hint="1"] .dyk-heading::before {
+.vp-view[data-dyk-hint="1"] .dyk-heading::before,
+.vp-chooser[data-dyk-hint="1"] .yv-cell[data-dyk="1"]::before,
+.vp-chooser[data-dyk-hint="1"] .cv-entry[data-dyk="1"]::before,
+.vp-card[data-dyk-hint="1"] .dyk-heading::before {
   animation: ex-dyk-hint 460ms ease-in-out 2;
 }
 @keyframes ex-dyk-hint {
@@ -2640,7 +2646,10 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   .vp-view[data-dyk-hint="1"] .yv-cell[data-dyk="1"]::before,
   .vp-view[data-dyk-hint="1"] .cv-entry[data-dyk="1"]::before,
-  .vp-view[data-dyk-hint="1"] .dyk-heading::before {
+  .vp-view[data-dyk-hint="1"] .dyk-heading::before,
+  .vp-chooser[data-dyk-hint="1"] .yv-cell[data-dyk="1"]::before,
+  .vp-chooser[data-dyk-hint="1"] .cv-entry[data-dyk="1"]::before,
+  .vp-card[data-dyk-hint="1"] .dyk-heading::before {
     animation: ex-dyk-hint-fade 460ms ease-in-out 2;
   }
 }

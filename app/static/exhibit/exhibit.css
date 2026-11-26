@@ -1545,6 +1545,222 @@ html, body {
  * opens on focus, so the message renders in the chips row instead. */
 .ann-chips-empty { color: var(--ex-text-dim); font-size: 0.85rem; align-self: center; }
 
+/* --------------------------------------------------------------------------
+ * THE EXPLORER ZONE (?explorers=zone; roadmap 29, ruled 2026-11-19). A row on
+ * top of the half — toward the band — FULL WIDTH ALWAYS: it spans both columns,
+ * so opening the side slot below never narrows it (the timeline that replaces
+ * the grid in step D must not reflow). Below it, the listening zone is the side
+ * slot's grid exactly as before; the slot spans only toolbar and strips.
+ * config.js brings `sideSlot=annotations` with the zone, so the grid above is
+ * always the base this re-declares.
+ * -------------------------------------------------------------------------- */
+.vp-zone { display: none; }
+.vp[data-side-slot][data-explorers="zone"] {
+  /* The explorer's ground and rail, shared by the zone and by the side slot
+   * while it holds a card (below). */
+  --zone-ground: color-mix(in srgb, var(--ex-bg) 85%, white);
+  --zone-rail: 2px solid var(--ex-band-border, var(--ex-border-strong));
+  grid-template-rows: var(--zone-height, 386px) auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "zone    zone"
+    "toolbar side"
+    "strips  side"
+    "below   below";
+}
+/* TWO ZONES, TOLD APART (user, 2026-11-25): the explorer sits on a slightly
+ * LIGHTER ground than the listening zone — the theme's own background lifted a
+ * few percent toward white, so every theme gets its own version — and a RAIL
+ * runs along its foot: a band-border line with a soft shadow falling onto the
+ * listening zone, so the explorer reads as a ledge above the strips rather than
+ * as more of the same surface. Margin, not padding, below the rail: the gap to
+ * the toolbar is listening-zone ground. */
+.vp[data-explorers="zone"] .vp-zone {
+  grid-area: zone;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  margin-bottom: 10px;
+  padding: 8px 10px 10px;
+  border-radius: 10px 10px 2px 2px;
+  background: var(--zone-ground);
+  border-bottom: var(--zone-rail);
+  box-shadow: 0 6px 10px -6px rgba(0, 0, 0, 0.55);
+}
+/* The tabs: the audience switch's pill language, one chip per explorer. */
+.vp-zone-tabs {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+}
+/* "Explore:" before the tabs: soft ink, the tabs' size, centred on their line. */
+.zone-lead {
+  align-self: center;
+  margin: 0 4px 0 6px;
+  font-size: 0.95rem;
+  color: var(--ex-text-soft);
+}
+/* The explorer's close control, at the row's far end: the side slot's ×. */
+.zone-close {
+  margin-left: auto;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-soft);
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+/* FOLDED AWAY (the zone's ×, user 2026-11-25): the zone keeps only its tab row
+ * — the way back in — and the listening zone takes the rest of the half, the
+ * strips centred in it as in the full-size listening view. Rows only: the
+ * columns, and so the strips' width, never change. */
+.vp[data-side-slot][data-explorers="zone"][data-zone="closed"] {
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+.vp[data-zone="closed"] .vp-zone-body,
+.vp[data-zone="closed"] .zone-close { display: none; }
+.vp[data-zone="closed"] .vp-zone-tabs { margin-bottom: 0; }
+/* Under the open explorer the strips SIT ON THE CHIPS (the wireframe), so the
+ * listening zone's few spare pixels gather above them, where the ribbon's
+ * now-playing line goes — 8 px over the strips here rather than 12, with
+ * config.js's 36 px strips making the rest of the room. Closed, they centre. */
+.vp[data-explorers="zone"]:not([data-zone="closed"]) .strips { align-self: end; }
+.vp[data-explorers="zone"] .vp-now-section { bottom: calc(100% + 8px); }
+.zone-tab {
+  min-height: 44px;
+  padding: 0 20px;
+  border: 1px solid var(--ex-border-strong);
+  border-radius: 22px;
+  background: var(--ex-panel);
+  color: var(--ex-text-soft);
+  font: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.zone-tab.is-on {
+  background: var(--ex-accent);
+  border-color: var(--ex-accent-border);
+  color: var(--ex-on-accent);
+}
+.vp-zone-body {
+  flex: 1 1 0;
+  min-height: 0;
+  position: relative;
+  color: var(--ex-text);
+}
+.vp-zone-body > .vp-chooser {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* Out-ranks the display rules on the zone body's and the slot's children,
+ * which would otherwise show a hidden root by source order. */
+.vp-zone-body > .vp-chooser[hidden], .vp-side-slot > .vp-card[hidden] { display: none; }
+
+/* The year grid, STRETCHED to the zone until step D's timeline replaces it: ten
+ * decade rows share the height, ten cells share the width — wide, short cells,
+ * close to the timeline's ~98 px per year. */
+.vp-chooser .yv-grid { flex: 1 1 auto; min-height: 0; align-self: stretch; }
+.vp-chooser .yv-row { flex: 1 1 0; min-height: 0; align-items: stretch; }
+.vp-chooser .yv-decade { align-self: center; }
+.vp-chooser .yv-cell { flex: 1 1 0; width: auto; height: auto; min-width: 0; }
+/* The roster three-up (conductors-view.js sets --cv-cols), filling the zone. */
+.vp-chooser .cv-roster { flex: 1 1 auto; min-height: 0; }
+
+/* THE CARD IN THE SIDE SLOT. It holds the slot OVER the annotation body, which
+ * stays mounted underneath (main.js showCard): hidden, not removed, so closing
+ * the card shows whatever the annotation machine holds at that moment.
+ *
+ * NARROW, so it SCROLLS AS ONE (ruled 2026-11-19): the whole card is the
+ * scroller, the heading and the Listen button pinned at its two ends, the
+ * programme in one column at its own size, and the story's pad no longer a
+ * scroller of its own inside it. */
+.vp[data-card] .vp-side-slot > .ann-body { display: none; }
+.vp-side-slot > .vp-card {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* The finger is drag-scroll.js's, not the browser's: under the turned stage
+   * native touch scrolling never moves the box, and a browser pan starting
+   * would cancel the pointer stream the scroller needs. */
+  touch-action: none;
+  color: var(--ex-text);
+}
+.vp-card .yv-detail, .vp-card .cv-detail {
+  flex: 0 0 auto;
+  min-height: auto;
+  overflow: visible;
+}
+.vp-card .yv-head, .vp-card .cv-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--ex-bg);
+}
+.vp-card .yv-foot, .vp-card .cv-foot {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  padding: 6px 0;
+  background: var(--ex-bg);
+}
+.vp-card .yv-programme { columns: 1; overflow: visible; }
+/* The conductor's head is what stays pinned, so in the card the portrait is a
+ * third of the overlay's 180 px less: pinned at full size, face and name took
+ * 190 of the card's 405 px and left the story a slot to scroll through. */
+.vp-card[data-view="conductors"] { --cv-face: 96px; }
+.vp-card .cv-name { font-size: 1.35rem; }
+/* The Listen button names the piece, so in a 399 px card it wraps onto a
+ * second line rather than running off the card's edge. */
+.vp-card .yv-listen, .vp-card .cv-listen {
+  flex: 1 1 auto;
+  max-width: 100%;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  text-align: left;
+}
+.vp-card .dyk { flex: 0 0 auto; min-height: 0; }
+.vp-card .dyk-body { overflow: visible; }
+
+/* THE CARD HANGS FROM THE EXPLORER (user, 2026-11-26): while the slot holds a
+ * card, it is a leg of the explorer's panel rather than a box of the listening
+ * zone — the same lifted ground, and the rail turning the corner. The slot
+ * reaches up over the zone's 10 px gap and its rail (12 px), covering that
+ * stretch of rail, so the line runs along the explorer's foot, turns down the
+ * card's inner edge and along its foot; the outer edge stays open, as the
+ * zone's own sides are. Annotation text in the slot keeps the listening ground:
+ * the leg is the explorer's only while it shows the explorer's content. */
+.vp[data-explorers="zone"][data-card] .vp-side-slot {
+  position: relative;
+  z-index: 1;
+  margin-top: -12px;
+  padding: 8px 10px 10px;
+  background: var(--zone-ground);
+  border-left: var(--zone-rail);
+  border-bottom: var(--zone-rail);
+  border-radius: 0 0 10px 10px;
+  box-shadow: -6px 6px 10px -6px rgba(0, 0, 0, 0.55);
+}
+.vp[data-explorers="zone"] .vp-card .yv-head,
+.vp[data-explorers="zone"] .vp-card .cv-head,
+.vp[data-explorers="zone"] .vp-card .yv-foot,
+.vp[data-explorers="zone"] .vp-card .cv-foot { background: var(--zone-ground); }
+
 /* Shared between the halves, read from both sides at once. Portrait, conductor
  * name, and year only — no UI labels, by design (plan §6.3). Which way up is an
  * A/B question behind ?bandOrientation (config.js): the rules below implement
@@ -3303,7 +3519,8 @@ html, body {
   align-content: start;
   /* The medallion fitRoster measured, or the kiosk's own number until it has. */
   --cv-med: var(--cv-med-fit, 48px);
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  /* Two beside the overlay's card; three in the explorer zone (--cv-cols). */
+  grid-template-columns: repeat(var(--cv-cols, 2), minmax(0, 1fr));
   column-gap: 12px;
   row-gap: 2px;
   min-height: 0;

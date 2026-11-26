@@ -1,5 +1,15 @@
 # Listen Here! CHANGELOG.md
 
+### 0.132.0 -- The exhibit's explorer zone
+* `?explorers=zone` puts a 386 px explorer zone above each half's listening zone, with "Explore:" tabs for By year and By conductor; the overlay stays the default (`?explorers=overlay`), and the study panel's Views tab switches between them.
+* A pick in the zone opens its card in the side slot, over the annotation text, which stays loaded underneath; a chip tap replaces the card and a pick brings it back, a wash entry never replaces it, and the first × closes the card before the second unfocuses.
+* The card hangs from the explorer: the same lighter ground, with the explorer's foot line turning down the card's inner edge.
+* The zone's × folds it to its tab row and the strips take the half back; a tab or a band tap reopens it. The attract sweep closes the card and rests the zone on By year.
+* Band taps open the tapping reader's card under the matching tab; the band's cue stands down while a card shows.
+* The card scrolls by dragging along its own axis through the turned stage (`drag-scroll.js`), coasting on release; a drag that starts on Listen does not press it.
+* In zone mode the strips are 36 px (`stripHeightZone`; an explicit `?stripHeight` wins), so the section caption clears the toolbar.
+* Testing: new spec 61 (61.1–61.10) passed 20 of 20 on Chromium and Firefox; 35.29 counts the Explorers row. Specs 35, 37, 45, 46, and 47 passed on both browsers, apart from the known Firefox 45.7 and 45.11. Full suite on both browsers: 1366 passed, 4 skipped, 10 failed, all ten among the 13 known (Firefox 29.1, 43.32, 45.7, 45.11, 49.3–49.7, and 50.3).
+
 ### 0.130.0 -- The exhibit's section ribbon and the Salon theme
 * A three-way switch in each viewport's toolbar shows the strips as the score's sections, as sections over a faint waveform, or as waveforms; on by default, waveform first (`?ribbon=off|switch|first`). Glass, regions, zoom, and taps are unchanged.
 * The choice is kept per viewport across reloads; the attract loop's sweep resets it.

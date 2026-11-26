@@ -53,10 +53,15 @@ import { createTour } from "../js/tour/tour.js";
 import { buildTourSteps } from "./tour-steps.js";
 import { loadConcerts, loadDyk } from "./concerts.js";
 import { createAttractLoop } from "./attract.js";
+import { attachDragScroll } from "./drag-scroll.js";
 import { createRoom, ghostAngleFor, roomViewportId } from "./room.js";
 
 const config = readConfig();
 setDebug(config.debug);
+// ?explorers=zone (roadmap 29): the explorers live in an always-visible zone
+// on top of each half and open their cards in the side slot, instead of being
+// drawn over the half. Read once; config.js has already brought the slot.
+const ZONE = config.explorers === "zone";
 
 // ---------------------------------------------------------------------------
 // The exhibit is a SECOND host for the grouping read model, and this is the whole
@@ -256,6 +261,23 @@ function buildScreen(root) {
     const rot = rotationFor(config, i);
     if (rot) vp.style.transform = `rotate(${rot}deg)`;
 
+    // The explorer zone (?explorers=zone), built HERE for the side slot's
+    // reason below: its row is part of the grid the strips are sized in, so
+    // it must exist before WaveSurfer measures them. Its choosers arrive in
+    // boot, when the modules and the sidecar have; the row is reserved now,
+    // so nothing moves when they land.
+    let zone = null;
+    if (ZONE) {
+      vp.dataset.explorers = "zone";
+      zone = buildZoneShell(
+        i,
+        vp.dataset.language,
+        (name) => setView(viewports[i], name, { card: false }),
+        () => closeZone(viewports[i]),
+      );
+      vp.appendChild(zone.el);
+    }
+
     const strips = document.createElement("div");
     strips.className = "strips";
     vp.appendChild(strips);
@@ -377,6 +399,18 @@ function buildScreen(root) {
       view: "listen",
       viewSwitchEl: null,
       views: {},
+      // ?explorers=zone: the zone's parts, the tab it shows, and the card the
+      // side slot holds over the annotation body — null when the slot belongs
+      // to the annotations (see showCard). `zoneToken` drops a tab switch
+      // that a later one overtook while its module loaded.
+      zoneEl: zone?.el ?? null,
+      zoneBodyEl: zone?.body ?? null,
+      zoneTabsEl: zone?.tabs ?? null,
+      explorerTab: null,
+      zoneOpen: true,
+      card: null,
+      zoneToken: 0,
+      sideCloseEl: null,
     });
   }
   return { viewports, bands };
@@ -778,7 +812,9 @@ function buildView(name, m, vp, concerts, dyk, opening) {
     onListen: (file) => {
       if (vp.bareSwitch) vp.bareSwitch(file);
       else data.turns?.request(vp.roomId, file, undefined);
-      setView(vp, "listen");
+      // In the zone the strips are already in view beside the card, so the
+      // card stays: there is no overlay to leave.
+      if (!ZONE) setView(vp, "listen");
     },
     // THE EXPLORERS INTERLINK (user, 2026-09-18) — plan §11(f)'s "the facets
     // are marks, not buttons" is REVERSED, deliberately and by name: "I cannot
@@ -790,12 +826,19 @@ function buildView(name, m, vp, concerts, dyk, opening) {
     // configured (viewModules), so the far side of a link can never be missing
     // while the near side is on screen.
     onExplore: (view, at) => setView(vp, view, at),
+    // The zone builds the chooser and the card apart (explorer-shell.js), and a
+    // reader's tap in the chooser is what opens the card beside the strips.
+    layout: ZONE ? "split" : "overlay",
+    onPick: ZONE ? () => showCard(vp, name) : null,
   };
   const at = openingFor(name, opening);
   const handle =
     name === "years"
       ? m.createYearsView({ ...common, initialYear: at })
       : m.createConductorsView({ ...common, initialConductor: at });
+  // The zone needs no way back: it never covers anything, and the card's way
+  // out is the side slot's own ×.
+  if (ZONE) return handle;
   // The way back, inside the overlay (plan §11(f)): the band is the way in and
   // the toolbar switch only the fallback, so the overlay itself must be
   // leavable.
@@ -842,6 +885,7 @@ async function setView(vp, name, opening = {}) {
     console.warn(`exhibit: view "${name}" asked for with no entry configured — ignored`);
     return;
   }
+  if (ZONE) return setZoneView(vp, name, opening);
   if (vp.view === name) {
     if (name !== "listen" && vp.views[name]) {
       const at = openingFor(name, opening);
@@ -887,6 +931,207 @@ async function setView(vp, name, opening = {}) {
   vp.el.appendChild(handle.el);
   positionView(vp);
   handle.refit?.();
+}
+
+// ---------------------------------------------------------------------------
+// THE EXPLORER ZONE (?explorers=zone; roadmap 29, ruled 2026-11-19). Each half
+// gets a full-width zone on top — tabs, and under them the chooser the tab
+// names (the year grid, the conductor roster) — and the CARD of whatever a
+// reader picks opens in the side slot, beside the waveforms, which stay in
+// view. `data-view` keeps meaning "an overlay covers the half", so here it
+// stays "listen"; the tab is `data-explorer-tab`, and setView stays the one
+// entry (the tabs, band taps, interlinks, the attract sweep, the test hook).
+//
+// THE SLOT HAS TWO OCCUPANTS, and the rulings decide between them:
+//   * The annotation machine keeps its own wish, vp.panelOpen, untouched:
+//     showText, fadeOutDetail, the chip, the ×, pin expiry, the audience
+//     switch, and the sweep all still call setPanelOpen.
+//   * vp.card is a HOLD on top of it. The body stays mounted under the card
+//     (hidden by CSS), so an AUTOMATIC entry only updates text nobody can see
+//     — it never replaces a card a reader tapped — and a fade only drops the
+//     annotations' wish, never the card.
+//   * The LAST TAP wins: a pick, a band tap, or an interlink shows the card; a
+//     chip tap closes it (chip tap, in boot). Closing a card — the slot's ×,
+//     or the sweep — shows whatever the annotation machine holds NOW, or
+//     closes the slot when it holds nothing (syncSlot).
+// ---------------------------------------------------------------------------
+const ZONE_TABS = ["years", "conductors"];
+
+/**
+ * The zone's frame: a tab row and a body for the choosers. The row ends in a
+ * close control (user, 2026-11-25): the explorer folds away to its tab row and
+ * the listening zone takes the half back; a tab reopens it.
+ */
+function buildZoneShell(index, language, onTab, onClose) {
+  const el = document.createElement("div");
+  el.className = "vp-zone";
+  const tabs = document.createElement("div");
+  tabs.className = "vp-zone-tabs";
+  tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", t("zone.tabs", language));
+  // The row's keyword (user, 2026-11-25): "Explore:" names what the tabs open,
+  // which matters most when the zone is folded away and they are the only sign
+  // of it. Decoration for a screen reader, which has the row's label.
+  const lead = document.createElement("span");
+  lead.className = "zone-lead";
+  lead.setAttribute("aria-hidden", "true");
+  lead.textContent = t("zone.lead", language);
+  tabs.appendChild(lead);
+  for (const name of ZONE_TABS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "zone-tab";
+    b.dataset.view = name;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", "false");
+    b.textContent = t("zone." + name, language);
+    b.addEventListener("click", () => onTab(name));
+    tabs.appendChild(b);
+  }
+  // The slot's × idiom: a 44 px ring, no words, a sentence for screen readers.
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "zone-close";
+  close.textContent = "×";
+  close.setAttribute("aria-label", t("zone.close", language));
+  close.addEventListener("click", onClose);
+  tabs.appendChild(close);
+  const body = document.createElement("div");
+  body.className = "vp-zone-body";
+  el.append(tabs, body);
+  return { el, tabs, body };
+}
+
+/**
+ * Fold the explorer away (the zone's ×): the card goes with it — the reader
+ * asked for the listening view, full size — and the zone shrinks to its tab
+ * row, which stays as the way back. Only heights change, never the strips'
+ * width, so WaveSurfer keeps its canvases; the glass is re-placed because the
+ * strips move down the half.
+ */
+function closeZone(vp) {
+  closeCard(vp);
+  setZoneOpen(vp, false);
+}
+
+function setZoneOpen(vp, open) {
+  if (vp.zoneOpen === open) return;
+  vp.zoneOpen = open;
+  if (open) delete vp.el.dataset.zone;
+  else vp.el.dataset.zone = "closed";
+  paintZoneTabs(vp);
+  vp.marker?.reposition();
+}
+
+function paintZoneTabs(vp) {
+  for (const b of vp.zoneTabsEl?.querySelectorAll(".zone-tab") ?? []) {
+    // Folded away, no tab is "on": both are simply ways back in.
+    const on = vp.zoneOpen && b.dataset.view === vp.explorerTab;
+    b.classList.toggle("is-on", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  }
+}
+
+/**
+ * setView under the zone. "listen" closes the card (the sweep's and the old
+ * Back's meaning); an explorer switches the tab, moves the chooser onto the
+ * fact, and opens its card — unless `opening.card === false` (a tab tap),
+ * which only switches the tab and leaves the chooser where the reader left it.
+ */
+async function setZoneView(vp, name, opening = {}) {
+  if (name === "listen") {
+    closeCard(vp);
+    return;
+  }
+  const withCard = opening.card !== false;
+  const token = ++vp.zoneToken;
+  // Every way into an explorer (a tab, a band tap, an interlink) unfolds it.
+  setZoneOpen(vp, true);
+  vp.explorerTab = name;
+  vp.el.dataset.explorerTab = name;
+  paintZoneTabs(vp);
+  // A card opening is the explorer being used; a tab flip (boot's included)
+  // is not yet. The tour's explorer fragments are rewritten for the zone later.
+  if (withCard) vp.tour?.signal("view", name);
+  for (const [n, h] of Object.entries(vp.views)) if (h.chooserEl) h.chooserEl.hidden = n !== name;
+  let handle = vp.views[name];
+  if (!handle) {
+    const [m, concerts, dyk] = await Promise.all([viewModules[name], concertsData, dykData]);
+    // Built even when a later switch overtook this one (it is mounted hidden
+    // and costs nothing again); only the showing waits on the token below.
+    handle = vp.views[name];
+    if (!handle) {
+      handle = vp.views[name] = buildView(name, m, vp, concerts, dyk, withCard ? opening : {});
+      vp.zoneBodyEl.appendChild(handle.chooserEl);
+      handle.cardEl.hidden = true;
+      vp.sideSlotEl.appendChild(handle.cardEl);
+      // The card scrolls under the finger through the turned stage, where
+      // native touch scrolling does not reach (drag-scroll.js).
+      attachDragScroll(handle.cardEl, () =>
+        rotationFor(config, vp.index) + (Number(config.stageRotation) || 0),
+      );
+    }
+    handle.chooserEl.hidden = vp.explorerTab !== name;
+  } else if (withCard) {
+    const at = openingFor(name, opening);
+    if (at != null) handle.select(at);
+  }
+  if (token !== vp.zoneToken) return;
+  if (withCard) showCard(vp, name);
+  else handle.refit?.();
+}
+
+/** Show `name`'s card in the side slot, over the annotation body. */
+function showCard(vp, name) {
+  const handle = vp.views[name];
+  if (!handle?.cardEl) return;
+  vp.card = name;
+  vp.el.dataset.card = name;
+  for (const [n, h] of Object.entries(vp.views)) if (h.cardEl) h.cardEl.hidden = n !== name;
+  // A new card starts at its head, not wherever the last one was scrolled to.
+  handle.cardEl.scrollTop = 0;
+  vp.sideCloseEl?.setAttribute("aria-label", t("card.close", vp.language));
+  syncSlot(vp);
+  // The band's cue stands down on the fact whose card is SHOWING (ruled
+  // 2026-11-19), not on the tab: the tab is always one of the two.
+  bandHandle?.setCurrentView(vp.index, name);
+  // The card's fits (the programme, the roster's story) measure, so they run
+  // once the slot has its width.
+  handle.refit?.();
+}
+
+/**
+ * Take the card off the slot. Returns whether there was one. `sync: false`
+ * leaves the slot's open state to the caller's own setPanelOpen, so a chip
+ * tap that replaces the card does not close and reopen the slot in one go.
+ */
+function closeCard(vp, { sync = true } = {}) {
+  if (!vp.card) return false;
+  vp.card = null;
+  delete vp.el.dataset.card;
+  for (const h of Object.values(vp.views)) if (h.cardEl) h.cardEl.hidden = true;
+  vp.sideCloseEl?.setAttribute("aria-label", t("panel.close", vp.language));
+  if (sync) syncSlot(vp);
+  bandHandle?.setCurrentView(vp.index, "listen");
+  return true;
+}
+
+/**
+ * The attract sweep's tidy for the zone: the first tab, each chooser back on
+ * its resting choice (the audible recording's fact, as at first build). The
+ * card itself has already gone with setView(vp, "listen").
+ */
+function resetZone(vp) {
+  const c = concertsResolved;
+  const resting = (n) =>
+    openingFor(n, {}) ??
+    (n === "years" ? c?.lastInArchives ?? c?.first : c?.conductors.at(-1)?.name) ??
+    null;
+  for (const [n, h] of Object.entries(vp.views)) {
+    const at = resting(n);
+    if (at != null) h.select(at);
+  }
+  setZoneView(vp, ZONE_TABS[0], { card: false });
 }
 
 const root = document.getElementById("screen");
@@ -947,6 +1192,19 @@ window._exhibitTest = {
   setView: (i, name, opening) => setView(viewports[i], name, opening),
   yearsView: (i) => viewports[i]?.views.years?.state() ?? null,
   conductorsView: (i) => viewports[i]?.views.conductors?.state() ?? null,
+  // ?explorers=zone: the tab showing, the card in the slot (or null), and the
+  // slot's two wishes — the open state is their union (syncSlot).
+  zone: (i) => {
+    const vp = viewports[i];
+    if (!vp) return null;
+    return {
+      tab: vp.explorerTab,
+      open: vp.zoneOpen,
+      card: vp.card,
+      panelOpen: vp.panelOpen,
+      slotOpen: vp.el.dataset.sideOpen === "1",
+    };
+  },
   // The tour (roadmap 27): the half's tour object, or null when ?tour is off.
   tour: (i) => viewports[i]?.tour ?? null,
   ready: new Promise((resolve) => {
@@ -1187,7 +1445,8 @@ async function boot() {
   for (const slot of bands) slot.replaceWith(band.el);
   bandHandle = band;
   // A half may already be in a view (?views=…) before the band exists.
-  for (const vp of viewports) band.setCurrentView(vp.index, vp.view);
+  // Under the zone, what stands the cue down is the card showing, not the view.
+  for (const vp of viewports) band.setCurrentView(vp.index, ZONE ? vp.card || "listen" : vp.view);
   // The sidecar may have landed before the band existed: ask its facts again.
   if (concertsResolved !== undefined) band.refresh();
   window._exhibitTest.band = band;
@@ -1543,7 +1802,8 @@ async function boot() {
     if (ribbonOn) toolbar.append(buildLookSwitch(vp));
     // The view switch (plan §11), first on the bar: it changes what the whole
     // half shows, so it reads before the controls that belong to one view.
-    if (config.viewSwitch) toolbar.prepend(buildViewSwitch(vp));
+    // Not under the zone, whose tabs are the switch and never cover the half.
+    if (config.viewSwitch && !ZONE) toolbar.prepend(buildViewSwitch(vp));
     vp.el.insertBefore(toolbar, vp.stripsEl);
     // The tour (roadmap 27), and its listening "?" at the toolbar's far end.
     mountTour(vp, store, transport);
@@ -1605,6 +1865,10 @@ async function boot() {
       // listening interface), and chip-toggles-panel / ×-dismisses are the
       // two primitives that survive that change.
       onChipTap: (annId) => {
+        // The LAST TAP WINS (ruled 2026-11-19): a card in the slot gives way
+        // to the chip. Unsynced, because both side branches below set the
+        // panel themselves, and the slot should not close and reopen between.
+        const hadCard = closeCard(vp, { sync: false });
         // A tap takes manual control of the text: whatever fade window was
         // running is over, one way or the other.
         cancelDetailFade(vp);
@@ -1633,7 +1897,9 @@ async function boot() {
           // that annotation: it pins too, else the wash could swap the panel's
           // text mid-read the moment the clock crosses another region.
           vp.focusPinned = true;
-          setPanelOpen(vp, !vp.panelOpen);
+          // Under a card the chip's text was hidden, so this tap SHOWS it
+          // rather than toggling a panel the reader could not see.
+          setPanelOpen(vp, hadCard ? true : !vp.panelOpen);
         }
         renderAnnotations(vp, store);
         // A marker the Mark button placed follows the reading (user,
@@ -1686,7 +1952,11 @@ async function boot() {
       close.className = "side-close";
       close.textContent = "×";
       close.setAttribute("aria-label", t("panel.close", vp.language));
+      vp.sideCloseEl = close;
       close.addEventListener("click", () => {
+        // Over a card, the × closes the CARD: the slot then shows whatever the
+        // annotation machine holds now, or closes (ruled 2026-11-19).
+        if (closeCard(vp)) return;
         cancelDetailFade(vp);
         vp.shownId = null;
         clearWash(vp);
@@ -1706,7 +1976,11 @@ async function boot() {
     // overlay lands when its module and sidecar arrive; the strips beneath
     // finish booting regardless.
     const startView = config.views[vp.index] ?? config.views[0];
-    if (startView && startView !== "listen") setView(vp, startView);
+    const exploring = Boolean(startView) && startView !== "listen";
+    // The zone is always there: it starts on the first tab, or on the
+    // ?views= explorer with that explorer's card open.
+    if (ZONE) setView(vp, exploring ? startView : ZONE_TABS[0], { card: exploring });
+    else if (exploring) setView(vp, startView);
   }
 
   // Every renderer has to know its own duration before a single region is added:
@@ -2288,6 +2562,8 @@ async function boot() {
         // …and the strips in the look the exhibit starts in (?ribbon), the
         // remembered one forgotten.
         vp.setLook?.(config.ribbon === "first" ? "ribbon" : "wave");
+        // …and the explorer zone on its first tab, each chooser at rest.
+        if (ZONE) resetZone(vp);
         renderAnnotations(vp, store);
       }
       if (config.marker === "glass") syncGhosts();
@@ -2396,9 +2672,19 @@ function strapLabel(exhibit, file) {
  */
 function setPanelOpen(vp, open) {
   vp.panelOpen = !!open;
+  syncSlot(vp);
+}
+
+/**
+ * The slot is open while EITHER occupant wants it: the annotation machine's
+ * vp.panelOpen, or a card (?explorers=zone, showCard). The one writer of
+ * `data-side-open`, so the two can never disagree about the strips' width.
+ */
+function syncSlot(vp) {
+  const open = vp.panelOpen || Boolean(vp.card);
   const had = vp.el.dataset.sideOpen === "1";
-  if (vp.panelOpen === had) return;
-  if (vp.panelOpen) vp.el.dataset.sideOpen = "1";
+  if (open === had) return;
+  if (open) vp.el.dataset.sideOpen = "1";
   else delete vp.el.dataset.sideOpen;
   vp.zoom?.refit();
   vp.marker?.reposition();

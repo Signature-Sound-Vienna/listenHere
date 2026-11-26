@@ -257,6 +257,13 @@ const TABS = [
           "Offers each viewport a toolbar switch between the listening interface and the explorers of the whole New Year's Concert series — year by year, and conductor by conductor (plan §11). Off is the shipped exhibit; an explorer draws over this half's strips while the other half keeps listening. Since 0.52.0 this is the debug and fallback entry: the ruled entry is the band (Band tab, “Tappable facts”), and every explorer carries its own close control.",
       },
       {
+        key: "explorers",
+        label: "Explorers",
+        options: ["overlay", "zone"],
+        hint:
+          "Where the explorers live (roadmap 29). Overlay is the shipped interface: an explorer is drawn over the half, opened from the band or the view switch. Zone is the split layout: an always-visible explorer zone on top of each half, with tabs By year and By conductor, and a tapped year or conductor opens its card in the side slot beside the waveforms, which stay in view. Zone brings the side slot with it; a chip tap gives the slot back to the annotation text, and the slot's × closes the card.",
+      },
+      {
         key: "dykImages",
         label: "Did-you-know images",
         options: ["on", "off"],

@@ -60,6 +60,12 @@ const DEFAULTS = {
   // early: they do not run in full at this geometry, on a kiosk whose rule is
   // that nothing scrolls. It needs an editorial or UI decision, not a number.
   stripHeight: 38, // CSS px per waveform strip
+  // …and under ?explorers=zone, unless ?stripHeight is given (user, 2026-11-25):
+  // the listening zone under a 386 px explorer has 14 px to spare, and the
+  // ribbon's now-playing line needs 30 above the strips; ten strips at 36 give
+  // the other 20. For the whole session, not only while the explorer is open:
+  // WaveSurfer sizes its canvases once, at creation.
+  stripHeightZone: 36,
   middleBandHeight: 96, // conductor, year, portrait — and NO UI labels (plan §6.3)
   // How the shared band handles being read from two opposite sides at once —
   // plan §4.3's orientation question, pulled forward by user feedback after the
@@ -232,6 +238,17 @@ const DEFAULTS = {
   //                 between passes on one rhythm; reduced motion gets the
   //                 underline instead.
   bandTap: "off",
+  // WHERE THE EXPLORERS LIVE (roadmap 29, ruled 2026-11-19):
+  //   "overlay" — the shipped interface: an explorer is drawn over the half,
+  //               behind the band's facts or the view switch.
+  //   "zone"    — the split layout: an always-visible explorer zone on top of
+  //               each half (tabs By year / By conductor, holding the grid and
+  //               the roster), and a tapped year or conductor opens its card in
+  //               the SIDE SLOT beside the waveforms. Implies
+  //               `sideSlot=annotations`, and counts as an explorer entry
+  //               (viewsEnabled), so the sidecar and modules load.
+  // Not `layout=split`: `root.dataset.split` already names the halves' split.
+  explorers: "overlay",
   // THE "DID YOU KNOW?" FIGURES (content/dyk/, dyk.js). The museum text itself
   // is CONTENT and always on — there is no knob for it, and the A/B rule for UX
   // variants does not reach authored content (user, 2026-09-18). What IS a knob
@@ -678,7 +695,19 @@ export function readConfig(search = typeof location === "undefined" ? "" : locat
   // that would otherwise surface as an undefined rotation halfway through layout.
   out.viewports = Math.max(1, Math.round(out.viewports));
   // A viewport that starts in another view needs the switch to get back.
-  if (out.views.some((v) => v !== "listen")) out.viewSwitch = true;
+  // The explorer zone puts its cards in the side slot, so it brings the slot;
+  // an unknown value keeps the shipped overlay rather than half a layout.
+  if (out.explorers !== "overlay" && out.explorers !== "zone") {
+    console.warn(`exhibit: unknown explorers "${out.explorers}" — using "overlay"`);
+    out.explorers = "overlay";
+  }
+  if (out.explorers === "zone") {
+    out.sideSlot = "annotations";
+    if (!q.has("stripHeight")) out.stripHeight = out.stripHeightZone;
+  }
+  // A viewport that starts in another view needs the switch to get back —
+  // unless the zone is the way in, where the tabs are always there.
+  if (out.explorers !== "zone" && out.views.some((v) => v !== "listen")) out.viewSwitch = true;
   return out;
 }
 
@@ -775,7 +804,9 @@ export function bandTapFor(config) {
  * the shipped kiosk, byte-identical on the wire.
  */
 export function viewsEnabled(config) {
-  return Boolean(config.viewSwitch) || bandTapFor(config) !== "off";
+  return (
+    Boolean(config.viewSwitch) || bandTapFor(config) !== "off" || config.explorers === "zone"
+  );
 }
 
 export { DEFAULTS };

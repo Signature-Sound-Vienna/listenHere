@@ -139,6 +139,14 @@ const CATALOGUE = {
   "view.listen": { en: "Listen" },
   "view.years": { en: "Year by year" },
   "view.conductors": { en: "Conductors" },
+  // The explorer zone's tabs (?explorers=zone, roadmap 29): the wireframe's
+  // wording; a tab names the chooser it shows, so "By …" rather than a title.
+  "zone.years": { en: "By year" },
+  "zone.conductors": { en: "By conductor" },
+  "zone.tabs": { en: "Explore the New Year's Concerts" },
+  "zone.close": { en: "Close the explorer" },
+  "zone.lead": { en: "Explore:" },
+  "card.close": { en: "Close the card" },
   // The way out of an explorer, back into the listening view — since the band is
   // the way IN (plan §11(f)) and the toolbar switch only the fallback entry.
   //

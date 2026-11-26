@@ -64,11 +64,13 @@ import { createExplorerShell, pulseShellHint, removeShell } from "./explorer-she
  * @param {(view: string, at: object) => void} [opts.onExplore]  the OTHER explorer, on a fact
  * @param {string|null} [opts.initialConductor]  a name the sidecar knows
  * @param {"overlay"|"split"} [opts.layout]  one root over the half, or chooser + card apart (explorer-shell.js)
+ * @param {(name: string) => void} [opts.onPick]  a READER's tap on a name, after it selects
+ *   (the split layout opens the card on it; select() from outside does not call it)
  */
 export function createConductorsView({
   viewport, language, concerts, piece, portraitUrl, onListen, onExplore = null,
   initialConductor = null, dyk = null, audienceStore = null, dykImages = true, dykFont = "print", dykSkin = "pad", dykWidth = 94, dykTilt = 1.3,
-  layout = "overlay",
+  layout = "overlay", onPick = null,
 }) {
   const shell = createExplorerShell({ view: "conductors", viewport, layout });
   const { el, chooserEl, cardEl } = shell;
@@ -95,7 +97,9 @@ export function createConductorsView({
   heading.className = "cv-heading";
   heading.textContent = t("conductors.heading", language);
 
-  const roster = buildRoster(concerts, language, portraitUrl, dyk);
+  // Two columns beside the card in the overlay; three in the zone, which is
+  // full-width and short (386 px), so the roster reads across rather than down.
+  const roster = buildRoster(concerts, language, portraitUrl, dyk, layout === "split" ? 3 : 2);
   const detail = document.createElement("section");
   detail.className = "cv-detail";
 
@@ -147,7 +151,10 @@ export function createConductorsView({
     about.textContent = portraitAbout(language, c?.portraitCredit || null);
     if (story.showsAiImage()) about.append(" ", aiDisclosure(language));
   }
-  roster.onPick(select);
+  roster.onPick((name) => {
+    select(name);
+    onPick?.(name);
+  });
 
   // Resting selection: the conductor of the audible recording when the series
   // knows them, else the most recent conductor — the one a visitor most likely
@@ -185,13 +192,14 @@ export function createConductorsView({
 // down the left and continues down the right.
 // ---------------------------------------------------------------------------
 
-function buildRoster(concerts, language, portraitUrl, dyk) {
+function buildRoster(concerts, language, portraitUrl, dyk, columns = 2) {
   const root = document.createElement("div");
   root.className = "cv-roster";
   root.setAttribute("role", "group");
   root.setAttribute("aria-label", t("conductors.chooseConductor", language));
   const n = concerts.conductors.length;
-  root.style.setProperty("--cv-rows", String(Math.max(1, Math.ceil(n / 2))));
+  root.style.setProperty("--cv-cols", String(columns));
+  root.style.setProperty("--cv-rows", String(Math.max(1, Math.ceil(n / columns))));
 
   const entries = new Map();
   let pick = () => {};

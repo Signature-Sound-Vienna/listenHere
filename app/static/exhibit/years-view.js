@@ -56,11 +56,13 @@ import { createExplorerShell, pulseShellHint, removeShell } from "./explorer-she
  * @param {(view: string, at: object) => void} [opts.onExplore]  the OTHER explorer, on a fact
  * @param {number|null} [opts.initialYear]
  * @param {"overlay"|"split"} [opts.layout]  one root over the half, or chooser + card apart (explorer-shell.js)
+ * @param {(year: number) => void} [opts.onPick]  a READER's tap on a cell, after it selects
+ *   (the split layout opens the card on it; select() from outside does not call it)
  */
 export function createYearsView({
   viewport, language, concerts, piece, portraitUrl, onListen, onExplore = null,
   initialYear = null, dyk = null, audienceStore = null, dykImages = true, dykFont = "print", dykSkin = "pad", dykWidth = 94, dykTilt = 1.3,
-  layout = "overlay",
+  layout = "overlay", onPick = null,
 }) {
   const shell = createExplorerShell({ view: "years", viewport, layout });
   const { el, chooserEl, cardEl } = shell;
@@ -124,7 +126,7 @@ export function createYearsView({
     story.setEntry(dyk?.forYear(year));
     renderDetail(detail, concerts.get(year), {
       year, language, pieceId: piece?.id, pieceTitle, portraitUrl, onListen, onExplore,
-      story: story.el,
+      story: story.el, fit: layout !== "split",
     });
     // The credit follows the face: this card shows THIS year's conductor, so the
     // foot names the photographer of THAT portrait (strings.js, portraitAbout).
@@ -132,7 +134,10 @@ export function createYearsView({
       language, concerts.portraitCredit(concerts.get(year)?.conductor || ""),
     );
   }
-  grid.onPick(select);
+  grid.onPick((year) => {
+    select(year);
+    onPick?.(year);
+  });
 
   // Resting selection: the concert the audible recording comes from when it is
   // one, else the last year the archives know — the newest concert, which is
@@ -150,7 +155,7 @@ export function createYearsView({
     // its measurement could only be deferred to a frame — and a hidden tab
     // never gets one (the visibility-throttling trap).
     refit: () => {
-      const ol = detail.querySelector(".yv-programme");
+      const ol = layout === "split" ? null : detail.querySelector(".yv-programme");
       if (ol) fitProgramme(ol);
       story.remeasure();
     },
@@ -238,7 +243,7 @@ function buildGrid(concerts, language, dyk) {
 // The card.
 // ---------------------------------------------------------------------------
 
-function renderDetail(root, c, { year, language, pieceId, pieceTitle, portraitUrl, onListen, onExplore, story }) {
+function renderDetail(root, c, { year, language, pieceId, pieceTitle, portraitUrl, onListen, onExplore, story, fit = true }) {
   root.textContent = "";
   root.dataset.year = String(year);
   root.dataset.state = c?.date ? "concert" : "gap";
@@ -414,7 +419,10 @@ function renderDetail(root, c, { year, language, pieceId, pieceTitle, portraitUr
   // left, rather than the list taking everything and the story getting 4 px.
   if (story) root.appendChild(story);
   if (foot.childNodes.length) root.appendChild(foot);
-  const ol = root.querySelector(".yv-programme");
+  // Not in the split layout's card, which SCROLLS (ruled 2026-11-19): the list
+  // keeps its own size there, and the ladder would read a 1 px rounding of an
+  // unconstrained box as overflow and walk it down to the finest step.
+  const ol = fit ? root.querySelector(".yv-programme") : null;
   if (ol) fitProgramme(ol);
 }
 

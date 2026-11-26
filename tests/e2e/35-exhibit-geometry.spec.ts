@@ -934,10 +934,12 @@ test.describe('35. Week 2 — the study panel and themes', () => {
     // name instead. What must hold is that the two half-selectors come first and
     // the story's knobs after them — a reader reaching for "which view does this
     // half start in" should not have to read past four ways to draw a notepad.
-    await expect(rows).toHaveCount(8);
+    await expect(rows).toHaveCount(9);
     await expect(rows.nth(0).locator('.study-label')).toHaveText(/Near half/);
     await expect(rows.nth(1).locator('.study-label')).toHaveText(/Far half/);
     await expect(rows.nth(2).locator('.study-label')).toHaveText(/View switch/);
+    // The explorers' layout (roadmap 29, 0.132.0): overlay or the zone.
+    await expect(rows.nth(3).locator('.study-label')).toHaveText(/Explorers/);
     const labels = await rows.locator('.study-label').allTextContents();
     for (const want of ['Did-you-know images', 'Did-you-know skin', 'Did-you-know width', 'Did-you-know tilt', 'Did-you-know face']) {
       expect(labels.some((l) => l.includes(want)), `the Views tab lost "${want}"`).toBe(true);

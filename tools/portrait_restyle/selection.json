@@ -1,0 +1,29 @@
+{
+  "_README": [
+    "AUTHORED. Which restyle render stands for each sitter in the exhibit; build.py reads",
+    "this and nothing else. A render is named <slug>[.<variant>]-<template>-s<seed>, as in",
+    "renders.jsonl. FIRST SELECTION 2026-11-27, made by Claude for a first impression of",
+    "the interface: seed 1 (the user's preference in round 2) unless another seed was",
+    "clearly better, and every exception says why. To be revised with the user and Chanda."
+  ],
+  "sitters": {
+    "krauss": {"render": "krauss-p3-s1"},
+    "krips": {"render": "krips.wide-p4-s3", "why": "reframed with softened skin wording; seed 3 has the mildest blush (user, 2026-11-28)"},
+    "boskovsky": {"render": "boskovsky-p3-s1"},
+    "maazel": {"render": "maazel-p3-s1"},
+    "karajan": {"render": "karajan-p3-s1"},
+    "abbado": {"render": "abbado.wide-p4-s2", "why": "reframed, 'pale olive' skin; seed 2 drops the award figurine that seed 1 keeps (user, 2026-11-28)"},
+    "kleiber": {"render": "kleiber.mid-p4-s1", "why": "in his own polo shirt (p4 clothes), at a crop between the original and kleiber.wide, which made the face small and the shirt too salient; seed 1 (user, 2026-11-28)"},
+    "mehta": {"render": "mehta.pbs1980wide-p3-s1", "why": "the 1980 PBS portrait, zoomed out for breathing space (user, 2026-11-27); the 1985 photo's wide smile was atypical of the corpus. Provisional until the user has spoken to Chanda; mehta-p3-s1 is the 1985 render"},
+    "muti": {"render": "muti.wide-p4-s3", "why": "reframed for breathing space; seeds 1 and 2 darken his hair and take years off, 3 keeps the grey (user, 2026-11-28)"},
+    "harnoncourt": {"render": "harnoncourt-p3-s1"},
+    "ozawa": {"render": "ozawa-p3-s1"},
+    "jansons": {"render": "jansons-p4-s2", "why": "with a facts sentence (p3 darkened his hair and de-aged him in every seed); seed 2 (user, 2026-11-28)"},
+    "pretre": {"render": "pretre-p3-s1"},
+    "barenboim": {"render": "barenboim-p3-s1"},
+    "welser-moest": {"render": "welser-moest-p3-s1"},
+    "dudamel": {"render": "dudamel-p3-s1"},
+    "thielemann": {"render": "thielemann.michelides-p3-s3", "why": "from the 2015 Michelides photograph instead of the unflattering 2024 one (user, 2026-11-27)"},
+    "nelsons": {"render": "nelsons-p3-s1"}
+  }
+}

@@ -4,6 +4,24 @@ One circular gold medallion per conductor of the New Year's Concert, sized to th
 band's `border-radius: 50%` frame. Since **0.68.0** these are **freely-licensed
 photographs from Wikimedia Commons**, not Gen-AI impressions.
 
+> **Since 2026-11-27 the medallions here are AI-generated illustrations** made
+> from those photographs, after museum feedback that the photo set looked
+> incoherent. They are generated locally with an Apache-2.0 image-edit model,
+> under institutional sign-off. The pipeline, the prompts, and every render's
+> recipe live in `tools/portrait_restyle/`, and `tools/portrait_restyle/build.py`
+> writes the files.
+>
+> - **The photographs are kept.** The photo medallions and their `credits.json`
+>   are in `photo/`, and `sources.json` still describes them.
+> - **Disclosure is back.** The XMP says `trainedAlgorithmicMedia`, and the
+>   explorers' foot line says the portraits are AI illustrations. The photograph
+>   is still credited: "After a photo by …".
+> - **No AI mark on the medallions** (user, 2026-11-28): every portrait is now an illustration, so the footer sentence discloses the whole set and a per-image spark would mark nothing apart.
+> - **Thielemann differs.** His illustration is made from a different photograph
+>   than his photo medallion (Michelides, 2015), so his `credits.json` entry says so.
+>
+> The text below describes the photo set.
+
 ## Why they changed
 
 The first batch (2026-09-01) were AI-generated stylised portraits, and the plan

@@ -1,0 +1,219 @@
+{
+  "_README": [
+    "Appearance FACTS for sitters whose source photo is black and white (or colour-cast),",
+    "so the model does not invent hair, eye or skin colour. Each line describes the sitter",
+    "AT THE DATE OF THE SOURCE PHOTO. 'basis' says how each fact was established:",
+    "'seen' = read off dated colour photos found by image search (Bing Images, Commons), not reused;",
+    "'text' = a written first-hand description; 'tone' = inferred from the grey tone of the",
+    "source itself (weakest). Researched 2026-11-27."
+  ],
+  "karajan": {
+    "photo_year": 1963,
+    "age": 55,
+    "facts": "He is 55 years old, with thick silver-grey hair swept back from a high forehead, blue eyes and fair skin with visible lines.",
+    "basis": {
+      "hair": "seen: colour photos of the 1960s show grey-white hair",
+      "eyes": "text: 'penetrating blue eyes' (C Major Entertainment essay)"
+    }
+  },
+  "boskovsky": {
+    "photo_year": 1936,
+    "age": 27,
+    "facts": "He is a slim man in his late twenties, with light-brown hair combed straight back and fair skin.",
+    "basis": {
+      "year": "Commons inception date P571 = 1936 (the Octet founding is usually given as 1947/48, so the date is uncertain)",
+      "hair": "seen: 1950s colour Decca LP covers show light-brown hair; consistent with the source tone"
+    }
+  },
+  "krauss": {
+    "photo_year": 1930,
+    "age": 37,
+    "facts": "He is 37 years old, with dark brown hair combed back, long sideburns and fair skin.",
+    "basis": {
+      "hair": "tone: no colour photograph of him was found; dark in every black-and-white photo"
+    }
+  },
+  "krips": {
+    "photo_year": 1951,
+    "age": 49,
+    "facts": "He is a heavy-set man of 49 with a round face, a bald head, a fair complexion with slightly rosy cheeks and round dark horn-rimmed glasses.",
+    "basis": {
+      "all": "text: Met Orchestra memoir (bald, corpulent, ruddy complexion, huge horn-rimmed glasses); Time magazine ('moon face')"
+    },
+    "_facts_changed": "2026-11-28: 'a ruddy complexion' rendered too red (seed 1); softened"
+  },
+  "kleiber": {
+    "photo_year": 1973,
+    "age": 43,
+    "facts": "He is 43 years old, with dark brown hair receding at the temples, brown eyes and a lightly tanned complexion.",
+    "basis": {
+      "hair": "seen: 1970s colour photos and DG covers"
+    },
+    "clothes": "in the dark short-sleeved polo shirt he wears in the photo"
+  },
+  "harnoncourt": {
+    "photo_year": 1980,
+    "age": 51,
+    "facts": "He is 51 years old, with dark brown hair receding at the temples, pale skin and a long, angular face.",
+    "basis": {
+      "hair": "seen: 1970s and 1980s colour photos; grey only from the 1990s on"
+    }
+  },
+  "abbado": {
+    "photo_year": 1982,
+    "age": 49,
+    "facts": "He is 49 years old, with very dark brown hair, dark brown eyes and pale olive skin.",
+    "basis": {
+      "hair": "seen: 1980s colour photos and DG covers (e.g. Neujahrskonzert 1988)"
+    },
+    "_facts_changed": "2026-11-28: 'an olive complexion' rendered orange in seeds 1 and 2"
+  },
+  "mehta": {
+    "photo_year": 1985,
+    "age": 49,
+    "facts": "He is a 49-year-old Indian man with thick black hair, dark brown eyes and warm brown skin.",
+    "basis": {
+      "all": "seen: 1980s colour photos"
+    }
+  },
+  "pretre": {
+    "photo_year": 1989,
+    "age": 65,
+    "facts": "He is 65 years old, with white hair and a lightly tanned, ruddy complexion.",
+    "basis": {
+      "hair": "seen: colour photos around 1990 show white hair",
+      "eyes": "not stated: could not be read reliably"
+    }
+  },
+  "_VARIANTS": [
+    "A key 'slug.variant' trials ANOTHER source photo for a sitter without touching",
+    "sources.json (which still drives the shipped photo medallions). Its 'source'",
+    "overrides file/crop/year; renders are named after the full key. Promote a",
+    "variant into sources.json only once it is chosen."
+  ],
+  "thielemann.michelides": {
+    "source": {
+      "file": "Thielemann 2047-Michelides.jpg",
+      "crop": [
+        0.31,
+        0.27,
+        0.62
+      ],
+      "year": 2015,
+      "licence": "CC BY-SA 4.0",
+      "licenceUrl": "https://creativecommons.org/licenses/by-sa/4.0",
+      "author": "Christian Michelides",
+      "restrictions": "personality",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Thielemann_2047-Michelides.jpg"
+    },
+    "_why": "Trial 2026-11-27: the 2024 Staatsoper photo is unflattering (angle, expression); this is the only other usable free photo of him (Commons has 7 files; Flickr's CC hits are album covers).",
+    "photo_year": 2015,
+    "age": 56,
+    "facts": "He is 56 years old, with medium-brown hair, a broad face and fair skin.",
+    "basis": {
+      "hair": "seen: the 2024 colour source shows medium-brown hair; not checked against 2015 colour photos"
+    }
+  },
+  "mehta.pbs1980": {
+    "source": {
+      "file": "Zubin Mehta 1980.jpg",
+      "crop": [
+        0.48,
+        0.36,
+        1.3
+      ],
+      "year": 1980,
+      "licence": "Public domain",
+      "author": "PBS",
+      "_licence_note": "PBS publicity photo, Commons credit 'ebay'; the public-domain rationale is unverified",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Zubin_Mehta_1980.jpg"
+    },
+    "_why": "Trial 2026-11-27: the 1985 photo's wide smile is atypical of the corpus and its crop is tight; pending Chanda.",
+    "photo_year": 1980,
+    "age": 44,
+    "facts": "He is a 44-year-old Indian man with thick, wavy black hair, dark brown eyes and warm brown skin.",
+    "basis": {
+      "all": "seen: 1980s colour photos (as for the 1985 source)"
+    }
+  },
+  "mehta.pbs1980wide": {
+    "source": {
+      "file": "Zubin Mehta 1980.jpg",
+      "crop": [
+        0.48,
+        0.4,
+        1.8
+      ],
+      "year": 1980,
+      "licence": "Public domain",
+      "author": "PBS",
+      "_licence_note": "PBS publicity photo, Commons credit 'ebay'; the public-domain rationale is unverified",
+      "sourceUrl": "https://commons.wikimedia.org/wiki/File:Zubin_Mehta_1980.jpg"
+    },
+    "_why": "As mehta.pbs1980, zoomed out (crop size 1.3 -> 1.8) for breathing space in the medallion (user, 2026-11-27); the model repaints the edge-padded margin as hall and suit.",
+    "photo_year": 1980,
+    "age": 44,
+    "facts": "He is a 44-year-old Indian man with thick, wavy black hair, dark brown eyes and warm brown skin.",
+    "basis": {
+      "all": "seen: 1980s colour photos (as for the 1985 source)"
+    }
+  },
+  "jansons": {
+    "photo_year": 2015,
+    "age": 72,
+    "facts": "He is 72 years old, with thick silver-grey hair swept back, pale blue eyes and fair, lined skin.",
+    "basis": {
+      "all": "seen: the 2015 colour source itself; p3 darkened his hair and de-aged him regardless"
+    }
+  },
+  "krips.wide": {
+    "source": {
+      "crop": [
+        0.44,
+        0.27,
+        0.75
+      ]
+    },
+    "_why": "2026-11-28: reframed for breathing space in the medallion (user); same photograph, so the credit is unchanged"
+  },
+  "abbado.wide": {
+    "source": {
+      "crop": [
+        0.57,
+        0.31,
+        0.85
+      ]
+    },
+    "_why": "2026-11-28: reframed for breathing space in the medallion (user); same photograph, so the credit is unchanged"
+  },
+  "kleiber.wide": {
+    "source": {
+      "crop": [
+        0.55,
+        0.47,
+        0.42
+      ]
+    },
+    "_why": "2026-11-28: reframed for breathing space in the medallion (user); same photograph, so the credit is unchanged"
+  },
+  "kleiber.mid": {
+    "source": {
+      "crop": [
+        0.55,
+        0.465,
+        0.36
+      ]
+    },
+    "_why": "2026-11-28: between the original crop (0.30) and kleiber.wide (0.42): the wide one made his face small and the polo shirt too salient (user)"
+  },
+  "muti.wide": {
+    "source": {
+      "crop": [
+        0.45,
+        0.32,
+        0.95
+      ]
+    },
+    "_why": "2026-11-28: reframed for breathing space in the medallion (user); same photograph, so the credit is unchanged"
+  }
+}

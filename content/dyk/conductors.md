@@ -86,7 +86,7 @@ Experts / nerds:  Did you know? **Boskovsky**’s quarter-century leading the *N
 
 # Riccardo Muti (1993, 1997, 2000, 2004, 2018, 2021, 2025\)
 
-**Kids:** Did you know? Some conductors lead the New Year’s concert once or twice, but Italian conductor Riccardo muti has done it seven times — more than almost anyone in modern times\! He even conducted it in 2021, the strange year during the covid pandemic where the hall was almost empty.
+**Kids:** Did you know? Some conductors lead the New Year’s concert once or twice, but Italian conductor Riccardo Muti has done it seven times — more than almost anyone in modern times\! He even conducted it in 2021, the strange year during the Covid pandemic where the hall was almost empty.
 
 **Adults:** Did you know? The Italian conductor Riccardo Muti, born in Naples in 1941, has led the New Year’s Concert seven times — in 1993, 1997, 2000, 2004, 2018, 2021 and 2025 — making him, with Zubin Mehta, one of the two most engaged New Year’s Concert conductors since the era of Lorin Maazel. His bond with the Vienna Philharmonic, which he first conducted in 1971, runs deep, and it fell to Muti to conduct the extraordinary 2021 concert, played to an empty hall during the pandemic.
 
